@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/spark_span",
+    "crates/spark_intern",
+    "crates/spark_diagnostics",
+    "crates/spark_ast",
+    "crates/spark_lexer",
+    # "crates/spark_parser",
+    # "crates/spark_modules",
+    # "crates/spark_resolve",
+    # "crates/spark_types",
+    # "crates/spark_hir",
+    # "crates/spark_mir",
+    # "crates/spark_borrow",
+    # "crates/spark_codegen",
+    # "crates/spark_driver",
+    # "crates/spark_cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/neilwadden/spark"
+
+[workspace.dependencies]
+# Internal crates
+spark_span = { path = "crates/spark_span" }
+spark_intern = { path = "crates/spark_intern" }
+spark_diagnostics = { path = "crates/spark_diagnostics" }
+spark_ast = { path = "crates/spark_ast" }
+spark_lexer = { path = "crates/spark_lexer" }
+
+# Error reporting
+thiserror = "1.0"
+ariadne = "0.4"
+
+# Code generation (for later)
+# inkwell = "0.4"
+# cranelift = "0.105"
+# cranelift-module = "0.105"
+
+# Data structures
+rustc-hash = "1.1"
+indexmap = "2.0"
+la-arena = "0.3"
+
+# String handling
+smol_str = "0.2"
+
+# Parallelism
+rayon = "1.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Testing
+insta = "1.34"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
