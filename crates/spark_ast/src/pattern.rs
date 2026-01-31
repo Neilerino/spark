@@ -23,39 +23,27 @@ pub struct Pattern {
 impl Pattern {
     /// Creates a new pattern.
     #[must_use]
-    pub fn new(kind: PatternKind, span: Span) -> Self {
+    pub const fn new(kind: PatternKind, span: Span) -> Self {
         Self { kind, span }
     }
 
     /// Creates a wildcard pattern.
     #[must_use]
-    pub fn wildcard(span: Span) -> Self {
+    pub const fn wildcard(span: Span) -> Self {
         Self::new(PatternKind::Wildcard, span)
     }
 
     /// Creates an identifier pattern.
     #[must_use]
-    pub fn ident(name: Ident) -> Self {
+    pub const fn ident(name: Ident) -> Self {
         let span = name.span;
-        Self::new(
-            PatternKind::Ident {
-                name,
-                ty: None,
-            },
-            span,
-        )
+        Self::new(PatternKind::Ident { name, ty: None }, span)
     }
 
     /// Creates an identifier pattern with type annotation.
     #[must_use]
-    pub fn ident_typed(name: Ident, ty: TypeExpr, span: Span) -> Self {
-        Self::new(
-            PatternKind::Ident {
-                name,
-                ty: Some(ty),
-            },
-            span,
-        )
+    pub const fn ident_typed(name: Ident, ty: TypeExpr, span: Span) -> Self {
+        Self::new(PatternKind::Ident { name, ty: Some(ty) }, span)
     }
 }
 
@@ -151,13 +139,17 @@ pub struct FieldPattern {
 impl FieldPattern {
     /// Creates a new field pattern.
     #[must_use]
-    pub fn new(name: Ident, pattern: Option<Pattern>, span: Span) -> Self {
-        Self { name, pattern, span }
+    pub const fn new(name: Ident, pattern: Option<Pattern>, span: Span) -> Self {
+        Self {
+            name,
+            pattern,
+            span,
+        }
     }
 
     /// Creates a shorthand field pattern (binds field to same-named local).
     #[must_use]
-    pub fn shorthand(name: Ident) -> Self {
+    pub const fn shorthand(name: Ident) -> Self {
         let span = name.span;
         Self {
             name,
@@ -211,8 +203,14 @@ mod tests {
     #[test]
     fn pattern_or() {
         let patterns = vec![
-            Pattern::new(PatternKind::Literal(Literal::int(1, Span::DUMMY)), Span::DUMMY),
-            Pattern::new(PatternKind::Literal(Literal::int(2, Span::DUMMY)), Span::DUMMY),
+            Pattern::new(
+                PatternKind::Literal(Literal::int(1, Span::DUMMY)),
+                Span::DUMMY,
+            ),
+            Pattern::new(
+                PatternKind::Literal(Literal::int(2, Span::DUMMY)),
+                Span::DUMMY,
+            ),
         ];
         let pat = Pattern::new(PatternKind::Or(patterns), Span::DUMMY);
 

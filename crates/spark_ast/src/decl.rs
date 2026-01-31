@@ -3,7 +3,7 @@
 use spark_intern::Symbol;
 use spark_span::Span;
 
-use crate::{Block, Expr, FnParam, GenericParam, Ident, Path, PartialArg, TypeExpr};
+use crate::{Block, Expr, FnParam, GenericParam, Ident, PartialArg, Path, TypeExpr};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,7 @@ impl Visibility {
 // ============================================================================
 
 /// Module declaration: `module user`
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ModuleDecl {
     /// The module name.
@@ -48,13 +48,13 @@ pub struct ModuleDecl {
 impl ModuleDecl {
     /// Creates a new module declaration.
     #[must_use]
-    pub fn new(name: Ident, span: Span) -> Self {
+    pub const fn new(name: Ident, span: Span) -> Self {
         Self { name, span }
     }
 }
 
 /// Using declaration (join existing module): `using user`
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct UsingDecl {
     /// The module path to join.
@@ -66,13 +66,13 @@ pub struct UsingDecl {
 impl UsingDecl {
     /// Creates a new using declaration.
     #[must_use]
-    pub fn new(path: Path, span: Span) -> Self {
+    pub const fn new(path: Path, span: Span) -> Self {
         Self { path, span }
     }
 }
 
 /// Import declaration: `import user { User, createUser }`
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ImportDecl {
     /// Whether this is a re-export: `pub import`
@@ -88,7 +88,7 @@ pub struct ImportDecl {
 impl ImportDecl {
     /// Creates a new import declaration.
     #[must_use]
-    pub fn new(is_pub: bool, path: Path, items: Vec<ImportItem>, span: Span) -> Self {
+    pub const fn new(is_pub: bool, path: Path, items: Vec<ImportItem>, span: Span) -> Self {
         Self {
             is_pub,
             path,
@@ -99,7 +99,7 @@ impl ImportDecl {
 }
 
 /// An item in an import list.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ImportItem {
     /// The name being imported.
@@ -113,13 +113,13 @@ pub struct ImportItem {
 impl ImportItem {
     /// Creates a new import item.
     #[must_use]
-    pub fn new(name: Ident, alias: Option<Ident>, span: Span) -> Self {
+    pub const fn new(name: Ident, alias: Option<Ident>, span: Span) -> Self {
         Self { name, alias, span }
     }
 
     /// Creates an import item without alias.
     #[must_use]
-    pub fn simple(name: Ident) -> Self {
+    pub const fn simple(name: Ident) -> Self {
         let span = name.span;
         Self {
             name,
@@ -162,7 +162,7 @@ pub struct FunctionDef {
 impl FunctionDef {
     /// Returns true if this is a method declaration without a body.
     #[must_use]
-    pub fn is_declaration(&self) -> bool {
+    pub const fn is_declaration(&self) -> bool {
         self.body.is_none()
     }
 }
@@ -182,13 +182,13 @@ pub struct Decorator {
 impl Decorator {
     /// Creates a new decorator.
     #[must_use]
-    pub fn new(name: Path, args: Vec<PartialArg>, span: Span) -> Self {
+    pub const fn new(name: Path, args: Vec<PartialArg>, span: Span) -> Self {
         Self { name, args, span }
     }
 
     /// Creates a decorator without arguments.
     #[must_use]
-    pub fn simple(name: Path, span: Span) -> Self {
+    pub const fn simple(name: Path, span: Span) -> Self {
         Self {
             name,
             args: Vec::new(),
@@ -198,7 +198,7 @@ impl Decorator {
 }
 
 /// A documentation comment.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DocComment {
     /// The comment text (without leading ///).
@@ -210,7 +210,7 @@ pub struct DocComment {
 impl DocComment {
     /// Creates a new doc comment.
     #[must_use]
-    pub fn new(content: Symbol, span: Span) -> Self {
+    pub const fn new(content: Symbol, span: Span) -> Self {
         Self { content, span }
     }
 }
@@ -254,7 +254,7 @@ pub struct StructField {
 impl StructField {
     /// Creates a new struct field.
     #[must_use]
-    pub fn new(name: Ident, ty: TypeExpr, span: Span) -> Self {
+    pub const fn new(name: Ident, ty: TypeExpr, span: Span) -> Self {
         Self {
             name,
             ty,
@@ -265,7 +265,7 @@ impl StructField {
 
     /// Creates a struct field with doc comment.
     #[must_use]
-    pub fn with_doc(name: Ident, ty: TypeExpr, doc: DocComment, span: Span) -> Self {
+    pub const fn with_doc(name: Ident, ty: TypeExpr, doc: DocComment, span: Span) -> Self {
         Self {
             name,
             ty,
@@ -316,7 +316,7 @@ pub struct EnumVariant {
 impl EnumVariant {
     /// Creates a unit variant.
     #[must_use]
-    pub fn unit(name: Ident, span: Span) -> Self {
+    pub const fn unit(name: Ident, span: Span) -> Self {
         Self {
             name,
             data: EnumVariantData::Unit,
@@ -327,7 +327,7 @@ impl EnumVariant {
 
     /// Creates a variant with a raw value.
     #[must_use]
-    pub fn with_value(name: Ident, value: Expr, span: Span) -> Self {
+    pub const fn with_value(name: Ident, value: Expr, span: Span) -> Self {
         Self {
             name,
             data: EnumVariantData::RawValue(value),
@@ -338,7 +338,7 @@ impl EnumVariant {
 
     /// Creates a variant with fields.
     #[must_use]
-    pub fn with_fields(name: Ident, fields: Vec<EnumField>, span: Span) -> Self {
+    pub const fn with_fields(name: Ident, fields: Vec<EnumField>, span: Span) -> Self {
         Self {
             name,
             data: EnumVariantData::Fields(fields),
@@ -377,7 +377,7 @@ pub struct EnumField {
 impl EnumField {
     /// Creates a new enum field.
     #[must_use]
-    pub fn new(name: Ident, ty: TypeExpr, span: Span) -> Self {
+    pub const fn new(name: Ident, ty: TypeExpr, span: Span) -> Self {
         Self { name, ty, span }
     }
 }
@@ -487,7 +487,7 @@ pub struct BindingDef {
 impl BindingDef {
     /// Creates a new binding definition.
     #[must_use]
-    pub fn new(ty: TypeExpr, bindings: Vec<BindingTarget>, span: Span) -> Self {
+    pub const fn new(ty: TypeExpr, bindings: Vec<BindingTarget>, span: Span) -> Self {
         Self { ty, bindings, span }
     }
 }
@@ -507,7 +507,7 @@ pub struct BindingTarget {
 impl BindingTarget {
     /// Creates a new binding target.
     #[must_use]
-    pub fn new(interface: Path, methods: Vec<FunctionDef>, span: Span) -> Self {
+    pub const fn new(interface: Path, methods: Vec<FunctionDef>, span: Span) -> Self {
         Self {
             interface,
             methods,
@@ -517,7 +517,7 @@ impl BindingTarget {
 
     /// Creates a binding target with no method implementations.
     #[must_use]
-    pub fn simple(interface: Path, span: Span) -> Self {
+    pub const fn simple(interface: Path, span: Span) -> Self {
         Self {
             interface,
             methods: Vec::new(),
@@ -576,11 +576,7 @@ mod tests {
 
     #[test]
     fn import_item_with_alias() {
-        let item = ImportItem::new(
-            dummy_ident("User"),
-            Some(dummy_ident("U")),
-            Span::DUMMY,
-        );
+        let item = ImportItem::new(dummy_ident("User"), Some(dummy_ident("U")), Span::DUMMY);
         assert!(item.alias.is_some());
         assert_eq!(item.alias.unwrap().name, sym("U"));
     }
@@ -600,7 +596,11 @@ mod tests {
 
     #[test]
     fn enum_variant_with_fields() {
-        let fields = vec![EnumField::new(dummy_ident("value"), int_type(), Span::DUMMY)];
+        let fields = vec![EnumField::new(
+            dummy_ident("value"),
+            int_type(),
+            Span::DUMMY,
+        )];
         let variant = EnumVariant::with_fields(dummy_ident("Success"), fields, Span::DUMMY);
 
         if let EnumVariantData::Fields(fields) = variant.data {

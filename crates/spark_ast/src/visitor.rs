@@ -25,7 +25,11 @@
 //! println!("Found {} expressions", counter.count);
 //! ```
 
-use crate::*;
+use crate::{
+    Ast, Block, EnumDef, EnumVariantData, Expr, ExprKind, FunctionDef, Ident, InterfaceDef, Item,
+    Literal, Path, Pattern, PatternKind, Stmt, StmtKind, StructDef, ToHandler, TypeExpr,
+    TypeExprKind,
+};
 
 /// A visitor for traversing AST nodes.
 ///
@@ -217,11 +221,7 @@ pub fn walk_stmt<V: Visitor>(v: &mut V, stmt: &Stmt) {
             v.visit_type(ty);
             v.visit_expr(value);
         }
-        StmtKind::Assign { target, value } => {
-            v.visit_expr(target);
-            v.visit_expr(value);
-        }
-        StmtKind::CompoundAssign { target, value, .. } => {
+        StmtKind::Assign { target, value } | StmtKind::CompoundAssign { target, value, .. } => {
             v.visit_expr(target);
             v.visit_expr(value);
         }
@@ -237,7 +237,7 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
         ExprKind::Ident(id) => v.visit_ident(id),
         ExprKind::Path(p) => v.visit_path(p),
 
-        ExprKind::List(elems) => {
+        ExprKind::List(elems) | ExprKind::Set(elems) | ExprKind::Tuple(elems) => {
             for e in elems {
                 v.visit_expr(e);
             }
@@ -257,13 +257,7 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
                 v.visit_expr(&entry.value);
             }
         }
-        ExprKind::Set(elems) | ExprKind::Tuple(elems) => {
-            for e in elems {
-                v.visit_expr(e);
-            }
-        }
-
-        ExprKind::Binary { lhs, rhs, .. } => {
+        ExprKind::Binary { lhs, rhs, .. } | ExprKind::Coalesce { lhs, rhs } => {
             v.visit_expr(lhs);
             v.visit_expr(rhs);
         }
@@ -354,8 +348,6 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
                 v.visit_expr(e);
             }
         }
-        ExprKind::Continue => {}
-
         ExprKind::Each {
             iterable,
             param,
@@ -390,11 +382,7 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
             }
         }
 
-        ExprKind::Coalesce { lhs, rhs } => {
-            v.visit_expr(lhs);
-            v.visit_expr(rhs);
-        }
-        ExprKind::Propagate(e) => v.visit_expr(e),
+        ExprKind::Propagate(e) | ExprKind::Paren(e) => v.visit_expr(e),
 
         ExprKind::Is { expr, ty } | ExprKind::As { expr, ty } => {
             v.visit_expr(expr);
@@ -427,14 +415,12 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
             v.visit_expr(e);
         }
 
-        ExprKind::Paren(e) => v.visit_expr(e),
-
         ExprKind::Range { start, end, .. } => {
             v.visit_expr(start);
             v.visit_expr(end);
         }
 
-        ExprKind::Error => {}
+        ExprKind::Error | ExprKind::Continue => {}
     }
 }
 
@@ -539,7 +525,11 @@ pub fn walk_pattern<V: Visitor>(v: &mut V, pat: &Pattern) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{
+        walk_expr, Ast, Expr, ExprKind, Ident, Item, Literal, Path, StructDef, TypeExpr,
+        TypeExprKind, Visitor,
+    };
+    use crate::{BinaryOp, StructField, Visibility};
     use spark_intern::{sym, Symbol};
     use spark_span::{FileId, Span};
 
@@ -567,10 +557,7 @@ mod tests {
     }
 
     fn int_literal(n: i64) -> Expr {
-        Expr::new(
-            ExprKind::Literal(Literal::int(n, Span::DUMMY)),
-            Span::DUMMY,
-        )
+        Expr::new(ExprKind::Literal(Literal::int(n, Span::DUMMY)), Span::DUMMY)
     }
 
     #[test]

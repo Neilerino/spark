@@ -39,13 +39,13 @@ pub struct Block {
 impl Block {
     /// Creates a new block.
     #[must_use]
-    pub fn new(stmts: Vec<Stmt>, expr: Option<Box<Expr>>, span: Span) -> Self {
+    pub const fn new(stmts: Vec<Stmt>, expr: Option<Box<Expr>>, span: Span) -> Self {
         Self { stmts, expr, span }
     }
 
     /// Creates an empty block.
     #[must_use]
-    pub fn empty(span: Span) -> Self {
+    pub const fn empty(span: Span) -> Self {
         Self {
             stmts: Vec::new(),
             expr: None,
@@ -77,13 +77,19 @@ pub struct Stmt {
 impl Stmt {
     /// Creates a new statement.
     #[must_use]
-    pub fn new(kind: StmtKind, span: Span) -> Self {
+    pub const fn new(kind: StmtKind, span: Span) -> Self {
         Self { kind, span }
     }
 
     /// Creates a let statement.
     #[must_use]
-    pub fn let_stmt(name: Ident, ty: TypeExpr, mutable: bool, value: Expr, span: Span) -> Self {
+    pub const fn let_stmt(
+        name: Ident,
+        ty: TypeExpr,
+        mutable: bool,
+        value: Expr,
+        span: Span,
+    ) -> Self {
         Self::new(
             StmtKind::Let {
                 name,
@@ -97,7 +103,7 @@ impl Stmt {
 
     /// Creates an expression statement.
     #[must_use]
-    pub fn expr(expr: Expr) -> Self {
+    pub const fn expr(expr: Expr) -> Self {
         let span = expr.span;
         Self::new(StmtKind::Expr(expr), span)
     }
@@ -233,12 +239,7 @@ mod tests {
             Span::DUMMY,
         );
 
-        if let StmtKind::Let {
-            name,
-            mutable,
-            ..
-        } = stmt.kind
-        {
+        if let StmtKind::Let { name, mutable, .. } = stmt.kind {
             assert_eq!(name.name, sym("x"));
             assert!(!mutable);
         } else {
@@ -248,13 +249,7 @@ mod tests {
 
     #[test]
     fn stmt_let_mutable() {
-        let stmt = Stmt::let_stmt(
-            dummy_ident("y"),
-            int_type(),
-            true,
-            int_expr(0),
-            Span::DUMMY,
-        );
+        let stmt = Stmt::let_stmt(dummy_ident("y"), int_type(), true, int_expr(0), Span::DUMMY);
 
         if let StmtKind::Let { mutable, .. } = stmt.kind {
             assert!(mutable);

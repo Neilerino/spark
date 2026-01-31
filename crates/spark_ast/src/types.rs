@@ -23,19 +23,19 @@ pub struct TypeExpr {
 impl TypeExpr {
     /// Creates a new type expression.
     #[must_use]
-    pub fn new(kind: TypeExprKind, span: Span) -> Self {
+    pub const fn new(kind: TypeExprKind, span: Span) -> Self {
         Self { kind, span }
     }
 
     /// Creates an error type for recovery.
     #[must_use]
-    pub fn error(span: Span) -> Self {
+    pub const fn error(span: Span) -> Self {
         Self::new(TypeExprKind::Error, span)
     }
 
     /// Creates an inferred type placeholder.
     #[must_use]
-    pub fn infer(span: Span) -> Self {
+    pub const fn infer(span: Span) -> Self {
         Self::new(TypeExprKind::Infer, span)
     }
 }
@@ -111,7 +111,7 @@ pub struct StructuralField {
 impl StructuralField {
     /// Creates a new structural field.
     #[must_use]
-    pub fn new(name: Ident, ty: TypeExpr, span: Span) -> Self {
+    pub const fn new(name: Ident, ty: TypeExpr, span: Span) -> Self {
         Self { name, ty, span }
     }
 }
@@ -133,7 +133,7 @@ pub struct GenericParam {
 impl GenericParam {
     /// Creates a new unconstrained generic parameter.
     #[must_use]
-    pub fn new(name: Ident, span: Span) -> Self {
+    pub const fn new(name: Ident, span: Span) -> Self {
         Self {
             name,
             constraint: None,
@@ -143,7 +143,7 @@ impl GenericParam {
 
     /// Creates a generic parameter with a constraint.
     #[must_use]
-    pub fn with_constraint(name: Ident, constraint: GenericConstraint, span: Span) -> Self {
+    pub const fn with_constraint(name: Ident, constraint: GenericConstraint, span: Span) -> Self {
         Self {
             name,
             constraint: Some(constraint),
@@ -177,7 +177,7 @@ pub struct LifetimeParam {
 impl LifetimeParam {
     /// Creates a new lifetime parameter.
     #[must_use]
-    pub fn new(name: Ident, span: Span) -> Self {
+    pub const fn new(name: Ident, span: Span) -> Self {
         Self { name, span }
     }
 }

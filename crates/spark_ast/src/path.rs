@@ -28,7 +28,7 @@ impl Ident {
 
     /// Creates a dummy identifier for testing or error recovery.
     #[must_use]
-    pub fn dummy(name: Symbol) -> Self {
+    pub const fn dummy(name: Symbol) -> Self {
         Self {
             name,
             span: Span::DUMMY,
@@ -57,7 +57,7 @@ pub struct Path {
 impl Path {
     /// Creates a new path from segments.
     #[must_use]
-    pub fn new(segments: Vec<Ident>, span: Span) -> Self {
+    pub const fn new(segments: Vec<Ident>, span: Span) -> Self {
         Self { segments, span }
     }
 
@@ -73,7 +73,7 @@ impl Path {
 
     /// Returns true if this is a simple single-segment path.
     #[must_use]
-    pub fn is_simple(&self) -> bool {
+    pub const fn is_simple(&self) -> bool {
         self.segments.len() == 1
     }
 

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Expressions are the primary building blocks of Spark programs.
 /// Unlike statements, expressions always produce a value.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Expr {
@@ -23,13 +24,13 @@ pub struct Expr {
 impl Expr {
     /// Creates a new expression.
     #[must_use]
-    pub fn new(kind: ExprKind, span: Span) -> Self {
+    pub const fn new(kind: ExprKind, span: Span) -> Self {
         Self { kind, span }
     }
 
     /// Creates an error expression for recovery.
     #[must_use]
-    pub fn error(span: Span) -> Self {
+    pub const fn error(span: Span) -> Self {
         Self::new(ExprKind::Error, span)
     }
 }
@@ -399,7 +400,10 @@ impl BinaryOp {
     /// Returns true if this is an arithmetic operator.
     #[must_use]
     pub const fn is_arithmetic(self) -> bool {
-        matches!(self, Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Mod)
+        matches!(
+            self,
+            Self::Add | Self::Sub | Self::Mul | Self::Div | Self::Mod
+        )
     }
 
     /// Returns true if this is a comparison operator.
@@ -466,7 +470,7 @@ pub struct MapEntry {
 impl MapEntry {
     /// Creates a new map entry.
     #[must_use]
-    pub fn new(key: Expr, value: Expr, span: Span) -> Self {
+    pub const fn new(key: Expr, value: Expr, span: Span) -> Self {
         Self { key, value, span }
     }
 }
@@ -486,7 +490,7 @@ pub struct CallArg {
 impl CallArg {
     /// Creates a positional argument.
     #[must_use]
-    pub fn positional(value: Expr) -> Self {
+    pub const fn positional(value: Expr) -> Self {
         let span = value.span;
         Self {
             name: None,
@@ -497,7 +501,7 @@ impl CallArg {
 
     /// Creates a named argument.
     #[must_use]
-    pub fn named(name: Ident, value: Expr, span: Span) -> Self {
+    pub const fn named(name: Ident, value: Expr, span: Span) -> Self {
         Self {
             name: Some(name),
             value,
@@ -521,7 +525,7 @@ pub struct FieldInit {
 impl FieldInit {
     /// Creates a new field initializer.
     #[must_use]
-    pub fn new(name: Ident, value: Expr, span: Span) -> Self {
+    pub const fn new(name: Ident, value: Expr, span: Span) -> Self {
         Self { name, value, span }
     }
 }
@@ -557,7 +561,7 @@ pub struct PartialArg {
 impl PartialArg {
     /// Creates a new partial argument.
     #[must_use]
-    pub fn new(name: Ident, value: Expr, span: Span) -> Self {
+    pub const fn new(name: Ident, value: Expr, span: Span) -> Self {
         Self { name, value, span }
     }
 }
@@ -577,7 +581,7 @@ pub struct FnParam {
 impl FnParam {
     /// Creates a new function parameter.
     #[must_use]
-    pub fn new(name: Ident, ty: TypeExpr, span: Span) -> Self {
+    pub const fn new(name: Ident, ty: TypeExpr, span: Span) -> Self {
         Self { name, ty, span }
     }
 }
@@ -597,8 +601,12 @@ pub struct MatchArm {
 impl MatchArm {
     /// Creates a new match arm.
     #[must_use]
-    pub fn new(pattern: Pattern, body: Expr, span: Span) -> Self {
-        Self { pattern, body, span }
+    pub const fn new(pattern: Pattern, body: Expr, span: Span) -> Self {
+        Self {
+            pattern,
+            body,
+            span,
+        }
     }
 }
 
@@ -612,10 +620,7 @@ mod tests {
     }
 
     fn int_literal(n: i64) -> Expr {
-        Expr::new(
-            ExprKind::Literal(Literal::int(n, Span::DUMMY)),
-            Span::DUMMY,
-        )
+        Expr::new(ExprKind::Literal(Literal::int(n, Span::DUMMY)), Span::DUMMY)
     }
 
     #[test]

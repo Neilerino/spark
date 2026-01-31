@@ -36,7 +36,7 @@ pub struct Ast {
 impl Ast {
     /// Creates a new empty AST for a file.
     #[must_use]
-    pub fn new(file_id: FileId) -> Self {
+    pub const fn new(file_id: FileId) -> Self {
         Self {
             file_id,
             module_decl: None,
@@ -48,25 +48,25 @@ impl Ast {
 
     /// Returns true if this AST has a module declaration.
     #[must_use]
-    pub fn has_module_decl(&self) -> bool {
+    pub const fn has_module_decl(&self) -> bool {
         self.module_decl.is_some()
     }
 
     /// Returns true if this AST has a using declaration.
     #[must_use]
-    pub fn has_using_decl(&self) -> bool {
+    pub const fn has_using_decl(&self) -> bool {
         self.using_decl.is_some()
     }
 
     /// Returns true if this AST has no items.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
     /// Returns the number of top-level items.
     #[must_use]
-    pub fn item_count(&self) -> usize {
+    pub const fn item_count(&self) -> usize {
         self.items.len()
     }
 }
@@ -106,7 +106,7 @@ pub enum Item {
 impl Item {
     /// Returns the span of this item.
     #[must_use]
-    pub fn span(&self) -> Span {
+    pub const fn span(&self) -> Span {
         match self {
             Self::Function(f) => f.span,
             Self::Struct(s) => s.span,
@@ -169,7 +169,7 @@ impl Item {
 
     /// Returns this item as a function, if it is one.
     #[must_use]
-    pub fn as_function(&self) -> Option<&FunctionDef> {
+    pub const fn as_function(&self) -> Option<&FunctionDef> {
         if let Self::Function(f) = self {
             Some(f)
         } else {
@@ -179,7 +179,7 @@ impl Item {
 
     /// Returns this item as a struct, if it is one.
     #[must_use]
-    pub fn as_struct(&self) -> Option<&StructDef> {
+    pub const fn as_struct(&self) -> Option<&StructDef> {
         if let Self::Struct(s) = self {
             Some(s)
         } else {
@@ -189,7 +189,7 @@ impl Item {
 
     /// Returns this item as an enum, if it is one.
     #[must_use]
-    pub fn as_enum(&self) -> Option<&EnumDef> {
+    pub const fn as_enum(&self) -> Option<&EnumDef> {
         if let Self::Enum(e) = self {
             Some(e)
         } else {
@@ -199,7 +199,7 @@ impl Item {
 
     /// Returns this item as an interface, if it is one.
     #[must_use]
-    pub fn as_interface(&self) -> Option<&InterfaceDef> {
+    pub const fn as_interface(&self) -> Option<&InterfaceDef> {
         if let Self::Interface(i) = self {
             Some(i)
         } else {
