@@ -211,10 +211,7 @@ impl<'a> Lexer<'a> {
 
             // Unknown character
             _ => {
-                self.error(
-                    format!("unexpected character `{c}`"),
-                    self.span(start),
-                );
+                self.error(format!("unexpected character `{c}`"), self.span(start));
                 Token::new(TokenKind::Error, self.span(start))
             }
         }
@@ -298,7 +295,11 @@ impl<'a> Lexer<'a> {
         }
 
         let symbol = sym(&value);
-        Token::with_value(TokenKind::StringLiteral, self.span(start), TokenValue::String(symbol))
+        Token::with_value(
+            TokenKind::StringLiteral,
+            self.span(start),
+            TokenValue::String(symbol),
+        )
     }
 
     /// Scans an escape sequence, returning the escaped character.
@@ -374,7 +375,11 @@ impl<'a> Lexer<'a> {
         }
 
         match value {
-            Some(c) => Token::with_value(TokenKind::CharLiteral, self.span(start), TokenValue::Char(c)),
+            Some(c) => Token::with_value(
+                TokenKind::CharLiteral,
+                self.span(start),
+                TokenValue::Char(c),
+            ),
             None => Token::new(TokenKind::Error, self.span(start)),
         }
     }
@@ -441,7 +446,8 @@ impl<'a> Lexer<'a> {
     /// Scans an octal number.
     fn scan_octal(&mut self, start: u32) -> Token {
         self.cursor.bump(); // o or O
-        self.cursor.eat_while(|c| matches!(c, '0'..='7') || c == '_');
+        self.cursor
+            .eat_while(|c| matches!(c, '0'..='7') || c == '_');
         self.make_int(start, 8)
     }
 
@@ -478,12 +484,13 @@ impl<'a> Lexer<'a> {
         let clean: String = text.chars().filter(|&c| c != '_').collect();
 
         if let Ok(n) = clean.parse::<f64>() {
-            Token::with_value(TokenKind::FloatLiteral, self.span(start), TokenValue::Float(n))
-        } else {
-            self.error(
-                format!("invalid float literal `{text}`"),
+            Token::with_value(
+                TokenKind::FloatLiteral,
                 self.span(start),
-            );
+                TokenValue::Float(n),
+            )
+        } else {
+            self.error(format!("invalid float literal `{text}`"), self.span(start));
             Token::new(TokenKind::Error, self.span(start))
         }
     }
@@ -500,7 +507,11 @@ impl<'a> Lexer<'a> {
 
         // It's an identifier
         let symbol = sym(text);
-        Token::with_value(TokenKind::Identifier, self.span(start), TokenValue::Ident(symbol))
+        Token::with_value(
+            TokenKind::Identifier,
+            self.span(start),
+            TokenValue::Ident(symbol),
+        )
     }
 
     /// Creates a span from start to current position.
@@ -510,9 +521,8 @@ impl<'a> Lexer<'a> {
 
     /// Records an error diagnostic.
     fn error(&mut self, message: impl Into<String>, span: Span) {
-        self.diagnostics.push(
-            Diagnostic::error(message).with_label(Label::primary(span, "")),
-        );
+        self.diagnostics
+            .push(Diagnostic::error(message).with_label(Label::primary(span, "")));
     }
 }
 
@@ -571,8 +581,14 @@ mod tests {
         assert_eq!(lex_kinds("..."), vec![TokenKind::Ellipsis, TokenKind::Eof]);
         assert_eq!(lex_kinds("->"), vec![TokenKind::Arrow, TokenKind::Eof]);
         assert_eq!(lex_kinds("=>"), vec![TokenKind::FatArrow, TokenKind::Eof]);
-        assert_eq!(lex_kinds("??"), vec![TokenKind::QuestionQuestion, TokenKind::Eof]);
-        assert_eq!(lex_kinds("?."), vec![TokenKind::QuestionDot, TokenKind::Eof]);
+        assert_eq!(
+            lex_kinds("??"),
+            vec![TokenKind::QuestionQuestion, TokenKind::Eof]
+        );
+        assert_eq!(
+            lex_kinds("?."),
+            vec![TokenKind::QuestionDot, TokenKind::Eof]
+        );
     }
 
     #[test]
@@ -648,7 +664,9 @@ mod tests {
         assert!(matches!(tokens[0].value, Some(TokenValue::Float(f)) if (f - 3.14).abs() < 0.001));
         assert!(matches!(tokens[1].value, Some(TokenValue::Float(f)) if (f - 1.0).abs() < 0.001));
         assert!(matches!(tokens[2].value, Some(TokenValue::Float(f)) if (f - 1e10).abs() < 1e5));
-        assert!(matches!(tokens[3].value, Some(TokenValue::Float(f)) if (f - 1.5e-3).abs() < 0.0001));
+        assert!(
+            matches!(tokens[3].value, Some(TokenValue::Float(f)) if (f - 1.5e-3).abs() < 0.0001)
+        );
     }
 
     #[test]

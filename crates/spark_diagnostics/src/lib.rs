@@ -213,7 +213,12 @@ impl Suggestion {
 
     /// Creates a suggestion to insert text at a position.
     #[must_use]
-    pub fn insert(message: impl Into<String>, file: FileId, pos: u32, text: impl Into<String>) -> Self {
+    pub fn insert(
+        message: impl Into<String>,
+        file: FileId,
+        pos: u32,
+        text: impl Into<String>,
+    ) -> Self {
         Self {
             message: message.into(),
             span: Span::point(file, pos),
@@ -785,8 +790,8 @@ mod tests {
         let file_id = source_map.add_file("test.spark", "let x = 42");
         let span = Span::new(file_id, 4, 5);
 
-        let diag = Diagnostic::error("undefined variable")
-            .with_label(Label::primary(span, "not found"));
+        let diag =
+            Diagnostic::error("undefined variable").with_label(Label::primary(span, "not found"));
 
         let output = diag.to_string_with_source(&source_map);
         assert!(output.contains("undefined variable"));
@@ -798,13 +803,10 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         diags.push(
-            Diagnostic::error("second")
-                .with_label(Label::primary(Span::new(file, 20, 25), "")),
+            Diagnostic::error("second").with_label(Label::primary(Span::new(file, 20, 25), "")),
         );
-        diags.push(
-            Diagnostic::error("first")
-                .with_label(Label::primary(Span::new(file, 0, 5), "")),
-        );
+        diags
+            .push(Diagnostic::error("first").with_label(Label::primary(Span::new(file, 0, 5), "")));
 
         diags.sort_by_location();
 

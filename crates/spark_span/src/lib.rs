@@ -570,8 +570,7 @@ impl SourceMap {
     /// Returns `"<unknown>"` if the file ID is invalid.
     #[must_use]
     pub fn file_name(&self, id: FileId) -> &str {
-        self.get_file(id)
-            .map_or("<unknown>", SourceFile::name)
+        self.get_file(id).map_or("<unknown>", SourceFile::name)
     }
 
     /// Returns an iterator over all source files.
