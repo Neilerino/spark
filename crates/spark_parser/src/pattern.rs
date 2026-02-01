@@ -83,7 +83,11 @@ impl Parser {
             // Literal patterns
             TokenKind::IntLiteral => {
                 let token = self.advance();
-                let value = token.value.as_ref().and_then(spark_lexer::TokenValue::as_int).unwrap_or(0);
+                let value = token
+                    .value
+                    .as_ref()
+                    .and_then(spark_lexer::TokenValue::as_int)
+                    .unwrap_or(0);
                 let lit = Literal::int(value, token.span);
                 Pattern::new(PatternKind::Literal(lit), token.span)
             }

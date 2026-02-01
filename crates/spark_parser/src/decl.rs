@@ -231,7 +231,7 @@ impl Parser {
     /// Parses a block.
     fn parse_block(&mut self) -> Block {
         self.expect(TokenKind::LBrace);
-        
+
         // Note: parse_block_inner already expects RBrace
         self.parse_block_inner()
     }
