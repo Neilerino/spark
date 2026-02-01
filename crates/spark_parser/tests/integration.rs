@@ -26,6 +26,7 @@ fn parse_file(path: &Path) -> Result<ParseResult, std::io::Error> {
         import_count: ast.imports.len(),
         error_count: diagnostics.iter().filter(|d| d.is_error()).count(),
         warning_count: diagnostics.iter().filter(|d| d.is_warning()).count(),
+        diagnostics,
     })
 }
 
@@ -37,10 +38,11 @@ struct ParseResult {
     import_count: usize,
     error_count: usize,
     warning_count: usize,
+    diagnostics: spark_diagnostics::Diagnostics,
 }
 
 impl ParseResult {
-    fn is_ok(&self) -> bool {
+    const fn is_ok(&self) -> bool {
         self.error_count == 0
     }
 }
@@ -105,6 +107,48 @@ fn parse_functions() {
         result.error_count
     );
     assert!(result.item_count >= 8, "Expected at least 8 functions");
+}
+
+#[test]
+fn test_simple_propagate() {
+    let path = Path::new("tests/fixtures/simple_propagate.spark");
+    let result = parse_file(path).expect("Failed to read file");
+
+    if !result.is_ok() {
+        eprintln!("Parse errors ({}):", result.error_count);
+        for diag in result.diagnostics.iter() {
+            eprintln!("  - {}", diag.message);
+        }
+    }
+
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
+
+    assert_eq!(result.item_count, 1, "Should parse 1 function");
+}
+
+#[test]
+fn test_error_propagation() {
+    let path = Path::new("tests/fixtures/error_propagation.spark");
+    let result = parse_file(path).expect("Failed to read file");
+
+    if !result.is_ok() {
+        eprintln!("Parse errors ({}):", result.error_count);
+        for diag in result.diagnostics.iter() {
+            eprintln!("  - {}", diag.message);
+        }
+    }
+
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
+
+    assert_eq!(result.item_count, 12, "Should parse 6 type definitions and 6 functions");
 }
 
 #[test]
@@ -265,7 +309,7 @@ fn parse_all_fixtures() {
         }
 
         // Only process .spark files
-        if path.extension().map_or(false, |ext| ext == "spark") {
+        if path.extension().is_some_and(|ext| ext == "spark") {
             let result = parse_file(&path).expect("Failed to read file");
 
             if result.is_ok() {
@@ -286,9 +330,6 @@ fn parse_all_fixtures() {
         }
     }
 
-    println!(
-        "\nResults: {} passed, {} with errors",
-        success_count, failure_count
-    );
+    println!("\nResults: {success_count} passed, {failure_count} with errors");
     assert_eq!(failure_count, 0, "Some fixtures failed to parse");
 }

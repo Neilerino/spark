@@ -37,6 +37,18 @@
 //! - **Recursive descent** for statements, declarations, and types
 //! - **Span tracking** for all AST nodes
 //! - **Diagnostic collection** for error reporting
+//!
+//! ## Keyword Handling
+//!
+//! Spark uses lexer-level keyword disambiguation. Most type names (Int, String,
+//! Bool, etc.) are regular identifiers. However, `Null` is a keyword because
+//! it's both a literal value and a type name:
+//!
+//! - As a value: `x: User? = Null`
+//! - As a type: `fn get(): User | Null`
+//!
+//! The parser handles this by accepting `TokenKind::Null` in both expression
+//! and type contexts.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
