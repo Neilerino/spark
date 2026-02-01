@@ -90,6 +90,7 @@ impl Parser {
     /// Parses a named type with optional generic arguments.
     ///
     /// `NamedType` = Path ("[" `TypeArgs` "]")?
+    #[allow(clippy::doc_link_with_quotes)]
     pub(crate) fn parse_named_type(&mut self) -> TypeExpr {
         let start = self.current_span();
         let path = self.parse_path();
@@ -152,6 +153,7 @@ impl Parser {
     /// Parses generic type arguments.
     ///
     /// `TypeArgs` = "[" Type ("," Type)* "]"
+    #[allow(clippy::doc_link_with_quotes)]
     fn parse_type_args(&mut self) -> Vec<TypeExpr> {
         let mut args = Vec::new();
 
@@ -243,6 +245,7 @@ impl Parser {
     /// Parses generic parameters in a declaration.
     ///
     /// `GenericParams` = "[" `GenericParam` ("," `GenericParam`)* "]"
+    #[allow(clippy::doc_link_with_quotes)]
     pub fn parse_generic_params(&mut self) -> Vec<GenericParam> {
         let mut params = Vec::new();
 

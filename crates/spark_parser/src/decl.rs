@@ -747,6 +747,7 @@ impl Parser {
     /// Parses binding targets.
     ///
     /// `BindingTargets` = `BindingTarget` | "[" `BindingTarget` ("," `BindingTarget`)* "]"
+    #[allow(clippy::doc_link_with_quotes)]
     fn parse_binding_targets(&mut self) -> Vec<BindingTarget> {
         if self.eat(TokenKind::LBracket).is_some() {
             // Multiple bindings

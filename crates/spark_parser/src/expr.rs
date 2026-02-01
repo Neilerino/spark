@@ -398,6 +398,7 @@ impl Parser {
     }
 
     /// Converts a brace expression to either struct init or partial application.
+    #[allow(clippy::unused_self)]
     fn convert_to_struct_or_partial(&self, path: Path, args: Vec<PartialArg>, span: Span) -> Expr {
         // Heuristic: if path starts with uppercase, assume struct init
         // This is a simplification - proper resolution happens later
