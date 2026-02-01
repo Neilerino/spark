@@ -73,7 +73,7 @@ impl Parser {
                 if let Some(path) = Self::lhs_as_path(&lhs) {
                     let args = self.parse_partial_args();
                     let span = self.span_from(start);
-                    lhs = self.convert_to_struct_or_partial(path, args, span);
+                    lhs = Self::convert_to_struct_or_partial(path, args, span);
                     continue;
                 }
             }
@@ -398,8 +398,7 @@ impl Parser {
     }
 
     /// Converts a brace expression to either struct init or partial application.
-    #[allow(clippy::unused_self)]
-    fn convert_to_struct_or_partial(&self, path: Path, args: Vec<PartialArg>, span: Span) -> Expr {
+    fn convert_to_struct_or_partial(path: Path, args: Vec<PartialArg>, span: Span) -> Expr {
         // Heuristic: if path starts with uppercase, assume struct init
         // This is a simplification - proper resolution happens later
         if let Some(first) = path.last() {
