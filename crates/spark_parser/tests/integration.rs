@@ -209,6 +209,30 @@ fn parse_types() {
 }
 
 #[test]
+fn test_higher_order_functions() {
+    let source = Path::new("tests/fixtures/high_order_fn.spark");
+    let result = parse_file(source).expect("Failed to read file");
+
+    //test
+    if !result.is_ok() {
+        eprintln!("Parse errors ({}):", result.error_count);
+        for diag in &result.diagnostics {
+            eprintln!("  - {}", diag.message);
+        }
+    }
+
+    assert!(
+        result.diagnostics.is_empty(),
+        "Should parse higher-order functions without errors"
+    );
+    assert!(
+        result.item_count >= 13,
+        "Expected at least 13 items (functions with higher-order functions) Found {0}",
+        result.item_count,
+    );
+}
+
+#[test]
 fn parse_async() {
     let path = Path::new("tests/fixtures/async.spark");
     let result = parse_file(path).expect("Failed to read file");
