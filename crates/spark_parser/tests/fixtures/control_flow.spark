@@ -1,0 +1,40 @@
+// Control flow expressions
+
+fn if_else(n: Int): Int {
+    if n > 0 { n } else { 0 }
+}
+
+fn if_else_if(n: Int): String {
+    if n > 0 {
+        "positive"
+    } else if n < 0 {
+        "negative"
+    } else {
+        "zero"
+    }
+}
+
+fn simple_match(n: Int): String {
+    match n {
+        0 -> "zero",
+        1 -> "one",
+        _ -> "other",
+    }
+}
+
+fn loop_with_break(n: Int): Int {
+    count: Int! = 0
+    loop {
+        if count >= n {
+            break count
+        }
+        count += 1
+    }
+}
+
+fn early_return(n: Int): Int {
+    if n < 0 {
+        return 0
+    }
+    n * 2
+}

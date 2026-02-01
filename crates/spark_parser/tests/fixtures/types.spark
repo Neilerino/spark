@@ -1,0 +1,52 @@
+// Type definitions and aliases
+
+pub alias UserId = Int
+pub alias Email = String
+pub alias Callback[T] = (T): Void
+
+type Meters = Float
+type Seconds = Float
+
+alias StringMap[V] = Map[String, V]
+alias Predicate[T] = (T): Bool
+
+// Optional types
+fn maybe_parse(s: String): Int? {
+    if s.isEmpty() {
+        Null
+    } else {
+        parse_int(s)
+    }
+}
+
+// Mutable types
+fn accumulate(acc: Int!, value: Int): Int {
+    acc = acc + value
+    acc
+}
+
+// Union types
+fn parse_value(input: String): Int | Float | ParseError {
+    if input.isInteger() {
+        parse_int(input)
+    } else if input.isFloat() {
+        parse_float(input)
+    } else {
+        ParseError { message: "Invalid" }
+    }
+}
+
+// Function types as parameters
+fn apply_func(x: Int, f: (Int): Int): Int {
+    f(x)
+}
+
+// Structural types
+fn get_dimensions(obj: { width: Int, height: Int }): Int {
+    obj.width * obj.height
+}
+
+// Generic type with constraint
+fn sort[T: Comparable[T]](list: List[T]): List[T] {
+    list.sorted()
+}

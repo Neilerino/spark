@@ -1,0 +1,54 @@
+// Enum definitions with variants
+
+pub enum Color: Int {
+    Red = 0,
+    Green = 1,
+    Blue = 2,
+}
+
+pub enum Option[T] {
+    Some(T),
+    None,
+}
+
+pub enum Result[T, E] {
+    Ok(T),
+    Err(E),
+}
+
+enum Shape {
+    Circle(Float),
+    Rectangle(Float, Float),
+    Triangle(Float, Float, Float),
+}
+
+enum Message {
+    Quit,
+    Move { x: Int, y: Int },
+    Write(String),
+    ChangeColor(Int, Int, Int),
+}
+
+fn describe_shape(shape: Shape): String {
+    match shape {
+        Shape.Circle(radius) -> "Circle",
+        Shape.Rectangle(w, h) -> "Rectangle",
+        Shape.Triangle(a, b, c) -> "Triangle",
+    }
+}
+
+fn unwrap_or[T](opt: Option[T], default: T): T {
+    match opt {
+        Option.Some(value) -> value,
+        Option.None -> default,
+    }
+}
+
+fn handle_message(msg: Message): Void {
+    match msg {
+        Message.Quit -> quit(),
+        Message.Move { x, y } -> move_to(x, y),
+        Message.Write(text) -> print(text),
+        Message.ChangeColor(r, g, b) -> set_color(r, g, b),
+    }
+}

@@ -10,7 +10,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 
 ## Completed Work
 
-### Foundation Crates (5/10 compiler phases)
+### Foundation Crates (6/10 compiler phases)
 
 | Crate | Purpose | Tests | Status |
 |-------|---------|-------|--------|
@@ -19,8 +19,9 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_diagnostics` | Error reporting with ariadne rendering | 12 | ✅ Complete |
 | `spark_lexer` | Tokenization (keywords, literals, operators, comments) | 33 | ✅ Complete |
 | `spark_ast` | AST node definitions for all language constructs | 53 | ✅ Complete |
+| `spark_parser` | Recursive descent parser with Pratt expression parsing | 102 | ✅ Complete |
 
-**Total: 125 tests passing across workspace.**
+**Total: 227 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (nursery warnings only).
 
@@ -38,108 +39,82 @@ spark/
     ├── spark_intern/             # Symbol, Interner, kw module (67 keywords)
     ├── spark_diagnostics/        # Diagnostic, Label, Diagnostics
     ├── spark_lexer/              # Lexer, Token, TokenKind (65 variants)
-    └── spark_ast/                # AST nodes (NEW)
-        ├── src/lib.rs            # Re-exports
-        ├── src/path.rs           # Ident, Path
-        ├── src/lit.rs            # Literal, LiteralKind, StringLiteral
-        ├── src/types.rs          # TypeExpr, GenericParam, constraints
-        ├── src/pattern.rs        # Pattern, PatternKind, FieldPattern
-        ├── src/stmt.rs           # Block, Stmt, StmtKind
-        ├── src/expr.rs           # Expr, ExprKind (~35 variants), BinaryOp, UnaryOp
-        ├── src/decl.rs           # FunctionDef, StructDef, EnumDef, InterfaceDef, etc.
-        ├── src/ast.rs            # Ast, Item
-        └── src/visitor.rs        # Visitor trait, walk_* functions
+    ├── spark_ast/                # AST nodes
+    │   ├── src/lib.rs            # Re-exports
+    │   ├── src/path.rs           # Ident, Path
+    │   ├── src/lit.rs            # Literal, LiteralKind, StringLiteral
+    │   ├── src/types.rs          # TypeExpr, GenericParam, constraints
+    │   ├── src/pattern.rs        # Pattern, PatternKind, FieldPattern
+    │   ├── src/stmt.rs           # Block, Stmt, StmtKind
+    │   ├── src/expr.rs           # Expr, ExprKind (~35 variants), BinaryOp, UnaryOp
+    │   ├── src/decl.rs           # FunctionDef, StructDef, EnumDef, InterfaceDef, etc.
+    │   ├── src/ast.rs            # Ast, Item
+    │   └── src/visitor.rs        # Visitor trait, walk_* functions
+    └── spark_parser/             # Parser (NEW)
+        ├── README.md             # Design documentation
+        └── src/
+            ├── lib.rs            # Public API, Parser struct
+            ├── expr.rs           # Expression parsing (Pratt algorithm)
+            ├── stmt.rs           # Statement parsing
+            ├── decl.rs           # Declaration parsing
+            ├── types.rs          # Type expression parsing
+            └── pattern.rs        # Pattern parsing
 ```
 
-### spark_ast Overview
+### spark_parser Overview
 
-The AST crate defines all node types for the Spark language:
+The parser implements:
+- **Pratt parsing** for expressions with 14 precedence levels
+- **Recursive descent** for declarations, statements, types, and patterns
+- **Error recovery** to report multiple syntax errors per file
+- **Span tracking** for all AST nodes
 
-**Top-level:**
-- `Ast` - Complete file representation
-- `Item` - Function, Struct, Enum, Interface, TypeAlias, TypeDef, Const, Binding
+**Key features:**
+- `parse(tokens, file_id) -> (Ast, Diagnostics)` - Main entry point
+- `parse_expr(tokens, file_id) -> (Expr, Diagnostics)` - For REPL/testing
+- Error nodes (`ExprKind::Error`, etc.) allow continued parsing after errors
+- `parse_expr_no_struct` for contexts where `{` starts a block, not struct init
 
-**Declarations:**
-- `FunctionDef` - Functions with generics, params, decorators, async support
-- `StructDef` / `StructField` - Struct definitions
-- `EnumDef` / `EnumVariant` - Enums with unit, raw value, or associated data variants
-- `InterfaceDef` - Interfaces with extends support
-- `TypeAliasDef` / `TypeDefDef` - Type aliases and distinct types
-- `ConstDef` - Constants
-- `BindingDef` / `BindingTarget` - Interface bindings
+**Operator Precedence:**
 
-**Expressions (~35 variants in `ExprKind`):**
-- Literals, identifiers, paths
-- Collections: List, Map, Set, Tuple, ListRange
-- Operators: Binary, Unary
-- Access: Field, OptionalField, Index, Call, MethodCall
-- Instantiation: StructInit, EnumVariant
-- Control flow: Block, If, Match, Loop, Break, Continue, Return
-- Iteration: Each, EachVia, To (narrowing/pipeline)
-- Optional handling: Coalesce, Propagate
-- Type operations: Is, As
-- Functions: Lambda, Partial
-- Async: Await, BlockAwait, Spawn
-
-**Types (`TypeExprKind`):**
-- Named (with generics), Tuple, Function, Optional, Union, Mutable, Ref, Structural
-
-**Patterns (`PatternKind`):**
-- Wildcard, Ident, Literal, Variant, Struct, Tuple, List, TypeNarrowing, Or, Guard
-
-**Visitor:**
-- `Visitor` trait with default traversal implementations
-- `walk_*` functions for each node type
+| Level | Operators | Binding Power |
+|-------|-----------|---------------|
+| 1 | `..`, `..=` (range) | 1-2 |
+| 2 | `??` (coalesce) | 3-4 |
+| 3 | `or` | 5-6 |
+| 4 | `and` | 7-8 |
+| 5 | `==`, `!=` | 9-10 |
+| 6 | `<`, `>`, `<=`, `>=`, `is`, `as` | 11-12 |
+| 7 | `\|` (bitwise or) | 13-14 |
+| 8 | `^` (xor) | 15-16 |
+| 9 | `&` (bitwise and) | 17-18 |
+| 10 | `<<`, `>>` | 19-20 |
+| 11 | `+`, `-` | 21-22 |
+| 12 | `*`, `/`, `%` | 23-24 |
+| 13 | `-`, `not`, `~` (prefix) | 25 |
+| 14 | `!`, `?`, `.`, `?.`, `[]`, `()` (postfix) | 27 |
 
 ## What's Next
 
-### Immediate: spark_parser
+### Immediate: spark_modules
 
-Build a recursive descent parser that:
-1. Consumes `Vec<Token>` from `spark_lexer`
-2. Produces `Ast` from `spark_ast`
-3. Collects `Diagnostics` for syntax errors
-4. Implements error recovery to report multiple errors per file
+Build module resolution that:
+1. Parses multiple `.spark` files into ASTs
+2. Resolves module declarations and import statements
+3. Builds a module graph with dependency ordering
+4. Handles cyclic import detection
 
-**Key files to create:**
-```
-crates/spark_parser/
-├── Cargo.toml
-├── README.md
-└── src/
-    ├── lib.rs           # Public API
-    ├── parser.rs        # Main parser struct and entry points
-    ├── expr.rs          # Expression parsing (precedence climbing)
-    ├── stmt.rs          # Statement parsing
-    ├── decl.rs          # Declaration parsing (fn, struct, enum, etc.)
-    ├── types.rs         # Type expression parsing
-    └── pattern.rs       # Pattern parsing for match
-```
-
-**Operator Precedence (from architecture doc):**
-
-| Level | Operators | Associativity |
-|-------|-----------|---------------|
-| 1 | `=`, `+=`, `-=`, `*=`, `/=` | Right |
-| 2 | `??` | Left |
-| 3 | `or` | Left |
-| 4 | `and` | Left |
-| 5 | `==`, `!=` | Left |
-| 6 | `<`, `>`, `<=`, `>=`, `is`, `as` | Left |
-| 7 | `\|` | Left |
-| 8 | `^` | Left |
-| 9 | `&` | Left |
-| 10 | `<<`, `>>` | Left |
-| 11 | `+`, `-` | Left |
-| 12 | `*`, `/`, `%` | Left |
-| 13 | `-` (unary), `not`, `~` | Right (prefix) |
-| 14 | `!`, `?`, `.`, `?.`, `[]`, `()` | Left (postfix) |
+**Key considerations:**
+- File system traversal for discovering modules
+- Path resolution (relative imports, library paths)
+- Visibility enforcement (`pub` vs private items)
+- Re-exports handling
 
 ### Full Pipeline (from compiler-architecture.md)
 
 1. ✅ Lexer (spark_lexer)
-2. ⏳ Parser (spark_parser) ← **NEXT**
-3. ⏳ Module Resolution (spark_modules)
+2. ✅ Parser (spark_parser)
+3. ⏳ Module Resolution (spark_modules) ← **NEXT**
 4. ⏳ Name Resolution (spark_resolve)
 5. ⏳ Type Checking (spark_types)
 6. ⏳ HIR Lowering (spark_hir)
@@ -161,9 +136,9 @@ crates/spark_parser/
 
 ```bash
 cargo build              # Build all
-cargo test               # Test all (125 tests)
+cargo test               # Test all (227 tests)
 cargo clippy             # Lint all
-cargo test -p spark_ast  # Test specific crate
+cargo test -p spark_parser  # Test specific crate
 cargo doc --open         # View documentation
 ```
 
@@ -175,15 +150,15 @@ cargo doc --open         # View documentation
 4. **ExprKind has ~35 variants** - Covers all expression forms in the language
 5. **Visitor pattern** - Use `walk_*` functions to traverse AST nodes
 6. **Error recovery** - `ExprKind::Error`, `TypeExprKind::Error`, `PatternKind::Error` for parser recovery
+7. **Symbol::as_str()** - Use this to get the string representation of interned symbols
 
 ## Notes for Next Agent
 
-1. **Read `docs/lang-spec.md`** before implementing the parser - it has the full grammar
-2. **Use `spark_ast` types directly** - they're designed for easy construction
-3. **Pre-interned keywords** in `kw` module are ready to compare with token symbols
-4. **Consider error recovery** - the parser should continue after syntax errors
-5. **Test with real Spark code** - create sample `.spark` files to parse
-6. **The architecture doc** has detailed input/output schemas for each phase
+1. **Read `docs/lang-spec.md`** - It has the full grammar and language semantics
+2. **The parser is complete** - You can parse any valid Spark program into an AST
+3. **Error recovery is implemented** - The parser continues after syntax errors
+4. **Test with real Spark code** - Create sample `.spark` files to parse
+5. **The architecture doc** has detailed input/output schemas for each phase
 
 ## Crate Dependencies
 
@@ -198,5 +173,7 @@ spark_lexer         (depends on span, intern, diagnostics)
       │
 spark_ast           (depends on span, intern)
       │
-spark_parser        (will depend on span, intern, diagnostics, lexer, ast)
+spark_parser        (depends on span, intern, diagnostics, lexer, ast)
+      │
+spark_modules       (will depend on all above)
 ```

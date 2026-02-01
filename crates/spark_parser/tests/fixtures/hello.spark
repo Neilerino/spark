@@ -1,0 +1,9 @@
+// Basic hello world program
+
+fn main(): Void {
+    print("Hello, Spark!")
+}
+
+fn greet(name: String): String {
+    "Hello, " + name + "!"
+}

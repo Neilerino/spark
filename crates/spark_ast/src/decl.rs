@@ -396,8 +396,8 @@ pub struct InterfaceDef {
     pub name: Ident,
     /// Generic parameters.
     pub generics: Vec<GenericParam>,
-    /// Interfaces this extends.
-    pub extends: Vec<Path>,
+    /// Interfaces this extends (can include type args like `Collection[T]`).
+    pub extends: Vec<TypeExpr>,
     /// Interface methods.
     pub methods: Vec<FunctionDef>,
     /// Doc comment.
@@ -496,8 +496,8 @@ impl BindingDef {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BindingTarget {
-    /// The interface being bound.
-    pub interface: Path,
+    /// The interface being bound (can include type args like `Comparable[Int]`).
+    pub interface: TypeExpr,
     /// Implementation methods (empty if interface has defaults).
     pub methods: Vec<FunctionDef>,
     /// The span.
@@ -507,7 +507,7 @@ pub struct BindingTarget {
 impl BindingTarget {
     /// Creates a new binding target.
     #[must_use]
-    pub const fn new(interface: Path, methods: Vec<FunctionDef>, span: Span) -> Self {
+    pub fn new(interface: TypeExpr, methods: Vec<FunctionDef>, span: Span) -> Self {
         Self {
             interface,
             methods,
@@ -517,7 +517,7 @@ impl BindingTarget {
 
     /// Creates a binding target with no method implementations.
     #[must_use]
-    pub const fn simple(interface: Path, span: Span) -> Self {
+    pub fn simple(interface: TypeExpr, span: Span) -> Self {
         Self {
             interface,
             methods: Vec::new(),

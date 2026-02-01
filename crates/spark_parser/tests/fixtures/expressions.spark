@@ -1,0 +1,99 @@
+// Various expression forms
+
+fn arithmetic(): Int {
+    result: Int = 1 + 2 * 3 - 4 / 2
+    result = result % 5
+    result = -result
+    result
+}
+
+fn comparison(a: Int, b: Int): Bool {
+    a < b and b <= 10 or a >= 0 and not (a == b)
+}
+
+fn bitwise(x: Int, y: Int): Int {
+    result: Int = x & y
+    result = result | 0xFF
+    result = result ^ 0x0F
+    result = result << 2
+    result = result >> 1
+    ~result
+}
+
+fn optional_handling(value: Int?): Int {
+    // Null coalescing
+    result: Int = value ?? 0
+    result
+}
+
+fn error_propagation(input: String): Int | ParseError {
+    value: Int = parse(input)!
+    value * 2
+}
+
+fn collections(): Void {
+    // List literal
+    numbers: List[Int] = [1, 2, 3, 4, 5]
+
+    // List range
+    range: List[Int] = [0..10]
+    inclusive: List[Int] = [0..=10]
+
+    // Tuple
+    pair: Tup[Int, String] = (42, "answer")
+
+    // Empty collections
+    empty_list: List[Int] = []
+}
+
+fn lambdas(): Void {
+    // Full lambda
+    add: (Int, Int): Int = fn(a: Int, b: Int): Int { a + b }
+
+    // Lambda usage
+    numbers: List[Int] = [1, 2, 3]
+    doubled: List[Int] = numbers.map(fn(x: Int): Int { x * 2 })
+}
+
+fn type_operations(value: Int | String): Void {
+    // Type check
+    if value is Int {
+        print("integer")
+    }
+
+    // Type cast
+    str: String = value as String
+}
+
+fn struct_expressions(): Void {
+    // Struct initialization
+    point: Point = Point { x: 10.0, y: 20.0 }
+
+    // Field access
+    x_value: Float = point.x
+
+    // Method call
+    distance: Float = point.distance(origin)
+
+    // Chained access
+    nested: Float = rect.origin.x
+
+    // Optional field access
+    maybe_x: Float? = maybe_point?.x
+}
+
+fn index_and_call(): Void {
+    list: List[Int] = [1, 2, 3]
+
+    // Index access
+    first: Int = list[0]
+
+    // Function call
+    result: Int = add(1, 2)
+
+    // Method call
+    size: Int = list.size()
+
+    // Chained calls
+    value: Int = list.map(double).first()
+}

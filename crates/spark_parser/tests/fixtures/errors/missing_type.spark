@@ -1,0 +1,9 @@
+// Missing type annotation - should produce error
+
+fn bad_param(x): Int {
+    x
+}
+
+fn missing_return(a: Int, b: Int) {
+    a + b
+}

@@ -1,0 +1,43 @@
+// Async operations
+
+async fn fetch_user(id: Int): User | NetworkError {
+    await http.get("/users/" + id.toString())
+}
+
+async fn fetch_posts(userId: Int): List[Post] | NetworkError {
+    await http.get("/users/" + userId.toString() + "/posts")
+}
+
+async fn fetch_user_with_posts(id: Int): UserWithPosts | NetworkError {
+    user: User = await fetch_user(id)!
+    posts: List[Post] = await fetch_posts(id)!
+    UserWithPosts { user: user, posts: posts }
+}
+
+// Parallel async with spawn
+async fn fetch_parallel(): AllData | NetworkError {
+    users_future: Future[List[User]] = spawn { await fetch_all_users() }
+    posts_future: Future[List[Post]] = spawn { await fetch_all_posts() }
+
+    AllData {
+        users: await users_future!,
+        posts: await posts_future!,
+    }
+}
+
+// Block await for CPU-bound work
+fn process_file(path: String): Data {
+    data: Bytes = block read_file(path)
+    process(data)
+}
+
+// Error propagation in async
+async fn safe_fetch(url: String): Data | FetchError {
+    response: Response = await http.get(url)!
+
+    if response.status != 200 {
+        return FetchError { status: response.status }
+    }
+
+    await response.json()!
+}

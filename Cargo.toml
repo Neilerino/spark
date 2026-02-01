@@ -6,7 +6,7 @@ members = [
     "crates/spark_diagnostics",
     "crates/spark_ast",
     "crates/spark_lexer",
-    # "crates/spark_parser",
+    "crates/spark_parser",
     # "crates/spark_modules",
     # "crates/spark_resolve",
     # "crates/spark_types",
@@ -31,6 +31,7 @@ spark_intern = { path = "crates/spark_intern" }
 spark_diagnostics = { path = "crates/spark_diagnostics" }
 spark_ast = { path = "crates/spark_ast" }
 spark_lexer = { path = "crates/spark_lexer" }
+spark_parser = { path = "crates/spark_parser" }
 
 # Error reporting
 thiserror = "1.0"

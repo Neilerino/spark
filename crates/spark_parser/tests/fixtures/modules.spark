@@ -1,0 +1,45 @@
+module collections
+
+using std.io
+
+import std.math { sqrt, pow, abs }
+import std.strings { join, split }
+
+pub import internal.helpers { Helper, utils }
+
+// Public items are accessible from other modules
+pub struct Stack[T] {
+    items: List[T],
+}
+
+pub fn new_stack[T](): Stack[T] {
+    Stack { items: [] }
+}
+
+// Private helper - not exported
+fn validate[T](stack: Stack[T]): Bool {
+    stack.items.size() >= 0
+}
+
+pub fn push[T](stack: Stack[T]!, item: T): Void {
+    stack.items.append(item)
+}
+
+pub fn pop[T](stack: Stack[T]!): T? {
+    if stack.items.isEmpty() {
+        Null
+    } else {
+        stack.items.removeLast()
+    }
+}
+
+pub fn peek[T](stack: Stack[T]): T? {
+    if stack.items.isEmpty() {
+        Null
+    } else {
+        stack.items.last()
+    }
+}
+
+pub const DEFAULT_CAPACITY: Int = 16
+pub const MAX_SIZE: Int = 1000000

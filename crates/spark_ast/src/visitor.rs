@@ -138,7 +138,7 @@ pub fn walk_item<V: Visitor>(v: &mut V, item: &Item) {
         Item::Binding(b) => {
             v.visit_type(&b.ty);
             for target in &b.bindings {
-                v.visit_path(&target.interface);
+                v.visit_type(&target.interface);
                 for method in &target.methods {
                     v.visit_function(method);
                 }
@@ -194,7 +194,7 @@ pub fn walk_enum<V: Visitor>(v: &mut V, e: &EnumDef) {
 pub fn walk_interface<V: Visitor>(v: &mut V, i: &InterfaceDef) {
     v.visit_ident(&i.name);
     for ext in &i.extends {
-        v.visit_path(ext);
+        v.visit_type(ext);
     }
     for method in &i.methods {
         v.visit_function(method);

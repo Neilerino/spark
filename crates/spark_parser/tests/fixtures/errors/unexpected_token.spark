@@ -1,0 +1,9 @@
+// Unexpected tokens - should produce errors
+
+fn broken(): Int {
+    1 + + 2
+}
+
+fn also_broken(): Int {
+    if { 1 }
+}

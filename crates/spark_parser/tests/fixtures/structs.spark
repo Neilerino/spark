@@ -1,0 +1,42 @@
+// Struct definitions and usage
+
+pub struct Point {
+    x: Float,
+    y: Float,
+}
+
+pub struct Rectangle {
+    origin: Point,
+    width: Float,
+    height: Float,
+}
+
+struct Color {
+    r: Int,
+    g: Int,
+    b: Int,
+    a: Int,
+}
+
+fn create_point(x: Float, y: Float): Point {
+    Point { x: x, y: y }
+}
+
+fn create_unit_square(): Rectangle {
+    Rectangle {
+        origin: Point { x: 0.0, y: 0.0 },
+        width: 1.0,
+        height: 1.0,
+    }
+}
+
+fn area(rect: Rectangle): Float {
+    rect.width * rect.height
+}
+
+fn translate(point: Point, dx: Float, dy: Float): Point {
+    Point {
+        x: point.x + dx,
+        y: point.y + dy,
+    }
+}

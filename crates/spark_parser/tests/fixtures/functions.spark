@@ -1,0 +1,51 @@
+// Function definitions with various features
+
+// Simple function
+fn add(a: Int, b: Int): Int {
+    a + b
+}
+
+// Generic function
+fn identity[T](value: T): T {
+    value
+}
+
+// Function with multiple generic parameters
+fn pair[A, B](first: A, second: B): Tup[A, B] {
+    (first, second)
+}
+
+// Async function
+async fn fetch_data(url: String): Data | NetworkError {
+    await http.get(url)
+}
+
+// Function with single decorator
+@deprecated
+fn old_api(): Void {
+    new_api()
+}
+
+// Function returning optional
+fn maybe_find(list: List[Int], target: Int): Int? {
+    Null
+}
+
+// Function with union return type
+fn divide(a: Int, b: Int): Int | DivisionError {
+    if b == 0 {
+        DivisionError { message: "Division by zero" }
+    } else {
+        a / b
+    }
+}
+
+// Higher-order function
+fn apply[T, U](value: T, f: (T): U): U {
+    f(value)
+}
+
+// Function with mutable parameter
+fn increment(counter: Int!): Void {
+    counter = counter + 1
+}

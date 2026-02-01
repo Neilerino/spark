@@ -153,11 +153,15 @@ impl GenericParam {
 }
 
 /// A constraint on a generic parameter.
+///
+/// Constraints can be:
+/// - Named types with optional type args: `Printable`, `Comparable[T]`
+/// - Structural types: `{ name: String }`
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum GenericConstraint {
-    /// A named constraint (interface or type): `T: Printable`
-    Named(Path),
+    /// A named constraint (interface or type): `T: Printable` or `T: Comparable[T]`
+    Named(TypeExpr),
     /// A structural constraint: `T: { name: String }`
     Structural(Vec<StructuralField>),
 }

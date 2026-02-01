@@ -1,0 +1,17 @@
+[package]
+name = "spark_parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parser for the Spark programming language"
+
+[dependencies]
+spark_span.workspace = true
+spark_intern.workspace = true
+spark_diagnostics.workspace = true
+spark_lexer.workspace = true
+spark_ast.workspace = true
+
+[lints]
+workspace = true

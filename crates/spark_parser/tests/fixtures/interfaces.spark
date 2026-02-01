@@ -1,0 +1,49 @@
+// Interface definitions and bindings
+
+pub interface Comparable[T] {
+    fn compare(other: T): Int
+}
+
+pub interface Hashable {
+    fn hash(): Int
+}
+
+pub interface Equatable {
+    fn equals(other: Self): Bool
+}
+
+interface Printable {
+    fn toString(): String
+}
+
+// Interface with multiple methods
+interface Collection[T] {
+    fn size(): Int
+    fn isEmpty(): Bool
+    fn contains(item: T): Bool
+}
+
+// Interface extending another
+interface OrderedCollection[T] extends Collection[T] {
+    fn first(): T?
+    fn last(): T?
+}
+
+// Binding a type to an interface
+Int binds Comparable[Int] {
+    fn compare(other: Int): Int {
+        if self < other { -1 }
+        else if self > other { 1 }
+        else { 0 }
+    }
+}
+
+// Generic constraint
+fn max[T: Comparable[T]](a: T, b: T): T {
+    if a.compare(b) > 0 { a } else { b }
+}
+
+// Structural constraint
+fn get_name[T: { name: String }](obj: T): String {
+    obj.name
+}
