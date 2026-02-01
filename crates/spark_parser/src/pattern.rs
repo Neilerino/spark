@@ -22,14 +22,14 @@ use crate::Parser;
 impl Parser {
     /// Parses a pattern.
     ///
-    /// Pattern = OrPattern
+    /// Pattern = `OrPattern`
     pub fn parse_pattern(&mut self) -> Pattern {
         self.parse_or_pattern()
     }
 
     /// Parses an or pattern.
     ///
-    /// OrPattern = GuardPattern ("|" GuardPattern)*
+    /// `OrPattern` = `GuardPattern` ("|" `GuardPattern`)*
     fn parse_or_pattern(&mut self) -> Pattern {
         let start = self.current_span();
         let first = self.parse_guard_pattern();
@@ -49,7 +49,7 @@ impl Parser {
 
     /// Parses a pattern with optional guard.
     ///
-    /// GuardPattern = PrimaryPattern ("if" Expr)?
+    /// `GuardPattern` = `PrimaryPattern` ("if" Expr)?
     fn parse_guard_pattern(&mut self) -> Pattern {
         let start = self.current_span();
         let pattern = self.parse_primary_pattern();
@@ -83,7 +83,7 @@ impl Parser {
             // Literal patterns
             TokenKind::IntLiteral => {
                 let token = self.advance();
-                let value = token.value.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
+                let value = token.value.as_ref().and_then(spark_lexer::TokenValue::as_int).unwrap_or(0);
                 let lit = Literal::int(value, token.span);
                 Pattern::new(PatternKind::Literal(lit), token.span)
             }
@@ -93,7 +93,7 @@ impl Parser {
                 let value = token
                     .value
                     .as_ref()
-                    .and_then(|v| v.as_float())
+                    .and_then(spark_lexer::TokenValue::as_float)
                     .unwrap_or(0.0);
                 let lit = Literal::float(value, token.span);
                 Pattern::new(PatternKind::Literal(lit), token.span)
@@ -104,7 +104,7 @@ impl Parser {
                 let text = token
                     .value
                     .as_ref()
-                    .and_then(|v| v.as_symbol())
+                    .and_then(spark_lexer::TokenValue::as_symbol)
                     .unwrap_or_else(|| sym(""));
                 let lit = Literal::new(
                     LiteralKind::String(spark_ast::StringLiteral::simple(text)),
@@ -118,7 +118,7 @@ impl Parser {
                 let value = token
                     .value
                     .as_ref()
-                    .and_then(|v| v.as_char())
+                    .and_then(spark_lexer::TokenValue::as_char)
                     .unwrap_or('\0');
                 let lit = Literal::char(value, token.span);
                 Pattern::new(PatternKind::Literal(lit), token.span)
@@ -168,7 +168,7 @@ impl Parser {
 
     /// Parses a tuple pattern.
     ///
-    /// TuplePattern = "(" (Pattern ("," Pattern)*)? ")"
+    /// `TuplePattern` = "(" (Pattern ("," Pattern)*)? ")"
     fn parse_tuple_pattern(&mut self) -> Pattern {
         let start = self.current_span();
         self.expect(TokenKind::LParen);
@@ -197,7 +197,7 @@ impl Parser {
 
     /// Parses a list pattern.
     ///
-    /// ListPattern = "[" (Pattern ("," Pattern)* ("," "..." Pattern)?)? "]"
+    /// `ListPattern` = "[" (Pattern ("," Pattern)* ("," "..." Pattern)?)? "]"
     fn parse_list_pattern(&mut self) -> Pattern {
         let start = self.current_span();
         self.expect(TokenKind::LBracket);
@@ -287,7 +287,7 @@ impl Parser {
 
     /// Parses a struct destructuring pattern.
     ///
-    /// StructPattern = Path "{" (FieldPattern ("," FieldPattern)* ","? ".."?)? "}"
+    /// `StructPattern` = Path "{" (`FieldPattern` ("," `FieldPattern`)* ","? ".."?)? "}"
     fn parse_struct_pattern(&mut self, path: Path, start: Span) -> Pattern {
         self.expect(TokenKind::LBrace);
 
@@ -321,7 +321,7 @@ impl Parser {
 
     /// Parses a field pattern in struct destructuring.
     ///
-    /// FieldPattern = Ident (":" Pattern)?
+    /// `FieldPattern` = Ident (":" Pattern)?
     fn parse_field_pattern(&mut self) -> FieldPattern {
         let name = self
             .expect_ident()
@@ -338,7 +338,7 @@ impl Parser {
 
     /// Parses a variant pattern with fields.
     ///
-    /// VariantPattern = Path "(" (Pattern ("," Pattern)*)? ")"
+    /// `VariantPattern` = Path "(" (Pattern ("," Pattern)*)? ")"
     fn parse_variant_pattern(&mut self, path: Path, start: Span) -> Pattern {
         self.expect(TokenKind::LParen);
 

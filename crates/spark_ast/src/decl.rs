@@ -507,7 +507,7 @@ pub struct BindingTarget {
 impl BindingTarget {
     /// Creates a new binding target.
     #[must_use]
-    pub fn new(interface: TypeExpr, methods: Vec<FunctionDef>, span: Span) -> Self {
+    pub const fn new(interface: TypeExpr, methods: Vec<FunctionDef>, span: Span) -> Self {
         Self {
             interface,
             methods,
@@ -517,7 +517,7 @@ impl BindingTarget {
 
     /// Creates a binding target with no method implementations.
     #[must_use]
-    pub fn simple(interface: TypeExpr, span: Span) -> Self {
+    pub const fn simple(interface: TypeExpr, span: Span) -> Self {
         Self {
             interface,
             methods: Vec::new(),

@@ -190,7 +190,7 @@ impl Parser {
         if self.check(kind) {
             Some(self.advance())
         } else {
-            self.error_expected(&kind.as_str());
+            self.error_expected(kind.as_str());
             None
         }
     }

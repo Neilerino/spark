@@ -17,14 +17,14 @@ use crate::Parser;
 impl Parser {
     /// Parses a type expression.
     ///
-    /// Type = UnionType
+    /// Type = `UnionType`
     pub fn parse_type(&mut self) -> TypeExpr {
         self.parse_union_type()
     }
 
     /// Parses a union type.
     ///
-    /// UnionType = PostfixType ("|" PostfixType)*
+    /// `UnionType` = `PostfixType` ("|" `PostfixType`)*
     fn parse_union_type(&mut self) -> TypeExpr {
         let start = self.current_span();
         let first = self.parse_postfix_type();
@@ -44,7 +44,7 @@ impl Parser {
 
     /// Parses a type with optional postfix modifiers.
     ///
-    /// PostfixType = PrimaryType ("?" | "!")*
+    /// `PostfixType` = `PrimaryType` ("?" | "!")*
     fn parse_postfix_type(&mut self) -> TypeExpr {
         let start = self.current_span();
         let mut ty = self.parse_primary_type();
@@ -66,7 +66,7 @@ impl Parser {
 
     /// Parses a primary type.
     ///
-    /// PrimaryType = NamedType | FunctionType | StructuralType
+    /// `PrimaryType` = `NamedType` | `FunctionType` | `StructuralType`
     fn parse_primary_type(&mut self) -> TypeExpr {
         let start = self.current_span();
 
@@ -89,7 +89,7 @@ impl Parser {
 
     /// Parses a named type with optional generic arguments.
     ///
-    /// NamedType = Path ("[" TypeArgs "]")?
+    /// `NamedType` = Path ("[" `TypeArgs` "]")?
     pub(crate) fn parse_named_type(&mut self) -> TypeExpr {
         let start = self.current_span();
         let path = self.parse_path();
@@ -151,7 +151,7 @@ impl Parser {
 
     /// Parses generic type arguments.
     ///
-    /// TypeArgs = "[" Type ("," Type)* "]"
+    /// `TypeArgs` = "[" Type ("," Type)* "]"
     fn parse_type_args(&mut self) -> Vec<TypeExpr> {
         let mut args = Vec::new();
 
@@ -175,7 +175,7 @@ impl Parser {
 
     /// Parses a function type.
     ///
-    /// FunctionType = "(" (Type ("," Type)*)? ")" ":" Type
+    /// `FunctionType` = "(" (Type ("," Type)*)? ")" ":" Type
     fn parse_function_type(&mut self) -> TypeExpr {
         let start = self.current_span();
 
@@ -203,7 +203,7 @@ impl Parser {
 
     /// Parses a structural type.
     ///
-    /// StructuralType = "{" (StructuralField ("," StructuralField)*)? "}"
+    /// `StructuralType` = "{" (`StructuralField` ("," `StructuralField`)*)? "}"
     fn parse_structural_type(&mut self) -> TypeExpr {
         let start = self.current_span();
 
@@ -228,7 +228,7 @@ impl Parser {
 
     /// Parses a structural field.
     ///
-    /// StructuralField = Ident ":" Type
+    /// `StructuralField` = Ident ":" Type
     fn parse_structural_field(&mut self) -> StructuralField {
         let start = self.current_span();
         let name = self
@@ -242,7 +242,7 @@ impl Parser {
 
     /// Parses generic parameters in a declaration.
     ///
-    /// GenericParams = "[" GenericParam ("," GenericParam)* "]"
+    /// `GenericParams` = "[" `GenericParam` ("," `GenericParam`)* "]"
     pub fn parse_generic_params(&mut self) -> Vec<GenericParam> {
         let mut params = Vec::new();
 
@@ -266,7 +266,7 @@ impl Parser {
 
     /// Parses a single generic parameter.
     ///
-    /// GenericParam = Ident (":" Constraint)?
+    /// `GenericParam` = Ident (":" Constraint)?
     fn parse_generic_param(&mut self) -> GenericParam {
         let start = self.current_span();
         let name = self
@@ -290,7 +290,7 @@ impl Parser {
 
     /// Parses a generic constraint.
     ///
-    /// Constraint = StructuralType | NamedType
+    /// Constraint = `StructuralType` | `NamedType`
     fn parse_generic_constraint(&mut self) -> GenericConstraint {
         if self.check(TokenKind::LBrace) {
             // Structural constraint: { field: Type }

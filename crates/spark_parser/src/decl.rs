@@ -28,7 +28,7 @@ impl Parser {
 
     /// Parses a module declaration.
     ///
-    /// ModuleDecl = "module" Ident
+    /// `ModuleDecl` = "module" Ident
     pub(crate) fn parse_module_decl(&mut self) -> ModuleDecl {
         let start = self.current_span();
         self.expect(TokenKind::Module);
@@ -41,7 +41,7 @@ impl Parser {
 
     /// Parses a using declaration.
     ///
-    /// UsingDecl = "using" Path
+    /// `UsingDecl` = "using" Path
     pub(crate) fn parse_using_decl(&mut self) -> UsingDecl {
         let start = self.current_span();
         self.expect(TokenKind::Using);
@@ -52,7 +52,7 @@ impl Parser {
 
     /// Parses an import declaration.
     ///
-    /// ImportDecl = ("pub")? "import" Path ("{" ImportItems "}")?
+    /// `ImportDecl` = ("pub")? "import" Path ("{" `ImportItems` "}")?
     pub(crate) fn parse_import_decl(&mut self) -> ImportDecl {
         let start = self.current_span();
         let is_pub = self.eat(TokenKind::Pub).is_some();
@@ -71,7 +71,7 @@ impl Parser {
 
     /// Parses import items.
     ///
-    /// ImportItems = "{" (ImportItem ("," ImportItem)*)? "}"
+    /// `ImportItems` = "{" (`ImportItem` ("," `ImportItem`)*)? "}"
     fn parse_import_items(&mut self) -> Vec<ImportItem> {
         let mut items = Vec::new();
 
@@ -93,7 +93,7 @@ impl Parser {
 
     /// Parses a single import item.
     ///
-    /// ImportItem = Ident ("as" Ident)?
+    /// `ImportItem` = Ident ("as" Ident)?
     fn parse_import_item(&mut self) -> ImportItem {
         let start = self.current_span();
         let name = self
@@ -119,7 +119,7 @@ impl Parser {
 
     /// Parses decorators.
     ///
-    /// Decorators = ("@" Path ("{" PartialArgs "}")?)*
+    /// Decorators = ("@" Path ("{" `PartialArgs` "}")?)*
     pub(crate) fn parse_decorators(&mut self) -> Vec<Decorator> {
         let mut decorators = Vec::new();
 
@@ -153,7 +153,7 @@ impl Parser {
 
     /// Parses a function declaration.
     ///
-    /// FunctionDef = ("pub")? ("async")? "fn" Ident GenericParams? "(" Params ")" ":" Type Block?
+    /// `FunctionDef` = ("pub")? ("async")? "fn" Ident `GenericParams`? "(" Params ")" ":" Type Block?
     pub(crate) fn parse_function(
         &mut self,
         is_pub: bool,
@@ -231,9 +231,9 @@ impl Parser {
     /// Parses a block.
     fn parse_block(&mut self) -> Block {
         self.expect(TokenKind::LBrace);
-        let block = self.parse_block_inner();
+        
         // Note: parse_block_inner already expects RBrace
-        block
+        self.parse_block_inner()
     }
 
     // ========================================================================
@@ -242,7 +242,7 @@ impl Parser {
 
     /// Parses a struct declaration.
     ///
-    /// StructDef = ("pub")? "struct" Ident GenericParams? "{" StructFields "}"
+    /// `StructDef` = ("pub")? "struct" Ident `GenericParams`? "{" `StructFields` "}"
     pub(crate) fn parse_struct(&mut self, is_pub: bool) -> Item {
         let start = self.current_span();
         self.expect(TokenKind::Struct);
@@ -328,7 +328,7 @@ impl Parser {
             let content = token
                 .value
                 .as_ref()
-                .and_then(|v| v.as_symbol())
+                .and_then(spark_lexer::TokenValue::as_symbol)
                 .unwrap_or_else(|| sym(""));
             Some(DocComment::new(content, token.span))
         } else {
@@ -342,7 +342,7 @@ impl Parser {
 
     /// Parses an enum declaration.
     ///
-    /// EnumDef = ("pub")? "enum" Ident GenericParams? (":" Type)? "{" EnumVariants "}"
+    /// `EnumDef` = ("pub")? "enum" Ident `GenericParams`? (":" Type)? "{" `EnumVariants` "}"
     pub(crate) fn parse_enum(&mut self, is_pub: bool) -> Item {
         let start = self.current_span();
         self.expect(TokenKind::Enum);
@@ -525,7 +525,7 @@ impl Parser {
 
     /// Parses an interface declaration.
     ///
-    /// InterfaceDef = ("pub")? "interface" Ident GenericParams? ("extends" Paths)? "{" Methods "}"
+    /// `InterfaceDef` = ("pub")? "interface" Ident `GenericParams`? ("extends" Paths)? "{" Methods "}"
     pub(crate) fn parse_interface(&mut self, is_pub: bool) -> Item {
         let start = self.current_span();
         self.expect(TokenKind::Interface);
@@ -617,7 +617,7 @@ impl Parser {
 
     /// Parses a type definition (distinct type).
     ///
-    /// TypeDefDef = ("pub")? "type" Ident GenericParams? "=" Type
+    /// `TypeDefDef` = ("pub")? "type" Ident `GenericParams`? "=" Type
     pub(crate) fn parse_type_def(&mut self, is_pub: bool) -> Item {
         let start = self.current_span();
         self.expect(TokenKind::Type);
@@ -653,7 +653,7 @@ impl Parser {
 
     /// Parses a type alias.
     ///
-    /// TypeAliasDef = ("pub")? "alias" Ident GenericParams? "=" Type
+    /// `TypeAliasDef` = ("pub")? "alias" Ident `GenericParams`? "=" Type
     pub(crate) fn parse_type_alias(&mut self, is_pub: bool) -> Item {
         let start = self.current_span();
         self.expect(TokenKind::Alias);
@@ -693,7 +693,7 @@ impl Parser {
 
     /// Parses a constant declaration.
     ///
-    /// ConstDef = ("pub")? "const" Ident ":" Type "=" Expr
+    /// `ConstDef` = ("pub")? "const" Ident ":" Type "=" Expr
     pub(crate) fn parse_const(&mut self, is_pub: bool) -> Item {
         let start = self.current_span();
         self.expect(TokenKind::Const);
@@ -728,7 +728,7 @@ impl Parser {
 
     /// Parses a binding declaration.
     ///
-    /// BindingDef = Type "binds" BindingTargets
+    /// `BindingDef` = Type "binds" `BindingTargets`
     pub(crate) fn parse_binding(&mut self) -> Item {
         let start = self.current_span();
 
@@ -746,7 +746,7 @@ impl Parser {
 
     /// Parses binding targets.
     ///
-    /// BindingTargets = BindingTarget | "[" BindingTarget ("," BindingTarget)* "]"
+    /// `BindingTargets` = `BindingTarget` | "[" `BindingTarget` ("," `BindingTarget`)* "]"
     fn parse_binding_targets(&mut self) -> Vec<BindingTarget> {
         if self.eat(TokenKind::LBracket).is_some() {
             // Multiple bindings
@@ -767,7 +767,7 @@ impl Parser {
 
     /// Parses a single binding target.
     ///
-    /// BindingTarget = NamedType ("{" Methods "}")?
+    /// `BindingTarget` = `NamedType` ("{" Methods "}")?
     fn parse_binding_target(&mut self) -> BindingTarget {
         let start = self.current_span();
         let interface = self.parse_named_type();

@@ -15,7 +15,7 @@ use crate::Parser;
 impl Parser {
     /// Parses a let statement.
     ///
-    /// LetStmt = Ident ":" Type ("!")? "=" Expr
+    /// `LetStmt` = Ident ":" Type ("!")? "=" Expr
     pub(crate) fn parse_let_stmt(&mut self) -> Stmt {
         let start = self.current_span();
 

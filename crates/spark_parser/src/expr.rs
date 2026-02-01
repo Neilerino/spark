@@ -570,7 +570,7 @@ impl Parser {
 
     /// Parses a `to` expression.
     ///
-    /// To = Expr "to" (Block | Ident PartialArgs?)
+    /// To = Expr "to" (Block | Ident `PartialArgs`?)
     fn parse_to(&mut self, expr: Expr, start: Span) -> Expr {
         self.expect(TokenKind::To);
 
@@ -720,7 +720,7 @@ impl Parser {
 
     fn parse_int_literal(&mut self) -> Expr {
         let token = self.advance();
-        let value = token.value.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
+        let value = token.value.as_ref().and_then(spark_lexer::TokenValue::as_int).unwrap_or(0);
         Expr::new(
             ExprKind::Literal(Literal::int(value, token.span)),
             token.span,
@@ -732,7 +732,7 @@ impl Parser {
         let value = token
             .value
             .as_ref()
-            .and_then(|v| v.as_float())
+            .and_then(spark_lexer::TokenValue::as_float)
             .unwrap_or(0.0);
         Expr::new(
             ExprKind::Literal(Literal::float(value, token.span)),
@@ -745,7 +745,7 @@ impl Parser {
         let text = token
             .value
             .as_ref()
-            .and_then(|v| v.as_symbol())
+            .and_then(spark_lexer::TokenValue::as_symbol)
             .unwrap_or_else(|| sym(""));
         let lit = Literal::new(LiteralKind::String(StringLiteral::simple(text)), token.span);
         Expr::new(ExprKind::Literal(lit), token.span)
@@ -756,7 +756,7 @@ impl Parser {
         let value = token
             .value
             .as_ref()
-            .and_then(|v| v.as_char())
+            .and_then(spark_lexer::TokenValue::as_char)
             .unwrap_or('\0');
         Expr::new(
             ExprKind::Literal(Literal::char(value, token.span)),
@@ -1024,7 +1024,7 @@ impl Parser {
             let entry_span = self.span_from(key_start);
             entries.push(MapEntry::new(key, value, entry_span));
 
-            if !self.eat(TokenKind::Comma).is_some() {
+            if self.eat(TokenKind::Comma).is_none() {
                 break;
             }
         }
