@@ -1,16 +1,10 @@
 # CLAUDE.md - AI Assistant Guide for Spark Compiler
 
-**Purpose**: Quick reference for AI assistants working on the Spark compiler  
-**Status**: 5/10 phases complete (125 tests passing)  
-**Current Task**: Implement `spark_parser` (Phase 2)
-
----
-
 ## Essential Reading (Start Here)
 
-1. **[HANDOFF.md](HANDOFF.md)** - Current status, completed work, immediate next steps
-2. **[docs/lang-spec.md](docs/lang-spec.md)** - Complete language specification (2000+ lines)
-3. **[docs/compiler-architecture.md](docs/compiler-architecture.md)** - Pipeline design, I/O schemas, crate responsibilities
+1. **[docs/lang-spec.md](docs/lang-spec.md)** - Complete language specification (2000+ lines)
+2. **[docs/compiler-architecture.md](docs/compiler-architecture.md)** - Pipeline design, I/O schemas, crate responsibilities
+3. **[HANDOFF.md](HANDOFF.md)** - Current status, completed work, immediate next steps
 
 ---
 
@@ -55,7 +49,7 @@
 
 ```
 Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR → Borrow → Opt → Codegen
-           ✅      ⏳        ⏳         ⏳        ⏳      ⏳    ⏳      ⏳       ⏳     ⏳
+           ✅      ✅        ⏳         ⏳        ⏳      ⏳    ⏳      ⏳       ⏳     ⏳
 
 Dependencies:
 spark_span ──┬──► spark_diagnostics ──┬──► spark_lexer ──► spark_ast
@@ -71,6 +65,7 @@ spark_intern ┘                         └────────────
 3. **COMPREHENSIVE TESTS** - Every feature, every error path, edge cases
 4. **ALL PUBLIC ITEMS DOCUMENTED** - Doc comments required
 5. **SINGLE RESPONSIBILITY** - Each crate has exactly one job
+6. **LOW COUPLING, HIGH COHESION** - Crates should work together seamlessly. Without depending too heavily on one another. So that we can make a change in one crate independant of the rest of the codebase.
 
 ---
 
@@ -152,7 +147,7 @@ impl Parser {
 
 1. Add variant to enum in [spark_ast/src/](crates/spark_ast/src/)
 2. Update visitor in [spark_ast/src/visitor.rs](crates/spark_ast/src/visitor.rs)
-3. Add parser method in `spark_parser` (when implementing)
+3. Add parser method in `spark_parser`
 4. Add tests
 
 ### Creating Diagnostics

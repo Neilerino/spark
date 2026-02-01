@@ -3,6 +3,7 @@
 ## Project Overview
 
 Spark is a statically-typed programming language ("lower-level Python") with:
+
 - Immutability by default
 - Union types for error handling (no exceptions)
 - Opt-in borrow checking for performance-critical code
@@ -12,32 +13,18 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 
 ### Foundation Crates (6/10 compiler phases)
 
-| Crate | Purpose | Tests | Status |
-|-------|---------|-------|--------|
-| `spark_span` | Source locations (`FileId`, `Span`, `SourceMap`) | 13 | ✅ Complete |
-| `spark_intern` | String interning (`Symbol`, `Interner`, pre-interned keywords) | 14 | ✅ Complete |
-| `spark_diagnostics` | Error reporting with ariadne rendering | 12 | ✅ Complete |
-| `spark_lexer` | Tokenization (keywords, literals, operators, comments) | 33 | ✅ Complete |
-| `spark_ast` | AST node definitions for all language constructs | 53 | ✅ Complete |
-| `spark_parser` | Recursive descent parser with Pratt expression parsing | 102 | ✅ Complete |
+| Crate               | Purpose                                                        | Tests | Status      |
+| ------------------- | -------------------------------------------------------------- | ----- | ----------- |
+| `spark_span`        | Source locations (`FileId`, `Span`, `SourceMap`)               | 13    | ✅ Complete |
+| `spark_intern`      | String interning (`Symbol`, `Interner`, pre-interned keywords) | 14    | ✅ Complete |
+| `spark_diagnostics` | Error reporting with ariadne rendering                         | 12    | ✅ Complete |
+| `spark_lexer`       | Tokenization (keywords, literals, operators, comments)         | 33    | ✅ Complete |
+| `spark_ast`         | AST node definitions for all language constructs               | 53    | ✅ Complete |
+| `spark_parser`      | Recursive descent parser with Pratt expression parsing         | 102   | ✅ Complete |
 
 **Total: 227 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (nursery warnings only).
-
-### Recent Changes (2026-01-31)
-
-**Generic Type Arguments in Constraints**
-- **Issue**: Parser couldn't handle type arguments in generic constraints, extends clauses, and binding targets
-- **Fix**: Changed AST to use `TypeExpr` instead of `Path` in:
-  - `GenericConstraint::Named` (was `Path`, now `TypeExpr`)
-  - `InterfaceDef::extends` (was `Vec<Path>`, now `Vec<TypeExpr>`)
-  - `BindingTarget::interface` (was `Path`, now `TypeExpr`)
-- **Impact**: Enables parsing of:
-  - Generic constraints: `fn foo[T: Comparable[T]](...)`
-  - Interface extends: `interface Foo extends Collection[T]`
-  - Binding targets: `Int binds Comparable[Int]`
-- **Files Modified**: `spark_ast/src/types.rs`, `spark_ast/src/decl.rs`, `spark_parser/src/types.rs`, `spark_parser/src/decl.rs`
 
 ### Project Structure
 
@@ -78,12 +65,14 @@ spark/
 ### spark_parser Overview
 
 The parser implements:
+
 - **Pratt parsing** for expressions with 14 precedence levels
 - **Recursive descent** for declarations, statements, types, and patterns
 - **Error recovery** to report multiple syntax errors per file
 - **Span tracking** for all AST nodes
 
 **Key features:**
+
 - `parse(tokens, file_id) -> (Ast, Diagnostics)` - Main entry point
 - `parse_expr(tokens, file_id) -> (Expr, Diagnostics)` - For REPL/testing
 - Error nodes (`ExprKind::Error`, etc.) allow continued parsing after errors
@@ -91,22 +80,22 @@ The parser implements:
 
 **Operator Precedence:**
 
-| Level | Operators | Binding Power |
-|-------|-----------|---------------|
-| 1 | `..`, `..=` (range) | 1-2 |
-| 2 | `??` (coalesce) | 3-4 |
-| 3 | `or` | 5-6 |
-| 4 | `and` | 7-8 |
-| 5 | `==`, `!=` | 9-10 |
-| 6 | `<`, `>`, `<=`, `>=`, `is`, `as` | 11-12 |
-| 7 | `\|` (bitwise or) | 13-14 |
-| 8 | `^` (xor) | 15-16 |
-| 9 | `&` (bitwise and) | 17-18 |
-| 10 | `<<`, `>>` | 19-20 |
-| 11 | `+`, `-` | 21-22 |
-| 12 | `*`, `/`, `%` | 23-24 |
-| 13 | `-`, `not`, `~` (prefix) | 25 |
-| 14 | `!`, `?`, `.`, `?.`, `[]`, `()` (postfix) | 27 |
+| Level | Operators                                 | Binding Power |
+| ----- | ----------------------------------------- | ------------- |
+| 1     | `..`, `..=` (range)                       | 1-2           |
+| 2     | `??` (coalesce)                           | 3-4           |
+| 3     | `or`                                      | 5-6           |
+| 4     | `and`                                     | 7-8           |
+| 5     | `==`, `!=`                                | 9-10          |
+| 6     | `<`, `>`, `<=`, `>=`, `is`, `as`          | 11-12         |
+| 7     | `\|` (bitwise or)                         | 13-14         |
+| 8     | `^` (xor)                                 | 15-16         |
+| 9     | `&` (bitwise and)                         | 17-18         |
+| 10    | `<<`, `>>`                                | 19-20         |
+| 11    | `+`, `-`                                  | 21-22         |
+| 12    | `*`, `/`, `%`                             | 23-24         |
+| 13    | `-`, `not`, `~` (prefix)                  | 25            |
+| 14    | `!`, `?`, `.`, `?.`, `[]`, `()` (postfix) | 27            |
 
 ## Known Gaps (Non-Blocking)
 
@@ -136,6 +125,7 @@ These gaps do not block progress to the next phase (module resolution). They can
 **Goal**: Build module resolution to handle multi-file Spark projects.
 
 **Core Tasks**:
+
 1. **File discovery** - Traverse directories to find `.spark` files
 2. **Module path mapping** - Map `module` declarations to file paths
 3. **Import resolution** - Resolve `import` statements to actual modules
@@ -145,6 +135,7 @@ These gaps do not block progress to the next phase (module resolution). They can
 7. **Re-exports** - Handle `pub import` for re-exporting items
 
 **Key Design Decisions**:
+
 - **Module paths**: How do `module user` and `using user` map to file paths?
 - **Root discovery**: How to find project root (look for `Spark.toml`?)
 - **Stdlib path**: Where do standard library modules live?
@@ -153,6 +144,7 @@ These gaps do not block progress to the next phase (module resolution). They can
 **Reference**: See Phase 3 in `docs/compiler-architecture.md` for detailed requirements.
 
 **Success Criteria**:
+
 - Can parse multi-file projects
 - Builds correct dependency ordering for compilation
 - Reports clear errors for missing/cyclic imports

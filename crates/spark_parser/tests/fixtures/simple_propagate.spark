@@ -1,0 +1,5 @@
+// Minimal test for propagation operator
+fn test(): Int {
+    let x = foo()!
+    x
+}

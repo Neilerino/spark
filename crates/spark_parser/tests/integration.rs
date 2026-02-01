@@ -26,6 +26,7 @@ fn parse_file(path: &Path) -> Result<ParseResult, std::io::Error> {
         import_count: ast.imports.len(),
         error_count: diagnostics.iter().filter(|d| d.is_error()).count(),
         warning_count: diagnostics.iter().filter(|d| d.is_warning()).count(),
+        diagnostics,
     })
 }
 
@@ -37,10 +38,11 @@ struct ParseResult {
     import_count: usize,
     error_count: usize,
     warning_count: usize,
+    diagnostics: spark_diagnostics::Diagnostics,
 }
 
 impl ParseResult {
-    fn is_ok(&self) -> bool {
+    const fn is_ok(&self) -> bool {
         self.error_count == 0
     }
 }
@@ -108,6 +110,51 @@ fn parse_functions() {
 }
 
 #[test]
+fn test_simple_propagate() {
+    let path = Path::new("tests/fixtures/simple_propagate.spark");
+    let result = parse_file(path).expect("Failed to read file");
+
+    if !result.is_ok() {
+        eprintln!("Parse errors ({}):", result.error_count);
+        for diag in result.diagnostics.iter() {
+            eprintln!("  - {}", diag.message);
+        }
+    }
+
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
+
+    assert_eq!(result.item_count, 1, "Should parse 1 function");
+}
+
+#[test]
+fn test_error_propagation() {
+    let path = Path::new("tests/fixtures/error_propagation.spark");
+    let result = parse_file(path).expect("Failed to read file");
+
+    if !result.is_ok() {
+        eprintln!("Parse errors ({}):", result.error_count);
+        for diag in result.diagnostics.iter() {
+            eprintln!("  - {}", diag.message);
+        }
+    }
+
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
+
+    assert_eq!(
+        result.item_count, 12,
+        "Should parse 6 type definitions and 6 functions"
+    );
+}
+
+#[test]
 fn parse_patterns() {
     let path = Path::new("tests/fixtures/patterns.spark");
     let result = parse_file(path).expect("Failed to read file");
@@ -159,6 +206,30 @@ fn parse_types() {
     );
     // Type aliases, type defs, and functions
     assert!(result.item_count >= 5, "Expected at least 5 items");
+}
+
+#[test]
+fn test_higher_order_functions() {
+    let source = Path::new("tests/fixtures/high_order_fn.spark");
+    let result = parse_file(source).expect("Failed to read file");
+
+    //test
+    if !result.is_ok() {
+        eprintln!("Parse errors ({}):", result.error_count);
+        for diag in &result.diagnostics {
+            eprintln!("  - {}", diag.message);
+        }
+    }
+
+    assert!(
+        result.diagnostics.is_empty(),
+        "Should parse higher-order functions without errors"
+    );
+    assert!(
+        result.item_count >= 13,
+        "Expected at least 13 items (functions with higher-order functions) Found {0}",
+        result.item_count,
+    );
 }
 
 #[test]
@@ -265,7 +336,7 @@ fn parse_all_fixtures() {
         }
 
         // Only process .spark files
-        if path.extension().map_or(false, |ext| ext == "spark") {
+        if path.extension().is_some_and(|ext| ext == "spark") {
             let result = parse_file(&path).expect("Failed to read file");
 
             if result.is_ok() {
@@ -286,9 +357,6 @@ fn parse_all_fixtures() {
         }
     }
 
-    println!(
-        "\nResults: {} passed, {} with errors",
-        success_count, failure_count
-    );
+    println!("\nResults: {success_count} passed, {failure_count} with errors");
     assert_eq!(failure_count, 0, "Some fixtures failed to parse");
 }
