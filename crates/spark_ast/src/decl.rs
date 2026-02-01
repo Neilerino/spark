@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 // ============================================================================
 // Visibility
 // ============================================================================
-// Visibility of an item.
+/// Visibility of an item.
+///
+/// Determines whether an item (function, struct, etc.) can be accessed
+/// from outside its defining module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Visibility {
@@ -33,7 +36,7 @@ impl Visibility {
 // ============================================================================
 // Module Declarations
 // ============================================================================
-// Module declaration: `module user`
+/// Module declaration: `module user`
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ModuleDecl {
