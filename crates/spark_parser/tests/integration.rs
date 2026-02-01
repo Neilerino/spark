@@ -148,7 +148,10 @@ fn test_error_propagation() {
         result.error_count
     );
 
-    assert_eq!(result.item_count, 12, "Should parse 6 type definitions and 6 functions");
+    assert_eq!(
+        result.item_count, 12,
+        "Should parse 6 type definitions and 6 functions"
+    );
 }
 
 #[test]

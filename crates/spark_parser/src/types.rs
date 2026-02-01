@@ -9,7 +9,9 @@
 //! - Ref types: `Ref[Type, Lifetime]`
 //! - Structural types: `{ field: Type }`
 
-use spark_ast::{GenericConstraint, GenericParam, Ident, Path, StructuralField, TypeExpr, TypeExprKind};
+use spark_ast::{
+    GenericConstraint, GenericParam, Ident, Path, StructuralField, TypeExpr, TypeExprKind,
+};
 use spark_intern::kw;
 use spark_lexer::TokenKind;
 
@@ -91,7 +93,7 @@ impl Parser {
     /// Parses a named type with optional generic arguments.
     ///
     /// Handles both regular identifiers (Int, User, List) and the Null keyword.
-    /// Null is a keyword (TokenKind::Null) because it's also a literal value,
+    /// Null is a keyword (`TokenKind::Null`) because it's also a literal value,
     /// but it can be used as a type name in union types like `User | Null`.
     ///
     /// `NamedType` = (Identifier | Null) ("[" `TypeArgs` "]")?
@@ -470,7 +472,7 @@ mod tests {
         // User? is equivalent to User | Null at the AST level
         let optional = parse_type_str("User?");
         assert!(matches!(optional.kind, TypeExprKind::Optional(_)));
-        
+
         // User | Null is the explicit union form
         let union = parse_type_str("User | Null");
         if let TypeExprKind::Union(types) = union.kind {
