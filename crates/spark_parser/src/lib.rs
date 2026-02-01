@@ -216,9 +216,8 @@ impl Parser {
     /// Emits an error diagnostic with the given message.
     fn error(&mut self, message: &str) {
         let span = self.current_span();
-        self.diagnostics.push(
-            Diagnostic::error(message).with_label(Label::primary(span, "here")),
-        );
+        self.diagnostics
+            .push(Diagnostic::error(message).with_label(Label::primary(span, "here")));
     }
 
     /// Emits an "expected X" error diagnostic.
@@ -303,9 +302,7 @@ impl Parser {
     /// Creates a span from a start position to the current position.
     fn span_from(&self, start: Span) -> Span {
         let end_span = if self.pos > 0 {
-            self.tokens
-                .get(self.pos - 1)
-                .map_or(start, |t| t.span)
+            self.tokens.get(self.pos - 1).map_or(start, |t| t.span)
         } else {
             start
         };
@@ -402,7 +399,7 @@ impl Parser {
                 | TokenKind::Const
                 | TokenKind::Pub
                 | TokenKind::Async
-                | TokenKind::At  // Decorator
+                | TokenKind::At // Decorator
         ) || self.is_binding_start()
     }
 

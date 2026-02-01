@@ -83,11 +83,7 @@ impl Parser {
             // Literal patterns
             TokenKind::IntLiteral => {
                 let token = self.advance();
-                let value = token
-                    .value
-                    .as_ref()
-                    .and_then(|v| v.as_int())
-                    .unwrap_or(0);
+                let value = token.value.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
                 let lit = Literal::int(value, token.span);
                 Pattern::new(PatternKind::Literal(lit), token.span)
             }
@@ -327,7 +323,9 @@ impl Parser {
     ///
     /// FieldPattern = Ident (":" Pattern)?
     fn parse_field_pattern(&mut self) -> FieldPattern {
-        let name = self.expect_ident().unwrap_or_else(|| Ident::dummy(sym("_")));
+        let name = self
+            .expect_ident()
+            .unwrap_or_else(|| Ident::dummy(sym("_")));
 
         let pattern = if self.eat(TokenKind::Colon).is_some() {
             Some(self.parse_pattern())

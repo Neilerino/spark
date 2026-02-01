@@ -19,9 +19,9 @@ impl Parser {
     pub(crate) fn parse_let_stmt(&mut self) -> Stmt {
         let start = self.current_span();
 
-        let name = self.expect_ident().unwrap_or_else(|| {
-            spark_ast::Ident::dummy(sym("_"))
-        });
+        let name = self
+            .expect_ident()
+            .unwrap_or_else(|| spark_ast::Ident::dummy(sym("_")));
 
         self.expect(TokenKind::Colon);
 
@@ -63,15 +63,9 @@ impl Parser {
         let span = self.span_from(start);
 
         if let Some(op) = compound_op {
-            Stmt::new(
-                StmtKind::CompoundAssign { target, op, value },
-                span,
-            )
+            Stmt::new(StmtKind::CompoundAssign { target, op, value }, span)
         } else {
-            Stmt::new(
-                StmtKind::Assign { target, value },
-                span,
-            )
+            Stmt::new(StmtKind::Assign { target, value }, span)
         }
     }
 }

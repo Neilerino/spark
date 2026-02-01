@@ -54,7 +54,11 @@ fn parse_hello() {
     let path = Path::new("tests/fixtures/hello.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
     assert_eq!(result.item_count, 2, "Expected 2 functions");
 }
 
@@ -63,8 +67,15 @@ fn parse_structs() {
     let path = Path::new("tests/fixtures/structs.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
-    assert!(result.item_count >= 4, "Expected at least 4 items (structs + functions)");
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
+    assert!(
+        result.item_count >= 4,
+        "Expected at least 4 items (structs + functions)"
+    );
 }
 
 #[test]
@@ -72,8 +83,15 @@ fn parse_enums() {
     let path = Path::new("tests/fixtures/enums.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
-    assert!(result.item_count >= 4, "Expected at least 4 items (enums + functions)");
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
+    assert!(
+        result.item_count >= 4,
+        "Expected at least 4 items (enums + functions)"
+    );
 }
 
 #[test]
@@ -81,7 +99,11 @@ fn parse_functions() {
     let path = Path::new("tests/fixtures/functions.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
     assert!(result.item_count >= 8, "Expected at least 8 functions");
 }
 
@@ -90,7 +112,11 @@ fn parse_patterns() {
     let path = Path::new("tests/fixtures/patterns.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
     assert!(result.item_count >= 5, "Expected at least 5 functions");
 }
 
@@ -99,7 +125,11 @@ fn parse_interfaces() {
     let path = Path::new("tests/fixtures/interfaces.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
     // Interfaces, bindings, and functions
     assert!(result.item_count >= 5, "Expected at least 5 items");
 }
@@ -109,7 +139,11 @@ fn parse_control_flow() {
     let path = Path::new("tests/fixtures/control_flow.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
     assert!(result.item_count >= 5, "Expected at least 5 functions");
 }
 
@@ -118,7 +152,11 @@ fn parse_types() {
     let path = Path::new("tests/fixtures/types.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
     // Type aliases, type defs, and functions
     assert!(result.item_count >= 5, "Expected at least 5 items");
 }
@@ -128,8 +166,15 @@ fn parse_async() {
     let path = Path::new("tests/fixtures/async.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
-    assert!(result.item_count >= 4, "Expected at least 4 async functions");
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
+    assert!(
+        result.item_count >= 4,
+        "Expected at least 4 async functions"
+    );
 }
 
 #[test]
@@ -137,7 +182,11 @@ fn parse_modules() {
     let path = Path::new("tests/fixtures/modules.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
     assert!(result.has_module, "Expected module declaration");
     assert!(result.has_using, "Expected using declaration");
     assert!(result.import_count >= 2, "Expected at least 2 imports");
@@ -148,7 +197,11 @@ fn parse_expressions() {
     let path = Path::new("tests/fixtures/expressions.spark");
     let result = parse_file(path).expect("Failed to read file");
 
-    assert!(result.is_ok(), "Expected no errors, got {}", result.error_count);
+    assert!(
+        result.is_ok(),
+        "Expected no errors, got {}",
+        result.error_count
+    );
     assert!(result.item_count >= 5, "Expected at least 5 functions");
 }
 
@@ -164,7 +217,10 @@ fn parse_missing_brace_recovers() {
     // Should have errors but still parse something
     assert!(result.error_count > 0, "Expected errors for missing brace");
     // Parser should recover and find the next function
-    assert!(result.item_count >= 1, "Expected parser to recover and find items");
+    assert!(
+        result.item_count >= 1,
+        "Expected parser to recover and find items"
+    );
 }
 
 #[test]
@@ -182,7 +238,10 @@ fn parse_unexpected_token_recovers() {
     let result = parse_file(path).expect("Failed to read file");
 
     // Should have errors but still produce AST
-    assert!(result.error_count > 0, "Expected errors for unexpected tokens");
+    assert!(
+        result.error_count > 0,
+        "Expected errors for unexpected tokens"
+    );
 }
 
 // ============================================================================
@@ -211,7 +270,11 @@ fn parse_all_fixtures() {
 
             if result.is_ok() {
                 success_count += 1;
-                println!("OK: {:?} ({} items)", path.file_name().unwrap(), result.item_count);
+                println!(
+                    "OK: {:?} ({} items)",
+                    path.file_name().unwrap(),
+                    result.item_count
+                );
             } else {
                 failure_count += 1;
                 println!(
@@ -223,6 +286,9 @@ fn parse_all_fixtures() {
         }
     }
 
-    println!("\nResults: {} passed, {} with errors", success_count, failure_count);
+    println!(
+        "\nResults: {} passed, {} with errors",
+        success_count, failure_count
+    );
     assert_eq!(failure_count, 0, "Some fixtures failed to parse");
 }

@@ -9,9 +9,7 @@
 //! - Ref types: `Ref[Type, Lifetime]`
 //! - Structural types: `{ field: Type }`
 
-use spark_ast::{
-    GenericConstraint, GenericParam, Ident, StructuralField, TypeExpr, TypeExprKind,
-};
+use spark_ast::{GenericConstraint, GenericParam, Ident, StructuralField, TypeExpr, TypeExprKind};
 use spark_lexer::TokenKind;
 
 use crate::Parser;
@@ -233,7 +231,9 @@ impl Parser {
     /// StructuralField = Ident ":" Type
     fn parse_structural_field(&mut self) -> StructuralField {
         let start = self.current_span();
-        let name = self.expect_ident().unwrap_or_else(|| Ident::dummy(spark_intern::sym("_")));
+        let name = self
+            .expect_ident()
+            .unwrap_or_else(|| Ident::dummy(spark_intern::sym("_")));
         self.expect(TokenKind::Colon);
         let ty = self.parse_type();
         let span = self.span_from(start);
@@ -269,7 +269,9 @@ impl Parser {
     /// GenericParam = Ident (":" Constraint)?
     fn parse_generic_param(&mut self) -> GenericParam {
         let start = self.current_span();
-        let name = self.expect_ident().unwrap_or_else(|| Ident::dummy(spark_intern::sym("T")));
+        let name = self
+            .expect_ident()
+            .unwrap_or_else(|| Ident::dummy(spark_intern::sym("T")));
 
         let constraint = if self.eat(TokenKind::Colon).is_some() {
             Some(self.parse_generic_constraint())

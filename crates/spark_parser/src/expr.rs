@@ -327,7 +327,9 @@ impl Parser {
 
             TokenKind::Dot => {
                 self.advance();
-                let field = self.expect_ident().unwrap_or_else(|| Ident::dummy(sym("_")));
+                let field = self
+                    .expect_ident()
+                    .unwrap_or_else(|| Ident::dummy(sym("_")));
 
                 // Check for method call
                 if self.check(TokenKind::LParen) {
@@ -355,7 +357,9 @@ impl Parser {
 
             TokenKind::QuestionDot => {
                 self.advance();
-                let field = self.expect_ident().unwrap_or_else(|| Ident::dummy(sym("_")));
+                let field = self
+                    .expect_ident()
+                    .unwrap_or_else(|| Ident::dummy(sym("_")));
                 let span = self.span_from(start);
                 Expr::new(
                     ExprKind::OptionalField {
@@ -393,18 +397,12 @@ impl Parser {
             }
 
             // LBrace (struct init / partial) is handled in parse_expr_bp
-
             _ => lhs,
         }
     }
 
     /// Converts a brace expression to either struct init or partial application.
-    fn convert_to_struct_or_partial(
-        &self,
-        path: Path,
-        args: Vec<PartialArg>,
-        span: Span,
-    ) -> Expr {
+    fn convert_to_struct_or_partial(&self, path: Path, args: Vec<PartialArg>, span: Span) -> Expr {
         // Heuristic: if path starts with uppercase, assume struct init
         // This is a simplification - proper resolution happens later
         if let Some(first) = path.last() {
@@ -510,7 +508,9 @@ impl Parser {
             return PartialArg::new(name, value, span);
         }
 
-        let name = self.expect_ident().unwrap_or_else(|| Ident::dummy(sym("_")));
+        let name = self
+            .expect_ident()
+            .unwrap_or_else(|| Ident::dummy(sym("_")));
 
         // Field shorthand: { name } instead of { name: name }
         if !self.check(TokenKind::Colon) {
@@ -580,7 +580,9 @@ impl Parser {
             ToHandler::Narrowing(arms)
         } else {
             // Pipeline: to operation or to operation{args}
-            let operation = self.expect_ident().unwrap_or_else(|| Ident::dummy(sym("_")));
+            let operation = self
+                .expect_ident()
+                .unwrap_or_else(|| Ident::dummy(sym("_")));
             let args = if self.check(TokenKind::LBrace) {
                 self.parse_partial_args()
             } else {
@@ -602,7 +604,9 @@ impl Parser {
     /// Parses a function parameter.
     pub(crate) fn parse_fn_param(&mut self) -> FnParam {
         let start = self.current_span();
-        let name = self.expect_ident().unwrap_or_else(|| Ident::dummy(sym("_")));
+        let name = self
+            .expect_ident()
+            .unwrap_or_else(|| Ident::dummy(sym("_")));
         self.expect(TokenKind::Colon);
         let ty = self.parse_type();
         let span = self.span_from(start);
@@ -716,11 +720,7 @@ impl Parser {
 
     fn parse_int_literal(&mut self) -> Expr {
         let token = self.advance();
-        let value = token
-            .value
-            .as_ref()
-            .and_then(|v| v.as_int())
-            .unwrap_or(0);
+        let value = token.value.as_ref().and_then(|v| v.as_int()).unwrap_or(0);
         Expr::new(
             ExprKind::Literal(Literal::int(value, token.span)),
             token.span,
@@ -999,9 +999,7 @@ impl Parser {
         // If first element is an expression and followed by comma (no colon), it's a set
         // Otherwise, it's a block
 
-        if self.check(TokenKind::StringLiteral)
-            && (self.peek().kind == TokenKind::Colon)
-        {
+        if self.check(TokenKind::StringLiteral) && (self.peek().kind == TokenKind::Colon) {
             // Map literal
             return self.parse_map_literal(start);
         }
@@ -1184,9 +1182,7 @@ impl Parser {
     /// Parses a statement or expression.
     fn parse_stmt_or_expr(&mut self) -> StmtOrExpr {
         // Check for let binding: ident : Type = value
-        if self.check(TokenKind::Identifier)
-            && self.peek().kind == TokenKind::Colon
-        {
+        if self.check(TokenKind::Identifier) && self.peek().kind == TokenKind::Colon {
             // This could be let binding or type-annotated expression
             // Let binding: name : Type = value
             // Peek further to see if there's an = after the type
@@ -1326,7 +1322,13 @@ mod tests {
         // Should parse as 1 + (2 * 3)
         if let ExprKind::Binary { op, rhs, .. } = expr.kind {
             assert_eq!(op, BinaryOp::Add);
-            assert!(matches!(rhs.kind, ExprKind::Binary { op: BinaryOp::Mul, .. }));
+            assert!(matches!(
+                rhs.kind,
+                ExprKind::Binary {
+                    op: BinaryOp::Mul,
+                    ..
+                }
+            ));
         } else {
             panic!("expected binary");
         }
@@ -1339,7 +1341,13 @@ mod tests {
         // Should parse as a or (b and c)
         if let ExprKind::Binary { op, rhs, .. } = expr.kind {
             assert_eq!(op, BinaryOp::Or);
-            assert!(matches!(rhs.kind, ExprKind::Binary { op: BinaryOp::And, .. }));
+            assert!(matches!(
+                rhs.kind,
+                ExprKind::Binary {
+                    op: BinaryOp::And,
+                    ..
+                }
+            ));
         } else {
             panic!("expected binary");
         }
