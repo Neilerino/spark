@@ -276,13 +276,10 @@ impl Parser {
     fn synchronize_stmt(&mut self) {
         while !self.at_end() {
             match self.current_kind() {
-                TokenKind::RBrace => return,
-                TokenKind::Semicolon => {
-                    // Don't consume - let the caller handle it
-                    return;
-                }
                 // Control flow that starts new statements
-                TokenKind::If
+                TokenKind::Semicolon
+                | TokenKind::RBrace
+                | TokenKind::If
                 | TokenKind::Match
                 | TokenKind::Loop
                 | TokenKind::Return
