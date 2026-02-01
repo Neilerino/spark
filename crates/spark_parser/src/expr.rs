@@ -70,7 +70,7 @@ impl Parser {
             // Check for struct init / partial application: ident/path followed by {
             // Only applies when lhs is an identifier or path and we're not in no_struct mode
             if !no_struct && self.check(TokenKind::LBrace) && 27 >= min_bp {
-                if let Some(path) = self.lhs_as_path(&lhs) {
+                if let Some(path) = Self::lhs_as_path(&lhs) {
                     let args = self.parse_partial_args();
                     let span = self.span_from(start);
                     lhs = self.convert_to_struct_or_partial(path, args, span);
@@ -105,7 +105,7 @@ impl Parser {
     }
 
     /// Extracts a path from an expression if it's an identifier or path.
-    fn lhs_as_path(&self, lhs: &Expr) -> Option<Path> {
+    fn lhs_as_path(lhs: &Expr) -> Option<Path> {
         match &lhs.kind {
             ExprKind::Ident(ident) => Some(Path::from_ident(ident.clone())),
             ExprKind::Path(path) => Some(path.clone()),
@@ -163,17 +163,13 @@ impl Parser {
     /// Returns the binding power for postfix operators.
     fn postfix_bp(&self) -> Option<(u8, ())> {
         match self.current_kind() {
-            // Propagation
-            TokenKind::Bang | TokenKind::Question => Some((27, ())),
-
-            // Access
-            TokenKind::Dot | TokenKind::QuestionDot => Some((27, ())),
-
-            // Index
-            TokenKind::LBracket => Some((27, ())),
-
-            // Call
-            TokenKind::LParen => Some((27, ())),
+            // Propagation, Access, Index, Call
+            TokenKind::Bang
+            | TokenKind::Question
+            | TokenKind::Dot
+            | TokenKind::QuestionDot
+            | TokenKind::LBracket
+            | TokenKind::LParen => Some((27, ())),
 
             // Note: LBrace is NOT a general postfix operator.
             // Struct init (Type { }) and partial application (func { }) are
@@ -720,7 +716,11 @@ impl Parser {
 
     fn parse_int_literal(&mut self) -> Expr {
         let token = self.advance();
-        let value = token.value.as_ref().and_then(spark_lexer::TokenValue::as_int).unwrap_or(0);
+        let value = token
+            .value
+            .as_ref()
+            .and_then(spark_lexer::TokenValue::as_int)
+            .unwrap_or(0);
         Expr::new(
             ExprKind::Literal(Literal::int(value, token.span)),
             token.span,

@@ -317,7 +317,14 @@ mod tests {
 
     #[test]
     fn generic_param_with_constraint() {
-        let constraint = GenericConstraint::Named(dummy_path("Printable"));
+        let printable_type = TypeExpr::new(
+            TypeExprKind::Named {
+                path: dummy_path("Printable"),
+                type_args: vec![],
+            },
+            Span::DUMMY,
+        );
+        let constraint = GenericConstraint::Named(printable_type);
         let param = GenericParam::with_constraint(dummy_ident("T"), constraint, Span::DUMMY);
         assert!(param.constraint.is_some());
     }

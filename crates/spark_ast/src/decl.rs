@@ -11,8 +11,7 @@ use serde::{Deserialize, Serialize};
 // ============================================================================
 // Visibility
 // ============================================================================
-
-/// Visibility of an item.
+// Visibility of an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Visibility {
@@ -34,8 +33,7 @@ impl Visibility {
 // ============================================================================
 // Module Declarations
 // ============================================================================
-
-/// Module declaration: `module user`
+// Module declaration: `module user`
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ModuleDecl {
@@ -132,7 +130,6 @@ impl ImportItem {
 // ============================================================================
 // Function Declaration
 // ============================================================================
-
 /// Function definition.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -218,7 +215,6 @@ impl DocComment {
 // ============================================================================
 // Struct Declaration
 // ============================================================================
-
 /// Struct definition.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -278,7 +274,6 @@ impl StructField {
 // ============================================================================
 // Enum Declaration
 // ============================================================================
-
 /// Enum definition.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -385,7 +380,6 @@ impl EnumField {
 // ============================================================================
 // Interface Declaration
 // ============================================================================
-
 /// Interface definition.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -409,7 +403,6 @@ pub struct InterfaceDef {
 // ============================================================================
 // Type Definitions
 // ============================================================================
-
 /// Type alias: `alias UserId = Int`
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -449,7 +442,6 @@ pub struct TypeDefDef {
 // ============================================================================
 // Const Declaration
 // ============================================================================
-
 /// Constant definition: `const MAX_SIZE: Int = 1000`
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -471,7 +463,6 @@ pub struct ConstDef {
 // ============================================================================
 // Binding Declaration
 // ============================================================================
-
 /// Interface binding: `User binds Printable { ... }`
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -618,7 +609,7 @@ mod tests {
 
     #[test]
     fn binding_target_simple() {
-        let target = BindingTarget::simple(dummy_path("Printable"), Span::DUMMY);
+        let target = BindingTarget::simple(int_type(), Span::DUMMY);
         assert!(target.methods.is_empty());
     }
 }

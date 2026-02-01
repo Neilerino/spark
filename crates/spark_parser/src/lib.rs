@@ -251,9 +251,9 @@ impl Parser {
                     return;
                 }
                 // Block end
-                TokenKind::RBrace => return,
                 // Item keywords
-                TokenKind::Fn
+                TokenKind::RBrace
+                | TokenKind::Fn
                 | TokenKind::Struct
                 | TokenKind::Enum
                 | TokenKind::Interface

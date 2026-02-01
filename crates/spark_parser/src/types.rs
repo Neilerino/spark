@@ -114,7 +114,7 @@ impl Parser {
                     let lifetime_type = args_iter.next();
                     // For now, treat second arg as a named type representing the lifetime
                     // In a proper implementation, we'd extract the lifetime identifier
-                    let lifetime = self.extract_lifetime_from_type(&lifetime_type);
+                    let lifetime = Self::extract_lifetime_from_type(lifetime_type.as_ref());
                     let mutable = false; // Mutability handled in postfix
                     return TypeExpr::new(
                         TypeExprKind::Ref {
@@ -132,7 +132,7 @@ impl Parser {
     }
 
     /// Extracts a lifetime identifier from a type expression.
-    fn extract_lifetime_from_type(&self, ty: &Option<TypeExpr>) -> Ident {
+    fn extract_lifetime_from_type(ty: Option<&TypeExpr>) -> Ident {
         if let Some(TypeExpr {
             kind: TypeExprKind::Named { path, type_args },
             span: _,
