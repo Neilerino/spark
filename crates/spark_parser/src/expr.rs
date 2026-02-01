@@ -1548,4 +1548,19 @@ mod tests {
         // Should parse correctly with left-to-right postfix
         assert!(matches!(expr.kind, ExprKind::MethodCall { .. }));
     }
+
+    #[test]
+    fn propagate_expr() {
+        let (expr, diags) = parse_expr_str("foo()!");
+        assert!(!diags.has_errors());
+        assert!(matches!(expr.kind, ExprKind::Propagate(_)));
+    }
+
+    #[test]
+    fn chained_propagate() {
+        let (expr, diags) = parse_expr_str("a.b()!.c()!");
+        assert!(!diags.has_errors());
+        // Outer should be propagate
+        assert!(matches!(expr.kind, ExprKind::Propagate(_)));
+    }
 }

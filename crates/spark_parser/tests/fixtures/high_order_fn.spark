@@ -1,0 +1,62 @@
+// Test higher-order functions - passing functions as arguments
+
+// Basic function type aliases
+type Transform[T, U] = (T): U
+type Predicate[T] = (T): Bool
+
+// Function that takes another function as parameter
+fn map[T, U](items: List[T], transform: (T): U): List[U] {
+    items
+}
+
+// Filter function
+fn filter[T](items: List[T], predicate: (T): Bool): List[T] {
+    items
+}
+
+// Functions returning functions (closures)
+fn make_adder(x: Int): (Int): Int {
+    fn(y: Int): Int { x + y }
+}
+
+fn make_multiplier(factor: Int): (Int): Int {
+    fn(x: Int): Int { x * factor }
+}
+
+// Compose two functions
+fn compose[A, B, C](f: (B): C, g: (A): B): (A): C {
+    fn(x: A): C { f(g(x)) }
+}
+
+// Using higher-order functions
+fn use_map(): List[Int] {
+    numbers: List[Int] = [1, 2, 3, 4, 5]
+    map(numbers, fn(x: Int): Int { x * 2 })
+}
+
+fn use_filter(): List[Int] {
+    numbers: List[Int] = [1, 2, 3, 4, 5]
+    filter(numbers, fn(x: Int): Bool { x % 2 == 0 })
+}
+
+fn use_compose(): (Int): Int {
+    add5: (Int): Int = make_adder(5)
+    times2: (Int): Int = make_multiplier(2)
+    compose(times2, add5)
+}
+
+// Passing named functions
+fn double(x: Int): Int {
+    x * 2
+}
+
+fn triple(x: Int): Int {
+    x * 3
+}
+
+fn use_named_functions(): List[Int] {
+    numbers: List[Int] = [1, 2, 3]
+    doubled: List[Int] = map(numbers, double)
+    tripled: List[Int] = map(numbers, triple)
+    tripled
+}

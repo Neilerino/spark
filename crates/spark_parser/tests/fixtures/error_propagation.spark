@@ -1,0 +1,79 @@
+// Test error propagation operator (!)
+// Used to propagate errors from union types
+
+enum IoError {
+    NotFound(path: String)
+    PermissionDenied
+    InvalidData(message: String)
+}
+
+enum ParseError {
+    InvalidFormat
+    MissingField(field: String)
+}
+
+struct Config {
+    host: String
+    port: Int
+}
+
+struct User {
+    name: String
+    email: String
+}
+
+enum DbError {
+    ConnectionFailed
+    QueryError(message: String)
+}
+
+enum ValidationError {
+    EmptyName
+    InvalidEmail
+}
+
+// Basic error propagation
+fn read_config(path: String): Config | IoError | ParseError {
+    file: File = open_file(path)!  // Propagate IoError
+    contents: String = file.read_to_string()!  // Propagate IoError
+    config: Config = parse_config(contents)!  // Propagate ParseError
+    return config
+}
+
+// Chained propagation
+fn chained_propagation(): Int | DbError | ValidationError {
+    a: Data = fetch_data()!  // Propagate DbError
+    b: ValidData = process(a)!  // Propagate ValidationError
+    c: Int = validate(b)!  // Propagate ValidationError
+    return c
+}
+
+// With async
+async fn async_propagation(): Data | NetworkError {
+    response: Response = await fetch_url("https://api.example.com")!
+    json: Data = await response.json()!
+    return json
+}
+
+// With optionals
+fn find_user(id: Int): User | Null | DbError {
+    db: Database = get_database()!  // Propagate DbError
+    user: User = db.find_user(id)!  // Propagate Null or DbError
+    return user
+}
+
+// Complex expressions with propagation
+fn complex_error_handling(): Int | ComputeError | ProcessError {
+    x: Int = (compute_a()! + compute_b()!) * 2  // Propagate ComputeError
+    y: Int = process(get_value()!)!  // Propagate ProcessError
+    return x + y
+}
+
+// In match arms
+fn match_with_propagation(value: Int | ParseError): String | ParseError | FormatError {
+    result: String = match value {
+        n: Int -> format_number(n)!,  // Propagate FormatError
+        e: ParseError -> return e
+    }
+    return result
+}

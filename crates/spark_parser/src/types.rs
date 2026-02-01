@@ -9,7 +9,10 @@
 //! - Ref types: `Ref[Type, Lifetime]`
 //! - Structural types: `{ field: Type }`
 
-use spark_ast::{GenericConstraint, GenericParam, Ident, StructuralField, TypeExpr, TypeExprKind};
+use spark_ast::{
+    GenericConstraint, GenericParam, Ident, Path, StructuralField, TypeExpr, TypeExprKind,
+};
+use spark_intern::kw;
 use spark_lexer::TokenKind;
 
 use crate::Parser;
@@ -77,8 +80,8 @@ impl Parser {
             // Structural type: { field: Type, ... }
             TokenKind::LBrace => self.parse_structural_type(),
 
-            // Named type: Identifier or Path
-            TokenKind::Identifier => self.parse_named_type(),
+            // Named type: Identifier or Path (including Null keyword)
+            TokenKind::Identifier | TokenKind::Null => self.parse_named_type(),
 
             _ => {
                 self.error_expected("type");
@@ -89,11 +92,24 @@ impl Parser {
 
     /// Parses a named type with optional generic arguments.
     ///
-    /// `NamedType` = Path ("[" `TypeArgs` "]")?
+    /// Handles both regular identifiers (Int, User, List) and the Null keyword.
+    /// Null is a keyword (`TokenKind::Null`) because it's also a literal value,
+    /// but it can be used as a type name in union types like `User | Null`.
+    ///
+    /// `NamedType` = (Identifier | Null) ("[" `TypeArgs` "]")?
     #[allow(clippy::doc_link_with_quotes)]
     pub(crate) fn parse_named_type(&mut self) -> TypeExpr {
         let start = self.current_span();
-        let path = self.parse_path();
+
+        // Handle Null keyword specially since it's tokenized as TokenKind::Null
+        // rather than TokenKind::Identifier, but should be treated as a type name
+        let path = if self.check(TokenKind::Null) {
+            let span = self.current_span();
+            self.advance();
+            Path::from_ident(Ident::new(kw::NULL, span))
+        } else {
+            self.parse_path()
+        };
 
         let type_args = if self.check(TokenKind::LBracket) {
             self.parse_type_args()
@@ -420,6 +436,49 @@ mod tests {
             }
         } else {
             panic!("expected optional type");
+        }
+    }
+
+    #[test]
+    fn null_type() {
+        let ty = parse_type_str("Null");
+        if let TypeExprKind::Named { path, type_args } = ty.kind {
+            assert!(path.is_simple());
+            assert_eq!(path.first().unwrap().name, kw::NULL);
+            assert!(type_args.is_empty());
+        } else {
+            panic!("expected named type for Null");
+        }
+    }
+
+    #[test]
+    fn null_in_union() {
+        let ty = parse_type_str("User | Null");
+        if let TypeExprKind::Union(types) = ty.kind {
+            assert_eq!(types.len(), 2);
+            // Second type should be Null
+            if let TypeExprKind::Named { path, .. } = &types[1].kind {
+                assert_eq!(path.first().unwrap().name, kw::NULL);
+            } else {
+                panic!("expected Null as second union member");
+            }
+        } else {
+            panic!("expected union type");
+        }
+    }
+
+    #[test]
+    fn optional_is_sugar_for_null_union() {
+        // User? is equivalent to User | Null at the AST level
+        let optional = parse_type_str("User?");
+        assert!(matches!(optional.kind, TypeExprKind::Optional(_)));
+
+        // User | Null is the explicit union form
+        let union = parse_type_str("User | Null");
+        if let TypeExprKind::Union(types) = union.kind {
+            assert_eq!(types.len(), 2);
+        } else {
+            panic!("expected union type");
         }
     }
 }
