@@ -267,7 +267,9 @@ insta = "1.34"
 
 ## Compilation Phases
 
-### Phase 1: Lexical Analysis
+### Phase 1: Lexical Analysis ✅
+
+**Status:** Complete
 
 The lexer transforms source code into a stream of tokens.
 
@@ -278,6 +280,13 @@ The lexer transforms source code into a stream of tokens.
 - `src/token.rs` — Token definitions
 - `src/lexer.rs` — Lexer implementation
 - `src/cursor.rs` — Character iteration with lookahead
+
+**Implementation:**
+
+- Hand-written lexer with full Unicode support
+- 65 token kinds (4 literals, 31 keywords, 25 operators, 3 special)
+- Error recovery for invalid characters
+- 33 tests covering all token types
 
 **Token Definition:**
 
@@ -335,7 +344,9 @@ pub enum TokenKind {
 
 ---
 
-### Phase 2: Parsing
+### Phase 2: Parsing ✅
+
+**Status:** Complete
 
 The parser transforms tokens into an Abstract Syntax Tree.
 
@@ -343,11 +354,19 @@ The parser transforms tokens into an Abstract Syntax Tree.
 
 **Key Files:**
 
-- `src/parser.rs` — Main parser
-- `src/expr.rs` — Expression parsing (precedence climbing)
+- `src/lib.rs` — Public API and Parser struct
+- `src/expr.rs` — Expression parsing (Pratt algorithm)
 - `src/stmt.rs` — Statement parsing
 - `src/types.rs` — Type expression parsing
+- `src/decl.rs` — Declaration parsing
 - `src/pattern.rs` — Pattern parsing for match
+
+**Implementation:**
+
+- Recursive descent parser with Pratt expression parsing
+- Error recovery to report multiple syntax errors per file
+- Span tracking for all AST nodes
+- 102 tests covering all language constructs
 
 **Operator Precedence (lowest to highest):**
 
@@ -1289,19 +1308,25 @@ enum Commands {
 
 ## Development Roadmap
 
-### Phase 1: Foundation
+### Phase 1: Foundation ✅
+
+**Status:** Complete
 
 - [x] Project setup and workspace structure
-- [x] `spark_span` and `spark_intern` crates
-- [x] `spark_diagnostics` foundation
-- [x] Lexer implementation
-- [ ] Basic parser (expressions, statements)
-- [x] AST data structures
+- [x] `spark_span` and `spark_intern` crates (13 + 14 tests)
+- [x] `spark_diagnostics` foundation (12 tests)
+- [x] Lexer implementation (33 tests)
+- [x] Complete parser (102 tests)
+- [x] AST data structures (53 tests)
 
-### Phase 2: Core Language
+**Total:** 227 tests passing
 
-- [ ] Complete parser (functions, structs, enums)
-- [ ] Module resolution
+### Phase 2: Core Language (IN PROGRESS)
+
+**Next:** Module resolution
+
+- [x] Complete parser (functions, structs, enums, interfaces, bindings)
+- [ ] Module resolution ← **NEXT**
 - [ ] Name resolution
 - [ ] Basic type checking (no generics)
 - [ ] Simple error messages

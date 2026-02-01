@@ -25,6 +25,20 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 
 All crates pass `cargo test` and `cargo clippy` (nursery warnings only).
 
+### Recent Changes (2026-01-31)
+
+**Generic Type Arguments in Constraints**
+- **Issue**: Parser couldn't handle type arguments in generic constraints, extends clauses, and binding targets
+- **Fix**: Changed AST to use `TypeExpr` instead of `Path` in:
+  - `GenericConstraint::Named` (was `Path`, now `TypeExpr`)
+  - `InterfaceDef::extends` (was `Vec<Path>`, now `Vec<TypeExpr>`)
+  - `BindingTarget::interface` (was `Path`, now `TypeExpr`)
+- **Impact**: Enables parsing of:
+  - Generic constraints: `fn foo[T: Comparable[T]](...)`
+  - Interface extends: `interface Foo extends Collection[T]`
+  - Binding targets: `Int binds Comparable[Int]`
+- **Files Modified**: `spark_ast/src/types.rs`, `spark_ast/src/decl.rs`, `spark_parser/src/types.rs`, `spark_parser/src/decl.rs`
+
 ### Project Structure
 
 ```
@@ -94,21 +108,55 @@ The parser implements:
 | 13 | `-`, `not`, `~` (prefix) | 25 |
 | 14 | `!`, `?`, `.`, `?.`, `[]`, `()` (postfix) | 27 |
 
+## Known Gaps (Non-Blocking)
+
+The parser handles all core language constructs but has minor gaps for advanced async features:
+
+1. **`spawn` blocks** - Parallel async execution: `spawn { await fetch_data() }`
+   - Currently unimplemented
+   - Used in test fixtures but parsing not yet supported
+   - Low priority: can be added when implementing async runtime
+
+2. **`block` keyword** - Blocking I/O marker: `block read_file(path)`
+   - Currently unimplemented
+   - Used to mark operations that should run on blocking thread pool
+   - Low priority: syntax exists in fixtures, can be added with runtime
+
+3. **Error propagation `!` operator** - Needs verification
+   - Lexer has `!` token
+   - Parser likely handles as postfix operator
+   - Should verify it works correctly in all contexts: `await fetch()!`
+
+These gaps do not block progress to the next phase (module resolution). They can be implemented when the async runtime design is finalized.
+
 ## What's Next
 
-### Immediate: spark_modules
+### Immediate: spark_modules (NEXT MAIN TASK) (NEXT MAIN TASK)
 
-Build module resolution that:
-1. Parses multiple `.spark` files into ASTs
-2. Resolves module declarations and import statements
-3. Builds a module graph with dependency ordering
-4. Handles cyclic import detection
+**Goal**: Build module resolution to handle multi-file Spark projects.
 
-**Key considerations:**
-- File system traversal for discovering modules
-- Path resolution (relative imports, library paths)
-- Visibility enforcement (`pub` vs private items)
-- Re-exports handling
+**Core Tasks**:
+1. **File discovery** - Traverse directories to find `.spark` files
+2. **Module path mapping** - Map `module` declarations to file paths
+3. **Import resolution** - Resolve `import` statements to actual modules
+4. **Dependency graph** - Build directed graph showing module dependencies
+5. **Cycle detection** - Detect and report circular imports
+6. **Visibility enforcement** - Respect `pub` vs private items
+7. **Re-exports** - Handle `pub import` for re-exporting items
+
+**Key Design Decisions**:
+- **Module paths**: How do `module user` and `using user` map to file paths?
+- **Root discovery**: How to find project root (look for `Spark.toml`?)
+- **Stdlib path**: Where do standard library modules live?
+- **Import syntax**: `import user { User }` - does `user` reference a module or file?
+
+**Reference**: See Phase 3 in `docs/compiler-architecture.md` for detailed requirements.
+
+**Success Criteria**:
+- Can parse multi-file projects
+- Builds correct dependency ordering for compilation
+- Reports clear errors for missing/cyclic imports
+- Passes test suite with fixture projects
 
 ### Full Pipeline (from compiler-architecture.md)
 
