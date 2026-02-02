@@ -11,7 +11,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 
 ## Completed Work
 
-### Foundation Crates (6/10 compiler phases)
+### Foundation Crates (7/10 compiler phases)
 
 | Crate               | Purpose                                                        | Tests | Status      |
 | ------------------- | -------------------------------------------------------------- | ----- | ----------- |
@@ -20,9 +20,10 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_diagnostics` | Error reporting with ariadne rendering                         | 12    | ✅ Complete |
 | `spark_lexer`       | Tokenization (keywords, literals, operators, comments)         | 33    | ✅ Complete |
 | `spark_ast`         | AST node definitions for all language constructs               | 53    | ✅ Complete |
-| `spark_parser`      | Recursive descent parser with Pratt expression parsing         | 102   | ✅ Complete |
+| `spark_parser`      | Recursive descent parser with Pratt expression parsing         | 107   | ✅ Complete |
+| `spark_modules`     | Module resolution, dependency graph, cycle detection           | 38    | ✅ Complete |
 
-**Total: 227 tests passing across workspace.**
+**Total: 270 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (nursery warnings only).
 
@@ -51,15 +52,23 @@ spark/
     │   ├── src/decl.rs           # FunctionDef, StructDef, EnumDef, InterfaceDef, etc.
     │   ├── src/ast.rs            # Ast, Item
     │   └── src/visitor.rs        # Visitor trait, walk_* functions
-    └── spark_parser/             # Parser (NEW)
+    ├── spark_parser/             # Parser
+    │   ├── README.md             # Design documentation
+    │   └── src/
+    │       ├── lib.rs            # Public API, Parser struct
+    │       ├── expr.rs           # Expression parsing (Pratt algorithm)
+    │       ├── stmt.rs           # Statement parsing
+    │       ├── decl.rs           # Declaration parsing
+    │       ├── types.rs          # Type expression parsing
+    │       └── pattern.rs        # Pattern parsing
+    └── spark_modules/            # Module resolution (NEW)
         ├── README.md             # Design documentation
         └── src/
-            ├── lib.rs            # Public API, Parser struct
-            ├── expr.rs           # Expression parsing (Pratt algorithm)
-            ├── stmt.rs           # Statement parsing
-            ├── decl.rs           # Declaration parsing
-            ├── types.rs          # Type expression parsing
-            └── pattern.rs        # Pattern parsing
+            ├── lib.rs            # Public API, resolve() function
+            ├── path.rs           # ModulePath type
+            ├── discovery.rs      # Module discovery from ASTs
+            ├── graph.rs          # ModuleGraph, cycle detection
+            └── exports.rs        # Export collection utilities
 ```
 
 ### spark_parser Overview
@@ -120,42 +129,58 @@ These gaps do not block progress to the next phase (module resolution). They can
 
 ## What's Next
 
-### Immediate: spark_modules (NEXT MAIN TASK) (NEXT MAIN TASK)
+### Immediate: spark_resolve (NEXT MAIN TASK)
 
-**Goal**: Build module resolution to handle multi-file Spark projects.
+**Goal**: Build name resolution to bind identifiers to their definitions.
 
 **Core Tasks**:
 
-1. **File discovery** - Traverse directories to find `.spark` files
-2. **Module path mapping** - Map `module` declarations to file paths
-3. **Import resolution** - Resolve `import` statements to actual modules
-4. **Dependency graph** - Build directed graph showing module dependencies
-5. **Cycle detection** - Detect and report circular imports
-6. **Visibility enforcement** - Respect `pub` vs private items
-7. **Re-exports** - Handle `pub import` for re-exporting items
+1. **Scope management** - Track nested scopes (modules, functions, blocks)
+2. **Name binding** - Resolve identifiers to their declarations
+3. **Symbol table** - Build a symbol table for all named items
+4. **Import handling** - Resolve imported names using ModuleGraph
+5. **Shadowing** - Handle variable shadowing correctly
+6. **Error reporting** - Report undefined/duplicate names
 
 **Key Design Decisions**:
 
-- **Module paths**: How do `module user` and `using user` map to file paths?
-- **Root discovery**: How to find project root (look for `Spark.toml`?)
-- **Stdlib path**: Where do standard library modules live?
-- **Import syntax**: `import user { User }` - does `user` reference a module or file?
+- **Symbol representation**: How to represent resolved symbols (DefId?)
+- **Scope structure**: How to model nested scopes efficiently
+- **Deferred resolution**: Handle forward references in interfaces
 
-**Reference**: See Phase 3 in `docs/compiler-architecture.md` for detailed requirements.
+**Reference**: See Phase 4 in `docs/compiler-architecture.md` for detailed requirements.
 
 **Success Criteria**:
 
-- Can parse multi-file projects
-- Builds correct dependency ordering for compilation
-- Reports clear errors for missing/cyclic imports
-- Passes test suite with fixture projects
+- Resolves all identifiers to their definitions
+- Handles imports from ModuleGraph correctly
+- Reports clear errors for undefined names
+- Supports shadowing and nested scopes
+
+### spark_modules Overview (COMPLETE)
+
+The module resolver implements:
+
+- **Module discovery** from `module` declarations
+- **Using resolution** for files joining existing modules
+- **Import resolution** with dependency edge tracking
+- **Cycle detection** using Tarjan's SCC algorithm
+- **Export collection** for public items
+- **Topological sort** for compilation order
+
+**Key features:**
+
+- `resolve(input) -> ModuleResolverOutput` - Main entry point
+- `ModuleGraph` with modules, dependencies, compilation order
+- `ModulePath` for representing module hierarchies
+- Comprehensive error messages for module issues
 
 ### Full Pipeline (from compiler-architecture.md)
 
 1. ✅ Lexer (spark_lexer)
 2. ✅ Parser (spark_parser)
-3. ⏳ Module Resolution (spark_modules) ← **NEXT**
-4. ⏳ Name Resolution (spark_resolve)
+3. ✅ Module Resolution (spark_modules)
+4. ⏳ Name Resolution (spark_resolve) ← **NEXT**
 5. ⏳ Type Checking (spark_types)
 6. ⏳ HIR Lowering (spark_hir)
 7. ⏳ MIR Lowering (spark_mir)
@@ -176,9 +201,9 @@ These gaps do not block progress to the next phase (module resolution). They can
 
 ```bash
 cargo build              # Build all
-cargo test               # Test all (227 tests)
+cargo test               # Test all (270 tests)
 cargo clippy             # Lint all
-cargo test -p spark_parser  # Test specific crate
+cargo test -p spark_modules  # Test specific crate
 cargo doc --open         # View documentation
 ```
 
@@ -196,9 +221,10 @@ cargo doc --open         # View documentation
 
 1. **Read `docs/lang-spec.md`** - It has the full grammar and language semantics
 2. **The parser is complete** - You can parse any valid Spark program into an AST
-3. **Error recovery is implemented** - The parser continues after syntax errors
-4. **Test with real Spark code** - Create sample `.spark` files to parse
+3. **Module resolution is complete** - `spark_modules` builds dependency graph from ASTs
+4. **Error recovery is implemented** - All phases continue after errors
 5. **The architecture doc** has detailed input/output schemas for each phase
+6. **Use ModuleGraph** - Name resolution should consume the ModuleGraph from spark_modules
 
 ## Crate Dependencies
 
@@ -215,5 +241,7 @@ spark_ast           (depends on span, intern)
       │
 spark_parser        (depends on span, intern, diagnostics, lexer, ast)
       │
-spark_modules       (will depend on all above)
+spark_modules       (depends on span, intern, diagnostics, ast)
+      │
+spark_resolve       (will depend on all above)
 ```
