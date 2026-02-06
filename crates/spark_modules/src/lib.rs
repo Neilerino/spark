@@ -270,7 +270,8 @@ impl ModuleResolver {
                 if import.is_pub {
                     if let Some(ref source) = source_module {
                         for item in &import.items {
-                            let export_name = item.alias.as_ref().map_or(item.name.name, |a| a.name);
+                            let export_name =
+                                item.alias.as_ref().map_or(item.name.name, |a| a.name);
                             let re_export = ReExport {
                                 source_module: target_path.clone(),
                                 original_name: item.name.name,
@@ -375,9 +376,8 @@ impl ModuleResolver {
     /// Emits an error diagnostic.
     fn emit_error(&mut self, message: impl Into<String>, span: Span, label: impl Into<String>) {
         use spark_diagnostics::{Diagnostic, Label};
-        self.diagnostics.push(
-            Diagnostic::error(message.into()).with_label(Label::primary(span, label.into())),
-        );
+        self.diagnostics
+            .push(Diagnostic::error(message.into()).with_label(Label::primary(span, label.into())));
     }
 }
 

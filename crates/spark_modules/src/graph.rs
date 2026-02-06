@@ -249,10 +249,7 @@ impl<'a> CycleDetector<'a> {
         }
 
         // Return only SCCs with more than one node (actual cycles)
-        self.sccs
-            .into_iter()
-            .filter(|scc| scc.len() > 1)
-            .collect()
+        self.sccs.into_iter().filter(|scc| scc.len() > 1).collect()
     }
 
     /// Tarjan's strongly connected components algorithm.
@@ -316,7 +313,9 @@ mod tests {
     fn single_module() {
         let mut graph = ModuleGraph::new();
         let path = make_path("main");
-        graph.modules.insert(path.clone(), ModuleInfo::new(path.clone()));
+        graph
+            .modules
+            .insert(path.clone(), ModuleInfo::new(path.clone()));
 
         let order = graph.topological_sort();
         assert_eq!(order.len(), 1);

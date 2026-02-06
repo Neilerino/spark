@@ -27,7 +27,7 @@ pub struct ModuleDiscovery<'a> {
 
 impl<'a> ModuleDiscovery<'a> {
     /// Creates a new module discovery instance.
-    #[must_use] 
+    #[must_use]
     pub fn new(
         asts: &'a HashMap<FileId, Ast>,
         file_paths: &'a HashMap<FileId, PathBuf>,
@@ -67,9 +67,7 @@ impl<'a> ModuleDiscovery<'a> {
                 // Check for duplicate module declarations
                 if let Some(existing) = modules.get(&module_path) {
                     self.emit_error(
-                        format!(
-                            "module `{module_path}` is already declared in another file"
-                        ),
+                        format!("module `{module_path}` is already declared in another file"),
                         module_decl.span,
                         "duplicate module declaration",
                         existing.decl_span,
@@ -121,12 +119,14 @@ impl<'a> ModuleDiscovery<'a> {
     ///
     /// The module path depends on the file's location relative to the root.
     /// For example, `user/auth/auth.spark` with `module auth` becomes `["user", "auth"]`.
-    fn compute_module_path(&self, file_id: FileId, module_name: spark_intern::Symbol) -> ModulePath {
+    fn compute_module_path(
+        &self,
+        file_id: FileId,
+        module_name: spark_intern::Symbol,
+    ) -> ModulePath {
         if let Some(file_path) = self.file_paths.get(&file_id) {
             // Get the parent directory path
-            let relative = file_path
-                .strip_prefix(self.root_path)
-                .unwrap_or(file_path);
+            let relative = file_path.strip_prefix(self.root_path).unwrap_or(file_path);
 
             let parent = relative.parent();
 
@@ -172,9 +172,7 @@ impl<'a> ModuleDiscovery<'a> {
 
     /// Converts a file path to an implicit module path.
     fn path_to_module_path(&self, file_path: &Path) -> ModulePath {
-        let relative = file_path
-            .strip_prefix(self.root_path)
-            .unwrap_or(file_path);
+        let relative = file_path.strip_prefix(self.root_path).unwrap_or(file_path);
 
         let mut segments: Vec<spark_intern::Symbol> = Vec::new();
 
