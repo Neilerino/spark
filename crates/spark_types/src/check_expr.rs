@@ -1,0 +1,1039 @@
+//! Expression type checking (Pass 2).
+//!
+//! Walks expression trees and returns the type of each expression,
+//! recording the result in the type table's `expr_types` map.
+
+use spark_ast::{BinaryOp, Block, Expr, ExprKind, LiteralKind, UnaryOp};
+use spark_diagnostics::{Diagnostic, Label};
+use spark_resolve::{DefId, DefinitionTable, ResolutionMap};
+use spark_span::Span;
+
+use crate::builtins::BuiltinTypes;
+use crate::check_stmt::check_stmt;
+use crate::lower::lower_type_expr;
+use crate::table::TypeTable;
+use crate::ty::{Ty, TypeId};
+
+/// Type-checks an expression and returns its type.
+///
+/// Records the resulting `TypeId` in `table.expr_types` keyed by the
+/// expression's span.
+#[allow(clippy::too_many_arguments)]
+pub fn check_expr(
+    expr: &Expr,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let ty = check_expr_inner(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+    table.set_expr_type(expr.span, ty);
+    ty
+}
+
+/// Inner expression type checker — dispatches on `ExprKind`.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn check_expr_inner(
+    expr: &Expr,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    match &expr.kind {
+        // === Literals ===
+        ExprKind::Literal(lit) => match &lit.kind {
+            LiteralKind::Int(_) => builtins.int,
+            LiteralKind::Float(_) => builtins.float,
+            LiteralKind::String(_) => builtins.string,
+            LiteralKind::Char(_) => builtins.char_ty,
+            LiteralKind::Bool(_) => builtins.bool_ty,
+            LiteralKind::Null => builtins.null,
+        },
+
+        // === Identifiers ===
+        ExprKind::Ident(ident) => {
+            if let Some(res) = resolutions {
+                if let Some(def_id) = res.get_ident(ident.span) {
+                    return table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
+                }
+            }
+            // Unresolved identifier — the resolver should have caught this,
+            // so just return error silently.
+            TypeId::ERROR
+        }
+
+        ExprKind::Path(path) => {
+            if let Some(res) = resolutions {
+                if let Some(def_id) = res.get_path(path.span) {
+                    return table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
+                }
+            }
+            TypeId::ERROR
+        }
+
+        // === Binary operators ===
+        ExprKind::Binary { op, lhs, rhs } => {
+            let lhs_ty = check_expr(lhs, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let rhs_ty = check_expr(rhs, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+
+            check_binary_op(*op, lhs_ty, rhs_ty, expr.span, lhs.span, rhs.span, table, builtins, diagnostics)
+        }
+
+        // === Unary operators ===
+        ExprKind::Unary { op, operand } => {
+            let operand_ty = check_expr(operand, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            check_unary_op(*op, operand_ty, expr.span, operand.span, table, builtins, diagnostics)
+        }
+
+        // === Function call ===
+        ExprKind::Call { callee, args } => {
+            let callee_ty = check_expr(callee, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            check_call(callee_ty, args, expr.span, callee.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+        }
+
+        // === Field access ===
+        ExprKind::Field { base, field } => {
+            let base_ty = check_expr(base, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            check_field_access(base_ty, field.name, field.span, table, definitions, diagnostics)
+        }
+
+        // === Optional field access ===
+        ExprKind::OptionalField { base, field } => {
+            let base_ty = check_expr(base, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let inner_ty = unwrap_optional(base_ty, table);
+            let field_ty = check_field_access(inner_ty, field.name, field.span, table, definitions, diagnostics);
+            if field_ty.is_error() {
+                return TypeId::ERROR;
+            }
+            table.intern(Ty::Optional(field_ty))
+        }
+
+        // === Index access ===
+        ExprKind::Index { base, index } => {
+            let base_ty = check_expr(base, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _index_ty = check_expr(index, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+
+            match table.resolve(strip_mutable(base_ty, table)).clone() {
+                Ty::List(elem) => table.intern(Ty::Optional(elem)),
+                Ty::Map(_, value) => table.intern(Ty::Optional(value)),
+                Ty::Tuple(elems) => {
+                    // For now, return the first element type or Error
+                    elems.first().copied().unwrap_or(TypeId::ERROR)
+                }
+                Ty::Error => TypeId::ERROR,
+                _ => {
+                    diagnostics.push(
+                        Diagnostic::error("type is not indexable")
+                            .with_label(Label::primary(base.span, "cannot index this type")),
+                    );
+                    TypeId::ERROR
+                }
+            }
+        }
+
+        // === Struct initialization ===
+        ExprKind::StructInit { path, fields, spread } => {
+            check_struct_init(path, fields, spread.as_deref(), expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+        }
+
+        // === Enum variant ===
+        ExprKind::EnumVariant { path, variant, fields } => {
+            check_enum_variant(path, variant, fields, expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+        }
+
+        // === Block ===
+        ExprKind::Block(block) => {
+            check_block(block, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+        }
+
+        // === If expression ===
+        ExprKind::If { condition, then_branch, else_branch } => {
+            let cond_ty = check_expr(condition, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+
+            if !is_compatible(cond_ty, builtins.bool_ty, table) {
+                diagnostics.push(
+                    Diagnostic::error("if condition must be Bool")
+                        .with_label(Label::primary(condition.span, "expected Bool")),
+                );
+            }
+
+            let then_ty = check_expr(then_branch, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+
+            else_branch.as_ref().map_or(builtins.void, |else_branch| {
+                let else_ty = check_expr(else_branch, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                unify_branches(then_ty, else_ty, table, builtins)
+            })
+        }
+
+        // === Match expression ===
+        ExprKind::Match { scrutinee, arms } => {
+            let _scrutinee_ty = check_expr(scrutinee, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+
+            let mut arm_types = Vec::with_capacity(arms.len());
+            for arm in arms {
+                // Pattern checking is simplified — we just check the body
+                let body_ty = check_expr(&arm.body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                arm_types.push(body_ty);
+            }
+
+            if arm_types.is_empty() {
+                builtins.never
+            } else {
+                let mut result = arm_types[0];
+                for &ty in &arm_types[1..] {
+                    result = unify_branches(result, ty, table, builtins);
+                }
+                result
+            }
+        }
+
+        // === Loop ===
+        ExprKind::Loop { body } => {
+            let _ = check_expr(body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            // Loop's type comes from break expressions — for now, Void
+            builtins.void
+        }
+
+        // === Break ===
+        ExprKind::Break(value) => {
+            if let Some(val) = value {
+                let _ = check_expr(val, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            }
+            builtins.never
+        }
+
+        // === Continue ===
+        ExprKind::Continue => builtins.never,
+
+        // === Return ===
+        ExprKind::Return(value) => {
+            let val_ty = value.as_ref().map_or(builtins.void, |val| {
+                check_expr(val, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+            });
+
+            if let Some(expected) = current_fn_ret {
+                if !is_compatible(val_ty, expected, table) {
+                    let expected_name = type_name(expected, table, definitions);
+                    let found_name = type_name(val_ty, table, definitions);
+                    diagnostics.push(
+                        Diagnostic::error(format!("return type mismatch: expected `{expected_name}`, found `{found_name}`"))
+                            .with_label(Label::primary(expr.span, format!("expected `{expected_name}`"))),
+                    );
+                }
+            }
+
+            builtins.never
+        }
+
+        // === Lambda ===
+        ExprKind::Lambda { params, ret_type, body } => {
+            let param_types: Vec<TypeId> = params
+                .iter()
+                .map(|p| lower_type_expr(&p.ty, table, builtins, definitions, resolutions, diagnostics))
+                .collect();
+
+            // Register param types
+            for (i, param) in params.iter().enumerate() {
+                if let Some(res) = resolutions {
+                    if let Some(def_id) = res.get_binding(param.name.span) {
+                        table.set_def_type(def_id, param_types[i]);
+                    }
+                }
+            }
+
+            let declared_ret = ret_type
+                .as_ref()
+                .map(|rt| lower_type_expr(rt, table, builtins, definitions, resolutions, diagnostics));
+
+            let body_ty = check_expr(body, table, builtins, definitions, resolutions, diagnostics, declared_ret);
+            let ret = declared_ret.unwrap_or(body_ty);
+
+            table.intern(Ty::Function {
+                params: param_types,
+                ret,
+                is_async: false,
+            })
+        }
+
+        // === Coalesce (??) ===
+        ExprKind::Coalesce { lhs, rhs } => {
+            let lhs_ty = check_expr(lhs, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let rhs_ty = check_expr(rhs, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+
+            let inner = unwrap_optional(lhs_ty, table);
+            if inner == lhs_ty && !lhs_ty.is_error() {
+                diagnostics.push(
+                    Diagnostic::error("left side of `??` must be an optional type")
+                        .with_label(Label::primary(lhs.span, "not optional")),
+                );
+            }
+
+            // The result is the non-optional inner type unified with rhs
+            if inner.is_error() { rhs_ty } else { unify_branches(inner, rhs_ty, table, builtins) }
+        }
+
+        // === Propagate (!) ===
+        ExprKind::Propagate(inner_expr) => {
+            let inner_ty = check_expr(inner_expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            // Simplified: unwrap optional or union, return the "success" type
+            unwrap_optional(inner_ty, table)
+        }
+
+        // === Is ===
+        ExprKind::Is { expr: inner_expr, .. } => {
+            let _ = check_expr(inner_expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            builtins.bool_ty
+        }
+
+        // === As ===
+        ExprKind::As { expr: inner_expr, ty } => {
+            let _ = check_expr(inner_expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            lower_type_expr(ty, table, builtins, definitions, resolutions, diagnostics)
+        }
+
+        // === Collections ===
+        ExprKind::List(elems) => {
+            if elems.is_empty() {
+                // Empty list — element type unknown, use Error for now
+                table.intern(Ty::List(TypeId::ERROR))
+            } else {
+                let first_ty = check_expr(&elems[0], table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                for elem in &elems[1..] {
+                    let _ = check_expr(elem, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                }
+                table.intern(Ty::List(first_ty))
+            }
+        }
+
+        ExprKind::Map(entries) => {
+            if entries.is_empty() {
+                table.intern(Ty::Map(TypeId::ERROR, TypeId::ERROR))
+            } else {
+                let key_ty = check_expr(&entries[0].key, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                let val_ty = check_expr(&entries[0].value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                for entry in &entries[1..] {
+                    let _ = check_expr(&entry.key, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                    let _ = check_expr(&entry.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                }
+                table.intern(Ty::Map(key_ty, val_ty))
+            }
+        }
+
+        ExprKind::Set(elems) => {
+            if elems.is_empty() {
+                table.intern(Ty::Set(TypeId::ERROR))
+            } else {
+                let first_ty = check_expr(&elems[0], table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                for elem in &elems[1..] {
+                    let _ = check_expr(elem, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                }
+                table.intern(Ty::Set(first_ty))
+            }
+        }
+
+        ExprKind::Tuple(elems) => {
+            let elem_types: Vec<TypeId> = elems
+                .iter()
+                .map(|e| check_expr(e, table, builtins, definitions, resolutions, diagnostics, current_fn_ret))
+                .collect();
+            table.intern(Ty::Tuple(elem_types))
+        }
+
+        // === Paren / Await / Spawn ===
+        ExprKind::Paren(inner)
+        | ExprKind::Await(inner)
+        | ExprKind::BlockAwait(inner)
+        | ExprKind::Spawn(inner) => {
+            check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+        }
+
+        // === Deferred / simplified ===
+        ExprKind::MethodCall { receiver, args, .. } => {
+            let _ = check_expr(receiver, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            for arg in args {
+                let _ = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            }
+            // Method resolution deferred
+            TypeId::ERROR
+        }
+
+        ExprKind::To { expr: inner, .. } => {
+            let _ = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            TypeId::ERROR
+        }
+
+        ExprKind::Each { iterable, body, .. }
+        | ExprKind::EachVia { iterable, body, .. } => {
+            let _ = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = check_expr(body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            builtins.void
+        }
+
+        ExprKind::Range { start, end, .. } | ExprKind::ListRange { start, end, .. } => {
+            let _ = check_expr(start, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = check_expr(end, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            // Range type — simplified for now
+            TypeId::ERROR
+        }
+
+        ExprKind::Partial { callee, args } => {
+            let _ = check_expr(callee, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            for arg in args {
+                let _ = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            }
+            TypeId::ERROR
+        }
+
+        ExprKind::Error => TypeId::ERROR,
+    }
+}
+
+/// Type-checks a block expression.
+pub fn check_block(
+    block: &Block,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    for stmt in &block.stmts {
+        check_stmt(stmt, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+    }
+
+    block.expr.as_ref().map_or(builtins.void, |expr| {
+        check_expr(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+    })
+}
+
+// === Binary operator checking ===
+
+#[allow(clippy::too_many_arguments)]
+fn check_binary_op(
+    op: BinaryOp,
+    lhs_ty: TypeId,
+    rhs_ty: TypeId,
+    op_span: Span,
+    lhs_span: Span,
+    rhs_span: Span,
+    table: &TypeTable,
+    builtins: &BuiltinTypes,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    // Error types propagate silently
+    if lhs_ty.is_error() || rhs_ty.is_error() {
+        return TypeId::ERROR;
+    }
+
+    if op.is_arithmetic() {
+        let lhs_resolved = table.resolve(lhs_ty);
+        if !lhs_resolved.is_numeric() {
+            diagnostics.push(
+                Diagnostic::error(format!("operator `{}` requires numeric operands", op.as_str()))
+                    .with_label(Label::primary(lhs_span, "not numeric")),
+            );
+            return TypeId::ERROR;
+        }
+        if !is_compatible(lhs_ty, rhs_ty, table) {
+            let l = type_name(lhs_ty, table, &DefinitionTable::new());
+            let r = type_name(rhs_ty, table, &DefinitionTable::new());
+            diagnostics.push(
+                Diagnostic::error(format!("mismatched types for `{}`: `{l}` and `{r}`", op.as_str()))
+                    .with_label(Label::primary(lhs_span, format!("`{l}`")))
+                    .with_label(Label::secondary(rhs_span, format!("`{r}`"))),
+            );
+            return TypeId::ERROR;
+        }
+        return lhs_ty;
+    }
+
+    if op.is_comparison() {
+        if !is_compatible(lhs_ty, rhs_ty, table) {
+            let l = type_name(lhs_ty, table, &DefinitionTable::new());
+            let r = type_name(rhs_ty, table, &DefinitionTable::new());
+            diagnostics.push(
+                Diagnostic::error(format!("cannot compare `{l}` with `{r}`"))
+                    .with_label(Label::primary(op_span, "type mismatch")),
+            );
+        }
+        return builtins.bool_ty;
+    }
+
+    if op.is_logical() {
+        if !is_compatible(lhs_ty, builtins.bool_ty, table) {
+            diagnostics.push(
+                Diagnostic::error(format!("operator `{}` requires Bool operands", op.as_str()))
+                    .with_label(Label::primary(lhs_span, "expected Bool")),
+            );
+        }
+        if !is_compatible(rhs_ty, builtins.bool_ty, table) {
+            diagnostics.push(
+                Diagnostic::error(format!("operator `{}` requires Bool operands", op.as_str()))
+                    .with_label(Label::primary(rhs_span, "expected Bool")),
+            );
+        }
+        return builtins.bool_ty;
+    }
+
+    if op.is_bitwise() {
+        let lhs_resolved = table.resolve(lhs_ty);
+        if !lhs_resolved.is_integer() {
+            diagnostics.push(
+                Diagnostic::error(format!("operator `{}` requires integer operands", op.as_str()))
+                    .with_label(Label::primary(lhs_span, "not integer")),
+            );
+            return TypeId::ERROR;
+        }
+        if !is_compatible(lhs_ty, rhs_ty, table) {
+            diagnostics.push(
+                Diagnostic::error(format!("mismatched integer types for `{}`", op.as_str()))
+                    .with_label(Label::primary(op_span, "type mismatch")),
+            );
+            return TypeId::ERROR;
+        }
+        return lhs_ty;
+    }
+
+    TypeId::ERROR
+}
+
+/// Checks a unary operator application.
+fn check_unary_op(
+    op: UnaryOp,
+    operand_ty: TypeId,
+    _op_span: Span,
+    operand_span: Span,
+    table: &TypeTable,
+    builtins: &BuiltinTypes,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if operand_ty.is_error() {
+        return TypeId::ERROR;
+    }
+
+    match op {
+        UnaryOp::Neg => {
+            if !table.resolve(operand_ty).is_numeric() {
+                diagnostics.push(
+                    Diagnostic::error("unary `-` requires a numeric operand")
+                        .with_label(Label::primary(operand_span, "not numeric")),
+                );
+                return TypeId::ERROR;
+            }
+            operand_ty
+        }
+        UnaryOp::Not => {
+            if !is_compatible(operand_ty, builtins.bool_ty, table) {
+                diagnostics.push(
+                    Diagnostic::error("`not` requires a Bool operand")
+                        .with_label(Label::primary(operand_span, "expected Bool")),
+                );
+                return TypeId::ERROR;
+            }
+            builtins.bool_ty
+        }
+        UnaryOp::BitNot => {
+            if !table.resolve(operand_ty).is_integer() {
+                diagnostics.push(
+                    Diagnostic::error("`~` requires an integer operand")
+                        .with_label(Label::primary(operand_span, "not integer")),
+                );
+                return TypeId::ERROR;
+            }
+            operand_ty
+        }
+    }
+}
+
+/// Checks a function call.
+#[allow(clippy::too_many_arguments)]
+fn check_call(
+    callee_ty: TypeId,
+    args: &[spark_ast::CallArg],
+    call_span: Span,
+    callee_span: Span,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    if callee_ty.is_error() {
+        // Still check args to report errors in them
+        for arg in args {
+            let _ = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+        }
+        return TypeId::ERROR;
+    }
+
+    let callee_resolved = table.resolve(callee_ty).clone();
+    match callee_resolved {
+        Ty::Function { params, ret, .. } => {
+            if args.len() != params.len() {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "expected {} argument{}, found {}",
+                        params.len(),
+                        if params.len() == 1 { "" } else { "s" },
+                        args.len()
+                    ))
+                    .with_label(Label::primary(call_span, "wrong number of arguments")),
+                );
+            }
+
+            for (i, arg) in args.iter().enumerate() {
+                let arg_ty = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                if let Some(&expected) = params.get(i) {
+                    if !is_compatible(arg_ty, expected, table) {
+                        let expected_name = type_name(expected, table, definitions);
+                        let found_name = type_name(arg_ty, table, definitions);
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
+                            ))
+                            .with_label(Label::primary(arg.value.span, format!("expected `{expected_name}`"))),
+                        );
+                    }
+                }
+            }
+
+            ret
+        }
+        // Struct construction via call syntax is handled by StructInit
+        Ty::Struct(_) | Ty::Enum(_) => {
+            for arg in args {
+                let _ = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            }
+            callee_ty
+        }
+        _ => {
+            diagnostics.push(
+                Diagnostic::error("expression is not callable")
+                    .with_label(Label::primary(callee_span, "not a function")),
+            );
+            for arg in args {
+                let _ = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            }
+            TypeId::ERROR
+        }
+    }
+}
+
+/// Checks struct field access.
+fn check_field_access(
+    base_ty: TypeId,
+    field_name: spark_intern::Symbol,
+    field_span: Span,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if base_ty.is_error() {
+        return TypeId::ERROR;
+    }
+
+    let resolved = table.resolve(strip_mutable(base_ty, table));
+    match resolved {
+        Ty::Struct(def_id) => {
+            let def_id = *def_id;
+            if let Some(fields) = table.get_struct_fields(def_id) {
+                for (name, ty) in fields {
+                    if *name == field_name {
+                        return *ty;
+                    }
+                }
+            }
+            let type_name = definitions
+                .get(def_id)
+                .map_or("<unknown>", |info| info.name.as_str());
+            diagnostics.push(
+                Diagnostic::error(format!("no field `{field_name}` on type `{type_name}`"))
+                    .with_label(Label::primary(field_span, "unknown field")),
+            );
+            TypeId::ERROR
+        }
+        Ty::Tuple(elems) => {
+            // Tuple field access via numeric name (e.g., .0, .1)
+            // For now, just return Error
+            let _ = elems;
+            TypeId::ERROR
+        }
+        Ty::Error => TypeId::ERROR,
+        _ => {
+            diagnostics.push(
+                Diagnostic::error("field access on non-struct type")
+                    .with_label(Label::primary(field_span, "not a struct")),
+            );
+            TypeId::ERROR
+        }
+    }
+}
+
+/// Checks struct initialization.
+#[allow(clippy::too_many_arguments)]
+fn check_struct_init(
+    path: &spark_ast::Path,
+    fields: &[spark_ast::FieldInit],
+    spread: Option<&Expr>,
+    _init_span: Span,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    // Resolve the struct path
+    let def_id = resolutions
+        .and_then(|res| res.get_path(path.span))
+        .unwrap_or(DefId::DUMMY);
+
+    if def_id.is_dummy() {
+        // Struct not resolved — check field values anyway
+        for field in fields {
+            let _ = check_expr(&field.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+        }
+        if let Some(spread) = spread {
+            let _ = check_expr(spread, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+        }
+        return TypeId::ERROR;
+    }
+
+    let struct_type = table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
+
+    // Check each field
+    if let Some(struct_fields) = table.get_struct_fields(def_id) {
+        let struct_fields = struct_fields.to_vec();
+        for field in fields {
+            let val_ty = check_expr(&field.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            if let Some((_, expected_ty)) = struct_fields.iter().find(|(name, _)| *name == field.name.name) {
+                if !is_compatible(val_ty, *expected_ty, table) {
+                    let expected_name = type_name(*expected_ty, table, definitions);
+                    let found_name = type_name(val_ty, table, definitions);
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "field `{}` type mismatch: expected `{expected_name}`, found `{found_name}`",
+                            field.name.name
+                        ))
+                        .with_label(Label::primary(field.value.span, format!("expected `{expected_name}`"))),
+                    );
+                }
+            } else {
+                diagnostics.push(
+                    Diagnostic::error(format!("unknown field `{}`", field.name.name))
+                        .with_label(Label::primary(field.name.span, "not a field of this struct")),
+                );
+            }
+        }
+    }
+
+    if let Some(spread) = spread {
+        let _ = check_expr(spread, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+    }
+
+    struct_type
+}
+
+/// Checks enum variant construction.
+#[allow(clippy::too_many_arguments)]
+fn check_enum_variant(
+    path: &spark_ast::Path,
+    _variant: &spark_ast::Ident,
+    fields: &[Expr],
+    _init_span: Span,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let def_id = resolutions
+        .and_then(|res| res.get_path(path.span))
+        .unwrap_or(DefId::DUMMY);
+
+    // Check field values regardless
+    for field in fields {
+        let _ = check_expr(field, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+    }
+
+    if def_id.is_dummy() {
+        return TypeId::ERROR;
+    }
+
+    table.get_def_type(def_id).unwrap_or(TypeId::ERROR)
+}
+
+// === Type compatibility ===
+
+/// Checks if `actual` is compatible with `expected`.
+///
+/// Compatibility rules:
+/// - `Ty::Error` is compatible with everything
+/// - `Ty::Never` is compatible with everything
+/// - Equal types are compatible
+/// - `Null` is compatible with `Optional(T)`
+/// - `T` is compatible with `Optional(T)`
+/// - `T` is a member of `Union([..., T, ...])`
+#[must_use]
+pub fn is_compatible(actual: TypeId, expected: TypeId, table: &TypeTable) -> bool {
+    if actual == expected {
+        return true;
+    }
+    if actual.is_error() || expected.is_error() {
+        return true;
+    }
+
+    let actual_ty = table.resolve(actual);
+    let expected_ty = table.resolve(expected);
+
+    // Never is the bottom type
+    if matches!(actual_ty, Ty::Never) || matches!(expected_ty, Ty::Never) {
+        return true;
+    }
+
+    // Null is compatible with Optional
+    if matches!(actual_ty, Ty::Null) && matches!(expected_ty, Ty::Optional(_)) {
+        return true;
+    }
+
+    // T is compatible with Optional(T)
+    if let Ty::Optional(inner) = expected_ty {
+        if actual == *inner || is_compatible(actual, *inner, table) {
+            return true;
+        }
+    }
+
+    // T is a member of Union
+    if let Ty::Union(members) = expected_ty {
+        for &member in members {
+            if is_compatible(actual, member, table) {
+                return true;
+            }
+        }
+    }
+
+    // Mutable T is compatible with T
+    if let Ty::Mutable(inner) = actual_ty {
+        if is_compatible(*inner, expected, table) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Unifies two branch types (e.g., if/else arms).
+///
+/// If both are the same type, returns it. If one is Never, returns the other.
+/// Otherwise, returns a union of both.
+fn unify_branches(a: TypeId, b: TypeId, table: &mut TypeTable, _builtins: &BuiltinTypes) -> TypeId {
+    if a == b {
+        return a;
+    }
+    if a.is_error() || b.is_error() {
+        return TypeId::ERROR;
+    }
+
+    let a_ty = table.resolve(a);
+    let b_ty = table.resolve(b);
+
+    if matches!(a_ty, Ty::Never) {
+        return b;
+    }
+    if matches!(b_ty, Ty::Never) {
+        return a;
+    }
+
+    // Create a union of the two types
+    let mut members = vec![a, b];
+    members.sort();
+    members.dedup();
+    table.intern(Ty::Union(members))
+}
+
+/// Strips the `Mutable` wrapper if present.
+fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
+    if let Ty::Mutable(inner) = table.resolve(ty) {
+        *inner
+    } else {
+        ty
+    }
+}
+
+/// Unwraps `Optional(T)` → `T`. Returns the input unchanged if not optional.
+fn unwrap_optional(ty: TypeId, table: &TypeTable) -> TypeId {
+    if let Ty::Optional(inner) = table.resolve(ty) {
+        *inner
+    } else {
+        ty
+    }
+}
+
+/// Returns a human-readable name for a type.
+#[must_use]
+pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -> String {
+    match table.resolve(ty) {
+        Ty::Int(w) => w.to_string(),
+        Ty::Float(w) => w.to_string(),
+        Ty::Bool => "Bool".to_string(),
+        Ty::Char => "Char".to_string(),
+        Ty::String => "String".to_string(),
+        Ty::Byte => "Byte".to_string(),
+        Ty::Void => "Void".to_string(),
+        Ty::Null => "Null".to_string(),
+        Ty::Never => "Never".to_string(),
+        Ty::List(elem) => format!("List[{}]", type_name(*elem, table, definitions)),
+        Ty::Map(k, v) => format!(
+            "Map[{}, {}]",
+            type_name(*k, table, definitions),
+            type_name(*v, table, definitions)
+        ),
+        Ty::Set(elem) => format!("Set[{}]", type_name(*elem, table, definitions)),
+        Ty::Tuple(elems) => {
+            let parts: Vec<_> = elems.iter().map(|e| type_name(*e, table, definitions)).collect();
+            format!("Tup[{}]", parts.join(", "))
+        }
+        Ty::Struct(def_id) => definitions
+            .get(*def_id)
+            .map_or_else(|| "<struct>".to_string(), |info| info.name.to_string()),
+        Ty::Enum(def_id) => definitions
+            .get(*def_id)
+            .map_or_else(|| "<enum>".to_string(), |info| info.name.to_string()),
+        Ty::Union(members) => {
+            let parts: Vec<_> = members.iter().map(|m| type_name(*m, table, definitions)).collect();
+            parts.join(" | ")
+        }
+        Ty::Optional(inner) => format!("{}?", type_name(*inner, table, definitions)),
+        Ty::Mutable(inner) => format!("{}!", type_name(*inner, table, definitions)),
+        Ty::Ref { inner, mutable } => {
+            if *mutable {
+                format!("Ref[{}]!", type_name(*inner, table, definitions))
+            } else {
+                format!("Ref[{}]", type_name(*inner, table, definitions))
+            }
+        }
+        Ty::Function { params, ret, is_async } => {
+            let params_str: Vec<_> = params.iter().map(|p| type_name(*p, table, definitions)).collect();
+            let async_prefix = if *is_async { "async " } else { "" };
+            format!("{}({}): {}", async_prefix, params_str.join(", "), type_name(*ret, table, definitions))
+        }
+        Ty::Param(def_id) => definitions
+            .get(*def_id)
+            .map_or_else(|| "<param>".to_string(), |info| info.name.to_string()),
+        Ty::Error => "<error>".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::builtins::register_builtins;
+
+    #[test]
+    fn compatible_same_types() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        assert!(is_compatible(builtins.int, builtins.int, &table));
+    }
+
+    #[test]
+    fn compatible_error_with_anything() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        assert!(is_compatible(TypeId::ERROR, builtins.int, &table));
+        assert!(is_compatible(builtins.int, TypeId::ERROR, &table));
+    }
+
+    #[test]
+    fn compatible_never_with_anything() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        assert!(is_compatible(builtins.never, builtins.int, &table));
+        assert!(is_compatible(builtins.int, builtins.never, &table));
+    }
+
+    #[test]
+    fn compatible_null_with_optional() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        let opt_int = table.intern(Ty::Optional(builtins.int));
+        assert!(is_compatible(builtins.null, opt_int, &table));
+    }
+
+    #[test]
+    fn compatible_t_with_optional_t() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        let opt_int = table.intern(Ty::Optional(builtins.int));
+        assert!(is_compatible(builtins.int, opt_int, &table));
+    }
+
+    #[test]
+    fn compatible_member_of_union() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        let union_ty = table.intern(Ty::Union(vec![builtins.int, builtins.string]));
+        assert!(is_compatible(builtins.int, union_ty, &table));
+        assert!(is_compatible(builtins.string, union_ty, &table));
+        assert!(!is_compatible(builtins.bool_ty, union_ty, &table));
+    }
+
+    #[test]
+    fn incompatible_different_types() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        assert!(!is_compatible(builtins.int, builtins.string, &table));
+    }
+
+    #[test]
+    fn type_name_primitives() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        let defs = DefinitionTable::new();
+
+        assert_eq!(type_name(builtins.int, &table, &defs), "Int64");
+        assert_eq!(type_name(builtins.bool_ty, &table, &defs), "Bool");
+        assert_eq!(type_name(builtins.string, &table, &defs), "String");
+        assert_eq!(type_name(builtins.void, &table, &defs), "Void");
+    }
+
+    #[test]
+    fn type_name_optional() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        let defs = DefinitionTable::new();
+        let opt_int = table.intern(Ty::Optional(builtins.int));
+        assert_eq!(type_name(opt_int, &table, &defs), "Int64?");
+    }
+
+    #[test]
+    fn unify_same() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        assert_eq!(unify_branches(builtins.int, builtins.int, &mut table, &builtins), builtins.int);
+    }
+
+    #[test]
+    fn unify_with_never() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        assert_eq!(unify_branches(builtins.never, builtins.int, &mut table, &builtins), builtins.int);
+        assert_eq!(unify_branches(builtins.int, builtins.never, &mut table, &builtins), builtins.int);
+    }
+
+    #[test]
+    fn unify_different_creates_union() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        let result = unify_branches(builtins.int, builtins.string, &mut table, &builtins);
+        assert!(matches!(table.resolve(result), Ty::Union(_)));
+    }
+}

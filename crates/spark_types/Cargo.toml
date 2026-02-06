@@ -1,0 +1,23 @@
+[package]
+name = "spark_types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Type checking for the Spark compiler"
+
+[dependencies]
+spark_span = { workspace = true }
+spark_intern = { workspace = true }
+spark_diagnostics = { workspace = true }
+spark_ast = { workspace = true }
+spark_modules = { workspace = true }
+spark_resolve = { workspace = true }
+rustc-hash = { workspace = true }
+
+[dev-dependencies]
+spark_lexer = { workspace = true }
+spark_parser = { workspace = true }
+
+[lints]
+workspace = true
