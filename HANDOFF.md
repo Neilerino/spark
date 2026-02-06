@@ -11,237 +11,113 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 
 ## Completed Work
 
-### Foundation Crates (7/10 compiler phases)
+### Foundation Crates (8/10 compiler phases)
 
 | Crate               | Purpose                                                        | Tests | Status      |
 | ------------------- | -------------------------------------------------------------- | ----- | ----------- |
-| `spark_span`        | Source locations (`FileId`, `Span`, `SourceMap`)               | 13    | ✅ Complete |
-| `spark_intern`      | String interning (`Symbol`, `Interner`, pre-interned keywords) | 14    | ✅ Complete |
-| `spark_diagnostics` | Error reporting with ariadne rendering                         | 12    | ✅ Complete |
-| `spark_lexer`       | Tokenization (keywords, literals, operators, comments)         | 33    | ✅ Complete |
-| `spark_ast`         | AST node definitions for all language constructs               | 53    | ✅ Complete |
-| `spark_parser`      | Recursive descent parser with Pratt expression parsing         | 107   | ✅ Complete |
-| `spark_modules`     | Module resolution, dependency graph, cycle detection           | 38    | ✅ Complete |
+| `spark_span`        | Source locations (`FileId`, `Span`, `SourceMap`)               | 13    | Complete |
+| `spark_intern`      | String interning (`Symbol`, `Interner`, pre-interned keywords) | 14    | Complete |
+| `spark_diagnostics` | Error reporting with ariadne rendering                         | 12    | Complete |
+| `spark_lexer`       | Tokenization (keywords, literals, operators, comments)         | 33    | Complete |
+| `spark_ast`         | AST node definitions for all language constructs               | 53    | Complete |
+| `spark_parser`      | Recursive descent parser with Pratt expression parsing         | 125   | Complete |
+| `spark_modules`     | Module resolution, dependency graph, cycle detection           | 38    | Complete |
+| `spark_resolve`     | Name resolution: scoping, DefIds, imports                      | 51    | Complete |
 
-**Total: 270 tests passing across workspace.**
+**Total: 341 tests passing across workspace.**
 
-All crates pass `cargo test` and `cargo clippy` (nursery warnings only).
+All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
-### Project Structure
+### spark_resolve Overview (Just Completed)
 
-```
-spark/
-├── Cargo.toml                    # Workspace config
-├── HANDOFF.md                    # This file
-├── docs/
-│   ├── lang-spec.md              # Language specification (READ THIS FIRST)
-│   └── compiler-architecture.md  # Pipeline design with I/O schemas
-└── crates/
-    ├── spark_span/               # FileId, Span, SourceMap, Spanned<T>
-    ├── spark_intern/             # Symbol, Interner, kw module (67 keywords)
-    ├── spark_diagnostics/        # Diagnostic, Label, Diagnostics
-    ├── spark_lexer/              # Lexer, Token, TokenKind (65 variants)
-    ├── spark_ast/                # AST nodes
-    │   ├── src/lib.rs            # Re-exports
-    │   ├── src/path.rs           # Ident, Path
-    │   ├── src/lit.rs            # Literal, LiteralKind, StringLiteral
-    │   ├── src/types.rs          # TypeExpr, GenericParam, constraints
-    │   ├── src/pattern.rs        # Pattern, PatternKind, FieldPattern
-    │   ├── src/stmt.rs           # Block, Stmt, StmtKind
-    │   ├── src/expr.rs           # Expr, ExprKind (~35 variants), BinaryOp, UnaryOp
-    │   ├── src/decl.rs           # FunctionDef, StructDef, EnumDef, InterfaceDef, etc.
-    │   ├── src/ast.rs            # Ast, Item
-    │   └── src/visitor.rs        # Visitor trait, walk_* functions
-    ├── spark_parser/             # Parser
-    │   ├── README.md             # Design documentation
-    │   └── src/
-    │       ├── lib.rs            # Public API, Parser struct
-    │       ├── expr.rs           # Expression parsing (Pratt algorithm)
-    │       ├── stmt.rs           # Statement parsing
-    │       ├── decl.rs           # Declaration parsing
-    │       ├── types.rs          # Type expression parsing
-    │       └── pattern.rs        # Pattern parsing
-    └── spark_modules/            # Module resolution (NEW)
-        ├── README.md             # Design documentation
-        └── src/
-            ├── lib.rs            # Public API, resolve() function
-            ├── path.rs           # ModulePath type
-            ├── discovery.rs      # Module discovery from ASTs
-            ├── graph.rs          # ModuleGraph, cycle detection
-            └── exports.rs        # Export collection utilities
-```
+Two-pass name resolution that binds every identifier to its definition:
 
-### spark_parser Overview
+- **Collection pass**: Registers all top-level defs (functions, structs, enums, interfaces, type aliases, consts), struct fields, enum variants, import bindings. Structs/Enums go in both value and type namespaces.
+- **Resolution pass**: Walks all function bodies, expressions (35+ ExprKind variants), statements, type expressions, patterns. Resolves identifiers via `RibStack` lookup.
+- **Scoping**: `RibStack` with dual namespaces (value + type), push/pop ribs for blocks, functions, generics, lambdas.
+- **Built-in types**: `Int`, `String`, `Bool`, etc. silently skipped via `kw::is_builtin_type()` — deferred to `spark_types`.
+- **Error reporting**: Undefined name (E0425), undefined type (E0412), duplicate definition (E0428).
+- **Imports**: Cross-module name resolution via `ModuleGraph` exports.
 
-The parser implements:
+**Key types**: `DefId`, `DefinitionTable`, `DefinitionKind`, `RibStack`, `ResolutionMap`, `ResolvedAst`.
 
-- **Pratt parsing** for expressions with 14 precedence levels
-- **Recursive descent** for declarations, statements, types, and patterns
-- **Error recovery** to report multiple syntax errors per file
-- **Span tracking** for all AST nodes
-
-**Key features:**
-
-- `parse(tokens, file_id) -> (Ast, Diagnostics)` - Main entry point
-- `parse_expr(tokens, file_id) -> (Expr, Diagnostics)` - For REPL/testing
-- Error nodes (`ExprKind::Error`, etc.) allow continued parsing after errors
-- `parse_expr_no_struct` for contexts where `{` starts a block, not struct init
-
-**Operator Precedence:**
-
-| Level | Operators                                 | Binding Power |
-| ----- | ----------------------------------------- | ------------- |
-| 1     | `..`, `..=` (range)                       | 1-2           |
-| 2     | `??` (coalesce)                           | 3-4           |
-| 3     | `or`                                      | 5-6           |
-| 4     | `and`                                     | 7-8           |
-| 5     | `==`, `!=`                                | 9-10          |
-| 6     | `<`, `>`, `<=`, `>=`, `is`, `as`          | 11-12         |
-| 7     | `\|` (bitwise or)                         | 13-14         |
-| 8     | `^` (xor)                                 | 15-16         |
-| 9     | `&` (bitwise and)                         | 17-18         |
-| 10    | `<<`, `>>`                                | 19-20         |
-| 11    | `+`, `-`                                  | 21-22         |
-| 12    | `*`, `/`, `%`                             | 23-24         |
-| 13    | `-`, `not`, `~` (prefix)                  | 25            |
-| 14    | `!`, `?`, `.`, `?.`, `[]`, `()` (postfix) | 27            |
-
-## Known Gaps (Non-Blocking)
-
-The parser handles all core language constructs but has minor gaps for advanced async features:
-
-1. **`spawn` blocks** - Parallel async execution: `spawn { await fetch_data() }`
-   - Currently unimplemented
-   - Used in test fixtures but parsing not yet supported
-   - Low priority: can be added when implementing async runtime
-
-2. **`block` keyword** - Blocking I/O marker: `block read_file(path)`
-   - Currently unimplemented
-   - Used to mark operations that should run on blocking thread pool
-   - Low priority: syntax exists in fixtures, can be added with runtime
-
-3. **Error propagation `!` operator** - Needs verification
-   - Lexer has `!` token
-   - Parser likely handles as postfix operator
-   - Should verify it works correctly in all contexts: `await fetch()!`
-
-These gaps do not block progress to the next phase (module resolution). They can be implemented when the async runtime design is finalized.
+**API**: `resolve(ResolverInput) -> ResolverOutput` where input is `{graph: ModuleGraph, asts: HashMap<FileId, Ast>}` and output is `{resolved: ResolvedAst, definitions: DefinitionTable, diagnostics: Diagnostics}`.
 
 ## What's Next
 
-### Immediate: spark_resolve (NEXT MAIN TASK)
+### Immediate: spark_types (NEXT MAIN TASK)
 
-**Goal**: Build name resolution to bind identifiers to their definitions.
+**Goal**: Type checking and inference.
 
 **Core Tasks**:
 
-1. **Scope management** - Track nested scopes (modules, functions, blocks)
-2. **Name binding** - Resolve identifiers to their declarations
-3. **Symbol table** - Build a symbol table for all named items
-4. **Import handling** - Resolve imported names using ModuleGraph
-5. **Shadowing** - Handle variable shadowing correctly
-6. **Error reporting** - Report undefined/duplicate names
+1. **Type representation** - Internal type system (primitives, structs, enums, unions, optionals, functions, generics)
+2. **Type inference** - Infer types for locals, lambda params, generic instantiation
+3. **Type checking** - Verify assignments, function calls, operators, returns
+4. **Union type handling** - Spark uses `Int | Error` instead of exceptions
+5. **Generic instantiation** - Monomorphization or type erasure strategy
+6. **Struct field / enum variant resolution** - Type-directed lookup using `DefId`s from resolver
+7. **Interface conformance** - Check `binding` implementations satisfy interfaces
 
 **Key Design Decisions**:
 
-- **Symbol representation**: How to represent resolved symbols (DefId?)
-- **Scope structure**: How to model nested scopes efficiently
-- **Deferred resolution**: Handle forward references in interfaces
+- **Type representation**: How to represent types internally (interned? arena-allocated?)
+- **Inference strategy**: Hindley-Milner style or simpler forward-only inference?
+- **Error type handling**: How union types interact with the `to` operator and error propagation
 
-**Reference**: See Phase 4 in `docs/compiler-architecture.md` for detailed requirements.
+**Reference**: See Phase 5 in `docs/compiler-architecture.md` for detailed requirements.
 
-**Success Criteria**:
+**Available from resolver**: `DefinitionTable` maps every `DefId` to its `DefinitionInfo` (kind, name, span, visibility, module). `ResolutionMap` maps AST spans to their resolved `DefId`s.
 
-- Resolves all identifiers to their definitions
-- Handles imports from ModuleGraph correctly
-- Reports clear errors for undefined names
-- Supports shadowing and nested scopes
+### Full Pipeline
 
-### spark_modules Overview (COMPLETE)
-
-The module resolver implements:
-
-- **Module discovery** from `module` declarations
-- **Using resolution** for files joining existing modules
-- **Import resolution** with dependency edge tracking
-- **Cycle detection** using Tarjan's SCC algorithm
-- **Export collection** for public items
-- **Topological sort** for compilation order
-
-**Key features:**
-
-- `resolve(input) -> ModuleResolverOutput` - Main entry point
-- `ModuleGraph` with modules, dependencies, compilation order
-- `ModulePath` for representing module hierarchies
-- Comprehensive error messages for module issues
-
-### Full Pipeline (from compiler-architecture.md)
-
-1. ✅ Lexer (spark_lexer)
-2. ✅ Parser (spark_parser)
-3. ✅ Module Resolution (spark_modules)
-4. ⏳ Name Resolution (spark_resolve) ← **NEXT**
-5. ⏳ Type Checking (spark_types)
-6. ⏳ HIR Lowering (spark_hir)
-7. ⏳ MIR Lowering (spark_mir)
-8. ⏳ Borrow Checking (spark_borrow)
-9. ⏳ Optimization (spark_opt)
-10. ⏳ Code Generation (spark_codegen)
-
-## Design Principles
-
-- Each crate has a README.md explaining its responsibility
-- Tests are inline (idiomatic Rust)
-- All code passes `cargo clippy` with pedantic/nursery lints
-- No unsafe code (`#![forbid(unsafe_code)]`)
-- Hand-written lexer/parser for better error messages
-- Data-only AST nodes (logic lives in visitors and later phases)
-
-## Build Commands
-
-```bash
-cargo build              # Build all
-cargo test               # Test all (270 tests)
-cargo clippy             # Lint all
-cargo test -p spark_modules  # Test specific crate
-cargo doc --open         # View documentation
-```
-
-## Key Implementation Details
-
-1. **Spans are u32 byte offsets** - `SourceMap` converts to line/column when needed
-2. **Pre-interned keywords** - `spark_intern::kw` module has constants like `kw::FN`, `kw::STRUCT`
-3. **TokenKind has 65 variants** - 4 literals, 31 keywords, 25 operators, 3 special
-4. **ExprKind has ~35 variants** - Covers all expression forms in the language
-5. **Visitor pattern** - Use `walk_*` functions to traverse AST nodes
-6. **Error recovery** - `ExprKind::Error`, `TypeExprKind::Error`, `PatternKind::Error` for parser recovery
-7. **Symbol::as_str()** - Use this to get the string representation of interned symbols
-
-## Notes for Next Agent
-
-1. **Read `docs/lang-spec.md`** - It has the full grammar and language semantics
-2. **The parser is complete** - You can parse any valid Spark program into an AST
-3. **Module resolution is complete** - `spark_modules` builds dependency graph from ASTs
-4. **Error recovery is implemented** - All phases continue after errors
-5. **The architecture doc** has detailed input/output schemas for each phase
-6. **Use ModuleGraph** - Name resolution should consume the ModuleGraph from spark_modules
+1. Lexer (spark_lexer)
+2. Parser (spark_parser)
+3. Module Resolution (spark_modules)
+4. Name Resolution (spark_resolve)
+5. **Type Checking (spark_types) <- NEXT**
+6. HIR Lowering (spark_hir)
+7. MIR Lowering (spark_mir)
+8. Borrow Checking (spark_borrow)
+9. Optimization (spark_opt)
+10. Code Generation (spark_codegen)
 
 ## Crate Dependencies
 
 ```
 spark_span          (no dependencies)
-      │
 spark_intern        (no dependencies)
-      │
 spark_diagnostics   (depends on spark_span)
-      │
 spark_lexer         (depends on span, intern, diagnostics)
-      │
 spark_ast           (depends on span, intern)
-      │
 spark_parser        (depends on span, intern, diagnostics, lexer, ast)
-      │
 spark_modules       (depends on span, intern, diagnostics, ast)
-      │
-spark_resolve       (will depend on all above)
+spark_resolve       (depends on span, intern, diagnostics, ast, modules)
+spark_types         (will depend on all above)
+```
+
+## Key Implementation Details
+
+1. **Pre-interned keywords** - `spark_intern::kw` module has constants like `kw::FN`, `kw::STRUCT`, plus `kw::is_builtin_type()`
+2. **Lexer API** - `Lexer::new(file_id, source).tokenize()` (no free function)
+3. **Error recovery** - `ExprKind::Error`, `TypeExprKind::Error`, `PatternKind::Error` nodes
+4. **Visitor pattern** - `spark_ast::Visitor` trait uses `&self` (read-only). For mutable walks, use direct recursive methods (as resolver does).
+5. **Parser limitation** - Deeply nested bare blocks with bindings (`{ { a: Int = 1 } }`) can misparse. Use `if`-blocks in tests to avoid this.
+
+## Notes for Next Agent
+
+1. **Read `docs/lang-spec.md`** - Full grammar and language semantics
+2. **Read `docs/compiler-architecture.md`** - Pipeline design with I/O schemas for each phase
+3. **The resolver output** is the starting point for type checking
+4. **All phases use `Diagnostics`** for error accumulation — never panic on invalid input
+5. **`#![forbid(unsafe_code)]`** in every crate, clippy pedantic + nursery lints
+
+## Build Commands
+
+```bash
+cargo build                      # Build all
+cargo test                       # Test all (341 tests)
+cargo clippy                     # Lint all
+cargo test -p spark_resolve      # Test specific crate
+cargo doc --open                 # View documentation
 ```

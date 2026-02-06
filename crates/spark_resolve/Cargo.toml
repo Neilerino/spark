@@ -1,0 +1,27 @@
+[package]
+name = "spark_resolve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Name resolution for the Spark compiler"
+
+[features]
+default = []
+serde = ["dep:serde", "spark_ast/serde", "spark_span/serde", "spark_intern/serde", "spark_modules/serde"]
+
+[dependencies]
+spark_span = { workspace = true }
+spark_intern = { workspace = true }
+spark_diagnostics = { workspace = true }
+spark_ast = { workspace = true }
+spark_modules = { workspace = true }
+rustc-hash = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+spark_lexer = { workspace = true }
+spark_parser = { workspace = true }
+
+[lints]
+workspace = true
