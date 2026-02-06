@@ -13,8 +13,8 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 
 ### Foundation Crates (8/10 compiler phases)
 
-| Crate               | Purpose                                                        | Tests | Status      |
-| ------------------- | -------------------------------------------------------------- | ----- | ----------- |
+| Crate               | Purpose                                                        | Tests | Status   |
+| ------------------- | -------------------------------------------------------------- | ----- | -------- |
 | `spark_span`        | Source locations (`FileId`, `Span`, `SourceMap`)               | 13    | Complete |
 | `spark_intern`      | String interning (`Symbol`, `Interner`, pre-interned keywords) | 14    | Complete |
 | `spark_diagnostics` | Error reporting with ariadne rendering                         | 12    | Complete |
