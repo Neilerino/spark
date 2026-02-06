@@ -1,0 +1,392 @@
+//! MIR node definitions.
+//!
+//! The Mid-Level IR is a control-flow-graph-based representation where each
+//! function is a collection of basic blocks connected by explicit terminators.
+//! All intermediate values are held in locals/temporaries, and control flow
+//! is expressed as edges between blocks.
+
+use std::collections::HashMap;
+use std::fmt;
+
+use spark_ast::{BinaryOp, UnaryOp};
+use spark_intern::Symbol;
+use spark_resolve::DefId;
+use spark_span::Span;
+use spark_types::TypeId;
+
+// ── Identifiers ──────────────────────────────────────────────────────────
+
+/// A basic block identifier. `BlockId(0)` is always the entry block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockId(pub u32);
+
+impl BlockId {
+    /// The entry block for every function.
+    pub const ENTRY: Self = Self(0);
+
+    /// Returns the raw index.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl fmt::Display for BlockId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "bb{}", self.0)
+    }
+}
+
+/// A local variable or temporary. `Local(0)` is the return place, locals
+/// `1..=param_count` are function parameters, and the rest are user
+/// variables or compiler temporaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Local(pub u32);
+
+impl Local {
+    /// The return place.
+    pub const RETURN_PLACE: Self = Self(0);
+
+    /// Returns the raw index.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl fmt::Display for Local {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "_{}", self.0)
+    }
+}
+
+// ── Top-level ────────────────────────────────────────────────────────────
+
+/// The complete MIR for a compilation unit.
+#[derive(Debug)]
+pub struct Mir {
+    /// All functions, keyed by their [`DefId`].
+    pub functions: HashMap<DefId, MirFunction>,
+}
+
+/// A single function in MIR form.
+#[derive(Debug)]
+pub struct MirFunction {
+    /// The definition ID of this function.
+    pub def_id: DefId,
+    /// Number of parameters (locals `1..=param_count`).
+    pub param_count: u32,
+    /// The function's return type.
+    pub return_type: TypeId,
+    /// All locals (index 0 = return place).
+    pub locals: Vec<LocalDecl>,
+    /// All basic blocks (index 0 = entry block).
+    pub blocks: Vec<BasicBlock>,
+    /// Source span of the function.
+    pub span: Span,
+}
+
+/// Declaration of a local variable or temporary.
+#[derive(Debug)]
+pub struct LocalDecl {
+    /// The local identifier.
+    pub local: Local,
+    /// The type of this local.
+    pub ty: TypeId,
+    /// Optional user-visible name (`None` for compiler temporaries).
+    pub name: Option<Symbol>,
+    /// Whether this is a user-declared variable (vs. compiler temporary).
+    pub is_user_variable: bool,
+    /// Whether this local is mutable.
+    pub mutable: bool,
+    /// Source span (of declaration or expression producing the temp).
+    pub span: Span,
+}
+
+// ── Basic blocks ─────────────────────────────────────────────────────────
+
+/// A basic block: a sequence of statements followed by a terminator.
+#[derive(Debug)]
+pub struct BasicBlock {
+    /// Statements executed sequentially.
+    pub statements: Vec<Statement>,
+    /// The block's terminator (controls transfer to other blocks).
+    pub terminator: Terminator,
+    /// Whether this block is a cleanup/unwind handler.
+    pub is_cleanup: bool,
+}
+
+// ── Statements ───────────────────────────────────────────────────────────
+
+/// A single statement within a basic block.
+#[derive(Debug)]
+pub enum Statement {
+    /// Assign an rvalue to a place: `place = rvalue`.
+    Assign {
+        /// The destination place.
+        place: Place,
+        /// The value to assign.
+        rvalue: Rvalue,
+        /// Source span.
+        span: Span,
+    },
+    /// Drop the value at a place.
+    Drop {
+        /// The place to drop.
+        place: Place,
+        /// Source span.
+        span: Span,
+    },
+    /// No operation (placeholder).
+    Nop,
+}
+
+// ── Places and projections ───────────────────────────────────────────────
+
+/// A place in memory (l-value): a local with optional projections.
+#[derive(Debug, Clone)]
+pub struct Place {
+    /// The root local.
+    pub local: Local,
+    /// Projections from the root (field access, indexing, deref).
+    pub projections: Vec<Projection>,
+}
+
+impl Place {
+    /// Creates a place referring to just a local with no projections.
+    #[must_use]
+    pub const fn from_local(local: Local) -> Self {
+        Self {
+            local,
+            projections: Vec::new(),
+        }
+    }
+}
+
+impl fmt::Display for Place {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.local)?;
+        for proj in &self.projections {
+            match proj {
+                Projection::Field(sym) => write!(f, ".{}", sym.as_str())?,
+                Projection::Index(local) => write!(f, "[{local}]")?,
+                Projection::Deref => write!(f, ".*")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A projection from a place.
+#[derive(Debug, Clone)]
+pub enum Projection {
+    /// Access a named field.
+    Field(Symbol),
+    /// Index into a collection (the index is held in a local).
+    Index(Local),
+    /// Dereference a pointer/reference.
+    Deref,
+}
+
+// ── Rvalues ──────────────────────────────────────────────────────────────
+
+/// A right-hand-side value that can be assigned to a place.
+#[derive(Debug)]
+pub enum Rvalue {
+    /// Use an operand directly.
+    Use(Operand),
+    /// Binary operation.
+    BinaryOp(BinaryOp, Operand, Operand),
+    /// Unary operation.
+    UnaryOp(UnaryOp, Operand),
+    /// Take a reference to a place.
+    Ref {
+        /// The place to reference.
+        place: Place,
+        /// Whether the reference is mutable.
+        mutable: bool,
+    },
+    /// Construct an aggregate value (struct, enum variant, tuple, etc.).
+    Aggregate(AggregateKind, Vec<Operand>),
+    /// Read the discriminant of an enum.
+    Discriminant(Place),
+    /// Type cast.
+    Cast {
+        /// The source operand.
+        operand: Operand,
+        /// The target type.
+        target_ty: TypeId,
+    },
+}
+
+/// The kind of aggregate being constructed.
+#[derive(Debug)]
+pub enum AggregateKind {
+    /// Struct construction.
+    Struct {
+        /// The struct's [`DefId`].
+        def_id: DefId,
+        /// Field names (in order matching operands).
+        fields: Vec<Symbol>,
+    },
+    /// Enum variant construction.
+    EnumVariant {
+        /// The enum's [`DefId`].
+        def_id: DefId,
+        /// The variant name.
+        variant: Symbol,
+    },
+    /// Tuple construction.
+    Tuple,
+    /// List construction.
+    List,
+    /// Map construction (operands alternate key, value).
+    Map,
+    /// Set construction.
+    Set,
+}
+
+// ── Operands ─────────────────────────────────────────────────────────────
+
+/// An operand used in rvalues and terminators.
+#[derive(Debug, Clone)]
+pub enum Operand {
+    /// Copy the value at a place (for `Copy` types).
+    Copy(Place),
+    /// Move the value out of a place.
+    Move(Place),
+    /// An inline constant.
+    Constant(Constant),
+}
+
+/// A compile-time constant.
+#[derive(Debug, Clone)]
+pub enum Constant {
+    /// Integer constant.
+    Int(i64),
+    /// Float constant.
+    Float(f64),
+    /// Boolean constant.
+    Bool(bool),
+    /// String constant (interned).
+    String(Symbol),
+    /// Character constant.
+    Char(char),
+    /// Null value.
+    Null,
+    /// Reference to a function.
+    FunctionRef(DefId),
+    /// Void / unit value.
+    Void,
+}
+
+// ── Terminators ──────────────────────────────────────────────────────────
+
+/// A block terminator — how control leaves a basic block.
+#[derive(Debug)]
+pub enum Terminator {
+    /// Unconditional jump.
+    Goto {
+        /// Target block.
+        target: BlockId,
+    },
+    /// Return from the function (returning the value in `Local(0)`).
+    Return,
+    /// Conditional branch based on an integer value.
+    SwitchInt {
+        /// The value to switch on.
+        discriminant: Operand,
+        /// Matched values and their target blocks.
+        targets: Vec<(i128, BlockId)>,
+        /// The default/otherwise block.
+        otherwise: BlockId,
+    },
+    /// Function call.
+    Call {
+        /// The function operand.
+        func: Operand,
+        /// Arguments.
+        args: Vec<Operand>,
+        /// Where to store the result.
+        destination: Place,
+        /// The block to continue to after the call returns.
+        target: BlockId,
+        /// Source span.
+        span: Span,
+    },
+    /// Unreachable code (e.g. after a guaranteed diverging call).
+    Unreachable,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_id_display() {
+        assert_eq!(BlockId(0).to_string(), "bb0");
+        assert_eq!(BlockId(42).to_string(), "bb42");
+    }
+
+    #[test]
+    fn local_display() {
+        assert_eq!(Local(0).to_string(), "_0");
+        assert_eq!(Local(7).to_string(), "_7");
+    }
+
+    #[test]
+    fn place_from_local() {
+        let place = Place::from_local(Local(3));
+        assert_eq!(place.local, Local(3));
+        assert!(place.projections.is_empty());
+        assert_eq!(place.to_string(), "_3");
+    }
+
+    #[test]
+    fn block_id_entry() {
+        assert_eq!(BlockId::ENTRY, BlockId(0));
+        assert_eq!(BlockId::ENTRY.index(), 0);
+    }
+
+    #[test]
+    fn local_return_place() {
+        assert_eq!(Local::RETURN_PLACE, Local(0));
+        assert_eq!(Local::RETURN_PLACE.index(), 0);
+    }
+
+    #[test]
+    fn mir_function_creation() {
+        let func = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 0,
+            return_type: TypeId::ERROR,
+            locals: vec![],
+            blocks: vec![],
+            span: Span::DUMMY,
+        };
+        assert_eq!(func.param_count, 0);
+        assert!(func.locals.is_empty());
+        assert!(func.blocks.is_empty());
+    }
+
+    #[test]
+    fn basic_block_creation() {
+        let block = BasicBlock {
+            statements: vec![Statement::Nop],
+            terminator: Terminator::Return,
+            is_cleanup: false,
+        };
+        assert_eq!(block.statements.len(), 1);
+        assert!(!block.is_cleanup);
+    }
+
+    #[test]
+    fn constant_variants() {
+        let _ = Constant::Int(42);
+        let _ = Constant::Float(3.14);
+        let _ = Constant::Bool(true);
+        let _ = Constant::Char('a');
+        let _ = Constant::Null;
+        let _ = Constant::Void;
+    }
+}

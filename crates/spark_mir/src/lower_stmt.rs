@@ -1,0 +1,58 @@
+//! Statement lowering: HIR statements → MIR statements.
+
+use spark_hir::HirStmt;
+use spark_resolve::DefinitionTable;
+use spark_types::TypeTable;
+
+use crate::builder::{FunctionBuilder, MirBuilder};
+use crate::lower_expr::{lower_expr, lower_place};
+use crate::mir::{Operand, Place, Rvalue, Statement};
+
+/// Lowers a single HIR statement, emitting MIR into the current block.
+pub fn lower_stmt(
+    stmt: &HirStmt,
+    fb: &mut FunctionBuilder,
+    mir: &mut MirBuilder<'_>,
+    type_table: &TypeTable,
+    defs: &DefinitionTable,
+) {
+    match stmt {
+        HirStmt::Let {
+            def_id,
+            mutable,
+            value,
+        } => {
+            let val_local = lower_expr(value, fb, mir, type_table, defs);
+
+            // Allocate a local for this binding
+            let name = defs.get(*def_id).map(|info| info.name);
+            let local = match name {
+                Some(sym) => fb.fresh_local(value.ty, sym, *mutable, value.span),
+                None => fb.fresh_temp(value.ty, value.span),
+            };
+            fb.register_def(*def_id, local);
+
+            fb.push_stmt(Statement::Assign {
+                place: Place::from_local(local),
+                rvalue: Rvalue::Use(Operand::Copy(Place::from_local(val_local))),
+                span: value.span,
+            });
+        }
+
+        HirStmt::Assign { target, value } => {
+            let val_local = lower_expr(value, fb, mir, type_table, defs);
+            let place = lower_place(target, fb, mir, type_table, defs);
+
+            fb.push_stmt(Statement::Assign {
+                place,
+                rvalue: Rvalue::Use(Operand::Copy(Place::from_local(val_local))),
+                span: value.span,
+            });
+        }
+
+        HirStmt::Expr(expr) => {
+            // Evaluate for side effects; discard result
+            let _ = lower_expr(expr, fb, mir, type_table, defs);
+        }
+    }
+}

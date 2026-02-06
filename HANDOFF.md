@@ -11,7 +11,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 
 ## Completed Work
 
-### Foundation Crates (8/10 compiler phases)
+### Foundation Crates (9/10 compiler phases)
 
 | Crate               | Purpose                                                        | Tests | Status   |
 | ------------------- | -------------------------------------------------------------- | ----- | -------- |
@@ -25,33 +25,54 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_resolve`     | Name resolution: scoping, DefIds, imports                      | 51    | Complete |
 | `spark_types`       | Type checking: two-pass signature collection + body checking   | 72    | Complete |
 | `spark_hir`         | HIR lowering: desugar typed AST into core IR                   | 21    | Complete |
+| `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 32    | Complete |
 
-**Total: 414 tests passing across workspace.**
+**Total: 478 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
-### spark_hir Overview (Just Completed)
+### spark_mir Overview (Just Completed)
 
-Single-pass lowerer consuming resolver + type checker output and producing a tree-structured HIR:
+CFG-based MIR builder consuming HIR + TypeTable and producing one `MirFunction` per function:
 
-- **Input**: `ResolvedAst` + `DefinitionTable` + `TypeTable` (read-only)
-- **Output**: `Hir` (`HashMap<DefId, HirFunction>` + `HashMap<DefId, HirStatic>`) + `TypeTable` (passed through)
-- **Identifier resolution**: All identifiers/paths lowered to `DefId` via `ResolutionMap`
-- **Type annotation**: Every `HirExpr` carries a `TypeId` looked up from `TypeTable`
-- **Desugaring**: `Paren` (unwrap), `BlockAwait` (to `Await`), `CompoundAssign` (`x += y` to `x = x + y`), `Coalesce` (`??` to match), `OptionalField` (`?.` to match), `Propagate` (`!` to match + early return)
-- **Deferred constructs**: `Each`/`EachVia`, `To`, `Partial`, `Range`/`ListRange` produce `HirExprKind::Error`
-- **Pattern lowering**: All pattern kinds including guard extraction into `HirMatchArm.guard`
-- **Double-parse workaround**: Type checker consumes ASTs, so `lower_source` test helper re-parses + re-resolves for HIR input
+- **Input**: `Hir` + `TypeTable` (read-only) + `DefinitionTable`
+- **Output**: `Mir` (`HashMap<DefId, MirFunction>`) + `TypeTable` (passed through) + `Diagnostics`
+- **Pre-SSA**: One `Local` per variable — no phi nodes. `Local(0)` = return place, `1..=N` = params, rest = locals/temps.
+- **Calls are terminators**: Every `Call` splits the current block and creates a continuation block. This is correct for borrow checking (reason about before/after call).
+- **Expression lowering**: Every `HirExprKind` variant dispatched in `lower_expr()` → returns `Local` holding result. Leaf expressions produce constants; compound expressions allocate temporaries; control flow creates new blocks.
+- **Control flow**: `If` → `SwitchInt` + then/else/join blocks. `Loop` → header block + break block with `LoopContext` stack. `Return` → assign to `Local(0)` + `Return` terminator + dead block.
+- **Pattern matching**: Sequential test-and-branch chains per match arm. Wildcard/Binding always match; Literal uses `SwitchInt`; Variant reads discriminant; Struct/Tuple project fields recursively.
+- **Deferred features**: `is`, `lambda`, `await`, `spawn` emit warning diagnostics and produce void temps.
+- **Pretty printer**: `pretty_function()` produces human-readable MIR dumps for debugging and test assertions.
 
-**API**: `lower(HirInput) -> HirOutput`
+**API**: `lower(MirInput) -> MirOutput`
+
+**Files**:
+```
+crates/spark_mir/src/
+├── lib.rs            # Public API + integration tests
+├── mir.rs            # MIR node definitions (BlockId, Local, Place, Rvalue, Terminator, etc.)
+├── builder.rs        # MirBuilder + FunctionBuilder + LoopContext
+├── lower_function.rs # Function-level lowering orchestration
+├── lower_expr.rs     # HirExprKind -> Local (all 28 variants)
+├── lower_stmt.rs     # HirStmt lowering (Let, Assign, Expr)
+├── lower_pattern.rs  # Pattern matching compilation
+└── pretty.rs         # Debug printer for MIR
+```
 
 ## What's Next
 
-### Immediate: spark_mir (NEXT MAIN TASK)
+### Immediate: spark_borrow (NEXT MAIN TASK)
 
-**Goal**: Lower HIR into a control-flow-graph-based MIR for borrow checking and optimization.
+**Goal**: Borrow checking over the MIR CFG — enforce ownership, move semantics, and reference validity.
 
-**Reference**: See Phase 7 in `docs/compiler-architecture.md`.
+**Reference**: See Phase 8 in `docs/compiler-architecture.md`.
+
+**Key considerations**:
+- The MIR is pre-SSA (one Local per variable), so liveness analysis operates at the statement level
+- Calls are terminators, so reasoning about borrows across calls is straightforward (before-call vs after-call blocks)
+- Pattern match bindings create new locals via `compile_pattern`, so each arm's bindings are distinct
+- `Local(0)` (return place) is always written before `Return` terminator
 
 ### Deferred Work
 
@@ -62,8 +83,13 @@ These can be added incrementally as later phases need them:
 - Interface binding validation (`binding` implementations)
 - Method resolution (type-directed lookup)
 - `to` operator / `!` propagation type narrowing
-- `is`/`as` type operations
-- Fresh `DefId` synthesis in desugared match arms (coalesce/optional field currently use placeholders)
+- `is`/`as` type operations (MIR stubs exist, emit warnings)
+- Lambda/closure conversion (MIR stubs exist, emit warnings)
+- Async state machines (MIR stubs exist, emit warnings)
+- SSA construction / phi nodes (optimization pass)
+- Decision-tree match compilation (sequential suffices initially)
+- Drop elaboration (separate pass)
+- Fresh `DefId` synthesis in desugared match arms
 
 ### Full Pipeline
 
@@ -73,8 +99,8 @@ These can be added incrementally as later phases need them:
 4. Name Resolution (spark_resolve) ✅
 5. Type Checking (spark_types) ✅
 6. HIR Lowering (spark_hir) ✅
-7. **MIR Lowering (spark_mir) <- NEXT**
-8. Borrow Checking (spark_borrow)
+7. MIR Construction (spark_mir) ✅
+8. **Borrow Checking (spark_borrow) <- NEXT**
 9. Optimization (spark_opt)
 10. Code Generation (spark_codegen)
 
@@ -91,6 +117,7 @@ spark_modules       (depends on span, intern, diagnostics, ast)
 spark_resolve       (depends on span, intern, diagnostics, ast, modules)
 spark_types         (depends on span, intern, diagnostics, ast, modules, resolve)
 spark_hir           (depends on span, intern, diagnostics, ast, modules, resolve, types)
+spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, hir)
 ```
 
 ## Key Implementation Details
@@ -101,21 +128,24 @@ spark_hir           (depends on span, intern, diagnostics, ast, modules, resolve
 4. **Visitor pattern** - `spark_ast::Visitor` trait uses `&self` (read-only). For mutable walks, use direct recursive methods (as resolver and type checker do).
 5. **Borrow conflict pattern** - Use `std::mem::take` to temporarily move `self.asts`/`self.resolutions` when methods need `&mut self` alongside shared AST data.
 6. **Parser limitation** - Deeply nested bare blocks with bindings (`{ { a: Int = 1 } }`) can misparse. Use `if`-blocks in tests to avoid this.
+7. **Pipeline API** - Each crate: `Input` struct → public `lower()`/`check()` fn → `Output` struct. Output passes `TypeTable` through for subsequent phases.
+8. **Double-parse workaround** - Type checker consumes ASTs, so test helpers re-parse + re-resolve for HIR/MIR input.
 
 ## Notes for Next Agent
 
 1. **Read `docs/lang-spec.md`** - Full grammar and language semantics
 2. **Read `docs/compiler-architecture.md`** - Pipeline design with I/O schemas for each phase
-3. **HIR output** (`Hir` + `TypeTable`) is the starting point for MIR lowering
+3. **MIR output** (`Mir` + `TypeTable`) is the starting point for borrow checking
 4. **All phases use `Diagnostics`** for error accumulation — never panic on invalid input
 5. **`#![forbid(unsafe_code)]`** in every crate, clippy pedantic + nursery lints
+6. **MIR structure**: Each `MirFunction` has `locals: Vec<LocalDecl>` and `blocks: Vec<BasicBlock>`. Iterate blocks in order; each block has `statements` + `terminator`. Use `pretty_function()` to dump MIR for debugging.
 
 ## Build Commands
 
 ```bash
 cargo build                      # Build all
-cargo test                       # Test all (414 tests)
+cargo test                       # Test all (478 tests)
 cargo clippy                     # Lint all
-cargo test -p spark_hir          # Test specific crate
+cargo test -p spark_mir          # Test specific crate
 cargo doc --open                 # View documentation
 ```
