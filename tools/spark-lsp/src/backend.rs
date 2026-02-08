@@ -11,22 +11,26 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     self, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, InitializedParams, MessageType,
-    SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
+    MessageType, ReferenceParams, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolKind,
     TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer};
 
+use spark_ast::Item;
 use spark_diagnostics::Diagnostics;
 use spark_lexer::Lexer;
 use spark_modules::{ModuleResolverInput, ModuleGraph};
 use spark_parser::parse;
-use spark_resolve::ResolverInput;
+use spark_resolve::{DefinitionKind, ResolverInput};
 use spark_span::{FileId, SourceMap};
 use spark_types::TypeCheckerInput;
 
-use crate::document::{self, DocumentState};
+use crate::document::{self, AnalysisResult, DocumentState};
 use crate::semantic_tokens;
 
 /// The LSP server backend.
@@ -50,20 +54,28 @@ impl Backend {
         }
     }
 
-    /// Runs the compiler frontend on a document and publishes diagnostics.
+    /// Runs the compiler frontend on a document, caches analysis results,
+    /// and publishes diagnostics.
     async fn analyze_and_publish(&self, uri: &Url, source: &str, version: Option<i32>) {
-        let lsp_diagnostics = analyze(source, uri);
+        let (lsp_diagnostics, analysis) = analyze(source, uri);
+
+        // Cache analysis result for on-demand queries (go-to-definition, etc.)
+        if let Some(mut doc) = self.documents.get_mut(uri) {
+            doc.analysis = analysis;
+        }
+
         self.client
             .publish_diagnostics(uri.clone(), lsp_diagnostics, version)
             .await;
     }
 }
 
-/// Runs the compiler frontend pipeline and returns LSP diagnostics.
+/// Runs the compiler frontend pipeline and returns LSP diagnostics
+/// plus an optional analysis result for on-demand queries.
 ///
 /// Runs as many phases as possible, collecting all diagnostics.
 /// Parse errors prevent resolve/type-check but are still reported.
-fn analyze(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
+fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<AnalysisResult>) {
     let file_name = uri
         .to_file_path()
         .unwrap_or_else(|()| PathBuf::from("untitled.spark"));
@@ -74,6 +86,7 @@ fn analyze(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
     let rope = ropey::Rope::from_str(source);
 
     let mut all_diagnostics = Diagnostics::new();
+    let mut analysis = None;
 
     // Phase 1: Lex
     let tokens = Lexer::new(file_id, source).tokenize();
@@ -96,6 +109,15 @@ fn analyze(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
             let resolve_output = resolve_names(graph.clone(), file_id, ast);
             all_diagnostics.extend(resolve_output.diagnostics);
 
+            // Cache resolver output for on-demand queries (go-to-definition, hover, etc.)
+            // Clone before type checking consumes ownership.
+            analysis = Some(AnalysisResult {
+                file_id,
+                resolved: resolve_output.resolved.clone(),
+                definitions: resolve_output.definitions.clone(),
+                type_table: None,
+            });
+
             if !all_diagnostics.has_errors() {
                 // Phase 5: Type checking
                 let type_output = spark_types::check(TypeCheckerInput {
@@ -104,14 +126,222 @@ fn analyze(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
                     graph,
                 });
                 all_diagnostics.extend(type_output.diagnostics);
+
+                // Cache the type table for hover information
+                if let Some(ref mut a) = analysis {
+                    a.type_table = Some(type_output.table);
+                }
             }
         }
     }
 
     // Convert all collected diagnostics to LSP format
-    all_diagnostics
+    let lsp_diags = all_diagnostics
         .iter()
         .map(|d| document::diagnostic_to_lsp(d, &rope, uri))
+        .collect();
+
+    (lsp_diags, analysis)
+}
+
+/// Returns the type name for a definition, if type info is available.
+fn def_type_str(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Option<String> {
+    let table = analysis.type_table.as_ref()?;
+    let type_id = table.get_def_type(def_id)?;
+    Some(spark_types::type_name(type_id, table, &analysis.definitions))
+}
+
+/// Formats hover content for a definition.
+///
+/// Uses the type table (if available) to show typed signatures. Falls back
+/// to showing just the definition kind and name when type info is missing.
+fn format_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Option<String> {
+    let def_info = analysis.definitions.get(def_id)?;
+    let name = def_info.name.as_str();
+
+    let content = match &def_info.kind {
+        DefinitionKind::Function => def_type_str(analysis, def_id)
+            .map_or_else(|| format!("fn {name}(...)"), |ty| format!("fn {name}{ty}")),
+        DefinitionKind::Struct => format_struct_hover(analysis, def_id, name),
+        DefinitionKind::Enum => format_enum_hover(analysis, def_id, name),
+        DefinitionKind::Local | DefinitionKind::Parameter => def_type_str(analysis, def_id)
+            .map_or_else(|| name.to_string(), |ty| format!("{name}: {ty}")),
+        DefinitionKind::Const => def_type_str(analysis, def_id)
+            .map_or_else(|| format!("const {name}"), |ty| format!("const {name}: {ty}")),
+        DefinitionKind::StructField(parent_id) => {
+            let parent_name = analysis
+                .definitions
+                .get(*parent_id)
+                .map_or("?", |info| info.name.as_str());
+            def_type_str(analysis, def_id).map_or_else(
+                || format!("{parent_name}.{name}"),
+                |ty| format!("{parent_name}.{name}: {ty}"),
+            )
+        }
+        DefinitionKind::EnumVariant(parent_id) => {
+            let parent_name = analysis
+                .definitions
+                .get(*parent_id)
+                .map_or("?", |info| info.name.as_str());
+            format!("{parent_name}.{name}")
+        }
+        DefinitionKind::TypeAlias => format!("alias {name}"),
+        DefinitionKind::TypeDef => format!("type {name}"),
+        DefinitionKind::Interface => format!("interface {name}"),
+        DefinitionKind::GenericParam => name.to_string(),
+        DefinitionKind::LifetimeParam => format!("'{name}"),
+        DefinitionKind::BuiltinFunction => format!("fn {name}(...)"),
+    };
+
+    Some(content)
+}
+
+/// Formats hover for a struct, showing fields when type info is available.
+fn format_struct_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId, name: &str) -> String {
+    let fields = analysis
+        .type_table
+        .as_ref()
+        .and_then(|table| {
+            table.get_struct_fields(def_id).map(|fields| {
+                fields
+                    .iter()
+                    .map(|(sym, tid)| {
+                        let ty = spark_types::type_name(*tid, table, &analysis.definitions);
+                        format!("    {sym}: {ty}")
+                    })
+                    .collect::<Vec<_>>()
+            })
+        });
+    match fields {
+        Some(f) if f.is_empty() => format!("struct {name} {{ }}"),
+        Some(f) => format!("struct {name} {{\n{}\n}}", f.join(",\n")),
+        None => format!("struct {name}"),
+    }
+}
+
+/// Formats hover for an enum, showing variants when type info is available.
+fn format_enum_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId, name: &str) -> String {
+    let variants = analysis
+        .type_table
+        .as_ref()
+        .and_then(|table| {
+            table.get_enum_variants(def_id).map(|variants| {
+                variants
+                    .iter()
+                    .map(|(sym, _)| format!("    {sym}"))
+                    .collect::<Vec<_>>()
+            })
+        });
+    match variants {
+        Some(v) if v.is_empty() => format!("enum {name} {{ }}"),
+        Some(v) => format!("enum {name} {{\n{}\n}}", v.join(",\n")),
+        None => format!("enum {name}"),
+    }
+}
+
+/// Converts an AST `Item` to an LSP `DocumentSymbol`.
+///
+/// Returns `None` for items without a name (e.g. interface bindings).
+#[allow(deprecated)] // DocumentSymbol::deprecated field is deprecated in the LSP spec
+fn item_to_document_symbol(item: &Item, rope: &ropey::Rope) -> Option<DocumentSymbol> {
+    let (name, kind, span, name_span, children) = match item {
+        Item::Function(f) => (f.name.name, SymbolKind::FUNCTION, f.span, f.name.span, None),
+        Item::Struct(s) => {
+            let kids = struct_field_symbols(&s.fields, rope);
+            (s.name.name, SymbolKind::STRUCT, s.span, s.name.span, Some(kids))
+        }
+        Item::Enum(e) => {
+            let kids = enum_variant_symbols(&e.variants, rope);
+            (e.name.name, SymbolKind::ENUM, e.span, e.name.span, Some(kids))
+        }
+        Item::Interface(i) => {
+            let kids = interface_method_symbols(&i.methods, rope);
+            (i.name.name, SymbolKind::INTERFACE, i.span, i.name.span, Some(kids))
+        }
+        Item::TypeAlias(t) => (t.name.name, SymbolKind::TYPE_PARAMETER, t.span, t.name.span, None),
+        Item::TypeDef(t) => (t.name.name, SymbolKind::TYPE_PARAMETER, t.span, t.name.span, None),
+        Item::Const(c) => (c.name.name, SymbolKind::CONSTANT, c.span, c.name.span, None),
+        Item::Binding(_) => return None,
+    };
+
+    let range = document::span_to_range(rope, span)?;
+    let selection_range = document::span_to_range(rope, name_span)?;
+
+    Some(DocumentSymbol {
+        name: name.as_str().to_string(),
+        detail: None,
+        kind,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range,
+        children,
+    })
+}
+
+/// Converts struct fields to child `DocumentSymbol`s.
+#[allow(deprecated)]
+fn struct_field_symbols(fields: &[spark_ast::StructField], rope: &ropey::Rope) -> Vec<DocumentSymbol> {
+    fields
+        .iter()
+        .filter_map(|f| {
+            let range = document::span_to_range(rope, f.span)?;
+            let selection_range = document::span_to_range(rope, f.name.span)?;
+            Some(DocumentSymbol {
+                name: f.name.name.as_str().to_string(),
+                detail: None,
+                kind: SymbolKind::FIELD,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range,
+                children: None,
+            })
+        })
+        .collect()
+}
+
+/// Converts enum variants to child `DocumentSymbol`s.
+#[allow(deprecated)]
+fn enum_variant_symbols(variants: &[spark_ast::EnumVariant], rope: &ropey::Rope) -> Vec<DocumentSymbol> {
+    variants
+        .iter()
+        .filter_map(|v| {
+            let range = document::span_to_range(rope, v.span)?;
+            let selection_range = document::span_to_range(rope, v.name.span)?;
+            Some(DocumentSymbol {
+                name: v.name.name.as_str().to_string(),
+                detail: None,
+                kind: SymbolKind::ENUM_MEMBER,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range,
+                children: None,
+            })
+        })
+        .collect()
+}
+
+/// Converts interface methods to child `DocumentSymbol`s.
+#[allow(deprecated)]
+fn interface_method_symbols(methods: &[spark_ast::FunctionDef], rope: &ropey::Rope) -> Vec<DocumentSymbol> {
+    methods
+        .iter()
+        .filter_map(|m| {
+            let range = document::span_to_range(rope, m.span)?;
+            let selection_range = document::span_to_range(rope, m.name.span)?;
+            Some(DocumentSymbol {
+                name: m.name.name.as_str().to_string(),
+                detail: None,
+                kind: SymbolKind::METHOD,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range,
+                children: None,
+            })
+        })
         .collect()
 }
 
@@ -154,6 +384,10 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                definition_provider: Some(lsp_types::OneOf::Left(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
+                references_provider: Some(lsp_types::OneOf::Left(true)),
+                document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -205,6 +439,110 @@ impl LanguageServer for Backend {
         })))
     }
 
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let location = self.documents.get(uri).and_then(|doc| {
+            let analysis = doc.analysis.as_ref()?;
+            let offset = document::position_to_offset(&doc.rope, position)?;
+            let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
+            let (_span, def_id) = resolutions.find_at_offset(offset)?;
+            let def_info = analysis.definitions.get(def_id)?;
+            let range = document::span_to_range(&doc.rope, def_info.span)?;
+            Some(lsp_types::Location {
+                uri: uri.clone(),
+                range,
+            })
+        });
+
+        Ok(location.map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let hover = self.documents.get(uri).and_then(|doc| {
+            let analysis = doc.analysis.as_ref()?;
+            let offset = document::position_to_offset(&doc.rope, position)?;
+            let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
+            let (span, def_id) = resolutions.find_at_offset(offset)?;
+            let content = format_hover(analysis, def_id)?;
+            let range = document::span_to_range(&doc.rope, span);
+
+            Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!("```spark\n{content}\n```"),
+                }),
+                range,
+            })
+        });
+
+        Ok(hover)
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let locations = self.documents.get(uri).and_then(|doc| {
+            let analysis = doc.analysis.as_ref()?;
+            let offset = document::position_to_offset(&doc.rope, position)?;
+            let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
+            let (_span, def_id) = resolutions.find_at_offset(offset)?;
+
+            let mut ref_spans = resolutions.find_references(def_id);
+
+            // Include the definition site if requested
+            if params.context.include_declaration {
+                if let Some(def_info) = analysis.definitions.get(def_id) {
+                    ref_spans.push(def_info.span);
+                }
+            }
+
+            let locs: Vec<Location> = ref_spans
+                .iter()
+                .filter_map(|&span| {
+                    let range = document::span_to_range(&doc.rope, span)?;
+                    Some(Location {
+                        uri: uri.clone(),
+                        range,
+                    })
+                })
+                .collect();
+
+            if locs.is_empty() { None } else { Some(locs) }
+        });
+
+        Ok(locations)
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = &params.text_document.uri;
+
+        let symbols = self.documents.get(uri).and_then(|doc| {
+            let analysis = doc.analysis.as_ref()?;
+            let ast = analysis.resolved.asts.get(&analysis.file_id)?;
+            let syms: Vec<DocumentSymbol> = ast
+                .items
+                .iter()
+                .filter_map(|item| item_to_document_symbol(item, &doc.rope))
+                .collect();
+
+            if syms.is_empty() { None } else { Some(syms) }
+        });
+
+        Ok(symbols.map(DocumentSymbolResponse::Nested))
+    }
+
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
         let text = &params.text_document.text;
@@ -236,5 +574,301 @@ impl LanguageServer for Backend {
         self.client
             .publish_diagnostics(uri, Vec::new(), None)
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spark_span::Span;
+
+    /// Helper: runs the analyze pipeline and returns the `AnalysisResult`.
+    fn analyze_source(source: &str) -> Option<AnalysisResult> {
+        let uri = Url::parse("file:///test.spark").unwrap();
+        let (_diags, analysis) = analyze(source, &uri);
+        analysis
+    }
+
+    /// Helper: finds the hover content for the symbol at a byte offset.
+    fn hover_at(analysis: &AnalysisResult, offset: u32) -> Option<String> {
+        let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
+        let (_span, def_id) = resolutions.find_at_offset(offset)?;
+        format_hover(analysis, def_id)
+    }
+
+    /// Helper: finds all reference spans for the symbol at a byte offset.
+    fn references_at(
+        analysis: &AnalysisResult,
+        offset: u32,
+        include_declaration: bool,
+    ) -> Option<Vec<Span>> {
+        let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
+        let (_span, def_id) = resolutions.find_at_offset(offset)?;
+
+        let mut spans = resolutions.find_references(def_id);
+
+        if include_declaration {
+            if let Some(def_info) = analysis.definitions.get(def_id) {
+                spans.push(def_info.span);
+            }
+        }
+
+        if spans.is_empty() { None } else { Some(spans) }
+    }
+
+    #[test]
+    fn hover_function_shows_signature() {
+        let source = "fn add(a: Int, b: Int): Int { return a + b }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // Hover over `add` at offset 3 (inside "add")
+        let hover = hover_at(&analysis, 3).expect("hover should produce content");
+        assert!(hover.starts_with("fn add"), "Expected fn signature, got: {hover}");
+        assert!(hover.contains("Int"), "Expected Int in signature, got: {hover}");
+    }
+
+    #[test]
+    fn hover_variable_shows_type() {
+        let source = "fn main(): Void { x: Int = 42\nx }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `x` usage is at offset 30 (the `x` after newline)
+        let hover = hover_at(&analysis, 30).expect("hover should produce content");
+        assert!(hover.contains("Int"), "Expected type info, got: {hover}");
+    }
+
+    #[test]
+    fn hover_struct_shows_fields() {
+        let source = "struct Point { x: Int, y: Int }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `Point` starts at offset 7
+        let hover = hover_at(&analysis, 7).expect("hover should produce content");
+        assert!(hover.contains("struct Point"), "Expected struct, got: {hover}");
+        assert!(hover.contains("x: Int"), "Expected field x, got: {hover}");
+        assert!(hover.contains("y: Int"), "Expected field y, got: {hover}");
+    }
+
+    #[test]
+    fn hover_const_shows_type() {
+        let source = "const MAX: Int = 100";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `MAX` starts at offset 6
+        let hover = hover_at(&analysis, 6).expect("hover should produce content");
+        assert!(hover.contains("const MAX"), "Expected const, got: {hover}");
+        assert!(hover.contains("Int"), "Expected type, got: {hover}");
+    }
+
+    #[test]
+    fn hover_unknown_position_returns_none() {
+        let source = "fn main(): Void { }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // Offset 0 is the `f` in `fn` — a keyword, not a resolved name
+        let hover = hover_at(&analysis, 0);
+        assert!(hover.is_none(), "Expected None for keyword position");
+    }
+
+    #[test]
+    fn hover_without_type_table_shows_basic_info() {
+        let source = "fn main(): Void { x: Int = 42\nx }";
+        let mut analysis = analyze_source(source).expect("analysis should succeed");
+        // Simulate type checking failure by removing the type table
+        analysis.type_table = None;
+        // `x` usage at offset 30
+        let hover = hover_at(&analysis, 30).expect("hover should produce content");
+        // Without type info, should still show the name
+        assert!(hover.contains("x"), "Expected name, got: {hover}");
+    }
+
+    #[test]
+    fn hover_parameter_shows_type() {
+        let source = "fn greet(name: String): Void { name }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `name` usage at offset 31 (inside the body)
+        let hover = hover_at(&analysis, 31).expect("hover should produce content");
+        assert!(hover.contains("String"), "Expected param type, got: {hover}");
+    }
+
+    #[test]
+    fn analyze_caches_type_table() {
+        let source = "fn main(): Void { x: Int = 42 }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        assert!(
+            analysis.type_table.is_some(),
+            "Type table should be cached after successful type check"
+        );
+    }
+
+    #[test]
+    fn analyze_no_type_table_on_parse_error() {
+        // Intentionally broken syntax
+        let source = "fn main( { }";
+        let analysis = analyze_source(source);
+        // Parse error means no analysis at all (or no type table)
+        match analysis {
+            None => {} // Expected — parse errors prevent analysis
+            Some(a) => assert!(
+                a.type_table.is_none(),
+                "Type table should be None when earlier phases fail"
+            ),
+        }
+    }
+
+    // ── Find References tests ───────────────────────────────────────────
+
+    #[test]
+    fn references_function_called_multiple_times() {
+        let source = "fn add(a: Int, b: Int): Int { return a + b }\nfn main(): Void { add(1, 2)\nadd(3, 4) }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `add` call at offset 63 (first call in main body)
+        let refs = references_at(&analysis, 63, false).expect("should find references");
+        // At least 2 call-site references to `add`
+        assert!(refs.len() >= 2, "Expected >=2 references, got: {}", refs.len());
+    }
+
+    #[test]
+    fn references_variable_in_expression() {
+        let source = "fn main(): Void { x: Int = 42\nx + x }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `x` usage at offset 30 (first `x` after newline)
+        let refs = references_at(&analysis, 30, false).expect("should find references");
+        // `x` is used twice in `x + x`
+        assert!(refs.len() >= 2, "Expected >=2 references, got: {}", refs.len());
+    }
+
+    #[test]
+    fn references_include_declaration_true() {
+        let source = "fn main(): Void { x: Int = 42\nx }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `x` usage at offset 30
+        let refs_with = references_at(&analysis, 30, true).expect("should find references");
+        let refs_without = references_at(&analysis, 30, false).expect("should find references");
+        assert!(
+            refs_with.len() > refs_without.len(),
+            "include_declaration=true should return more spans ({} vs {})",
+            refs_with.len(),
+            refs_without.len()
+        );
+    }
+
+    #[test]
+    fn references_include_declaration_false_excludes_def() {
+        let source = "fn main(): Void { x: Int = 42\nx }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        let def_info_span = {
+            let resolutions = analysis.resolved.get_resolutions(analysis.file_id).unwrap();
+            let (_, def_id) = resolutions.find_at_offset(30).unwrap();
+            analysis.definitions.get(def_id).unwrap().span
+        };
+        let refs = references_at(&analysis, 30, false).expect("should find references");
+        // The definition span should NOT appear in usage-only references
+        assert!(
+            !refs.contains(&def_info_span),
+            "include_declaration=false should not contain the definition span"
+        );
+    }
+
+    #[test]
+    fn references_unknown_position_returns_none() {
+        let source = "fn main(): Void { }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // Offset 0 is `f` in `fn` — a keyword, not a resolved symbol
+        let refs = references_at(&analysis, 0, false);
+        assert!(refs.is_none(), "Expected None for keyword position");
+    }
+
+    // ── Document Symbol tests ───────────────────────────────────────────
+
+    /// Helper: returns document symbols for a source string.
+    #[allow(deprecated)]
+    fn document_symbols_for(source: &str) -> Vec<DocumentSymbol> {
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        let ast = analysis.resolved.asts.get(&analysis.file_id).unwrap();
+        let rope = ropey::Rope::from_str(source);
+        ast.items
+            .iter()
+            .filter_map(|item| item_to_document_symbol(item, &rope))
+            .collect()
+    }
+
+    #[test]
+    fn symbol_function() {
+        let symbols = document_symbols_for("fn foo(): Void { }");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "foo");
+        assert_eq!(symbols[0].kind, SymbolKind::FUNCTION);
+        assert!(symbols[0].children.is_none());
+    }
+
+    #[test]
+    fn symbol_struct_with_fields() {
+        let symbols = document_symbols_for("struct Point { x: Int, y: Int }");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "Point");
+        assert_eq!(symbols[0].kind, SymbolKind::STRUCT);
+        let children = symbols[0].children.as_ref().expect("struct should have children");
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].name, "x");
+        assert_eq!(children[0].kind, SymbolKind::FIELD);
+        assert_eq!(children[1].name, "y");
+        assert_eq!(children[1].kind, SymbolKind::FIELD);
+    }
+
+    #[test]
+    fn symbol_enum_with_variants() {
+        let symbols = document_symbols_for("enum Color { Red, Green, Blue }");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "Color");
+        assert_eq!(symbols[0].kind, SymbolKind::ENUM);
+        let children = symbols[0].children.as_ref().expect("enum should have children");
+        assert_eq!(children.len(), 3);
+        assert_eq!(children[0].name, "Red");
+        assert_eq!(children[0].kind, SymbolKind::ENUM_MEMBER);
+    }
+
+    #[test]
+    fn symbol_interface_with_methods() {
+        let symbols = document_symbols_for("interface Printable { fn print(): Void }");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "Printable");
+        assert_eq!(symbols[0].kind, SymbolKind::INTERFACE);
+        let children = symbols[0].children.as_ref().expect("interface should have children");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].name, "print");
+        assert_eq!(children[0].kind, SymbolKind::METHOD);
+    }
+
+    #[test]
+    fn symbol_const() {
+        let symbols = document_symbols_for("const MAX: Int = 100");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "MAX");
+        assert_eq!(symbols[0].kind, SymbolKind::CONSTANT);
+    }
+
+    #[test]
+    fn symbol_multiple_items() {
+        let source = "fn foo(): Void { }\nstruct Bar { }\nconst N: Int = 1";
+        let symbols = document_symbols_for(source);
+        assert_eq!(symbols.len(), 3);
+        assert_eq!(symbols[0].name, "foo");
+        assert_eq!(symbols[1].name, "Bar");
+        assert_eq!(symbols[2].name, "N");
+    }
+
+    #[test]
+    fn symbol_empty_file_returns_empty() {
+        let source = "";
+        let uri = Url::parse("file:///test.spark").unwrap();
+        let (_diags, analysis) = analyze(source, &uri);
+        // Empty file may not produce analysis at all
+        if let Some(analysis) = analysis {
+            if let Some(ast) = analysis.resolved.asts.get(&analysis.file_id) {
+                let rope = ropey::Rope::from_str(source);
+                let syms: Vec<DocumentSymbol> = ast
+                    .items
+                    .iter()
+                    .filter_map(|item| item_to_document_symbol(item, &rope))
+                    .collect();
+                assert!(syms.is_empty(), "Empty file should have no symbols");
+            }
+        }
     }
 }

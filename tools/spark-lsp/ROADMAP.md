@@ -51,7 +51,7 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 ---
 
-## Phase 3: Go-to-Definition *(current)*
+## Phase 3: Go-to-Definition ✅
 
 **Goal:** Jump from a name usage to its definition.
 
@@ -61,16 +61,23 @@ This document tracks the incremental path toward full Language Server Protocol s
 **Core crates:** `spark_resolve` (`ResolutionMap`, `DefinitionTable`)
 
 **How it works:**
-1. Find the `Span` at the cursor position
-2. Look up in `ResolutionMap.ident_resolutions` or `path_resolutions` → `DefId`
+1. Convert cursor LSP position to byte offset
+2. Search all `ResolutionMap` entries (ident, path, binding) for the narrowest span containing the offset
 3. Look up `DefId` in `DefinitionTable` → `DefinitionInfo.span`
 4. Convert definition span to LSP `Location`
 
-**Status:** [ ] Not started
+**Implementation notes:**
+- Added `ResolutionMap::find_at_offset()` to search for the most specific span at a byte offset
+- Added `Clone` derives to `ResolutionMap` and `ResolvedAst` so resolver output can be cached before type checking consumes it
+- `AnalysisResult` cached in `DocumentState` on each `did_change`/`did_open`
+- `position_to_offset()` helper added for reverse position conversion
+- Currently single-file only; definition jumps within the same document
+
+**Status:** [x] Complete
 
 ---
 
-## Phase 4: Hover Information
+## Phase 4: Hover Information ✅
 
 **Goal:** Show type information and signatures on hover.
 
@@ -87,11 +94,11 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 **Format:** Markdown with `spark` code blocks.
 
-**Status:** [ ] Not started
+**Status:** [x] Complete
 
 ---
 
-## Phase 5: Find References
+## Phase 5: Find References ✅
 
 **Goal:** Find all usages of a symbol across the file.
 
@@ -102,14 +109,20 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 **How it works:**
 1. Determine the `DefId` at the cursor (via resolution map or definition table)
-2. Scan all entries in `ResolutionMap` for spans that resolve to the same `DefId`
-3. Return as `Vec<Location>`
+2. `ResolutionMap::find_references(DefId)` scans ident and path resolutions for matching spans
+3. If `include_declaration` is true, the definition's own span is appended
+4. Return as `Vec<Location>`
 
-**Status:** [ ] Not started
+**Implementation notes:**
+- Added `ResolutionMap::find_references()` — reverse lookup from `DefId` to all usage spans
+- Pattern bindings are excluded (they are definition sites, not usages)
+- Follows the same handler pattern as go-to-definition and hover
+
+**Status:** [x] Complete
 
 ---
 
-## Phase 6: Document Symbols
+## Phase 6: Document Symbols ✅
 
 **Goal:** Outline view showing all top-level declarations.
 
@@ -120,17 +133,23 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 **Symbols reported:**
 - Functions → `SymbolKind::Function`
-- Structs → `SymbolKind::Struct`
-- Enums → `SymbolKind::Enum`
-- Interfaces → `SymbolKind::Interface`
+- Structs → `SymbolKind::Struct` (with Field children)
+- Enums → `SymbolKind::Enum` (with EnumMember children)
+- Interfaces → `SymbolKind::Interface` (with Method children)
 - Constants → `SymbolKind::Constant`
-- Type aliases → `SymbolKind::TypeParameter`
+- Type aliases/defs → `SymbolKind::TypeParameter`
 
-**Status:** [ ] Not started
+**Implementation notes:**
+- Walks `Ast.items` directly — no resolver or type checker data needed
+- Hierarchical: struct fields, enum variants, and interface methods are nested as child symbols
+- Uses `selection_range` for the name span (supports "Go to Symbol" navigation)
+- Bindings are skipped (no user-facing name)
+
+**Status:** [x] Complete
 
 ---
 
-## Phase 7: Completion
+## Phase 7: Completion *(blocked — needs core team scope export)*
 
 **Goal:** Context-aware code completion.
 
@@ -145,7 +164,9 @@ This document tracks the incremental path toward full Language Server Protocol s
 - Type position → suggest known types (built-in + user-defined)
 - Include type annotations in completion detail
 
-**Status:** [ ] Not started
+**Blocked on:** The resolver's `RibStack` is transient — it only exists during the resolution walk and is discarded. Scope-aware completion requires a persistent `ScopeMap` export from `spark_resolve` that records which names are visible at each scope boundary. See `docs/completion-requirements.md` for details.
+
+**Status:** [ ] Blocked
 
 ---
 
@@ -198,7 +219,7 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 ---
 
-## Phase 11: VS Code Extension
+## Phase 11: VS Code Extension ✅
 
 **Goal:** First-class VS Code support for Spark development.
 
@@ -208,11 +229,18 @@ This document tracks the incremental path toward full Language Server Protocol s
   - Language configuration (`.spark` file association)
   - Comment tokens (`//`), bracket pairs
   - Semantic token legend matching Phase 2
-- Extension TypeScript code that launches `spark-lsp` binary
+  - `spark.server.path` setting for custom binary location
+- Extension TypeScript code that launches `spark-lsp` binary via stdio
 - TextMate grammar for basic syntax highlighting (fallback when LSP is starting)
+- Language configuration: brackets, auto-closing pairs, indentation rules
 - Publish to VS Code marketplace
 
-**Status:** [ ] Not started
+**Implementation:**
+- Entry point: `src/extension.ts` — uses `vscode-languageclient` to spawn `spark-lsp` binary over stdio
+- TextMate grammar covers: keywords (31), constants, strings, characters, numbers, comments, type names, function definitions, operators
+- Configurable server path via `spark.server.path` (defaults to `spark-lsp` on PATH)
+
+**Status:** [x] Complete
 
 ---
 

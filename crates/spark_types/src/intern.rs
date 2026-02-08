@@ -15,7 +15,7 @@ use crate::ty::{Ty, TypeId};
 /// the same `TypeId` back.
 ///
 /// Index 0 is always `Ty::Error` (the error sentinel).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeInterner {
     /// All interned types. Index is the `TypeId`.
     types: Vec<Ty>,

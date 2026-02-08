@@ -65,6 +65,7 @@ pub mod ty;
 use spark_modules::ModuleGraph;
 use spark_resolve::{DefinitionTable, ResolvedAst};
 
+pub use check_expr::type_name;
 pub use checker::TypeCheckerOutput;
 pub use table::TypeTable;
 pub use ty::{FloatWidth, IntWidth, LifetimeId, Ty, TypeId};

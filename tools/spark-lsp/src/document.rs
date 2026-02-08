@@ -6,13 +6,32 @@
 
 use ropey::Rope;
 use spark_diagnostics::Diagnostic;
-use spark_span::Span;
+use spark_resolve::{DefinitionTable, ResolvedAst};
+use spark_span::{FileId, Span};
+use spark_types::TypeTable;
 use tower_lsp::lsp_types;
+
+/// Cached analysis output from the compiler pipeline.
+///
+/// Stored per-document so that on-demand queries (go-to-definition, hover)
+/// can look up resolver data without re-running the pipeline.
+pub struct AnalysisResult {
+    /// The file ID assigned during analysis.
+    pub file_id: FileId,
+    /// Resolved AST with span → `DefId` mappings.
+    pub resolved: ResolvedAst,
+    /// Table of all definitions.
+    pub definitions: DefinitionTable,
+    /// Type table from the type checker (only available when type checking succeeds).
+    pub type_table: Option<TypeTable>,
+}
 
 /// State for a single open document.
 pub struct DocumentState {
     /// The full source text, stored as a rope for efficient edits.
     pub rope: Rope,
+    /// Cached analysis result from the last successful resolve pass.
+    pub analysis: Option<AnalysisResult>,
 }
 
 impl DocumentState {
@@ -21,13 +40,32 @@ impl DocumentState {
     pub fn new(text: &str) -> Self {
         Self {
             rope: Rope::from_str(text),
+            analysis: None,
         }
     }
 
     /// Replaces the document contents with new text.
     pub fn update(&mut self, text: &str) {
         self.rope = Rope::from_str(text);
+        self.analysis = None;
     }
+}
+
+/// Converts an LSP `Position` to a byte offset.
+///
+/// Returns `None` if the position is out of bounds.
+#[must_use]
+pub fn position_to_offset(rope: &Rope, position: lsp_types::Position) -> Option<u32> {
+    let line = position.line as usize;
+    if line >= rope.len_lines() {
+        return None;
+    }
+    let line_start_char = rope.line_to_char(line);
+    let char_idx = line_start_char + position.character as usize;
+    if char_idx > rope.len_chars() {
+        return None;
+    }
+    Some(rope.char_to_byte(char_idx) as u32)
 }
 
 /// Converts a byte offset to an LSP `Position` (line, character).
@@ -151,6 +189,44 @@ mod tests {
     fn offset_to_position_out_of_bounds() {
         let rope = Rope::from_str("hi");
         assert!(offset_to_position(&rope, 100).is_none());
+    }
+
+    #[test]
+    fn position_to_offset_basic() {
+        let rope = Rope::from_str("hello\nworld");
+        // Start of first line
+        let off = position_to_offset(
+            &rope,
+            lsp_types::Position { line: 0, character: 0 },
+        )
+        .unwrap();
+        assert_eq!(off, 0);
+
+        // Middle of first line
+        let off = position_to_offset(
+            &rope,
+            lsp_types::Position { line: 0, character: 3 },
+        )
+        .unwrap();
+        assert_eq!(off, 3);
+
+        // Start of second line
+        let off = position_to_offset(
+            &rope,
+            lsp_types::Position { line: 1, character: 0 },
+        )
+        .unwrap();
+        assert_eq!(off, 6);
+    }
+
+    #[test]
+    fn position_to_offset_out_of_bounds() {
+        let rope = Rope::from_str("hi");
+        assert!(position_to_offset(
+            &rope,
+            lsp_types::Position { line: 5, character: 0 },
+        )
+        .is_none());
     }
 
     #[test]

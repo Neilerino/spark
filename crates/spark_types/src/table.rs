@@ -19,7 +19,7 @@ use crate::ty::{LifetimeId, Ty, TypeId};
 /// - Expression types (maps `Span` → `TypeId`)
 /// - Struct field information
 /// - Enum variant information
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeTable {
     /// The type interner backing all `TypeId`s.
     pub(crate) interner: TypeInterner,
