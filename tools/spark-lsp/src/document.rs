@@ -8,6 +8,7 @@ use ropey::Rope;
 use spark_diagnostics::Diagnostic;
 use spark_resolve::{DefinitionTable, ResolvedAst};
 use spark_span::{FileId, Span};
+use spark_types::TypeTable;
 use tower_lsp::lsp_types;
 
 /// Cached analysis output from the compiler pipeline.
@@ -21,6 +22,8 @@ pub struct AnalysisResult {
     pub resolved: ResolvedAst,
     /// Table of all definitions.
     pub definitions: DefinitionTable,
+    /// Type table from the type checker (only available when type checking succeeds).
+    pub type_table: Option<TypeTable>,
 }
 
 /// State for a single open document.

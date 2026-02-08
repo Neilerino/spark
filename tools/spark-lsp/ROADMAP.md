@@ -94,7 +94,7 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 **Format:** Markdown with `spark` code blocks.
 
-**Status:** [ ] Not started
+**Status:** [x] Complete
 
 ---
 

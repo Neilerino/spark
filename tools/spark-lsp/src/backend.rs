@@ -11,11 +11,11 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     self, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, GotoDefinitionResponse, InitializeParams, InitializeResult,
-    InitializedParams, MessageType, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, MarkupContent,
+    MarkupKind, MessageType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -23,7 +23,7 @@ use spark_diagnostics::Diagnostics;
 use spark_lexer::Lexer;
 use spark_modules::{ModuleResolverInput, ModuleGraph};
 use spark_parser::parse;
-use spark_resolve::ResolverInput;
+use spark_resolve::{DefinitionKind, ResolverInput};
 use spark_span::{FileId, SourceMap};
 use spark_types::TypeCheckerInput;
 
@@ -106,12 +106,13 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
             let resolve_output = resolve_names(graph.clone(), file_id, ast);
             all_diagnostics.extend(resolve_output.diagnostics);
 
-            // Cache resolver output for on-demand queries (go-to-definition, etc.)
+            // Cache resolver output for on-demand queries (go-to-definition, hover, etc.)
             // Clone before type checking consumes ownership.
             analysis = Some(AnalysisResult {
                 file_id,
                 resolved: resolve_output.resolved.clone(),
                 definitions: resolve_output.definitions.clone(),
+                type_table: None,
             });
 
             if !all_diagnostics.has_errors() {
@@ -122,6 +123,11 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
                     graph,
                 });
                 all_diagnostics.extend(type_output.diagnostics);
+
+                // Cache the type table for hover information
+                if let Some(ref mut a) = analysis {
+                    a.type_table = Some(type_output.table);
+                }
             }
         }
     }
@@ -133,6 +139,101 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
         .collect();
 
     (lsp_diags, analysis)
+}
+
+/// Returns the type name for a definition, if type info is available.
+fn def_type_str(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Option<String> {
+    let table = analysis.type_table.as_ref()?;
+    let type_id = table.get_def_type(def_id)?;
+    Some(spark_types::type_name(type_id, table, &analysis.definitions))
+}
+
+/// Formats hover content for a definition.
+///
+/// Uses the type table (if available) to show typed signatures. Falls back
+/// to showing just the definition kind and name when type info is missing.
+fn format_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Option<String> {
+    let def_info = analysis.definitions.get(def_id)?;
+    let name = def_info.name.as_str();
+
+    let content = match &def_info.kind {
+        DefinitionKind::Function => def_type_str(analysis, def_id)
+            .map_or_else(|| format!("fn {name}(...)"), |ty| format!("fn {name}{ty}")),
+        DefinitionKind::Struct => format_struct_hover(analysis, def_id, name),
+        DefinitionKind::Enum => format_enum_hover(analysis, def_id, name),
+        DefinitionKind::Local | DefinitionKind::Parameter => def_type_str(analysis, def_id)
+            .map_or_else(|| name.to_string(), |ty| format!("{name}: {ty}")),
+        DefinitionKind::Const => def_type_str(analysis, def_id)
+            .map_or_else(|| format!("const {name}"), |ty| format!("const {name}: {ty}")),
+        DefinitionKind::StructField(parent_id) => {
+            let parent_name = analysis
+                .definitions
+                .get(*parent_id)
+                .map_or("?", |info| info.name.as_str());
+            def_type_str(analysis, def_id).map_or_else(
+                || format!("{parent_name}.{name}"),
+                |ty| format!("{parent_name}.{name}: {ty}"),
+            )
+        }
+        DefinitionKind::EnumVariant(parent_id) => {
+            let parent_name = analysis
+                .definitions
+                .get(*parent_id)
+                .map_or("?", |info| info.name.as_str());
+            format!("{parent_name}.{name}")
+        }
+        DefinitionKind::TypeAlias => format!("alias {name}"),
+        DefinitionKind::TypeDef => format!("type {name}"),
+        DefinitionKind::Interface => format!("interface {name}"),
+        DefinitionKind::GenericParam => name.to_string(),
+        DefinitionKind::LifetimeParam => format!("'{name}"),
+        DefinitionKind::BuiltinFunction => format!("fn {name}(...)"),
+    };
+
+    Some(content)
+}
+
+/// Formats hover for a struct, showing fields when type info is available.
+fn format_struct_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId, name: &str) -> String {
+    let fields = analysis
+        .type_table
+        .as_ref()
+        .and_then(|table| {
+            table.get_struct_fields(def_id).map(|fields| {
+                fields
+                    .iter()
+                    .map(|(sym, tid)| {
+                        let ty = spark_types::type_name(*tid, table, &analysis.definitions);
+                        format!("    {sym}: {ty}")
+                    })
+                    .collect::<Vec<_>>()
+            })
+        });
+    match fields {
+        Some(f) if f.is_empty() => format!("struct {name} {{ }}"),
+        Some(f) => format!("struct {name} {{\n{}\n}}", f.join(",\n")),
+        None => format!("struct {name}"),
+    }
+}
+
+/// Formats hover for an enum, showing variants when type info is available.
+fn format_enum_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId, name: &str) -> String {
+    let variants = analysis
+        .type_table
+        .as_ref()
+        .and_then(|table| {
+            table.get_enum_variants(def_id).map(|variants| {
+                variants
+                    .iter()
+                    .map(|(sym, _)| format!("    {sym}"))
+                    .collect::<Vec<_>>()
+            })
+        });
+    match variants {
+        Some(v) if v.is_empty() => format!("enum {name} {{ }}"),
+        Some(v) => format!("enum {name} {{\n{}\n}}", v.join(",\n")),
+        None => format!("enum {name}"),
+    }
 }
 
 /// Sets up a single-file module graph (mirrors `spark_driver::pipeline`).
@@ -175,6 +276,7 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::FULL,
                 )),
                 definition_provider: Some(lsp_types::OneOf::Left(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -249,6 +351,30 @@ impl LanguageServer for Backend {
         Ok(location.map(GotoDefinitionResponse::Scalar))
     }
 
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let hover = self.documents.get(uri).and_then(|doc| {
+            let analysis = doc.analysis.as_ref()?;
+            let offset = document::position_to_offset(&doc.rope, position)?;
+            let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
+            let (span, def_id) = resolutions.find_at_offset(offset)?;
+            let content = format_hover(analysis, def_id)?;
+            let range = document::span_to_range(&doc.rope, span);
+
+            Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!("```spark\n{content}\n```"),
+                }),
+                range,
+            })
+        });
+
+        Ok(hover)
+    }
+
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
         let text = &params.text_document.text;
@@ -280,5 +406,119 @@ impl LanguageServer for Backend {
         self.client
             .publish_diagnostics(uri, Vec::new(), None)
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: runs the analyze pipeline and returns the `AnalysisResult`.
+    fn analyze_source(source: &str) -> Option<AnalysisResult> {
+        let uri = Url::parse("file:///test.spark").unwrap();
+        let (_diags, analysis) = analyze(source, &uri);
+        analysis
+    }
+
+    /// Helper: finds the hover content for the symbol at a byte offset.
+    fn hover_at(analysis: &AnalysisResult, offset: u32) -> Option<String> {
+        let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
+        let (_span, def_id) = resolutions.find_at_offset(offset)?;
+        format_hover(analysis, def_id)
+    }
+
+    #[test]
+    fn hover_function_shows_signature() {
+        let source = "fn add(a: Int, b: Int): Int { return a + b }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // Hover over `add` at offset 3 (inside "add")
+        let hover = hover_at(&analysis, 3).expect("hover should produce content");
+        assert!(hover.starts_with("fn add"), "Expected fn signature, got: {hover}");
+        assert!(hover.contains("Int"), "Expected Int in signature, got: {hover}");
+    }
+
+    #[test]
+    fn hover_variable_shows_type() {
+        let source = "fn main(): Void { x: Int = 42\nx }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `x` usage is at offset 30 (the `x` after newline)
+        let hover = hover_at(&analysis, 30).expect("hover should produce content");
+        assert!(hover.contains("Int"), "Expected type info, got: {hover}");
+    }
+
+    #[test]
+    fn hover_struct_shows_fields() {
+        let source = "struct Point { x: Int, y: Int }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `Point` starts at offset 7
+        let hover = hover_at(&analysis, 7).expect("hover should produce content");
+        assert!(hover.contains("struct Point"), "Expected struct, got: {hover}");
+        assert!(hover.contains("x: Int"), "Expected field x, got: {hover}");
+        assert!(hover.contains("y: Int"), "Expected field y, got: {hover}");
+    }
+
+    #[test]
+    fn hover_const_shows_type() {
+        let source = "const MAX: Int = 100";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `MAX` starts at offset 6
+        let hover = hover_at(&analysis, 6).expect("hover should produce content");
+        assert!(hover.contains("const MAX"), "Expected const, got: {hover}");
+        assert!(hover.contains("Int"), "Expected type, got: {hover}");
+    }
+
+    #[test]
+    fn hover_unknown_position_returns_none() {
+        let source = "fn main(): Void { }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // Offset 0 is the `f` in `fn` — a keyword, not a resolved name
+        let hover = hover_at(&analysis, 0);
+        assert!(hover.is_none(), "Expected None for keyword position");
+    }
+
+    #[test]
+    fn hover_without_type_table_shows_basic_info() {
+        let source = "fn main(): Void { x: Int = 42\nx }";
+        let mut analysis = analyze_source(source).expect("analysis should succeed");
+        // Simulate type checking failure by removing the type table
+        analysis.type_table = None;
+        // `x` usage at offset 30
+        let hover = hover_at(&analysis, 30).expect("hover should produce content");
+        // Without type info, should still show the name
+        assert!(hover.contains("x"), "Expected name, got: {hover}");
+    }
+
+    #[test]
+    fn hover_parameter_shows_type() {
+        let source = "fn greet(name: String): Void { name }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `name` usage at offset 31 (inside the body)
+        let hover = hover_at(&analysis, 31).expect("hover should produce content");
+        assert!(hover.contains("String"), "Expected param type, got: {hover}");
+    }
+
+    #[test]
+    fn analyze_caches_type_table() {
+        let source = "fn main(): Void { x: Int = 42 }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        assert!(
+            analysis.type_table.is_some(),
+            "Type table should be cached after successful type check"
+        );
+    }
+
+    #[test]
+    fn analyze_no_type_table_on_parse_error() {
+        // Intentionally broken syntax
+        let source = "fn main( { }";
+        let analysis = analyze_source(source);
+        // Parse error means no analysis at all (or no type table)
+        match analysis {
+            None => {} // Expected — parse errors prevent analysis
+            Some(a) => assert!(
+                a.type_table.is_none(),
+                "Type table should be None when earlier phases fail"
+            ),
+        }
     }
 }
