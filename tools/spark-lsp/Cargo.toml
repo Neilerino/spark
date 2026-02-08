@@ -1,0 +1,32 @@
+[package]
+name = "spark-lsp"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "spark-lsp"
+path = "src/main.rs"
+
+[dependencies]
+# Core compiler crates
+spark_span.workspace = true
+spark_intern.workspace = true
+spark_diagnostics.workspace = true
+spark_ast.workspace = true
+spark_lexer.workspace = true
+spark_parser.workspace = true
+spark_modules.workspace = true
+spark_resolve.workspace = true
+spark_types.workspace = true
+
+# LSP framework
+tower-lsp.workspace = true
+tokio.workspace = true
+
+# Document management
+dashmap.workspace = true
+ropey.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
