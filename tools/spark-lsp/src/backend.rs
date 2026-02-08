@@ -11,15 +11,17 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     self, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
-    MarkupContent, MarkupKind, MessageType, ReferenceParams, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
+    MessageType, ReferenceParams, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolKind,
     TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer};
 
+use spark_ast::Item;
 use spark_diagnostics::Diagnostics;
 use spark_lexer::Lexer;
 use spark_modules::{ModuleResolverInput, ModuleGraph};
@@ -237,6 +239,112 @@ fn format_enum_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId, na
     }
 }
 
+/// Converts an AST `Item` to an LSP `DocumentSymbol`.
+///
+/// Returns `None` for items without a name (e.g. interface bindings).
+#[allow(deprecated)] // DocumentSymbol::deprecated field is deprecated in the LSP spec
+fn item_to_document_symbol(item: &Item, rope: &ropey::Rope) -> Option<DocumentSymbol> {
+    let (name, kind, span, name_span, children) = match item {
+        Item::Function(f) => (f.name.name, SymbolKind::FUNCTION, f.span, f.name.span, None),
+        Item::Struct(s) => {
+            let kids = struct_field_symbols(&s.fields, rope);
+            (s.name.name, SymbolKind::STRUCT, s.span, s.name.span, Some(kids))
+        }
+        Item::Enum(e) => {
+            let kids = enum_variant_symbols(&e.variants, rope);
+            (e.name.name, SymbolKind::ENUM, e.span, e.name.span, Some(kids))
+        }
+        Item::Interface(i) => {
+            let kids = interface_method_symbols(&i.methods, rope);
+            (i.name.name, SymbolKind::INTERFACE, i.span, i.name.span, Some(kids))
+        }
+        Item::TypeAlias(t) => (t.name.name, SymbolKind::TYPE_PARAMETER, t.span, t.name.span, None),
+        Item::TypeDef(t) => (t.name.name, SymbolKind::TYPE_PARAMETER, t.span, t.name.span, None),
+        Item::Const(c) => (c.name.name, SymbolKind::CONSTANT, c.span, c.name.span, None),
+        Item::Binding(_) => return None,
+    };
+
+    let range = document::span_to_range(rope, span)?;
+    let selection_range = document::span_to_range(rope, name_span)?;
+
+    Some(DocumentSymbol {
+        name: name.as_str().to_string(),
+        detail: None,
+        kind,
+        tags: None,
+        deprecated: None,
+        range,
+        selection_range,
+        children,
+    })
+}
+
+/// Converts struct fields to child `DocumentSymbol`s.
+#[allow(deprecated)]
+fn struct_field_symbols(fields: &[spark_ast::StructField], rope: &ropey::Rope) -> Vec<DocumentSymbol> {
+    fields
+        .iter()
+        .filter_map(|f| {
+            let range = document::span_to_range(rope, f.span)?;
+            let selection_range = document::span_to_range(rope, f.name.span)?;
+            Some(DocumentSymbol {
+                name: f.name.name.as_str().to_string(),
+                detail: None,
+                kind: SymbolKind::FIELD,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range,
+                children: None,
+            })
+        })
+        .collect()
+}
+
+/// Converts enum variants to child `DocumentSymbol`s.
+#[allow(deprecated)]
+fn enum_variant_symbols(variants: &[spark_ast::EnumVariant], rope: &ropey::Rope) -> Vec<DocumentSymbol> {
+    variants
+        .iter()
+        .filter_map(|v| {
+            let range = document::span_to_range(rope, v.span)?;
+            let selection_range = document::span_to_range(rope, v.name.span)?;
+            Some(DocumentSymbol {
+                name: v.name.name.as_str().to_string(),
+                detail: None,
+                kind: SymbolKind::ENUM_MEMBER,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range,
+                children: None,
+            })
+        })
+        .collect()
+}
+
+/// Converts interface methods to child `DocumentSymbol`s.
+#[allow(deprecated)]
+fn interface_method_symbols(methods: &[spark_ast::FunctionDef], rope: &ropey::Rope) -> Vec<DocumentSymbol> {
+    methods
+        .iter()
+        .filter_map(|m| {
+            let range = document::span_to_range(rope, m.span)?;
+            let selection_range = document::span_to_range(rope, m.name.span)?;
+            Some(DocumentSymbol {
+                name: m.name.name.as_str().to_string(),
+                detail: None,
+                kind: SymbolKind::METHOD,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range,
+                children: None,
+            })
+        })
+        .collect()
+}
+
 /// Sets up a single-file module graph (mirrors `spark_driver::pipeline`).
 fn resolve_modules(
     file_id: FileId,
@@ -279,6 +387,7 @@ impl LanguageServer for Backend {
                 definition_provider: Some(lsp_types::OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 references_provider: Some(lsp_types::OneOf::Left(true)),
+                document_symbol_provider: Some(lsp_types::OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -411,6 +520,27 @@ impl LanguageServer for Backend {
         });
 
         Ok(locations)
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = &params.text_document.uri;
+
+        let symbols = self.documents.get(uri).and_then(|doc| {
+            let analysis = doc.analysis.as_ref()?;
+            let ast = analysis.resolved.asts.get(&analysis.file_id)?;
+            let syms: Vec<DocumentSymbol> = ast
+                .items
+                .iter()
+                .filter_map(|item| item_to_document_symbol(item, &doc.rope))
+                .collect();
+
+            if syms.is_empty() { None } else { Some(syms) }
+        });
+
+        Ok(symbols.map(DocumentSymbolResponse::Nested))
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
@@ -642,5 +772,103 @@ mod tests {
         // Offset 0 is `f` in `fn` — a keyword, not a resolved symbol
         let refs = references_at(&analysis, 0, false);
         assert!(refs.is_none(), "Expected None for keyword position");
+    }
+
+    // ── Document Symbol tests ───────────────────────────────────────────
+
+    /// Helper: returns document symbols for a source string.
+    #[allow(deprecated)]
+    fn document_symbols_for(source: &str) -> Vec<DocumentSymbol> {
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        let ast = analysis.resolved.asts.get(&analysis.file_id).unwrap();
+        let rope = ropey::Rope::from_str(source);
+        ast.items
+            .iter()
+            .filter_map(|item| item_to_document_symbol(item, &rope))
+            .collect()
+    }
+
+    #[test]
+    fn symbol_function() {
+        let symbols = document_symbols_for("fn foo(): Void { }");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "foo");
+        assert_eq!(symbols[0].kind, SymbolKind::FUNCTION);
+        assert!(symbols[0].children.is_none());
+    }
+
+    #[test]
+    fn symbol_struct_with_fields() {
+        let symbols = document_symbols_for("struct Point { x: Int, y: Int }");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "Point");
+        assert_eq!(symbols[0].kind, SymbolKind::STRUCT);
+        let children = symbols[0].children.as_ref().expect("struct should have children");
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].name, "x");
+        assert_eq!(children[0].kind, SymbolKind::FIELD);
+        assert_eq!(children[1].name, "y");
+        assert_eq!(children[1].kind, SymbolKind::FIELD);
+    }
+
+    #[test]
+    fn symbol_enum_with_variants() {
+        let symbols = document_symbols_for("enum Color { Red, Green, Blue }");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "Color");
+        assert_eq!(symbols[0].kind, SymbolKind::ENUM);
+        let children = symbols[0].children.as_ref().expect("enum should have children");
+        assert_eq!(children.len(), 3);
+        assert_eq!(children[0].name, "Red");
+        assert_eq!(children[0].kind, SymbolKind::ENUM_MEMBER);
+    }
+
+    #[test]
+    fn symbol_interface_with_methods() {
+        let symbols = document_symbols_for("interface Printable { fn print(): Void }");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "Printable");
+        assert_eq!(symbols[0].kind, SymbolKind::INTERFACE);
+        let children = symbols[0].children.as_ref().expect("interface should have children");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].name, "print");
+        assert_eq!(children[0].kind, SymbolKind::METHOD);
+    }
+
+    #[test]
+    fn symbol_const() {
+        let symbols = document_symbols_for("const MAX: Int = 100");
+        assert_eq!(symbols.len(), 1);
+        assert_eq!(symbols[0].name, "MAX");
+        assert_eq!(symbols[0].kind, SymbolKind::CONSTANT);
+    }
+
+    #[test]
+    fn symbol_multiple_items() {
+        let source = "fn foo(): Void { }\nstruct Bar { }\nconst N: Int = 1";
+        let symbols = document_symbols_for(source);
+        assert_eq!(symbols.len(), 3);
+        assert_eq!(symbols[0].name, "foo");
+        assert_eq!(symbols[1].name, "Bar");
+        assert_eq!(symbols[2].name, "N");
+    }
+
+    #[test]
+    fn symbol_empty_file_returns_empty() {
+        let source = "";
+        let uri = Url::parse("file:///test.spark").unwrap();
+        let (_diags, analysis) = analyze(source, &uri);
+        // Empty file may not produce analysis at all
+        if let Some(analysis) = analysis {
+            if let Some(ast) = analysis.resolved.asts.get(&analysis.file_id) {
+                let rope = ropey::Rope::from_str(source);
+                let syms: Vec<DocumentSymbol> = ast
+                    .items
+                    .iter()
+                    .filter_map(|item| item_to_document_symbol(item, &rope))
+                    .collect();
+                assert!(syms.is_empty(), "Empty file should have no symbols");
+            }
+        }
     }
 }

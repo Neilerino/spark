@@ -122,7 +122,7 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 ---
 
-## Phase 6: Document Symbols
+## Phase 6: Document Symbols ✅
 
 **Goal:** Outline view showing all top-level declarations.
 
@@ -133,17 +133,23 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 **Symbols reported:**
 - Functions → `SymbolKind::Function`
-- Structs → `SymbolKind::Struct`
-- Enums → `SymbolKind::Enum`
-- Interfaces → `SymbolKind::Interface`
+- Structs → `SymbolKind::Struct` (with Field children)
+- Enums → `SymbolKind::Enum` (with EnumMember children)
+- Interfaces → `SymbolKind::Interface` (with Method children)
 - Constants → `SymbolKind::Constant`
-- Type aliases → `SymbolKind::TypeParameter`
+- Type aliases/defs → `SymbolKind::TypeParameter`
 
-**Status:** [ ] Not started
+**Implementation notes:**
+- Walks `Ast.items` directly — no resolver or type checker data needed
+- Hierarchical: struct fields, enum variants, and interface methods are nested as child symbols
+- Uses `selection_range` for the name span (supports "Go to Symbol" navigation)
+- Bindings are skipped (no user-facing name)
+
+**Status:** [x] Complete
 
 ---
 
-## Phase 7: Completion
+## Phase 7: Completion *(blocked — needs core team scope export)*
 
 **Goal:** Context-aware code completion.
 
@@ -158,7 +164,9 @@ This document tracks the incremental path toward full Language Server Protocol s
 - Type position → suggest known types (built-in + user-defined)
 - Include type annotations in completion detail
 
-**Status:** [ ] Not started
+**Blocked on:** The resolver's `RibStack` is transient — it only exists during the resolution walk and is discarded. Scope-aware completion requires a persistent `ScopeMap` export from `spark_resolve` that records which names are visible at each scope boundary. See `docs/completion-requirements.md` for details.
+
+**Status:** [ ] Blocked
 
 ---
 
