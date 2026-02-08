@@ -30,14 +30,14 @@ pub fn lower_function(
 
     let param_count = u32::try_from(hir_fn.params.len()).unwrap_or(u32::MAX);
 
-    // Lower the body expression
-    let body_local = lower_expr(&hir_fn.body, &mut fb, mir, type_table, defs);
+    // Lower the body expression (value discarded; explicit `return` sets RETURN_PLACE)
+    let _body_local = lower_expr(&hir_fn.body, &mut fb, mir, type_table, defs);
 
-    // Assign body result to return place and add Return terminator
+    // Assign Void to return place on fallthrough (explicit `return` handles non-void)
     if !fb.is_terminated() {
         fb.push_stmt(Statement::Assign {
             place: Place::from_local(Local::RETURN_PLACE),
-            rvalue: Rvalue::Use(Operand::Copy(Place::from_local(body_local))),
+            rvalue: Rvalue::Use(Operand::Constant(crate::mir::Constant::Void)),
             span: hir_fn.body.span,
         });
         fb.terminate(Terminator::Return);

@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn lower_return_literal() {
-        let output = lower_source("fn f(): Int { 42 }");
+        let output = lower_source("fn f(): Int { return 42 }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn lower_binary_op() {
-        let output = lower_source("fn add(a: Int, b: Int): Int { a + b }");
+        let output = lower_source("fn add(a: Int, b: Int): Int { return a + b }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn lower_if_else() {
-        let output = lower_source("fn f(x: Bool): Int { if x { 1 } else { 2 } }");
+        let output = lower_source("fn f(x: Bool): Int { return if x { 1 } else { 2 } }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn lower_let_binding() {
-        let output = lower_source("fn f(): Int { x: Int = 10\nx }");
+        let output = lower_source("fn f(): Int { x: Int = 10\nreturn x }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn lower_function_call() {
-        let output = lower_source("fn id(x: Int): Int { x }\nfn main(): Int { id(42) }");
+        let output = lower_source("fn id(x: Int): Int { return x }\nfn main(): Int { return id(42) }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn lower_struct_init() {
         let output = lower_source(
-            "struct Point { x: Int, y: Int }\nfn make(): Point { Point { x: 1, y: 2 } }",
+            "struct Point { x: Int, y: Int }\nfn make(): Point { return Point { x: 1, y: 2 } }",
         );
         assert!(
             !output.diagnostics.has_errors(),
@@ -366,7 +366,7 @@ mod tests {
 
     #[test]
     fn lower_early_return() {
-        let output = lower_source("fn f(x: Bool): Int { if x { return 1 }\n2 }");
+        let output = lower_source("fn f(x: Bool): Int { if x { return 1 }\nreturn 2 }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn lower_multiple_functions() {
-        let output = lower_source("fn a(): Int { 1 }\nfn b(): Int { 2 }\nfn c(): Int { 3 }");
+        let output = lower_source("fn a(): Int { return 1 }\nfn b(): Int { return 2 }\nfn c(): Int { return 3 }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn lower_unary_op() {
-        let output = lower_source("fn neg(x: Int): Int { -x }");
+        let output = lower_source("fn neg(x: Int): Int { return -x }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn lower_bool_literal() {
-        let output = lower_source("fn f(): Bool { true }");
+        let output = lower_source("fn f(): Bool { return true }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn lower_string_literal() {
-        let output = lower_source("fn f(): String { \"hello\" }");
+        let output = lower_source("fn f(): String { return \"hello\" }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -465,7 +465,7 @@ mod tests {
 
     #[test]
     fn pretty_display_trait() {
-        let output = lower_source("fn f(): Int { 42 }");
+        let output = lower_source("fn f(): Int { return 42 }");
         let func = output.mir.functions.values().next().unwrap();
         // Display should produce the same as pretty_function
         let display = format!("{func}");

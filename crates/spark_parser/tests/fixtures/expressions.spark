@@ -4,11 +4,11 @@ fn arithmetic(): Int {
     result: Int = 1 + 2 * 3 - 4 / 2
     result = result % 5
     result = -result
-    result
+    return result
 }
 
 fn comparison(a: Int, b: Int): Bool {
-    a < b and b <= 10 or a >= 0 and not (a == b)
+    return a < b and b <= 10 or a >= 0 and not (a == b)
 }
 
 fn bitwise(x: Int, y: Int): Int {
@@ -17,18 +17,18 @@ fn bitwise(x: Int, y: Int): Int {
     result = result ^ 0x0F
     result = result << 2
     result = result >> 1
-    ~result
+    return ~result
 }
 
 fn optional_handling(value: Int?): Int {
     // Null coalescing
     result: Int = value ?? 0
-    result
+    return result
 }
 
 fn error_propagation(input: String): Int | ParseError {
     value: Int = parse(input)!
-    value * 2
+    return value * 2
 }
 
 fn collections(): Void {

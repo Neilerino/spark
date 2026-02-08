@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn lower_function_with_body() {
-        let output = lower_source("fn add(a: Int, b: Int): Int { a + b }");
+        let output = lower_source("fn add(a: Int, b: Int): Int { return a + b }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn lower_if_else() {
-        let output = lower_source("fn f(x: Bool): Int { if x { 1 } else { 2 } }");
+        let output = lower_source("fn f(x: Bool): Int { return if x { 1 } else { 2 } }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn lower_struct_init() {
         let output = lower_source(
-            "struct Point { x: Int, y: Int }\nfn make(): Point { Point { x: 1, y: 2 } }",
+            "struct Point { x: Int, y: Int }\nfn make(): Point { return Point { x: 1, y: 2 } }",
         );
         assert!(
             !output.diagnostics.has_errors(),
@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn lower_bool_literal() {
-        let output = lower_source("fn f(): Bool { true }");
+        let output = lower_source("fn f(): Bool { return true }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn lower_forward_reference() {
-        let output = lower_source("fn a(): Int { b() }\nfn b(): Int { 42 }");
+        let output = lower_source("fn a(): Int { return b() }\nfn b(): Int { return 42 }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn lower_null_coalesce() {
-        let output = lower_source("fn f(x: Int?): Int { x ?? 0 }");
+        let output = lower_source("fn f(x: Int?): Int { return x ?? 0 }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",

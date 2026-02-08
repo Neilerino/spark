@@ -190,25 +190,25 @@ mod tests {
 
     #[test]
     fn function_return_type() {
-        let output = check_source("fn get_num(): Int { 42 }");
+        let output = check_source("fn get_num(): Int { return 42 }");
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
     fn function_return_type_mismatch() {
-        let output = check_source("fn get_num(): Int { true }");
+        let output = check_source("fn get_num(): Int { return true }");
         assert!(output.diagnostics.has_errors());
     }
 
     #[test]
     fn binary_arithmetic() {
-        let output = check_source("fn add(a: Int, b: Int): Int { a + b }");
+        let output = check_source("fn add(a: Int, b: Int): Int { return a + b }");
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
     fn binary_comparison_returns_bool() {
-        let output = check_source("fn cmp(a: Int, b: Int): Bool { a > b }");
+        let output = check_source("fn cmp(a: Int, b: Int): Bool { return a > b }");
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn struct_field_access() {
         let output = check_source(
-            "struct User { name: String }\nfn get_name(u: User): String { u.name }",
+            "struct User { name: String }\nfn get_name(u: User): String { return u.name }",
         );
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn struct_init() {
         let output = check_source(
-            "struct Point { x: Int, y: Int }\nfn make(): Point { Point { x: 1, y: 2 } }",
+            "struct Point { x: Int, y: Int }\nfn make(): Point { return Point { x: 1, y: 2 } }",
         );
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn forward_reference() {
         let output = check_source(
-            "fn a(): Int { b() }\nfn b(): Int { 42 }",
+            "fn a(): Int { return b() }\nfn b(): Int { return 42 }",
         );
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn wrong_argument_count() {
         let output = check_source(
-            "fn add(a: Int, b: Int): Int { a + b }\nfn main(): Void { add(1) }",
+            "fn add(a: Int, b: Int): Int { return a + b }\nfn main(): Void { add(1) }",
         );
         assert!(output.diagnostics.has_errors());
     }
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn bool_literal() {
-        let output = check_source("fn main(): Bool { true }");
+        let output = check_source("fn main(): Bool { return true }");
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
@@ -290,19 +290,19 @@ mod tests {
 
     #[test]
     fn logical_operators() {
-        let output = check_source("fn test(a: Bool, b: Bool): Bool { a and b }");
+        let output = check_source("fn test(a: Bool, b: Bool): Bool { return a and b }");
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
     fn unary_negation() {
-        let output = check_source("fn neg(x: Int): Int { -x }");
+        let output = check_source("fn neg(x: Int): Int { return -x }");
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
     fn unary_not() {
-        let output = check_source("fn flip(x: Bool): Bool { not x }");
+        let output = check_source("fn flip(x: Bool): Bool { return not x }");
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
@@ -316,5 +316,28 @@ mod tests {
     fn const_type_mismatch() {
         let output = check_source("const MAX: Int = true");
         assert!(output.diagnostics.has_errors());
+    }
+
+    #[test]
+    fn missing_return_is_error() {
+        let output = check_source("fn f(): Int { 42 }");
+        assert!(output.diagnostics.has_errors());
+        let msgs: Vec<_> = output.diagnostics.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("missing `return`")),
+            "Expected 'missing return' diagnostic, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn void_function_no_return_ok() {
+        let output = check_source("fn f(): Void { }");
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn explicit_return_on_all_paths() {
+        let output = check_source("fn f(x: Bool): Int { if x { return 1 } else { return 2 } }");
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 }

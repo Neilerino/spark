@@ -19,11 +19,11 @@ struct Color {
 }
 
 fn create_point(x: Float, y: Float): Point {
-    Point { x: x, y: y }
+    return Point { x: x, y: y }
 }
 
 fn create_unit_square(): Rectangle {
-    Rectangle {
+    return Rectangle {
         origin: Point { x: 0.0, y: 0.0 },
         width: 1.0,
         height: 1.0,
@@ -31,11 +31,11 @@ fn create_unit_square(): Rectangle {
 }
 
 fn area(rect: Rectangle): Float {
-    rect.width * rect.height
+    return rect.width * rect.height
 }
 
 fn translate(point: Point, dx: Float, dy: Float): Point {
-    Point {
+    return Point {
         x: point.x + dx,
         y: point.y + dy,
     }

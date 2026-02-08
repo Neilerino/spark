@@ -32,7 +32,7 @@ interface OrderedCollection[T] extends Collection[T] {
 // Binding a type to an interface
 Int binds Comparable[Int] {
     fn compare(other: Int): Int {
-        if self < other { -1 }
+        return if self < other { -1 }
         else if self > other { 1 }
         else { 0 }
     }
@@ -40,10 +40,10 @@ Int binds Comparable[Int] {
 
 // Generic constraint
 fn max[T: Comparable[T]](a: T, b: T): T {
-    if a.compare(b) > 0 { a } else { b }
+    return if a.compare(b) > 0 { a } else { b }
 }
 
 // Structural constraint
 fn get_name[T: { name: String }](obj: T): String {
-    obj.name
+    return obj.name
 }

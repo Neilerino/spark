@@ -12,7 +12,7 @@ alias Predicate[T] = (T): Bool
 
 // Optional types
 fn maybe_parse(s: String): Int? {
-    if s.isEmpty() {
+    return if s.isEmpty() {
         Null
     } else {
         parse_int(s)
@@ -22,12 +22,12 @@ fn maybe_parse(s: String): Int? {
 // Mutable types
 fn accumulate(acc: Int!, value: Int): Int {
     acc = acc + value
-    acc
+    return acc
 }
 
 // Union types
 fn parse_value(input: String): Int | Float | ParseError {
-    if input.isInteger() {
+    return if input.isInteger() {
         parse_int(input)
     } else if input.isFloat() {
         parse_float(input)
@@ -38,15 +38,15 @@ fn parse_value(input: String): Int | Float | ParseError {
 
 // Function types as parameters
 fn apply_func(x: Int, f: (Int): Int): Int {
-    f(x)
+    return f(x)
 }
 
 // Structural types
 fn get_dimensions(obj: { width: Int, height: Int }): Int {
-    obj.width * obj.height
+    return obj.width * obj.height
 }
 
 // Generic type with constraint
 fn sort[T: Comparable[T]](list: List[T]): List[T] {
-    list.sorted()
+    return list.sorted()
 }

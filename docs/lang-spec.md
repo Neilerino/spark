@@ -867,6 +867,29 @@ fn log(message: String): Void {
 }
 ```
 
+### Return Semantics
+
+Functions require an explicit `return` statement to return a value. A function without a `return` statement implicitly returns `Void`. If a function declares a non-`Void` return type, all code paths must contain a `return` statement; otherwise the compiler emits a "missing return" error.
+
+```
+// Correct: explicit return
+fn double(x: Int): Int {
+    return x * 2
+}
+
+// Correct: Void functions need no return
+fn greet(): Void {
+    print("hi")
+}
+
+// Error: missing `return` in function with return type `Int`
+fn bad(): Int {
+    42
+}
+```
+
+> **Note:** Block expressions used in other contexts (if/match branches, variable bindings like `x: Int = { ... }`) still use their trailing expression as the block's value. The explicit-return rule applies only to function bodies.
+
 ### Union Return Types
 
 Functions that can fail return union types.
@@ -1129,7 +1152,7 @@ Individual variants can be used as types in unions.
 
 ```
 fn handleResponse(r: ApiResponse): Page | ApiResponse.Error | ApiResponse.Loading {
-    match r {
+    return match r {
         ApiResponse.Success(body) -> parsePage(body),
         e: ApiResponse.Error -> e,
         l: ApiResponse.Loading -> l

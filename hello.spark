@@ -10,12 +10,10 @@ fn loop_with_break(n: Int): Int {
             return count
         }
     }
-    count
+    return count
 }
 
 fn main(): Void {
     items: List[Int] = [1, 2, 3]
-    items each (item: Int): Void {
-        print(item)
-    }
+    loop_with_break(10)
 }

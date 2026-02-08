@@ -5,5 +5,5 @@ fn main(): Void {
 }
 
 fn greet(name: String): String {
-    "Hello, " + name + "!"
+    return "Hello, " + name + "!"
 }

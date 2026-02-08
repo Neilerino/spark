@@ -13,12 +13,12 @@ pub struct Stack[T] {
 }
 
 pub fn new_stack[T](): Stack[T] {
-    Stack { items: [] }
+    return Stack { items: [] }
 }
 
 // Private helper - not exported
 fn validate[T](stack: Stack[T]): Bool {
-    stack.items.size() >= 0
+    return stack.items.size() >= 0
 }
 
 pub fn push[T](stack: Stack[T]!, item: T): Void {
@@ -26,7 +26,7 @@ pub fn push[T](stack: Stack[T]!, item: T): Void {
 }
 
 pub fn pop[T](stack: Stack[T]!): T? {
-    if stack.items.isEmpty() {
+    return if stack.items.isEmpty() {
         Null
     } else {
         stack.items.removeLast()
@@ -34,7 +34,7 @@ pub fn pop[T](stack: Stack[T]!): T? {
 }
 
 pub fn peek[T](stack: Stack[T]): T? {
-    if stack.items.isEmpty() {
+    return if stack.items.isEmpty() {
         Null
     } else {
         stack.items.last()

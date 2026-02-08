@@ -30,7 +30,7 @@ enum Message {
 }
 
 fn describe_shape(shape: Shape): String {
-    match shape {
+    return match shape {
         Shape.Circle(radius) -> "Circle",
         Shape.Rectangle(w, h) -> "Rectangle",
         Shape.Triangle(a, b, c) -> "Triangle",
@@ -38,7 +38,7 @@ fn describe_shape(shape: Shape): String {
 }
 
 fn unwrap_or[T](opt: Option[T], default: T): T {
-    match opt {
+    return match opt {
         Option.Some(value) -> value,
         Option.None -> default,
     }

@@ -187,18 +187,26 @@ impl TypeChecker {
                         Some(ret_type),
                     );
 
-                    // Verify the body's type matches the return type
-                    if !crate::check_expr::is_compatible(body_ty, ret_type, &self.table) {
-                        let expected = crate::check_expr::type_name(ret_type, &self.table, &self.definitions);
-                        let found = crate::check_expr::type_name(body_ty, &self.table, &self.definitions);
+                    // Functions require explicit `return` to return a value.
+                    // If the return type is non-void and the body doesn't diverge
+                    // (i.e. body_ty is not Never), then a return statement is missing.
+                    let body_resolved = self.table.resolve(body_ty);
+                    if ret_type != self.builtins.void
+                        && !matches!(body_resolved, crate::Ty::Never)
+                    {
+                        let ret_name = crate::check_expr::type_name(
+                            ret_type,
+                            &self.table,
+                            &self.definitions,
+                        );
                         self.diagnostics.push(
                             spark_diagnostics::Diagnostic::error(format!(
-                                "function `{}` body type mismatch: expected `{expected}`, found `{found}`",
+                                "missing `return` in function `{}` with return type `{ret_name}`",
                                 func.name.name
                             ))
                             .with_label(spark_diagnostics::Label::primary(
                                 body.span,
-                                format!("expected `{expected}`"),
+                                "function body does not return a value on all paths",
                             )),
                         );
                     }
