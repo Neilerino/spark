@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// We use spans as keys because AST nodes don't have IDs. The span
 /// uniquely identifies where in the source the reference occurred.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ResolutionMap {
     /// Identifier resolutions (for `ExprKind::Ident`).
@@ -69,6 +69,25 @@ impl ResolutionMap {
         self.pattern_bindings.get(&span).copied()
     }
 
+    /// Finds the `DefId` for the most specific (smallest) resolved span
+    /// that contains the given byte offset.
+    ///
+    /// Searches identifier resolutions, path resolutions, and pattern
+    /// bindings. When multiple spans match, returns the narrowest one.
+    #[must_use]
+    pub fn find_at_offset(&self, offset: u32) -> Option<(Span, DefId)> {
+        let candidates = self
+            .ident_resolutions
+            .iter()
+            .chain(self.path_resolutions.iter())
+            .chain(self.pattern_bindings.iter());
+
+        candidates
+            .filter(|(span, _)| span.contains(offset))
+            .min_by_key(|(span, _)| span.end - span.start)
+            .map(|(span, def_id)| (*span, *def_id))
+    }
+
     /// Returns the total number of resolutions.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -87,7 +106,7 @@ impl ResolutionMap {
 /// The resolved AST output.
 ///
 /// Contains the original ASTs along with resolution mappings for each file.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ResolvedAst {
     /// The original ASTs (unchanged).
     pub asts: HashMap<FileId, Ast>,
@@ -153,6 +172,40 @@ mod tests {
         map.record_binding(span, def_id);
 
         assert_eq!(map.get_binding(span), Some(def_id));
+    }
+
+    #[test]
+    fn find_at_offset_ident() {
+        let mut map = ResolutionMap::new();
+        let span = Span::new(FileId::new(0), 10, 15);
+        let def_id = DefId::new(0);
+        map.record_ident(span, def_id);
+
+        // Inside the span
+        let result = map.find_at_offset(12);
+        assert_eq!(result, Some((span, def_id)));
+
+        // Outside the span
+        assert!(map.find_at_offset(20).is_none());
+    }
+
+    #[test]
+    fn find_at_offset_picks_narrowest() {
+        let mut map = ResolutionMap::new();
+        let outer = Span::new(FileId::new(0), 0, 20);
+        let inner = Span::new(FileId::new(0), 5, 10);
+        let outer_def = DefId::new(0);
+        let inner_def = DefId::new(1);
+        map.record_path(outer, outer_def);
+        map.record_ident(inner, inner_def);
+
+        // Offset 7 is inside both — should pick inner (narrower)
+        let result = map.find_at_offset(7);
+        assert_eq!(result, Some((inner, inner_def)));
+
+        // Offset 15 is only inside outer
+        let result = map.find_at_offset(15);
+        assert_eq!(result, Some((outer, outer_def)));
     }
 
     #[test]

@@ -51,7 +51,7 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 ---
 
-## Phase 3: Go-to-Definition *(current)*
+## Phase 3: Go-to-Definition ✅
 
 **Goal:** Jump from a name usage to its definition.
 
@@ -61,16 +61,23 @@ This document tracks the incremental path toward full Language Server Protocol s
 **Core crates:** `spark_resolve` (`ResolutionMap`, `DefinitionTable`)
 
 **How it works:**
-1. Find the `Span` at the cursor position
-2. Look up in `ResolutionMap.ident_resolutions` or `path_resolutions` → `DefId`
+1. Convert cursor LSP position to byte offset
+2. Search all `ResolutionMap` entries (ident, path, binding) for the narrowest span containing the offset
 3. Look up `DefId` in `DefinitionTable` → `DefinitionInfo.span`
 4. Convert definition span to LSP `Location`
 
-**Status:** [ ] Not started
+**Implementation notes:**
+- Added `ResolutionMap::find_at_offset()` to search for the most specific span at a byte offset
+- Added `Clone` derives to `ResolutionMap` and `ResolvedAst` so resolver output can be cached before type checking consumes it
+- `AnalysisResult` cached in `DocumentState` on each `did_change`/`did_open`
+- `position_to_offset()` helper added for reverse position conversion
+- Currently single-file only; definition jumps within the same document
+
+**Status:** [x] Complete
 
 ---
 
-## Phase 4: Hover Information
+## Phase 4: Hover Information *(current)*
 
 **Goal:** Show type information and signatures on hover.
 

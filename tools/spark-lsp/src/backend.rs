@@ -11,9 +11,10 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     self, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, InitializedParams, MessageType,
-    SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    GotoDefinitionParams, GotoDefinitionResponse, InitializeParams, InitializeResult,
+    InitializedParams, MessageType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
     TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer};
@@ -26,7 +27,7 @@ use spark_resolve::ResolverInput;
 use spark_span::{FileId, SourceMap};
 use spark_types::TypeCheckerInput;
 
-use crate::document::{self, DocumentState};
+use crate::document::{self, AnalysisResult, DocumentState};
 use crate::semantic_tokens;
 
 /// The LSP server backend.
@@ -50,20 +51,28 @@ impl Backend {
         }
     }
 
-    /// Runs the compiler frontend on a document and publishes diagnostics.
+    /// Runs the compiler frontend on a document, caches analysis results,
+    /// and publishes diagnostics.
     async fn analyze_and_publish(&self, uri: &Url, source: &str, version: Option<i32>) {
-        let lsp_diagnostics = analyze(source, uri);
+        let (lsp_diagnostics, analysis) = analyze(source, uri);
+
+        // Cache analysis result for on-demand queries (go-to-definition, etc.)
+        if let Some(mut doc) = self.documents.get_mut(uri) {
+            doc.analysis = analysis;
+        }
+
         self.client
             .publish_diagnostics(uri.clone(), lsp_diagnostics, version)
             .await;
     }
 }
 
-/// Runs the compiler frontend pipeline and returns LSP diagnostics.
+/// Runs the compiler frontend pipeline and returns LSP diagnostics
+/// plus an optional analysis result for on-demand queries.
 ///
 /// Runs as many phases as possible, collecting all diagnostics.
 /// Parse errors prevent resolve/type-check but are still reported.
-fn analyze(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
+fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<AnalysisResult>) {
     let file_name = uri
         .to_file_path()
         .unwrap_or_else(|()| PathBuf::from("untitled.spark"));
@@ -74,6 +83,7 @@ fn analyze(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
     let rope = ropey::Rope::from_str(source);
 
     let mut all_diagnostics = Diagnostics::new();
+    let mut analysis = None;
 
     // Phase 1: Lex
     let tokens = Lexer::new(file_id, source).tokenize();
@@ -96,6 +106,14 @@ fn analyze(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
             let resolve_output = resolve_names(graph.clone(), file_id, ast);
             all_diagnostics.extend(resolve_output.diagnostics);
 
+            // Cache resolver output for on-demand queries (go-to-definition, etc.)
+            // Clone before type checking consumes ownership.
+            analysis = Some(AnalysisResult {
+                file_id,
+                resolved: resolve_output.resolved.clone(),
+                definitions: resolve_output.definitions.clone(),
+            });
+
             if !all_diagnostics.has_errors() {
                 // Phase 5: Type checking
                 let type_output = spark_types::check(TypeCheckerInput {
@@ -109,10 +127,12 @@ fn analyze(source: &str, uri: &Url) -> Vec<lsp_types::Diagnostic> {
     }
 
     // Convert all collected diagnostics to LSP format
-    all_diagnostics
+    let lsp_diags = all_diagnostics
         .iter()
         .map(|d| document::diagnostic_to_lsp(d, &rope, uri))
-        .collect()
+        .collect();
+
+    (lsp_diags, analysis)
 }
 
 /// Sets up a single-file module graph (mirrors `spark_driver::pipeline`).
@@ -154,6 +174,7 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                definition_provider: Some(lsp_types::OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -203,6 +224,29 @@ impl LanguageServer for Backend {
             result_id: None,
             data: tokens,
         })))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        let location = self.documents.get(uri).and_then(|doc| {
+            let analysis = doc.analysis.as_ref()?;
+            let offset = document::position_to_offset(&doc.rope, position)?;
+            let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
+            let (_span, def_id) = resolutions.find_at_offset(offset)?;
+            let def_info = analysis.definitions.get(def_id)?;
+            let range = document::span_to_range(&doc.rope, def_info.span)?;
+            Some(lsp_types::Location {
+                uri: uri.clone(),
+                range,
+            })
+        });
+
+        Ok(location.map(GotoDefinitionResponse::Scalar))
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
