@@ -77,7 +77,7 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 ---
 
-## Phase 4: Hover Information *(current)*
+## Phase 4: Hover Information ✅
 
 **Goal:** Show type information and signatures on hover.
 
@@ -98,7 +98,7 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 ---
 
-## Phase 5: Find References
+## Phase 5: Find References ✅
 
 **Goal:** Find all usages of a symbol across the file.
 
@@ -109,10 +109,16 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 **How it works:**
 1. Determine the `DefId` at the cursor (via resolution map or definition table)
-2. Scan all entries in `ResolutionMap` for spans that resolve to the same `DefId`
-3. Return as `Vec<Location>`
+2. `ResolutionMap::find_references(DefId)` scans ident and path resolutions for matching spans
+3. If `include_declaration` is true, the definition's own span is appended
+4. Return as `Vec<Location>`
 
-**Status:** [ ] Not started
+**Implementation notes:**
+- Added `ResolutionMap::find_references()` — reverse lookup from `DefId` to all usage spans
+- Pattern bindings are excluded (they are definition sites, not usages)
+- Follows the same handler pattern as go-to-definition and hover
+
+**Status:** [x] Complete
 
 ---
 

@@ -12,10 +12,11 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     self, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, MarkupContent,
-    MarkupKind, MessageType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams, Location,
+    MarkupContent, MarkupKind, MessageType, ReferenceParams, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -277,6 +278,7 @@ impl LanguageServer for Backend {
                 )),
                 definition_provider: Some(lsp_types::OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                references_provider: Some(lsp_types::OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -375,6 +377,42 @@ impl LanguageServer for Backend {
         Ok(hover)
     }
 
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let locations = self.documents.get(uri).and_then(|doc| {
+            let analysis = doc.analysis.as_ref()?;
+            let offset = document::position_to_offset(&doc.rope, position)?;
+            let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
+            let (_span, def_id) = resolutions.find_at_offset(offset)?;
+
+            let mut ref_spans = resolutions.find_references(def_id);
+
+            // Include the definition site if requested
+            if params.context.include_declaration {
+                if let Some(def_info) = analysis.definitions.get(def_id) {
+                    ref_spans.push(def_info.span);
+                }
+            }
+
+            let locs: Vec<Location> = ref_spans
+                .iter()
+                .filter_map(|&span| {
+                    let range = document::span_to_range(&doc.rope, span)?;
+                    Some(Location {
+                        uri: uri.clone(),
+                        range,
+                    })
+                })
+                .collect();
+
+            if locs.is_empty() { None } else { Some(locs) }
+        });
+
+        Ok(locations)
+    }
+
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
         let text = &params.text_document.text;
@@ -412,6 +450,7 @@ impl LanguageServer for Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spark_span::Span;
 
     /// Helper: runs the analyze pipeline and returns the `AnalysisResult`.
     fn analyze_source(source: &str) -> Option<AnalysisResult> {
@@ -425,6 +464,26 @@ mod tests {
         let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
         let (_span, def_id) = resolutions.find_at_offset(offset)?;
         format_hover(analysis, def_id)
+    }
+
+    /// Helper: finds all reference spans for the symbol at a byte offset.
+    fn references_at(
+        analysis: &AnalysisResult,
+        offset: u32,
+        include_declaration: bool,
+    ) -> Option<Vec<Span>> {
+        let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
+        let (_span, def_id) = resolutions.find_at_offset(offset)?;
+
+        let mut spans = resolutions.find_references(def_id);
+
+        if include_declaration {
+            if let Some(def_info) = analysis.definitions.get(def_id) {
+                spans.push(def_info.span);
+            }
+        }
+
+        if spans.is_empty() { None } else { Some(spans) }
     }
 
     #[test]
@@ -520,5 +579,68 @@ mod tests {
                 "Type table should be None when earlier phases fail"
             ),
         }
+    }
+
+    // ── Find References tests ───────────────────────────────────────────
+
+    #[test]
+    fn references_function_called_multiple_times() {
+        let source = "fn add(a: Int, b: Int): Int { return a + b }\nfn main(): Void { add(1, 2)\nadd(3, 4) }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `add` call at offset 63 (first call in main body)
+        let refs = references_at(&analysis, 63, false).expect("should find references");
+        // At least 2 call-site references to `add`
+        assert!(refs.len() >= 2, "Expected >=2 references, got: {}", refs.len());
+    }
+
+    #[test]
+    fn references_variable_in_expression() {
+        let source = "fn main(): Void { x: Int = 42\nx + x }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `x` usage at offset 30 (first `x` after newline)
+        let refs = references_at(&analysis, 30, false).expect("should find references");
+        // `x` is used twice in `x + x`
+        assert!(refs.len() >= 2, "Expected >=2 references, got: {}", refs.len());
+    }
+
+    #[test]
+    fn references_include_declaration_true() {
+        let source = "fn main(): Void { x: Int = 42\nx }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `x` usage at offset 30
+        let refs_with = references_at(&analysis, 30, true).expect("should find references");
+        let refs_without = references_at(&analysis, 30, false).expect("should find references");
+        assert!(
+            refs_with.len() > refs_without.len(),
+            "include_declaration=true should return more spans ({} vs {})",
+            refs_with.len(),
+            refs_without.len()
+        );
+    }
+
+    #[test]
+    fn references_include_declaration_false_excludes_def() {
+        let source = "fn main(): Void { x: Int = 42\nx }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        let def_info_span = {
+            let resolutions = analysis.resolved.get_resolutions(analysis.file_id).unwrap();
+            let (_, def_id) = resolutions.find_at_offset(30).unwrap();
+            analysis.definitions.get(def_id).unwrap().span
+        };
+        let refs = references_at(&analysis, 30, false).expect("should find references");
+        // The definition span should NOT appear in usage-only references
+        assert!(
+            !refs.contains(&def_info_span),
+            "include_declaration=false should not contain the definition span"
+        );
+    }
+
+    #[test]
+    fn references_unknown_position_returns_none() {
+        let source = "fn main(): Void { }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // Offset 0 is `f` in `fn` — a keyword, not a resolved symbol
+        let refs = references_at(&analysis, 0, false);
+        assert!(refs.is_none(), "Expected None for keyword position");
     }
 }

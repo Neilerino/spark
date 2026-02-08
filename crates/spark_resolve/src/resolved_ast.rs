@@ -88,6 +88,20 @@ impl ResolutionMap {
             .map(|(span, def_id)| (*span, *def_id))
     }
 
+    /// Finds all reference spans that resolve to the given `DefId`.
+    ///
+    /// Searches identifier and path resolutions (usage sites). Pattern
+    /// bindings are excluded because they are definition sites, not usages.
+    #[must_use]
+    pub fn find_references(&self, target: DefId) -> Vec<Span> {
+        self.ident_resolutions
+            .iter()
+            .chain(self.path_resolutions.iter())
+            .filter(|(_, &def_id)| def_id == target)
+            .map(|(&span, _)| span)
+            .collect()
+    }
+
     /// Returns the total number of resolutions.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -206,6 +220,52 @@ mod tests {
         // Offset 15 is only inside outer
         let result = map.find_at_offset(15);
         assert_eq!(result, Some((outer, outer_def)));
+    }
+
+    #[test]
+    fn find_references_from_ident_and_path() {
+        let mut map = ResolutionMap::new();
+        let file = FileId::new(0);
+        let target = DefId::new(1);
+        let other = DefId::new(2);
+
+        let span_a = Span::new(file, 10, 15);
+        let span_b = Span::new(file, 30, 35);
+        let span_c = Span::new(file, 50, 55);
+
+        map.record_ident(span_a, target);
+        map.record_path(span_b, target);
+        map.record_ident(span_c, other);
+
+        let mut refs = map.find_references(target);
+        refs.sort_by_key(|s| s.start);
+        assert_eq!(refs, vec![span_a, span_b]);
+    }
+
+    #[test]
+    fn find_references_excludes_pattern_bindings() {
+        let mut map = ResolutionMap::new();
+        let file = FileId::new(0);
+        let target = DefId::new(1);
+
+        let usage = Span::new(file, 20, 25);
+        let binding = Span::new(file, 5, 10);
+
+        map.record_ident(usage, target);
+        map.record_binding(binding, target);
+
+        let refs = map.find_references(target);
+        assert_eq!(refs, vec![usage]);
+    }
+
+    #[test]
+    fn find_references_unknown_def_returns_empty() {
+        let mut map = ResolutionMap::new();
+        let file = FileId::new(0);
+        map.record_ident(Span::new(file, 0, 5), DefId::new(1));
+
+        let refs = map.find_references(DefId::new(99));
+        assert!(refs.is_empty());
     }
 
     #[test]
