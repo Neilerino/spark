@@ -43,6 +43,15 @@ pub struct LoopContext {
     pub break_block: BlockId,
     /// Optional local to store the break value in.
     pub break_value: Option<Local>,
+    /// Scope depth at which this loop was entered.
+    pub scope_depth: usize,
+}
+
+/// Tracks locals that need RC cleanup when a scope exits.
+struct ScopeContext {
+    /// Locals registered for drop in this scope, in allocation order.
+    /// Drops are emitted in reverse (LIFO) order.
+    locals_to_drop: Vec<Local>,
 }
 
 /// Builds a single MIR function from HIR.
@@ -65,6 +74,8 @@ pub struct FunctionBuilder {
     next_block: u32,
     /// Stack of active loop contexts (innermost last).
     pub(crate) loop_stack: Vec<LoopContext>,
+    /// Stack of active scopes for drop elaboration.
+    scope_stack: Vec<ScopeContext>,
 }
 
 impl FunctionBuilder {
@@ -81,6 +92,9 @@ impl FunctionBuilder {
             next_local: 0,
             next_block: 0,
             loop_stack: Vec::new(),
+            scope_stack: vec![ScopeContext {
+                locals_to_drop: Vec::new(),
+            }],
         };
 
         // Local(0) = return place
@@ -210,6 +224,89 @@ impl FunctionBuilder {
         self.loop_stack.last()
     }
 
+    // ── Scope management for drop elaboration ────────────────────
+
+    /// Pushes a new scope onto the scope stack.
+    pub fn push_scope(&mut self) {
+        self.scope_stack.push(ScopeContext {
+            locals_to_drop: Vec::new(),
+        });
+    }
+
+    /// Registers a local for drop when its enclosing scope exits.
+    pub fn register_drop(&mut self, local: Local) {
+        if let Some(scope) = self.scope_stack.last_mut() {
+            scope.locals_to_drop.push(local);
+        }
+    }
+
+    /// Pops the current scope and emits `Drop` statements for all locals
+    /// registered in that scope (in reverse / LIFO order).
+    ///
+    /// If `exclude` is `Some(local)`, that local is skipped (it's the value
+    /// being returned or moved out of the scope).
+    pub fn pop_scope_drops(&mut self, exclude: Option<Local>, span: Span) {
+        if let Some(scope) = self.scope_stack.pop() {
+            for &local in scope.locals_to_drop.iter().rev() {
+                if exclude == Some(local) {
+                    continue;
+                }
+                self.push_stmt(Statement::Drop {
+                    place: Place::from_local(local),
+                    span,
+                });
+            }
+        }
+    }
+
+    /// Emits drops for all scopes (for `return`), excluding one local.
+    pub fn drops_for_return(&mut self, exclude: Option<Local>, span: Span) {
+        // Collect all locals from all scopes (innermost first).
+        let mut all_locals: Vec<Local> = Vec::new();
+        for scope in self.scope_stack.iter().rev() {
+            for &local in scope.locals_to_drop.iter().rev() {
+                if exclude != Some(local) {
+                    all_locals.push(local);
+                }
+            }
+        }
+        for local in all_locals {
+            self.push_stmt(Statement::Drop {
+                place: Place::from_local(local),
+                span,
+            });
+        }
+    }
+
+    /// Emits drops for scopes above the current loop (for `break`/`continue`).
+    pub fn drops_to_loop(&mut self, exclude: Option<Local>, span: Span) {
+        let loop_depth = self
+            .current_loop()
+            .map_or(0, |ctx| ctx.scope_depth);
+
+        // Drop locals from scopes at indices >= loop_depth (innermost first).
+        let mut locals_to_drop: Vec<Local> = Vec::new();
+        for scope in self.scope_stack[loop_depth..].iter().rev() {
+            for &local in scope.locals_to_drop.iter().rev() {
+                if exclude != Some(local) {
+                    locals_to_drop.push(local);
+                }
+            }
+        }
+        for local in locals_to_drop {
+            self.push_stmt(Statement::Drop {
+                place: Place::from_local(local),
+                span,
+            });
+        }
+    }
+
+    /// Returns the current scope depth (used for loop context).
+    #[must_use]
+    pub const fn scope_depth(&self) -> usize {
+        self.scope_stack.len()
+    }
+
     /// Finishes building and returns the completed [`MirFunction`].
     #[must_use]
     pub fn finish(self, param_count: u32, span: Span) -> MirFunction {
@@ -290,6 +387,7 @@ mod tests {
             continue_block: cont,
             break_block: brk,
             break_value: None,
+            scope_depth: fb.scope_depth(),
         });
         assert!(fb.current_loop().is_some());
         assert_eq!(fb.current_loop().unwrap().break_block, brk);

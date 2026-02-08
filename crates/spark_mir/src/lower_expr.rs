@@ -191,10 +191,11 @@ pub fn lower_expr(
 
         // ── Control flow ─────────────────────────────────────────
         HirExprKind::Block { stmts, expr: tail } => {
+            fb.push_scope();
             for s in stmts {
                 lower_stmt(s, fb, mir, type_table, defs);
             }
-            if let Some(tail_expr) = tail {
+            let result = if let Some(tail_expr) = tail {
                 lower_expr(tail_expr, fb, mir, type_table, defs)
             } else {
                 let temp = fb.fresh_temp(expr.ty, expr.span);
@@ -204,7 +205,9 @@ pub fn lower_expr(
                     expr.span,
                 );
                 temp
-            }
+            };
+            fb.pop_scope_drops(Some(result), expr.span);
+            result
         }
 
         HirExprKind::If {
@@ -226,6 +229,8 @@ pub fn lower_expr(
         HirExprKind::Continue => {
             if let Some(ctx) = fb.current_loop() {
                 let target = ctx.continue_block;
+                // Drop locals in scopes above the loop before jumping back.
+                fb.drops_to_loop(None, expr.span);
                 fb.terminate(Terminator::Goto { target });
             }
             // Return a void temp (unreachable in practice)
@@ -596,10 +601,12 @@ fn lower_loop(
     // Jump from current block into header
     fb.terminate(Terminator::Goto { target: header_bb });
 
+    let scope_depth = fb.scope_depth();
     fb.push_loop(LoopContext {
         continue_block: header_bb,
         break_block: break_bb,
         break_value: Some(break_val),
+        scope_depth,
     });
 
     // Lower body in header block
@@ -637,12 +644,17 @@ fn lower_break(
                     val_expr.span,
                 );
             }
-        } else if let Some(dest) = break_local {
-            fb.push_assign(
-                Place::from_local(dest),
-                Rvalue::Use(Operand::Constant(Constant::Void)),
-                expr.span,
-            );
+            // Drop locals in scopes above the loop before jumping out.
+            fb.drops_to_loop(break_local, expr.span);
+        } else {
+            if let Some(dest) = break_local {
+                fb.push_assign(
+                    Place::from_local(dest),
+                    Rvalue::Use(Operand::Constant(Constant::Void)),
+                    expr.span,
+                );
+            }
+            fb.drops_to_loop(None, expr.span);
         }
 
         fb.terminate(Terminator::Goto {
@@ -669,20 +681,24 @@ fn lower_return(
     type_table: &TypeTable,
     defs: &DefinitionTable,
 ) -> Local {
-    if let Some(val_expr) = value {
+    let val_local = if let Some(val_expr) = value {
         let val = lower_expr(val_expr, fb, mir, type_table, defs);
         fb.push_assign(
             Place::from_local(Local::RETURN_PLACE),
             Rvalue::Use(Operand::Copy(Place::from_local(val))),
             val_expr.span,
         );
+        Some(val)
     } else {
         fb.push_assign(
             Place::from_local(Local::RETURN_PLACE),
             Rvalue::Use(Operand::Constant(Constant::Void)),
             expr.span,
         );
-    }
+        None
+    };
+    // Drop all locals in all scopes before returning.
+    fb.drops_for_return(val_local, expr.span);
     fb.terminate(Terminator::Return);
 
     // Start a new dead block so subsequent code (if any) doesn't corrupt

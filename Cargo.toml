@@ -14,6 +14,7 @@ members = [
     "crates/spark_mir",
     "crates/spark_borrow",
     "crates/spark_codegen",
+    "crates/spark_drop",
     "crates/spark_driver",
     "crates/spark_runtime",
     # "crates/spark_cli",
@@ -43,6 +44,7 @@ spark_hir = { path = "crates/spark_hir" }
 spark_mir = { path = "crates/spark_mir" }
 spark_borrow = { path = "crates/spark_borrow" }
 spark_codegen = { path = "crates/spark_codegen" }
+spark_drop = { path = "crates/spark_drop" }
 
 # Error reporting
 thiserror = "1.0"

@@ -33,6 +33,22 @@ pub struct RuntimeStubs {
     pub set_insert: FuncId,
     /// `__spark_rc_release(ptr) -> void`
     pub rc_release: FuncId,
+    /// `__spark_rc_inc(ptr) -> void`
+    pub rc_inc: FuncId,
+    /// `__spark_string_rc_dec(ptr) -> void`
+    pub string_rc_dec: FuncId,
+    /// `__spark_list_rc_dec(ptr, i8) -> void`
+    pub list_rc_dec: FuncId,
+    /// `__spark_map_rc_dec(ptr, i8, i8) -> void`
+    pub map_rc_dec: FuncId,
+    /// `__spark_set_rc_dec(ptr, i8) -> void`
+    pub set_rc_dec: FuncId,
+    /// `__spark_string_cow(ptr) -> ptr`
+    pub string_cow: FuncId,
+    /// `__spark_list_cow(ptr, i8) -> ptr`
+    pub list_cow: FuncId,
+    /// `__spark_map_cow(ptr, i8, i8) -> ptr`
+    pub map_cow: FuncId,
     /// `__spark_print_int(i64) -> void`
     pub print_int: FuncId,
     /// `__spark_print_string(ptr) -> void`
@@ -125,6 +141,62 @@ impl RuntimeStubs {
                 "__spark_rc_release",
                 &[ptr_type],
                 None,
+                call_conv,
+            ),
+            rc_inc: declare_fn(
+                module,
+                "__spark_rc_inc",
+                &[ptr_type],
+                None,
+                call_conv,
+            ),
+            string_rc_dec: declare_fn(
+                module,
+                "__spark_string_rc_dec",
+                &[ptr_type],
+                None,
+                call_conv,
+            ),
+            list_rc_dec: declare_fn(
+                module,
+                "__spark_list_rc_dec",
+                &[ptr_type, types::I8],
+                None,
+                call_conv,
+            ),
+            map_rc_dec: declare_fn(
+                module,
+                "__spark_map_rc_dec",
+                &[ptr_type, types::I8, types::I8],
+                None,
+                call_conv,
+            ),
+            set_rc_dec: declare_fn(
+                module,
+                "__spark_set_rc_dec",
+                &[ptr_type, types::I8],
+                None,
+                call_conv,
+            ),
+            string_cow: declare_fn(
+                module,
+                "__spark_string_cow",
+                &[ptr_type],
+                Some(ptr_type),
+                call_conv,
+            ),
+            list_cow: declare_fn(
+                module,
+                "__spark_list_cow",
+                &[ptr_type, types::I8],
+                Some(ptr_type),
+                call_conv,
+            ),
+            map_cow: declare_fn(
+                module,
+                "__spark_map_cow",
+                &[ptr_type, types::I8, types::I8],
+                Some(ptr_type),
                 call_conv,
             ),
             print_int: declare_fn(

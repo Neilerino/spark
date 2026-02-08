@@ -28,57 +28,58 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 32    | Complete |
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
-| `spark_runtime`     | `extern "C"` runtime library (print, strings, collections)     | —     | Complete |
+| `spark_drop`        | Type queries for RC/drop decisions (`needs_rc`, etc.)          | 11    | Complete |
+| `spark_runtime`     | `extern "C"` runtime library (print, strings, collections, RC) | —     | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
-**Total: 540+ tests passing across workspace.**
+**Total: 568 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
 ### Runtime & Driver
 
-- **`spark_runtime`**: Static library (`libspark_runtime.a`) with `extern "C"` FFI functions for print, strings, and collections. Strings are `Box<String>` behind an opaque `*mut u8` pointer. `__spark_string_from_literal(ptr, len)` creates a heap string; `__spark_print_string/int/bool/float` dispatch at codegen time based on argument type. Collections use type-erased backing: `SparkList` (growable array), `SparkMap` (linear-scan), `SparkSet` (list + dedup). All parameterized by element byte size.
+- **`spark_runtime`**: Static library (`libspark_runtime.a`) with `extern "C"` FFI functions for print, strings, collections, and reference counting. All heap types use custom `repr(C)` structs with `rc: usize` as the first field. `SparkString` manages its own UTF-8 buffer (`{ rc, data, len, cap }`). `__spark_string_from_literal(ptr, len)` creates a heap string; `__spark_print_string/int/bool/float` dispatch at codegen time based on argument type. Collections use type-erased backing: `SparkList` (growable array), `SparkMap` (linear-scan), `SparkSet` (list + dedup). All parameterized by element byte size. RC operations: `__spark_rc_inc(ptr)` is generic (rc at offset 0); type-specific `_rc_dec` functions handle nested element cleanup and freeing. COW copy functions prepared for future mutation support.
 - **`spark_driver`**: CLI binary (`spark build <file> [-o out]`, `spark run <file>`). Chains the full pipeline, writes the object file to a temp path, invokes `cc` to link against `libspark_runtime.a`, and optionally runs the result.
 - **`install.sh`**: Builds in release mode and copies `spark` + `libspark_runtime.a` to a prefix directory (default `~/.local`).
 
-### Recent: Collection Support (List, Map, Set)
+### Recent: RC Infrastructure & Drop Elaboration
 
-Collection literals and index access work end-to-end. `[10, 20, 30]` creates a real heap-backed list.
+COW value semantics with reference counting (Swift model). All heap-allocated values now properly freed.
+
+**New crate:**
+- `spark_drop`: Type query functions — `needs_rc(ty, table)`, `element_needs_rc()`, `map_key_val_needs_rc()`. Determines which types need RC operations. Used by MIR lowering and codegen.
 
 **Changes made:**
-- `spark_runtime/src/lib.rs`: Replaced collection stubs with real type-erased implementations:
-  - `SparkList`: `__spark_list_new(elem_size)`, `__spark_list_push(list, elem_ptr)`, `__spark_list_get(list, index)` — growable array with bounds checking
-  - `SparkMap`: `__spark_map_new(key_size, value_size)`, `__spark_map_insert(map, key, val)`, `__spark_map_get(map, key)` — linear-scan with memcmp
-  - `SparkSet`: `__spark_set_new(elem_size)`, `__spark_set_insert(set, elem)` — list-backed with dedup
-- `spark_codegen/cranelift/runtime.rs`: Updated `RuntimeStubs` — `list_new`/`map_new`/`set_new` now accept size parameters; added `list_push`, `list_get`, `map_insert`, `map_get`, `set_insert` FuncIds
-- `spark_codegen/cranelift/emit_rvalue.rs`: Threaded `module` through `emit_place_addr`/`emit_place_read`/`emit_discriminant`. `AggregateKind::List` calls `list_new` + `list_push` per element (scalars stored to temp stack slots for pointer passing). Map/Set follow same pattern. `Projection::Index` for `List` calls `list_get`; for `Map` calls `map_get`.
-- Added `store_scalar_to_temp` and `emit_operand_addr` helpers for passing register values as pointers to runtime functions
+- `spark_runtime/src/lib.rs`: Replaced `Box<String>` with custom `SparkString { rc, data, len, cap }`. Added `rc: usize` as first field to all heap types. All `_new` functions initialize `rc: 1`. Added `__spark_rc_inc(ptr)` (generic), type-specific `_rc_dec` functions with nested element cleanup, and COW copy functions (prepared for future use).
+- `spark_mir/src/builder.rs`: Added `ScopeContext` tracking with `locals_to_drop` for LIFO drop elaboration. Methods: `push_scope()`, `pop_scope_drops()`, `register_drop()`, `drops_for_return()`, `drops_to_loop()`.
+- `spark_mir/src/lower_stmt.rs`: Registers RC'd locals for drop on `Let`. Drops old value before reassignment on `Assign`. Drops discarded RC'd temps on `Expr`.
+- `spark_mir/src/lower_expr.rs`: Blocks push/pop scopes. Return/break/continue emit drops before jumping.
+- `spark_mir/src/lower_function.rs`: RC'd parameters registered for drop (caller inc'd, callee dec's). Fallthrough path emits drops before Return.
+- `spark_codegen/cranelift/runtime.rs`: Declared 8 new stubs: `rc_inc`, `string_rc_dec`, `list_rc_dec`, `map_rc_dec`, `set_rc_dec`, `string_cow`, `list_cow`, `map_cow`.
+- `spark_codegen/cranelift/emit_stmt.rs`: `Statement::Drop` now emits type-dispatched `_rc_dec` calls (was no-op). `Operand::Copy` emits `rc_inc` for RC'd types.
+- `spark_codegen/cranelift/emit_rvalue.rs`: `Operand::Copy` emits `__spark_rc_inc` for RC'd types. `Operand::Move` transfers without RC change.
+
+### Earlier: Collection Support (List, Map, Set)
+
+Collection literals and index access work end-to-end. `[10, 20, 30]` creates a real heap-backed list.
 
 ### Earlier: Real String Support
 
 String literals work end-to-end. `print("hello world")` produces output.
 
-**Changes made:**
-- `spark_runtime`: `__spark_string_new` / `__spark_string_from_literal` allocate real `Box<String>`; added `__spark_print_string`
-- `spark_codegen/cranelift/runtime.rs`: Declared `print_string`, `print_bool`, `print_float` stubs
-- `spark_codegen/cranelift/context.rs`: `FunctionContext` now carries `&RuntimeStubs`
-- `spark_codegen/cranelift/emit_rvalue.rs`: `Constant::String` calls `__spark_string_from_literal(ptr, len)` instead of returning a raw pointer
-- `spark_codegen/cranelift/emit_term.rs`: Built-in `print` dispatches by argument type (`Ty::String` → `print_string`, `Ty::Bool` → `print_bool`, `Ty::Float` → `print_float`, default → `print_int`). Uses `resolve_callee_def_id()` to trace function references through MIR locals.
-- `spark_types/checker.rs`: `print` signature broadened from `(Int): Void` to `(Int | Float | Bool | String): Void`
-
 ## What's Next
 
 ### Suggested Next Steps (in rough priority order)
 
-1. **Drop elaboration** — `Statement::Drop` exists in MIR but is a no-op in codegen (`emit_stmt.rs:56`). Insert drops at scope exits, emit `__spark_rc_release` (or type-specific drop functions) for heap types. Needed to avoid leaking strings/collections.
-2. **Collection methods** — `.append()`, `.len()`, `.remove()`, `.contains()`, etc. Need method resolution infrastructure or special-cased built-in dispatch (like `print`). Runtime stubs straightforward to add; the challenge is method call syntax resolution.
+1. **COW mutation hooks** — Runtime COW functions (`__spark_string_cow`, `__spark_list_cow`, `__spark_map_cow`) are prepared but not wired into codegen. Wire up when mutable collection operations are implemented: before any mutation, emit COW uniqueness check (if RC>1, copy buffer first).
+2. **Collection methods** — `.append()`, `.len()`, `.remove()`, `.contains()`, etc. Need method resolution infrastructure or special-cased built-in dispatch (like `print`). Each mutation method should emit COW check first.
 3. **`??` / `?.` desugaring** — HIR stubs exist (`desugar.rs:35`, `desugar.rs:80`) but need a `DefId` allocator for synthetic bindings.
 4. **`is` type test** — MIR stub (`lower_expr.rs:289`). Lower to discriminant extraction + comparison. Codegen already handles `Rvalue::Discriminant` and `SwitchInt`.
 5. **Match exhaustiveness checking** — Would go in `spark_types`. Report missing/unreachable patterns.
 6. **Method resolution & interface bindings** — Dot-call syntax, `binding Foo for Bar` validation. Prerequisite for collection methods via normal syntax.
 7. **`!` propagation operator** — Needs union type analysis to distinguish success/error variants.
 8. **Generic instantiation** — `Ty::Param` exists but isn't used. Needs monomorphization.
-9. **`spark_opt`** — MIR optimization passes (constant folding, DCE, SSA, copy propagation). Inserts between borrow and codegen. Performance-only; correctness is unaffected.
+9. **`spark_opt`** — MIR optimization passes (constant folding, DCE, SSA, copy propagation, RC elision). Inserts between borrow and codegen. Performance-only; correctness is unaffected.
 10. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support.
 11. **Async/await/spawn** — Future types, state machine transform, runtime executor.
 12. **String interpolation** — Lexer + parser changes for `"hello {expr}"` syntax.
@@ -100,7 +101,7 @@ String literals work end-to-end. `print("hello world")` produces output.
 7. MIR Construction (spark_mir) ✅
 8. Borrow Checking (spark_borrow) ✅
 9. Code Generation (spark_codegen) ✅
-10. Runtime (spark_runtime) ✅ (strings, print, collections working; RC stubs remain)
+10. Runtime (spark_runtime) ✅ (strings, print, collections, RC implemented)
 11. Driver (spark_driver) ✅ (`spark build` / `spark run`)
 12. Optimization (spark_opt) — not started, optional
 
@@ -117,9 +118,10 @@ spark_modules       (depends on span, intern, diagnostics, ast)
 spark_resolve       (depends on span, intern, diagnostics, ast, modules)
 spark_types         (depends on span, intern, diagnostics, ast, modules, resolve)
 spark_hir           (depends on span, intern, diagnostics, ast, modules, resolve, types)
-spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, hir)
+spark_drop          (depends on types)
+spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, hir, drop)
 spark_borrow        (depends on span, intern, diagnostics, resolve, types, mir)
-spark_codegen       (depends on span, intern, diagnostics, ast, resolve, types, mir + cranelift)
+spark_codegen       (depends on span, intern, diagnostics, ast, resolve, types, mir, drop + cranelift)
 spark_runtime       (no internal dependencies — standalone staticlib)
 spark_driver        (depends on all pipeline crates + codegen + clap)
 ```
@@ -136,6 +138,7 @@ spark_driver        (depends on all pipeline crates + codegen + clap)
 8. **Double-parse workaround** - Type checker consumes ASTs, so test helpers re-parse + re-resolve for HIR/MIR input.
 9. **Lifetime system** - `LifetimeId` in `Ty::Ref`, interned in `TypeTable`. `LifetimeId::ANONYMOUS` (0) is the default inferred lifetime. Parser already extracts lifetimes from `Ref[T, A]` syntax.
 10. **Borrow checker architecture** - NLL-style: fact extraction → liveness → region inference → conflict detection. Functions without `Ref` types skip the analysis entirely.
+11. **Reference counting** - COW value semantics (Swift model). `spark_drop::needs_rc()` determines which types need RC. `Operand::Copy` emits `rc_inc`; `Operand::Move` does not. `Statement::Drop` emits type-specific `_rc_dec`. Scope tracking in MIR builder handles drop elaboration at scope exits, returns, break/continue. Parameters are RC'd (caller inc's, callee dec's at scope exit).
 
 ## Notes for Next Agent
 
@@ -205,7 +208,7 @@ fn main(): Int {
 
 ```bash
 cargo build                      # Build all
-cargo test                       # Test all (540+ tests)
+cargo test                       # Test all (568 tests)
 cargo clippy                     # Lint all
 cargo test -p spark_codegen      # Test code generator
 cargo doc --open                 # View documentation

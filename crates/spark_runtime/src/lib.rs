@@ -3,6 +3,11 @@
 //! Provides `extern "C"` functions that are called by compiled Spark programs.
 //! This crate is compiled as a static library (`libspark_runtime.a`) and linked
 //! into every Spark executable.
+//!
+//! All heap-allocated types (`SparkString`, `SparkList`, `SparkMap`) start with
+//! a `rc: usize` field for reference counting. The generic `__spark_rc_inc`
+//! function works on any heap object (rc is always at offset 0). Type-specific
+//! `_rc_dec` functions handle deallocation when the count reaches zero.
 
 // Safety: This crate is an FFI boundary — `#[no_mangle]` and raw pointers
 // are required for the C ABI. No actual unsafe blocks are used.
@@ -44,8 +49,14 @@ pub extern "C" fn __spark_print_float(value: f64) {
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_print_string(ptr: *mut u8) {
-    let s = unsafe { &*(ptr.cast::<String>()) };
-    println!("{s}");
+    let s = unsafe { &*(ptr.cast::<SparkString>()) };
+    if s.len == 0 {
+        println!();
+        return;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(s.data, s.len) };
+    let text = std::str::from_utf8(slice).unwrap_or("<invalid utf-8>");
+    println!("{text}");
 }
 
 /// Prints an empty newline.
@@ -55,17 +66,38 @@ pub extern "C" fn __spark_println() {
 }
 
 // =============================================================================
-// String functions
+// String — heap-allocated UTF-8 string with reference counting
 // =============================================================================
 
-/// Creates a new empty heap-allocated string.
+/// A heap-allocated UTF-8 string with a reference count.
+///
+/// The `rc` field is always at offset 0, allowing generic RC operations.
+#[repr(C)]
+struct SparkString {
+    /// Reference count.
+    rc: usize,
+    /// Pointer to the UTF-8 byte buffer.
+    data: *mut u8,
+    /// Number of valid bytes.
+    len: usize,
+    /// Allocated capacity in bytes.
+    cap: usize,
+}
+
+/// Creates a new empty heap-allocated string (rc = 1).
 #[no_mangle]
 pub extern "C" fn __spark_string_new() -> *mut u8 {
-    let s = Box::new(String::new());
+    let s = Box::new(SparkString {
+        rc: 1,
+        data: std::ptr::null_mut(),
+        len: 0,
+        cap: 0,
+    });
     Box::into_raw(s).cast::<u8>()
 }
 
 /// Creates a heap-allocated string from a UTF-8 literal (pointer + length).
+/// The returned string has rc = 1.
 ///
 /// # Safety
 ///
@@ -73,21 +105,43 @@ pub extern "C" fn __spark_string_new() -> *mut u8 {
 #[no_mangle]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub unsafe extern "C" fn __spark_string_from_literal(data: *const u8, len: i64) -> *mut u8 {
-    let slice = unsafe { std::slice::from_raw_parts(data, len as usize) };
-    let s = Box::new(String::from_utf8_lossy(slice).into_owned());
+    let byte_len = len as usize;
+    let align = std::mem::align_of::<u64>();
+
+    if byte_len == 0 {
+        return __spark_string_new();
+    }
+
+    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(byte_len, align) };
+    let buf = unsafe { std::alloc::alloc(layout) };
+    if buf.is_null() {
+        eprintln!("spark: out of memory allocating string");
+        std::process::abort();
+    }
+    unsafe { std::ptr::copy_nonoverlapping(data, buf, byte_len) };
+
+    let s = Box::new(SparkString {
+        rc: 1,
+        data: buf,
+        len: byte_len,
+        cap: byte_len,
+    });
     Box::into_raw(s).cast::<u8>()
 }
 
 // =============================================================================
-// List — type-erased growable array
+// List — type-erased growable array with reference counting
 // =============================================================================
 
 /// Minimum capacity for list/set/map backing arrays.
 const MIN_CAP: usize = 4;
 
 /// Type-erased growable list. All elements are stored as raw bytes.
+/// The `rc` field is always at offset 0 for generic RC operations.
 #[repr(C)]
 struct SparkList {
+    /// Reference count.
+    rc: usize,
     /// Pointer to the contiguous data buffer.
     data: *mut u8,
     /// Number of elements currently stored.
@@ -98,7 +152,7 @@ struct SparkList {
     elem_size: usize,
 }
 
-/// Creates a new empty list for elements of the given byte size.
+/// Creates a new empty list for elements of the given byte size (rc = 1).
 ///
 /// # Safety
 ///
@@ -107,6 +161,7 @@ struct SparkList {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub extern "C" fn __spark_list_new(elem_size: i64) -> *mut u8 {
     let list = Box::new(SparkList {
+        rc: 1,
         data: std::ptr::null_mut(),
         len: 0,
         cap: 0,
@@ -175,12 +230,15 @@ fn list_grow(list: &mut SparkList) {
 }
 
 // =============================================================================
-// Map — type-erased linear-scan map
+// Map — type-erased linear-scan map with reference counting
 // =============================================================================
 
 /// Type-erased linear-scan map. Keys and values are stored as raw bytes.
+/// The `rc` field is always at offset 0 for generic RC operations.
 #[repr(C)]
 struct SparkMap {
+    /// Reference count.
+    rc: usize,
     /// Pointer to contiguous key buffer.
     keys: *mut u8,
     /// Pointer to contiguous value buffer.
@@ -195,7 +253,7 @@ struct SparkMap {
     value_size: usize,
 }
 
-/// Creates a new empty map for keys of `key_size` bytes and values of `value_size` bytes.
+/// Creates a new empty map for keys of `key_size` bytes and values of `value_size` bytes (rc = 1).
 ///
 /// # Safety
 ///
@@ -204,6 +262,7 @@ struct SparkMap {
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub extern "C" fn __spark_map_new(key_size: i64, value_size: i64) -> *mut u8 {
     let map = Box::new(SparkMap {
+        rc: 1,
         keys: std::ptr::null_mut(),
         values: std::ptr::null_mut(),
         len: 0,
@@ -372,11 +431,359 @@ unsafe fn libc_memcmp(a: *const u8, b: *const u8, len: usize) -> bool {
 }
 
 // =============================================================================
-// Reference counting stubs (placeholders)
+// Reference counting
 // =============================================================================
 
-/// Releases a reference-counted object. No-op (placeholder).
+/// Increments the reference count of any heap-allocated Spark object.
+///
+/// Works generically because `rc: usize` is always the first field (offset 0)
+/// in `SparkString`, `SparkList`, and `SparkMap`.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer to a Spark heap object whose first field
+/// is `rc: usize`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_rc_inc(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    let rc_ptr = ptr.cast::<usize>();
+    unsafe { *rc_ptr += 1 };
+}
+
+/// Decrements the reference count of a `SparkString`.
+/// Frees the string when the count reaches zero.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_string_new` or
+/// `__spark_string_from_literal`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_rc_dec(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    let s = unsafe { &mut *(ptr.cast::<SparkString>()) };
+    s.rc -= 1;
+    if s.rc == 0 {
+        // Free the data buffer.
+        if !s.data.is_null() && s.cap > 0 {
+            let align = std::mem::align_of::<u64>();
+            let layout =
+                unsafe { std::alloc::Layout::from_size_align_unchecked(s.cap, align) };
+            unsafe { std::alloc::dealloc(s.data, layout) };
+        }
+        // Free the SparkString struct itself.
+        drop(unsafe { Box::from_raw(ptr.cast::<SparkString>()) });
+    }
+}
+
+/// Decrements the reference count of a `SparkList`.
+/// If `elem_rc` is non-zero and the list is being freed, decrements
+/// the RC of each element pointer before freeing the list.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_list_new`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_list_rc_dec(ptr: *mut u8, elem_rc: i8) {
+    if ptr.is_null() {
+        return;
+    }
+    let list = unsafe { &mut *(ptr.cast::<SparkList>()) };
+    list.rc -= 1;
+    if list.rc == 0 {
+        // If elements are RC'd, dec each one.
+        if elem_rc != 0 && !list.data.is_null() {
+            for i in 0..list.len {
+                let elem_ptr_loc = unsafe { list.data.add(i * list.elem_size) };
+                // Each element is itself a pointer to an RC object.
+                let inner_ptr = unsafe { *(elem_ptr_loc.cast::<*mut u8>()) };
+                if !inner_ptr.is_null() {
+                    // Generic dec — the caller knows the element type and will
+                    // have arranged for the correct typed rc_dec. For simplicity,
+                    // we use a generic dec here that just decrements the RC field.
+                    // This works because all Spark heap types start with rc:usize.
+                    let rc_field = unsafe { &mut *(inner_ptr.cast::<usize>()) };
+                    *rc_field -= 1;
+                    // Note: this does NOT recursively free sub-objects.
+                    // For v1, nested RC dec is one level deep.
+                    // A production implementation would need a type-dispatch table.
+                }
+            }
+        }
+        // Free the data buffer.
+        if !list.data.is_null() && list.cap > 0 {
+            let align = std::mem::align_of::<u64>();
+            let buf_size = list.cap * list.elem_size;
+            let layout =
+                unsafe { std::alloc::Layout::from_size_align_unchecked(buf_size, align) };
+            unsafe { std::alloc::dealloc(list.data, layout) };
+        }
+        // Free the SparkList struct itself.
+        drop(unsafe { Box::from_raw(ptr.cast::<SparkList>()) });
+    }
+}
+
+/// Decrements the reference count of a `SparkMap`.
+/// If `key_rc` / `val_rc` are non-zero, decrements RC of corresponding
+/// element pointers before freeing.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_map_new`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_map_rc_dec(ptr: *mut u8, key_rc: i8, val_rc: i8) {
+    if ptr.is_null() {
+        return;
+    }
+    let map = unsafe { &mut *(ptr.cast::<SparkMap>()) };
+    map.rc -= 1;
+    if map.rc == 0 {
+        // Dec RC of keys if they're RC'd.
+        if key_rc != 0 && !map.keys.is_null() {
+            for i in 0..map.len {
+                let key_loc = unsafe { map.keys.add(i * map.key_size) };
+                let inner = unsafe { *(key_loc.cast::<*mut u8>()) };
+                if !inner.is_null() {
+                    let rc_field = unsafe { &mut *(inner.cast::<usize>()) };
+                    *rc_field -= 1;
+                }
+            }
+        }
+        // Dec RC of values if they're RC'd.
+        if val_rc != 0 && !map.values.is_null() {
+            for i in 0..map.len {
+                let val_loc = unsafe { map.values.add(i * map.value_size) };
+                let inner = unsafe { *(val_loc.cast::<*mut u8>()) };
+                if !inner.is_null() {
+                    let rc_field = unsafe { &mut *(inner.cast::<usize>()) };
+                    *rc_field -= 1;
+                }
+            }
+        }
+        // Free key buffer.
+        if !map.keys.is_null() && map.cap > 0 {
+            let align = std::mem::align_of::<u64>();
+            let key_buf_size = map.cap * map.key_size;
+            let layout =
+                unsafe { std::alloc::Layout::from_size_align_unchecked(key_buf_size, align) };
+            unsafe { std::alloc::dealloc(map.keys, layout) };
+        }
+        // Free value buffer.
+        if !map.values.is_null() && map.cap > 0 {
+            let align = std::mem::align_of::<u64>();
+            let val_buf_size = map.cap * map.value_size;
+            let layout =
+                unsafe { std::alloc::Layout::from_size_align_unchecked(val_buf_size, align) };
+            unsafe { std::alloc::dealloc(map.values, layout) };
+        }
+        // Free the SparkMap struct itself.
+        drop(unsafe { Box::from_raw(ptr.cast::<SparkMap>()) });
+    }
+}
+
+/// Decrements the reference count of a set (which is a `SparkList` internally).
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_set_new`.
+#[no_mangle]
+pub unsafe extern "C" fn __spark_set_rc_dec(ptr: *mut u8, elem_rc: i8) {
+    unsafe { __spark_list_rc_dec(ptr, elem_rc) };
+}
+
+// =============================================================================
+// COW (Copy-on-Write) helpers — prepared for mutation operations
+// =============================================================================
+
+/// Returns the pointer unchanged if rc == 1 (unique owner).
+/// If rc > 1, copies the string buffer, decrements the old rc, and returns
+/// a new `SparkString` with rc = 1.
+///
+/// # Safety
+///
+/// `ptr` must be a valid `SparkString` pointer.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_cow(ptr: *mut u8) -> *mut u8 {
+    if ptr.is_null() {
+        return ptr;
+    }
+    let s = unsafe { &*(ptr.cast::<SparkString>()) };
+    if s.rc == 1 {
+        return ptr;
+    }
+    // Clone the buffer.
+    let new_ptr = if s.len > 0 && !s.data.is_null() {
+        let align = std::mem::align_of::<u64>();
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(s.len, align) };
+        let buf = unsafe { std::alloc::alloc(layout) };
+        if buf.is_null() {
+            eprintln!("spark: out of memory in string COW copy");
+            std::process::abort();
+        }
+        unsafe { std::ptr::copy_nonoverlapping(s.data, buf, s.len) };
+        buf
+    } else {
+        std::ptr::null_mut()
+    };
+    let new = Box::new(SparkString {
+        rc: 1,
+        data: new_ptr,
+        len: s.len,
+        cap: s.len,
+    });
+    // Decrement old rc.
+    let old = unsafe { &mut *(ptr.cast::<SparkString>()) };
+    old.rc -= 1;
+    Box::into_raw(new).cast::<u8>()
+}
+
+/// COW for lists. If rc > 1, shallow-copies the data buffer and `rc_inc`
+/// each element if `elem_rc` is set.
+///
+/// # Safety
+///
+/// `ptr` must be a valid `SparkList` pointer.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8, elem_rc: i8) -> *mut u8 {
+    if ptr.is_null() {
+        return ptr;
+    }
+    let list = unsafe { &*(ptr.cast::<SparkList>()) };
+    if list.rc == 1 {
+        return ptr;
+    }
+    // Allocate new data buffer.
+    let buf_size = list.cap * list.elem_size;
+    let align = std::mem::align_of::<u64>();
+    let new_data = if buf_size > 0 && !list.data.is_null() {
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(buf_size, align) };
+        let buf = unsafe { std::alloc::alloc(layout) };
+        if buf.is_null() {
+            eprintln!("spark: out of memory in list COW copy");
+            std::process::abort();
+        }
+        unsafe { std::ptr::copy_nonoverlapping(list.data, buf, list.len * list.elem_size) };
+        // rc_inc each element if they're RC'd.
+        if elem_rc != 0 {
+            for i in 0..list.len {
+                let elem_loc = unsafe { buf.add(i * list.elem_size) };
+                let inner = unsafe { *(elem_loc.cast::<*mut u8>()) };
+                if !inner.is_null() {
+                    unsafe { __spark_rc_inc(inner) };
+                }
+            }
+        }
+        buf
+    } else {
+        std::ptr::null_mut()
+    };
+    let new = Box::new(SparkList {
+        rc: 1,
+        data: new_data,
+        len: list.len,
+        cap: list.cap,
+        elem_size: list.elem_size,
+    });
+    // Decrement old rc.
+    let old = unsafe { &mut *(ptr.cast::<SparkList>()) };
+    old.rc -= 1;
+    Box::into_raw(new).cast::<u8>()
+}
+
+/// COW for maps.
+///
+/// # Safety
+///
+/// `ptr` must be a valid `SparkMap` pointer.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8, key_rc: i8, val_rc: i8) -> *mut u8 {
+    if ptr.is_null() {
+        return ptr;
+    }
+    let map = unsafe { &*(ptr.cast::<SparkMap>()) };
+    if map.rc == 1 {
+        return ptr;
+    }
+    let align = std::mem::align_of::<u64>();
+    // Copy keys buffer.
+    let key_buf_size = map.cap * map.key_size;
+    let new_keys = if key_buf_size > 0 && !map.keys.is_null() {
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(key_buf_size, align) };
+        let buf = unsafe { std::alloc::alloc(layout) };
+        if buf.is_null() {
+            eprintln!("spark: out of memory in map COW copy");
+            std::process::abort();
+        }
+        unsafe { std::ptr::copy_nonoverlapping(map.keys, buf, map.len * map.key_size) };
+        if key_rc != 0 {
+            for i in 0..map.len {
+                let loc = unsafe { buf.add(i * map.key_size) };
+                let inner = unsafe { *(loc.cast::<*mut u8>()) };
+                if !inner.is_null() {
+                    unsafe { __spark_rc_inc(inner) };
+                }
+            }
+        }
+        buf
+    } else {
+        std::ptr::null_mut()
+    };
+    // Copy values buffer.
+    let val_buf_size = map.cap * map.value_size;
+    let new_values = if val_buf_size > 0 && !map.values.is_null() {
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(val_buf_size, align) };
+        let buf = unsafe { std::alloc::alloc(layout) };
+        if buf.is_null() {
+            eprintln!("spark: out of memory in map COW copy");
+            std::process::abort();
+        }
+        unsafe { std::ptr::copy_nonoverlapping(map.values, buf, map.len * map.value_size) };
+        if val_rc != 0 {
+            for i in 0..map.len {
+                let loc = unsafe { buf.add(i * map.value_size) };
+                let inner = unsafe { *(loc.cast::<*mut u8>()) };
+                if !inner.is_null() {
+                    unsafe { __spark_rc_inc(inner) };
+                }
+            }
+        }
+        buf
+    } else {
+        std::ptr::null_mut()
+    };
+    let new = Box::new(SparkMap {
+        rc: 1,
+        keys: new_keys,
+        values: new_values,
+        len: map.len,
+        cap: map.cap,
+        key_size: map.key_size,
+        value_size: map.value_size,
+    });
+    // Decrement old rc.
+    let old = unsafe { &mut *(ptr.cast::<SparkMap>()) };
+    old.rc -= 1;
+    Box::into_raw(new).cast::<u8>()
+}
+
+// =============================================================================
+// Legacy compatibility
+// =============================================================================
+
+/// Releases a reference-counted object. Legacy stub — use type-specific
+/// `_rc_dec` functions instead.
 #[no_mangle]
 pub extern "C" fn __spark_rc_release(_ptr: *mut u8) {
-    // No-op until RC is implemented
+    // No-op — kept for backward compatibility.
+    // New code should use __spark_string_rc_dec, __spark_list_rc_dec, etc.
 }

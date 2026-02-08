@@ -83,7 +83,18 @@ pub fn emit_operand<M: Module>(
     module: &mut M,
 ) -> Option<Value> {
     match operand {
-        Operand::Copy(place) | Operand::Move(place) => {
+        Operand::Copy(place) => {
+            let val = emit_place_read(ctx, place, table, module);
+            // RC inc: when copying an RC'd value, increment its reference count.
+            let ty_id = ctx.local_type_id(place.local);
+            if spark_drop::needs_rc(ty_id, table) {
+                let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
+                ctx.builder.ins().call(func_ref, &[val]);
+            }
+            Some(val)
+        }
+        Operand::Move(place) => {
+            // Move: no RC change — ownership transfers.
             Some(emit_place_read(ctx, place, table, module))
         }
         Operand::Constant(constant) => {

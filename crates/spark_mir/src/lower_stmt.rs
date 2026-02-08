@@ -37,11 +37,26 @@ pub fn lower_stmt(
                 rvalue: Rvalue::Use(Operand::Copy(Place::from_local(val_local))),
                 span: value.span,
             });
+
+            // Register for drop if the type is reference-counted.
+            if spark_drop::needs_rc(value.ty, type_table) {
+                fb.register_drop(local);
+            }
         }
 
         HirStmt::Assign { target, value } => {
             let val_local = lower_expr(value, fb, mir, type_table, defs);
             let place = lower_place(target, fb, mir, type_table, defs);
+
+            // If reassigning a mutable RC variable, drop the old value first.
+            if place.projections.is_empty()
+                && spark_drop::needs_rc(value.ty, type_table)
+            {
+                fb.push_stmt(Statement::Drop {
+                    place: place.clone(),
+                    span: value.span,
+                });
+            }
 
             fb.push_stmt(Statement::Assign {
                 place,
@@ -51,8 +66,15 @@ pub fn lower_stmt(
         }
 
         HirStmt::Expr(expr) => {
-            // Evaluate for side effects; discard result
-            let _ = lower_expr(expr, fb, mir, type_table, defs);
+            // Evaluate for side effects; discard result.
+            let result = lower_expr(expr, fb, mir, type_table, defs);
+            // If the discarded result is RC'd, drop it immediately.
+            if spark_drop::needs_rc(expr.ty, type_table) {
+                fb.push_stmt(Statement::Drop {
+                    place: Place::from_local(result),
+                    span: expr.span,
+                });
+            }
         }
     }
 }

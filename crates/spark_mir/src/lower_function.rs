@@ -26,6 +26,12 @@ pub fn lower_function(
     for param in &hir_fn.params {
         let local = alloc_param(&mut fb, param, defs);
         fb.register_def(param.def_id, local);
+
+        // Register RC'd parameters for drop at scope exit.
+        // The caller rc_inc'd the argument, so the callee must rc_dec.
+        if spark_drop::needs_rc(param.ty, type_table) {
+            fb.register_drop(local);
+        }
     }
 
     let param_count = u32::try_from(hir_fn.params.len()).unwrap_or(u32::MAX);
@@ -40,6 +46,8 @@ pub fn lower_function(
             rvalue: Rvalue::Use(Operand::Constant(crate::mir::Constant::Void)),
             span: hir_fn.body.span,
         });
+        // Drop all remaining locals before the fallthrough return.
+        fb.drops_for_return(None, hir_fn.body.span);
         fb.terminate(Terminator::Return);
     }
 

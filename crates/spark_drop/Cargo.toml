@@ -1,0 +1,13 @@
+[package]
+name = "spark_drop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Drop elaboration and RC type queries for the Spark compiler"
+
+[dependencies]
+spark_types = { workspace = true }
+
+[lints]
+workspace = true

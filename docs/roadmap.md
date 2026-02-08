@@ -11,7 +11,7 @@ Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR �
   ✅       ✅      ✅       ✅        ✅        ✅     ✅    ✅      ✅        ✅       ✅
 ```
 
-**What works**: 540+ tests pass. Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Install script (`install.sh`) provided.
+**What works**: 568 tests pass. Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. Install script (`install.sh`) provided.
 
 ```spark
 fn main(): Int {
@@ -23,7 +23,7 @@ fn main(): Int {
 }
 ```
 
-**What's missing**: Drop elaboration not implemented (heap values leak). Collection methods (`.append()`, `.len()`) not yet supported. Several language features deferred with stubs/warnings (closures, async, generics, method resolution).
+**What's missing**: Collection methods (`.append()`, `.len()`) not yet supported. COW mutation hooks prepared but not wired (no mutable collection operations yet). Several language features deferred with stubs/warnings (closures, async, generics, method resolution).
 
 ---
 
@@ -35,14 +35,15 @@ fn main(): Int {
 
 ### ~~1.2 Runtime Library (`spark_runtime`)~~ — Complete
 
-String functions implemented (`__spark_string_new`, `__spark_string_from_literal`, `__spark_print_string/int/bool/float`). Strings are `Box<String>` behind `*mut u8`.
+All heap types use custom `repr(C)` structs with `rc: usize` as the first field:
+- **`SparkString`** — custom UTF-8 buffer: `{ rc, data, len, cap }`. Created by `__spark_string_new()` / `__spark_string_from_literal(ptr, len)`. Freed by `__spark_string_rc_dec()`.
+- **`SparkList`** — growable type-erased array: `{ rc, data, len, cap, elem_size }`. Bounds-checked (aborts on OOB). Doubling growth strategy, minimum capacity 4.
+- **`SparkMap`** — linear-scan map: `{ rc, keys, values, len, cap, key_size, value_size }`. Key comparison via memcmp. Returns null on missing key. O(n) scan — hash-based can replace it later without FFI changes.
+- **`SparkSet`** — backed by `SparkList` with uniqueness and deduplication via memcmp.
 
-Collection functions implemented using **type-erased** approach (raw bytes + element size):
-- **`SparkList`** — growable array: `__spark_list_new(elem_size)`, `__spark_list_push(list, elem_ptr)`, `__spark_list_get(list, index)`. Bounds-checked (aborts on OOB). Doubling growth strategy, minimum capacity 4.
-- **`SparkMap`** — linear-scan map: `__spark_map_new(key_size, value_size)`, `__spark_map_insert(map, key_ptr, value_ptr)`, `__spark_map_get(map, key_ptr)`. Key comparison via memcmp. Returns null on missing key. O(n) scan — hash-based can replace it later without FFI changes.
-- **`SparkSet`** — backed by `SparkList` with uniqueness: `__spark_set_new(elem_size)`, `__spark_set_insert(set, elem_ptr)`. Deduplication via memcmp.
+**Reference counting**: `__spark_rc_inc(ptr)` works for all heap types (rc is always at offset 0). Type-specific `_rc_dec` functions (`__spark_string_rc_dec`, `__spark_list_rc_dec`, `__spark_map_rc_dec`, `__spark_set_rc_dec`) decrement RC and free when RC=0. Collection `_rc_dec` functions accept `elem_rc`/`key_rc`/`val_rc` boolean flags indicating whether elements are themselves RC'd (for nested cleanup).
 
-**Still stubbed**: `__spark_rc_release` (no-op until drop elaboration).
+**COW functions prepared** (not yet wired into codegen): `__spark_string_cow`, `__spark_list_cow`, `__spark_map_cow` — if RC=1 return as-is; if RC>1 copy buffer, dec old, return new with RC=1.
 
 **Not yet implemented**: Collection methods (`.append()`, `.len()`, `.remove()`, etc.), proper `Optional` wrapping on index access, set literals (parser ambiguity with blocks).
 
@@ -54,17 +55,25 @@ Collection functions implemented using **type-erased** approach (raw bytes + ele
 
 Type-erased collection backing implemented. List/Map/Set construction and index access work end-to-end. See section 1.2 above for details.
 
-### 1.2 Drop Elaboration
+### ~~1.2 Drop Elaboration & Reference Counting~~ — Complete
 
-**Status**: `Statement::Drop` exists in MIR but is a no-op in codegen
-**Location**: `spark_codegen/src/cranelift/emit_stmt.rs:56`
-**Impact**: All heap-allocated values (strings, collections) leak
+**Implementation**: COW value semantics backed by reference counting (Swift model).
 
-**Fix**: Two parts:
-1. **MIR pass**: Insert `Statement::Drop` at scope exits, before returns, and after moves
-2. **Codegen**: Emit calls to `__spark_rc_release` (or dedicated drop functions for strings/collections) for heap types, no-op for scalars
+- **`spark_drop` crate**: Type query functions (`needs_rc()`, `element_needs_rc()`, `map_key_val_needs_rc()`) determine which types need RC operations. Used by both MIR lowering and codegen.
+- **MIR scope tracking**: `FunctionBuilder` tracks `ScopeContext` stack with `locals_to_drop` vectors. Drops emitted at scope exits (`pop_scope_drops`), returns (`drops_for_return`), break/continue (`drops_to_loop`). Parameters registered for drops (caller RC-inc'd, callee RC-dec's).
+- **Statement lowering**: `HirStmt::Let` registers RC'd locals for drop. `HirStmt::Assign` drops old value before reassignment. `HirStmt::Expr` drops discarded RC'd temps.
+- **Expression lowering**: Blocks push/pop scopes. Return/break/continue emit drops before jumping.
+- **Codegen**: `Statement::Drop` dispatches to type-specific `_rc_dec` functions. `Operand::Copy` emits `__spark_rc_inc` for RC'd types. `Operand::Move` transfers ownership without RC change.
 
-### 1.3 Collection Methods
+### 1.3 COW Mutation Hooks
+
+**Status**: Runtime functions prepared, codegen not wired
+**Depends on**: Collection methods (1.4)
+**Impact**: Enables safe mutation of shared values
+
+Before any mutable collection operation (append, index-assign, remove), emit COW uniqueness check. If RC>1, copy buffer first. Update local to point to new allocation. Wire up when collection methods are implemented.
+
+### 1.4 Collection Methods
 
 **Status**: Not implemented
 **Impact**: No `.append()`, `.len()`, `.remove()`, `.contains()`, etc.
@@ -103,15 +112,9 @@ Create a synthetic `DefId` for the binding `v`, register it in the `DefinitionTa
 
 For enum/union types this is a straightforward integer comparison. Codegen already handles all the pieces.
 
-### 2.3 Drop Elaboration
+### ~~2.3 Drop Elaboration~~ — Complete (moved to P1.2)
 
-**Status**: `Statement::Drop` exists in MIR but is a no-op in codegen
-**Location**: `spark_codegen/src/cranelift/emit_stmt.rs:56`
-**Blocker was**: No codegen to emit drop calls
-
-**Fix**: Two parts:
-1. **MIR pass**: Insert `Statement::Drop` at scope exits, before returns, and after moves
-2. **Codegen**: Emit calls to `__spark_rc_release` for reference-counted types, no-op for scalars
+Implemented as part of the RC infrastructure. See P1.2 above.
 
 ---
 
@@ -251,7 +254,8 @@ These are deliberate design decisions per the language spec — Spark requires e
 | ~~P1~~ | ~~Compiler driver~~ | ~~Medium~~ | ~~Enables running any program~~ | Done |
 | ~~P1~~ | ~~Runtime library (strings)~~ | ~~Medium~~ | ~~Enables String printing~~ | Done |
 | ~~P1~~ | ~~Runtime collections~~ | ~~Medium~~ | ~~Enables List/Map/Set~~ | Done |
-| **P1** | Drop elaboration | Medium | Prevents memory leaks | Not started |
+| ~~P1~~ | ~~Drop elaboration & RC~~ | ~~Medium~~ | ~~Prevents memory leaks~~ | Done |
+| **P1** | COW mutation hooks | Low | Safe mutation of shared values | Prepared |
 | **P1** | Collection methods | Medium | `.append()`, `.len()`, etc. | Not started |
 | **P2** | `??` / `?.` desugaring | Low | Fixes null-handling operators | Partial |
 | **P2** | `is` type test | Low | Enables type checking expressions | MIR stub |

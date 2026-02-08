@@ -2,15 +2,17 @@
 //!
 //! Handles `Assign`, `Drop`, and `Nop` statements.
 
+use cranelift_codegen::ir::{types, InstBuilder};
 use cranelift_module::{FuncId, Module};
 use rustc_hash::FxHashMap;
 use spark_diagnostics::Diagnostics;
 use spark_mir::Statement;
 use spark_resolve::DefinitionTable;
-use spark_types::TypeTable;
+use spark_types::{Ty, TypeTable};
 
 use super::context::FunctionContext;
 use super::emit_rvalue;
+use super::types as clif_types;
 
 /// Emits a single MIR statement.
 #[allow(clippy::too_many_arguments)]
@@ -53,10 +55,61 @@ pub fn emit_statement<M: Module>(
             }
         }
 
-        Statement::Drop { place: _, span: _ } | Statement::Nop => {
-            // Drop and Nop are no-ops for now. When we have runtime support
-            // for reference counting or destructors, Drop would emit calls
-            // to cleanup routines.
+        Statement::Drop { place, span: _ } => {
+            emit_drop(ctx, place, table, module);
+        }
+
+        Statement::Nop => {}
+    }
+}
+
+/// Emits an RC decrement for a dropped place, dispatched by type.
+fn emit_drop<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    place: &spark_mir::Place,
+    table: &TypeTable,
+    module: &mut M,
+) {
+    let local = place.local;
+    let ty_id = ctx.local_type_id(local);
+    let (_, ty) = clif_types::unwrap_mutable(ty_id, table);
+
+    // Only RC types need a dec call.
+    if !spark_drop::needs_rc(ty_id, table) {
+        return;
+    }
+
+    let ptr_val = ctx.read_local(local);
+
+    match ty {
+        Ty::String => {
+            let func_ref = module.declare_func_in_func(ctx.stubs.string_rc_dec, ctx.builder.func);
+            ctx.builder.ins().call(func_ref, &[ptr_val]);
+        }
+        Ty::List(elem) => {
+            let elem_rc_flag = i64::from(spark_drop::needs_rc(*elem, table));
+            let elem_rc_val = ctx.builder.ins().iconst(types::I8, elem_rc_flag);
+            let func_ref = module.declare_func_in_func(ctx.stubs.list_rc_dec, ctx.builder.func);
+            ctx.builder.ins().call(func_ref, &[ptr_val, elem_rc_val]);
+        }
+        Ty::Map(k, v) => {
+            let key_rc_flag = i64::from(spark_drop::needs_rc(*k, table));
+            let val_rc_flag = i64::from(spark_drop::needs_rc(*v, table));
+            let key_rc_val = ctx.builder.ins().iconst(types::I8, key_rc_flag);
+            let val_rc_val = ctx.builder.ins().iconst(types::I8, val_rc_flag);
+            let func_ref = module.declare_func_in_func(ctx.stubs.map_rc_dec, ctx.builder.func);
+            ctx.builder
+                .ins()
+                .call(func_ref, &[ptr_val, key_rc_val, val_rc_val]);
+        }
+        Ty::Set(elem) => {
+            let elem_rc_flag = i64::from(spark_drop::needs_rc(*elem, table));
+            let elem_rc_val = ctx.builder.ins().iconst(types::I8, elem_rc_flag);
+            let func_ref = module.declare_func_in_func(ctx.stubs.set_rc_dec, ctx.builder.func);
+            ctx.builder.ins().call(func_ref, &[ptr_val, elem_rc_val]);
+        }
+        _ => {
+            // Non-RC type — no-op (shouldn't reach here due to early return).
         }
     }
 }
