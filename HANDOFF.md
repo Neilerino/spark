@@ -27,8 +27,9 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_hir`         | HIR lowering: desugar typed AST into core IR                   | 21    | Complete |
 | `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 32    | Complete |
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
+| `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
 
-**Total: 505 tests passing across workspace.**
+**Total: 540+ tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
@@ -68,13 +69,44 @@ crates/spark_borrow/src/
 └── errors.rs     # Diagnostic messages for borrow errors
 ```
 
+### spark_codegen Overview (Just Completed)
+
+Native code generation from MIR to object files via Cranelift:
+
+- **Input**: `Mir` + `TypeTable` (read-only) + `DefinitionTable` + `TargetSpec`
+- **Output**: `Vec<u8>` (native object file) + `Diagnostics`
+- **Backend-agnostic**: `CodegenBackend` trait allows swapping Cranelift for LLVM
+- **Two-phase compilation**: All functions declared first (forward references), then defined
+- **Type layout**: Backend-independent `LayoutCache` with C-style struct/enum layout
+- **ABI mapping**: All Spark types mapped to Cranelift IR types
+- **MIR coverage**: Constants, locals, parameters, binary/unary ops, control flow (goto, switchint, return), function calls (direct + indirect), aggregates (struct, enum, tuple), discriminant reads, type casts, references
+- **Runtime stubs**: String/collection/RC functions declared as external imports
+- **Deferred**: Closures, async/spawn, `is`/`as` type ops emit diagnostics
+
+**API**: `generate(CodegenInput) -> CodegenOutput`
+
+**Files**:
+```
+crates/spark_codegen/src/
+├── lib.rs              # Public API: CodegenInput, CodegenOutput, generate()
+├── backend.rs          # CodegenBackend trait
+├── layout.rs           # TypeLayout, StructLayout, EnumLayout, LayoutCache
+├── abi.rs              # Spark types → Cranelift ABI mapping
+└── cranelift/
+    ├── mod.rs          # CraneliftBackend implementing CodegenBackend
+    ├── context.rs      # Per-function compilation context
+    ├── types.rs        # Cranelift type utilities
+    ├── emit_stmt.rs    # Statement lowering
+    ├── emit_term.rs    # Terminator lowering
+    ├── emit_rvalue.rs  # Rvalue lowering
+    └── runtime.rs      # Runtime function stubs
+```
+
 ## What's Next
 
-### Immediate: spark_opt or spark_codegen (NEXT MAIN TASK)
+### Immediate: spark_opt (NEXT MAIN TASK)
 
-**Option A: spark_opt** — Optimization passes over MIR (constant folding, dead code elimination, SSA construction).
-
-**Option B: spark_codegen** — Code generation from MIR (LLVM via inkwell, or Cranelift).
+Optimization passes over MIR (constant folding, dead code elimination, SSA construction). Can be inserted transparently between `spark_borrow` and `spark_codegen` since both consume `Mir + TypeTable`.
 
 ### Deferred Work
 
@@ -107,8 +139,8 @@ These can be added incrementally as later phases need them:
 6. HIR Lowering (spark_hir) ✅
 7. MIR Construction (spark_mir) ✅
 8. Borrow Checking (spark_borrow) ✅
-9. **Optimization (spark_opt) <- NEXT**
-10. Code Generation (spark_codegen)
+9. Code Generation (spark_codegen) ✅
+10. **Optimization (spark_opt) <- NEXT** (inserts between borrow + codegen)
 
 ## Crate Dependencies
 
@@ -125,6 +157,7 @@ spark_types         (depends on span, intern, diagnostics, ast, modules, resolve
 spark_hir           (depends on span, intern, diagnostics, ast, modules, resolve, types)
 spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, hir)
 spark_borrow        (depends on span, intern, diagnostics, resolve, types, mir)
+spark_codegen       (depends on span, intern, diagnostics, ast, resolve, types, mir + cranelift)
 ```
 
 ## Key Implementation Details
@@ -153,8 +186,8 @@ spark_borrow        (depends on span, intern, diagnostics, resolve, types, mir)
 
 ```bash
 cargo build                      # Build all
-cargo test                       # Test all (505 tests)
+cargo test                       # Test all (540+ tests)
 cargo clippy                     # Lint all
-cargo test -p spark_borrow       # Test borrow checker
+cargo test -p spark_codegen      # Test code generator
 cargo doc --open                 # View documentation
 ```

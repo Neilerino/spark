@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// This is the primary output of the module resolution phase. It contains
 /// information about all modules in the project and their dependencies.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ModuleGraph {
     /// All modules indexed by their path.

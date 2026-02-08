@@ -1,0 +1,30 @@
+[package]
+name = "spark_driver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Compiler driver for the Spark programming language"
+
+[[bin]]
+name = "spark"
+path = "src/main.rs"
+
+[dependencies]
+spark_span.workspace = true
+spark_intern.workspace = true
+spark_diagnostics.workspace = true
+spark_ast.workspace = true
+spark_lexer.workspace = true
+spark_parser.workspace = true
+spark_modules.workspace = true
+spark_resolve.workspace = true
+spark_types.workspace = true
+spark_hir.workspace = true
+spark_mir.workspace = true
+spark_borrow.workspace = true
+spark_codegen.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,183 @@
+//! Per-function compilation context.
+//!
+//! Wraps a Cranelift [`FunctionBuilder`] with MIR-specific state: local
+//! variable mappings, block mappings, and helpers for emitting common patterns.
+
+use cranelift_codegen::entity::EntityRef;
+use cranelift_codegen::ir::types;
+use cranelift_codegen::ir::{Block, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Type as ClifType, Value};
+use cranelift_frontend::{FunctionBuilder, Variable};
+use spark_mir::{BlockId, Local, MirFunction};
+use spark_types::{TypeId, TypeTable};
+
+use crate::abi;
+use crate::cranelift::types as clif_types;
+use crate::layout::LayoutCache;
+
+/// How a MIR local is stored at the Cranelift IR level.
+#[derive(Debug, Clone, Copy)]
+pub enum LocalStorage {
+    /// Scalar value held in a Cranelift SSA variable.
+    Var(Variable, ClifType),
+    /// Aggregate value held in a stack slot.
+    StackSlot(cranelift_codegen::ir::StackSlot, u32),
+    /// Zero-sized type — no storage needed.
+    ZeroSized,
+}
+
+/// Per-function compilation state.
+pub struct FunctionContext<'a> {
+    /// The Cranelift function builder.
+    pub builder: FunctionBuilder<'a>,
+    /// Mapping from MIR `Local` to Cranelift storage.
+    pub locals: Vec<LocalStorage>,
+    /// Mapping from MIR `BlockId` to Cranelift `Block`.
+    pub blocks: Vec<Block>,
+    /// The pointer type for this target.
+    pub ptr_type: ClifType,
+    /// Layout cache for type size computations.
+    pub layouts: LayoutCache,
+    /// Type table reference.
+    pub table: &'a TypeTable,
+    /// The MIR function being compiled.
+    pub mir_func: &'a MirFunction,
+}
+
+impl<'a> FunctionContext<'a> {
+    /// Creates a new function context. Sets up blocks and local storage.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new(
+        mut builder: FunctionBuilder<'a>,
+        mir_func: &'a MirFunction,
+        table: &'a TypeTable,
+        ptr_type: ClifType,
+        mut layouts: LayoutCache,
+    ) -> Self {
+        // Create one Cranelift block per MIR basic block.
+        let blocks: Vec<Block> = (0..mir_func.blocks.len())
+            .map(|_| builder.create_block())
+            .collect();
+
+        // Declare locals.
+        let mut locals = Vec::with_capacity(mir_func.locals.len());
+        let mut next_var = 0usize;
+
+        for local_decl in &mir_func.locals {
+            let ty_id = local_decl.ty;
+            if abi::is_zero_sized(ty_id, table) {
+                locals.push(LocalStorage::ZeroSized);
+            } else if abi::is_scalar(ty_id, table) {
+                let clif_ty = clif_types::local_clif_type(ty_id, table, ptr_type)
+                    .unwrap_or(types::I64);
+                let var = Variable::new(next_var);
+                next_var += 1;
+                builder.declare_var(var, clif_ty);
+                locals.push(LocalStorage::Var(var, clif_ty));
+            } else {
+                // Aggregate — allocate a stack slot.
+                let layout = layouts.layout_of(ty_id, table);
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    layout.size,
+                    u8::try_from(layout.align.trailing_zeros()).unwrap_or(0),
+                ));
+                locals.push(LocalStorage::StackSlot(slot, layout.size));
+            }
+        }
+
+        Self {
+            builder,
+            locals,
+            blocks,
+            ptr_type,
+            layouts,
+            table,
+            mir_func,
+        }
+    }
+
+    /// Returns the Cranelift block for a MIR block ID.
+    #[must_use]
+    pub fn clif_block(&self, block_id: BlockId) -> Block {
+        self.blocks[block_id.index()]
+    }
+
+    /// Reads a scalar local's current value.
+    ///
+    /// For stack slots, returns the address of the slot.
+    /// For zero-sized types, returns an iconst 0.
+    #[must_use]
+    pub fn read_local(&mut self, local: Local) -> Value {
+        match self.locals[local.index()] {
+            LocalStorage::Var(var, _) => self.builder.use_var(var),
+            LocalStorage::StackSlot(slot, _) => {
+                self.builder.ins().stack_addr(self.ptr_type, slot, 0)
+            }
+            LocalStorage::ZeroSized => self.builder.ins().iconst(types::I8, 0),
+        }
+    }
+
+    /// Writes a scalar value to a local.
+    ///
+    /// For stack slots, this is a no-op (aggregates are written field-by-field).
+    pub fn write_local(&mut self, local: Local, val: Value) {
+        match self.locals[local.index()] {
+            LocalStorage::Var(var, _) => {
+                self.builder.def_var(var, val);
+            }
+            LocalStorage::StackSlot(_, _) | LocalStorage::ZeroSized => {
+                // Aggregates and ZSTs: no scalar write needed.
+            }
+        }
+    }
+
+    /// Returns the address of a local's stack slot (for aggregates).
+    ///
+    /// Returns `None` if the local is not stored in a stack slot.
+    #[must_use]
+    pub fn local_stack_addr(&mut self, local: Local) -> Option<Value> {
+        match self.locals[local.index()] {
+            LocalStorage::StackSlot(slot, _) => {
+                Some(self.builder.ins().stack_addr(self.ptr_type, slot, 0))
+            }
+            _ => None,
+        }
+    }
+
+    /// Stores a value at a memory address.
+    pub fn store(&mut self, val: Value, addr: Value, offset: i32) {
+        self.builder
+            .ins()
+            .store(MemFlags::new(), val, addr, offset);
+    }
+
+    /// Loads a value from a memory address.
+    #[must_use]
+    pub fn load(&mut self, ty: ClifType, addr: Value, offset: i32) -> Value {
+        self.builder
+            .ins()
+            .load(ty, MemFlags::new(), addr, offset)
+    }
+
+    /// Returns the type ID of a MIR local.
+    #[must_use]
+    pub fn local_type_id(&self, local: Local) -> TypeId {
+        self.mir_func.locals[local.index()].ty
+    }
+
+    /// Returns the storage kind for a local.
+    #[must_use]
+    pub fn local_storage(&self, local: Local) -> LocalStorage {
+        self.locals[local.index()]
+    }
+
+    /// Look up Cranelift variable storage, returns None for non-Var locals.
+    #[must_use]
+    pub fn local_var(&self, local: Local) -> Option<(Variable, ClifType)> {
+        match self.locals[local.index()] {
+            LocalStorage::Var(var, ty) => Some((var, ty)),
+            _ => None,
+        }
+    }
+}

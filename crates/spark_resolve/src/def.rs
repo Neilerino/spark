@@ -183,7 +183,7 @@ impl DefinitionInfo {
 /// Table of all definitions in the program.
 ///
 /// Definitions are stored in a vector indexed by their `DefId`.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DefinitionTable {
     defs: Vec<DefinitionInfo>,

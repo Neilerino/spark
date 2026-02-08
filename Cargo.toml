@@ -13,8 +13,8 @@ members = [
     "crates/spark_hir",
     "crates/spark_mir",
     "crates/spark_borrow",
-    # "crates/spark_codegen",
-    # "crates/spark_driver",
+    "crates/spark_codegen",
+    "crates/spark_driver",
     # "crates/spark_cli",
 ]
 
@@ -38,15 +38,19 @@ spark_types = { path = "crates/spark_types" }
 spark_hir = { path = "crates/spark_hir" }
 spark_mir = { path = "crates/spark_mir" }
 spark_borrow = { path = "crates/spark_borrow" }
+spark_codegen = { path = "crates/spark_codegen" }
 
 # Error reporting
 thiserror = "1.0"
 ariadne = "0.4"
 
-# Code generation (for later)
-# inkwell = "0.4"
-# cranelift = "0.105"
-# cranelift-module = "0.105"
+# Code generation
+cranelift-codegen = "0.115"
+cranelift-frontend = "0.115"
+cranelift-module = "0.115"
+cranelift-object = "0.115"
+cranelift-native = "0.115"
+target-lexicon = "0.12"
 
 # Data structures
 rustc-hash = "1.1"

@@ -1,0 +1,33 @@
+[package]
+name = "spark_codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native code generation for the Spark compiler"
+
+[dependencies]
+spark_span = { workspace = true }
+spark_intern = { workspace = true }
+spark_diagnostics = { workspace = true }
+spark_ast = { workspace = true }
+spark_resolve = { workspace = true }
+spark_types = { workspace = true }
+spark_mir = { workspace = true }
+rustc-hash = { workspace = true }
+cranelift-codegen = { workspace = true }
+cranelift-frontend = { workspace = true }
+cranelift-module = { workspace = true }
+cranelift-object = { workspace = true }
+cranelift-native = { workspace = true }
+target-lexicon = { workspace = true }
+
+[dev-dependencies]
+spark_lexer = { workspace = true }
+spark_parser = { workspace = true }
+spark_modules = { workspace = true }
+spark_hir = { workspace = true }
+spark_borrow = { workspace = true }
+
+[lints]
+workspace = true
