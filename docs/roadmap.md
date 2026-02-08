@@ -432,3 +432,21 @@ Sequential dependencies:
 3. **Track 3**: Stream E + Stream F (optimization + string interpolation) — fully independent
 
 Once Track 2 is stable, start Stream C (lambdas), then Stream G (async).
+
+---
+
+## Recommended Implementation Order
+
+The streams above can be parallelized, but for the **critical path** (features that unlock the most downstream work), the recommended sequential order is:
+
+1. **Method resolution & interface bindings (Stream B, 3.4)** — Foundation for user-defined types. Many features need to look up methods by receiver type. Should come before lambdas because lambda support will need method-like call dispatch.
+
+2. **Lambdas/closures (Stream C, 5.1)** — Unlocks all functional features. Requires function types as first-class values, capture analysis, closure environments, and LSP `ScopeMap` integration.
+
+3. **`each`/`each via`/`via`/partial application (Stream C, 5.5/5.6)** — Once lambdas land, these follow naturally. Partial application desugars into lambda + captured args.
+
+4. **Generics (Stream B, 3.5)** — Highest effort single item. Benefits from method resolution being stable. Monomorphization is independent of lambda support.
+
+5. **Async/await/spawn (Stream G, 5.2)** — Requires stable closures for `spawn`. State machine transformation is the largest remaining infrastructure piece.
+
+Streams A (union types), D (safety analysis), E (optimization), and F (string interpolation) can run **in parallel with any step above** since they touch independent parts of the codebase.
