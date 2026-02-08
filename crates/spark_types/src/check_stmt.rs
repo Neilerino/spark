@@ -25,7 +25,7 @@ pub fn check_stmt(
     current_fn_ret: Option<TypeId>,
 ) {
     match &stmt.kind {
-        StmtKind::Let { name, ty, mutable, value } => {
+        StmtKind::Let { name, ty, mutable: _, value } => {
             // Lower the declared type
             let declared_ty = lower_type_expr(ty, table, builtins, definitions, resolutions, diagnostics);
 
@@ -45,13 +45,11 @@ pub fn check_stmt(
                 );
             }
 
-            // Register the local's type
-            // The declared type is the source of truth (possibly wrapped in Mutable)
-            let local_ty = if *mutable {
-                table.intern(Ty::Mutable(declared_ty))
-            } else {
-                declared_ty
-            };
+            // Register the local's type.
+            // The declared type is the source of truth: `Int!` already lowers
+            // to `Mutable(Int)`, so we must NOT wrap again based on the
+            // `mutable` flag (which is derived from the same type annotation).
+            let local_ty = declared_ty;
 
             // Try to find the DefId for this local
             if let Some(res) = resolutions {

@@ -432,7 +432,10 @@ fn check_binary_op(
     }
 
     if op.is_arithmetic() {
-        let lhs_resolved = table.resolve(lhs_ty);
+        // Strip Mutable wrappers — `count + 1` where count is Int! should work
+        let lhs_base = strip_mutable(lhs_ty, table);
+        let rhs_base = strip_mutable(rhs_ty, table);
+        let lhs_resolved = table.resolve(lhs_base);
         if !lhs_resolved.is_numeric() {
             diagnostics.push(
                 Diagnostic::error(format!("operator `{}` requires numeric operands", op.as_str()))
@@ -440,9 +443,9 @@ fn check_binary_op(
             );
             return TypeId::ERROR;
         }
-        if !is_compatible(lhs_ty, rhs_ty, table) {
-            let l = type_name(lhs_ty, table, &DefinitionTable::new());
-            let r = type_name(rhs_ty, table, &DefinitionTable::new());
+        if !is_compatible(lhs_base, rhs_base, table) {
+            let l = type_name(lhs_base, table, &DefinitionTable::new());
+            let r = type_name(rhs_base, table, &DefinitionTable::new());
             diagnostics.push(
                 Diagnostic::error(format!("mismatched types for `{}`: `{l}` and `{r}`", op.as_str()))
                     .with_label(Label::primary(lhs_span, format!("`{l}`")))
@@ -450,13 +453,16 @@ fn check_binary_op(
             );
             return TypeId::ERROR;
         }
-        return lhs_ty;
+        // Arithmetic produces a new value, not a mutable binding
+        return lhs_base;
     }
 
     if op.is_comparison() {
-        if !is_compatible(lhs_ty, rhs_ty, table) {
-            let l = type_name(lhs_ty, table, &DefinitionTable::new());
-            let r = type_name(rhs_ty, table, &DefinitionTable::new());
+        let lhs_base = strip_mutable(lhs_ty, table);
+        let rhs_base = strip_mutable(rhs_ty, table);
+        if !is_compatible(lhs_base, rhs_base, table) {
+            let l = type_name(lhs_base, table, &DefinitionTable::new());
+            let r = type_name(rhs_base, table, &DefinitionTable::new());
             diagnostics.push(
                 Diagnostic::error(format!("cannot compare `{l}` with `{r}`"))
                     .with_label(Label::primary(op_span, "type mismatch")),
@@ -482,7 +488,9 @@ fn check_binary_op(
     }
 
     if op.is_bitwise() {
-        let lhs_resolved = table.resolve(lhs_ty);
+        let lhs_base = strip_mutable(lhs_ty, table);
+        let rhs_base = strip_mutable(rhs_ty, table);
+        let lhs_resolved = table.resolve(lhs_base);
         if !lhs_resolved.is_integer() {
             diagnostics.push(
                 Diagnostic::error(format!("operator `{}` requires integer operands", op.as_str()))
@@ -490,14 +498,14 @@ fn check_binary_op(
             );
             return TypeId::ERROR;
         }
-        if !is_compatible(lhs_ty, rhs_ty, table) {
+        if !is_compatible(lhs_base, rhs_base, table) {
             diagnostics.push(
                 Diagnostic::error(format!("mismatched integer types for `{}`", op.as_str()))
                     .with_label(Label::primary(op_span, "type mismatch")),
             );
             return TypeId::ERROR;
         }
-        return lhs_ty;
+        return lhs_base;
     }
 
     TypeId::ERROR
@@ -517,19 +525,21 @@ fn check_unary_op(
         return TypeId::ERROR;
     }
 
+    let operand_base = strip_mutable(operand_ty, table);
+
     match op {
         UnaryOp::Neg => {
-            if !table.resolve(operand_ty).is_numeric() {
+            if !table.resolve(operand_base).is_numeric() {
                 diagnostics.push(
                     Diagnostic::error("unary `-` requires a numeric operand")
                         .with_label(Label::primary(operand_span, "not numeric")),
                 );
                 return TypeId::ERROR;
             }
-            operand_ty
+            operand_base
         }
         UnaryOp::Not => {
-            if !is_compatible(operand_ty, builtins.bool_ty, table) {
+            if !is_compatible(operand_base, builtins.bool_ty, table) {
                 diagnostics.push(
                     Diagnostic::error("`not` requires a Bool operand")
                         .with_label(Label::primary(operand_span, "expected Bool")),
@@ -539,14 +549,14 @@ fn check_unary_op(
             builtins.bool_ty
         }
         UnaryOp::BitNot => {
-            if !table.resolve(operand_ty).is_integer() {
+            if !table.resolve(operand_base).is_integer() {
                 diagnostics.push(
                     Diagnostic::error("`~` requires an integer operand")
                         .with_label(Label::primary(operand_span, "not integer")),
                 );
                 return TypeId::ERROR;
             }
-            operand_ty
+            operand_base
         }
     }
 }
@@ -823,6 +833,13 @@ pub fn is_compatible(actual: TypeId, expected: TypeId, table: &TypeTable) -> boo
     // Mutable T is compatible with T
     if let Ty::Mutable(inner) = actual_ty {
         if is_compatible(*inner, expected, table) {
+            return true;
+        }
+    }
+
+    // T is compatible with Mutable(T) — a plain value can initialize a mutable binding
+    if let Ty::Mutable(inner) = expected_ty {
+        if is_compatible(actual, *inner, table) {
             return true;
         }
     }

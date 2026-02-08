@@ -1,5 +1,15 @@
-fn main(): Void {
-    print("hello world")
-    print(42)
-    print(true)
+fn loop_with_break(n: Int): Void {
+    count: Int! = 0
+    loop {
+        if count >= n {
+            break count
+        }
+        print(count)
+        count += 1
+    }
+}
+
+fn main(): Int {
+    loop_with_break(10)
+    0
 }
