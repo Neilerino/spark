@@ -799,21 +799,34 @@ items.enumerate() each (pair: Tup[Int, Item]): Void {
 
 ### Via
 
-Transformation that creates new collections.
+Applies a function to a value. When used with `each`, transforms each element.
+When used standalone, applies to the whole value (pipeline composition).
 
 ```
-// Transform each element
+// Transform each element (each via)
 doubled: List[Int] = numbers each via (n: Int): Int { n * 2 }
 
-// Chain transformations
+// Chain per-element transformations
 result: List[String] = numbers
     each via (n: Int): Int { n * 2 }
+    each via (n: Int): String { n.toString() }
+
+// Pipeline: apply whole-collection operations (standalone via)
+result: List[Int] = numbers
+    via sort
+    via take{count: 5}
+
+// Combined: pipeline + per-element transforms
+result: List[String] = numbers
+    via sort
+    each via (n: Int): Int { n * 2 }
+    via take{count: 5}
     each via (n: Int): String { n.toString() }
 ```
 
 ### To
 
-Type narrowing and pipeline composition.
+Type narrowing for union types. Handles error/variant cases explicitly.
 
 ```
 // Type narrowing
@@ -822,17 +835,10 @@ user: User = fetchUser(id) to {
     DbError(e) -> panic("db: {e}")
 }
 
-// Pipeline with whole-collection operations
-result: List[Int] = numbers
-    to sort
-    to take{count: 5}
-
-// Combined with each via
-result: List[String] = numbers
-    to sort
-    each via (n: Int): Int { n * 2 }
-    to take{count: 5}
-    each via (n: Int): String { n.toString() }
+// Narrowing a union return
+content: String = readFile(path) to {
+    IoError(e) -> return e.message
+}
 ```
 
 ---
@@ -2064,7 +2070,7 @@ loop { }
 // Iteration
 collection each (item): Void { }
 collection each via (item): T { }
-value to handler
+value via function
 value to { narrowing }
 
 // Functions

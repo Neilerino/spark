@@ -1,0 +1,9 @@
+fn main(): Int {
+    x: Int = 10
+    if x > 5 {
+        print("bigger")
+    } else {
+        print("smaller")
+    }
+    return 0
+}

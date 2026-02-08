@@ -1,0 +1,6 @@
+fn main(): Int {
+    nums: List[Int]! = [1, 2]
+    nums.append(3)
+    print(nums.len())
+    return 0
+}

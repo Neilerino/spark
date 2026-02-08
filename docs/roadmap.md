@@ -11,19 +11,20 @@ Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR �
   ✅       ✅      ✅       ✅        ✅        ✅     ✅    ✅      ✅        ✅       ✅
 ```
 
-**What works**: 568 tests pass. Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. Install script (`install.sh`) provided.
+**What works**: 576 tests pass (including 8 end-to-end tests). Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Collection methods (`.len()`, `.append()`, `.contains()`, `.remove()`) work for List/Map/Set/String with COW enforcement on mutating operations. Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. E2E test framework in `spark_driver/tests/e2e.rs`. LSP with semantic tokens in `tools/spark-lsp`. Install script (`install.sh`) provided.
 
 ```spark
 fn main(): Int {
-    numbers: List[Int] = [10, 20, 30]
+    nums: List[Int]! = [10, 20, 30]
+    print(nums.len())
+    print(nums.contains(20))
+    nums.append(40)
     print("hello world")
-    print(42)
-    print(true)
-    0
+    return 0
 }
 ```
 
-**What's missing**: Collection methods (`.append()`, `.len()`) not yet supported. COW mutation hooks prepared but not wired (no mutable collection operations yet). Several language features deferred with stubs/warnings (closures, async, generics, method resolution).
+**What's missing**: `each`/`each via` iteration (blocked on lambdas/closures — see `docs/design-notes/lambdas-closures-each.md`). Several language features deferred with stubs/warnings (closures, async, generics, interface method resolution).
 
 ---
 
@@ -43,9 +44,9 @@ All heap types use custom `repr(C)` structs with `rc: usize` as the first field:
 
 **Reference counting**: `__spark_rc_inc(ptr)` works for all heap types (rc is always at offset 0). Type-specific `_rc_dec` functions (`__spark_string_rc_dec`, `__spark_list_rc_dec`, `__spark_map_rc_dec`, `__spark_set_rc_dec`) decrement RC and free when RC=0. Collection `_rc_dec` functions accept `elem_rc`/`key_rc`/`val_rc` boolean flags indicating whether elements are themselves RC'd (for nested cleanup).
 
-**COW functions prepared** (not yet wired into codegen): `__spark_string_cow`, `__spark_list_cow`, `__spark_map_cow` — if RC=1 return as-is; if RC>1 copy buffer, dec old, return new with RC=1.
+**COW functions**: `__spark_string_cow`, `__spark_list_cow`, `__spark_map_cow` — if RC=1 return as-is; if RC>1 copy buffer, dec old, return new with RC=1. Wired into codegen for mutating collection methods (append, remove, add).
 
-**Not yet implemented**: Collection methods (`.append()`, `.len()`, `.remove()`, etc.), proper `Optional` wrapping on index access, set literals (parser ambiguity with blocks).
+**Not yet implemented**: Proper `Optional` wrapping on index access, set literals (parser ambiguity with blocks).
 
 ---
 
@@ -65,20 +66,22 @@ Type-erased collection backing implemented. List/Map/Set construction and index 
 - **Expression lowering**: Blocks push/pop scopes. Return/break/continue emit drops before jumping.
 - **Codegen**: `Statement::Drop` dispatches to type-specific `_rc_dec` functions. `Operand::Copy` emits `__spark_rc_inc` for RC'd types. `Operand::Move` transfers ownership without RC change.
 
-### 1.3 COW Mutation Hooks
+### ~~1.3 COW Mutation Hooks~~ — Complete
 
-**Status**: Runtime functions prepared, codegen not wired
-**Depends on**: Collection methods (1.4)
-**Impact**: Enables safe mutation of shared values
+COW uniqueness checks wired into codegen for all mutating collection methods. Before append/remove/add, `emit_cow()` calls the appropriate COW function (`__spark_list_cow`, `__spark_map_cow`), writes back the (possibly new) pointer to the receiver local.
 
-Before any mutable collection operation (append, index-assign, remove), emit COW uniqueness check. If RC>1, copy buffer first. Update local to point to new allocation. Wire up when collection methods are implemented.
+### ~~1.4 Collection Methods~~ — Complete
 
-### 1.4 Collection Methods
+Built-in method dispatch implemented via `DefinitionKind::BuiltinMethod` (same pattern as `print`). Methods type-checked in `spark_types`, resolved in MIR, dispatched by receiver type in codegen.
 
-**Status**: Not implemented
-**Impact**: No `.append()`, `.len()`, `.remove()`, `.contains()`, etc.
+| Receiver | Methods | Mutating (COW) |
+|----------|---------|----------------|
+| `List[T]` | `.len()`, `.append(item)`, `.contains(item)`, `.remove(index)` | append, remove |
+| `Map[K,V]` | `.len()`, `.contains(key)`, `.remove(key)` | remove |
+| `Set[T]` | `.len()`, `.add(item)`, `.contains(item)`, `.remove(item)` | add, remove |
+| `String` | `.len()` | — |
 
-Needs method resolution infrastructure (P3.4) or special-cased built-in method dispatch similar to `print`.
+Mutating methods enforce mutable receivers at type-check time.
 
 ---
 
@@ -156,15 +159,27 @@ Needs union type analysis to distinguish success vs error variants, then desugar
 match expr { ok -> ok, err -> return err }
 ```
 
+### 3.6 `to` Type Narrowing
+
+**Status**: Parsed (`ExprKind::To` with `ToHandler::Narrowing`), deferred in HIR
+**Location**: Parser done, HIR lowering emits `HirExprKind::Error`
+**Impact**: No union type narrowing syntax
+
+`result to { NotFound -> ..., DbError(e) -> ... }` desugars to a `match` on the union type's error variants. Shares union type analysis infrastructure with `!` propagation (3.3). Does **not** depend on lambdas.
+
+Note: `to` was previously overloaded for both type narrowing and pipeline composition. Pipeline operations (`to sort`, `to take{...}`) have been moved to the `via` keyword (see 5.6).
+
 ### 3.4 Method Resolution and Interface Bindings
 
-**Status**: Not implemented — method calls return `TypeId::ERROR`
-**Location**: Would go in `spark_types` and `spark_resolve`
-**Impact**: No dot-call syntax, no interface validation
+**Status**: Partial — built-in collection methods work, user-defined methods do not
+**Location**: `spark_types` and `spark_resolve`
+**Impact**: No user-defined methods, no interface validation
 
-Two parts:
+**Done**: Built-in method dispatch for collection types (`.len()`, `.append()`, etc.) via `DefinitionKind::BuiltinMethod`. Type checker dispatches by receiver type.
+
+**Remaining** (two parts):
 1. **Interface validation**: Verify `binding Foo for Bar { ... }` implements all required methods
-2. **Method resolution**: `expr.method(args)` looks up method via type's bindings
+2. **User-defined method resolution**: `expr.method(args)` looks up method via type's bindings
 
 ### 3.5 Generic Instantiation
 
@@ -211,6 +226,7 @@ Planned passes:
 
 **Status**: Warning in MIR lowering
 **Location**: `spark_mir/src/lower_expr.rs:294`
+**Design note**: `docs/design-notes/lambdas-closures-each.md`
 
 Needs:
 - Closure capture analysis (identify free variables in lambda body)
@@ -218,6 +234,29 @@ Needs:
 - Closure representation (function pointer + environment pointer)
 - Borrow checker support for captures
 - Codegen for closure allocation and invocation
+- LSP `ScopeMap` integration (see design note for LSP team requirements)
+
+**Blocks**: `each`/`each via` (5.5), partial application
+
+### 5.5 `each`/`each via` Iteration
+
+**Status**: Parsed, deferred in HIR (emits `HirExprKind::Error`)
+**Location**: Parser done (`spark_parser/src/expr.rs:524`), resolver creates param DefIds
+**Blocked by**: Lambda/closure support (5.1)
+**Design note**: `docs/design-notes/lambdas-closures-each.md`
+
+`each`/`each via` must accept both inline bodies AND function references (e.g., `items each via double`) to enable clean chaining with partial application. An inline-only loop desugaring was rejected because it can't support function-as-value arguments. Implementation deferred until lambdas land.
+
+### 5.6 `via` Pipeline Operator
+
+**Status**: Currently parsed as `ExprKind::To` with `ToHandler::Pipeline`, deferred in HIR
+**Location**: Parser done, HIR lowering emits `HirExprKind::Error`
+**Blocked by**: Lambda/closure support (5.1), method resolution (3.4)
+**Design note**: `docs/design-notes/lambdas-closures-each.md`
+
+`data via sort`, `data via take{count: 5}` — applies a named function (or partial) to the whole value. Requires function-as-value semantics. Previously part of the `to` keyword; split out for clearer semantics (`to` is now exclusively type narrowing).
+
+When implemented, the AST will need a new `ExprKind::Via` node (split from `ToHandler::Pipeline`).
 
 ### 5.2 Async/Await and Spawn
 
@@ -255,17 +294,141 @@ These are deliberate design decisions per the language spec — Spark requires e
 | ~~P1~~ | ~~Runtime library (strings)~~ | ~~Medium~~ | ~~Enables String printing~~ | Done |
 | ~~P1~~ | ~~Runtime collections~~ | ~~Medium~~ | ~~Enables List/Map/Set~~ | Done |
 | ~~P1~~ | ~~Drop elaboration & RC~~ | ~~Medium~~ | ~~Prevents memory leaks~~ | Done |
-| **P1** | COW mutation hooks | Low | Safe mutation of shared values | Prepared |
-| **P1** | Collection methods | Medium | `.append()`, `.len()`, etc. | Not started |
+| ~~P1~~ | ~~COW mutation hooks~~ | ~~Low~~ | ~~Safe mutation of shared values~~ | Done |
+| ~~P1~~ | ~~Collection methods~~ | ~~Medium~~ | ~~`.append()`, `.len()`, etc.~~ | Done |
 | **P2** | `??` / `?.` desugaring | Low | Fixes null-handling operators | Partial |
 | **P2** | `is` type test | Low | Enables type checking expressions | MIR stub |
 | **P3** | Match exhaustiveness | Medium | Safety — catches missing cases | Not started |
 | **P3** | Lifetime elision | Low | Ergonomics for references | Not started |
 | **P3** | `!` propagation | Medium | Error handling ergonomics | Partial |
-| **P3** | Method resolution | Medium-High | Enables dot-call syntax | Not started |
+| **P3** | `to` type narrowing | Low-Medium | Union type error handling | Parsed, deferred |
+| **P3** | Method resolution | Medium-High | User-defined methods + interfaces | Partial (builtins done) |
 | **P3** | Generics | High | Enables parameterized types | Not started |
 | **P4** | `spark_opt` passes | High | Performance optimization | Not started |
 | **P4** | Reborrowing | Low | Borrow checker ergonomics | Not started |
 | **P5** | Lambdas/closures | High | First-class functions | MIR stub |
+| **P5** | `each`/`each via` | Medium | Collection iteration | Blocked on lambdas |
+| **P5** | `via` pipeline | Medium | Whole-value function application | Blocked on lambdas |
 | **P5** | Async/await/spawn | Very High | Concurrency model | MIR stub |
 | **P5** | String interpolation | Medium | Syntax convenience | Not started |
+
+### Infrastructure
+- **E2E test framework**: `spark_driver/tests/e2e.rs` — 8 tests running `.spark` fixtures end-to-end
+- **LSP**: `tools/spark-lsp` — semantic tokens, diagnostics
+- **Design notes**: `docs/design-notes/lambdas-closures-each.md` — captures lambda/each/via/LSP ScopeMap requirements
+
+---
+
+## Work Streams
+
+Remaining items grouped into parallelizable streams. Streams are independent unless a dependency is noted.
+
+### Stream A: Union Type Handling
+> `!` propagation → `to` type narrowing → `??`/`?.` desugaring
+
+These all need union type analysis (distinguishing success vs error variants in union types) and fresh `DefId` synthesis in HIR desugaring. They share infrastructure and should be done together.
+
+| Item | Effort | Dependencies |
+|------|--------|-------------|
+| Union type analysis infrastructure | Medium | None |
+| `!` propagation (3.3) | Medium | Union type analysis |
+| `to` type narrowing (3.6) | Low-Medium | Union type analysis |
+| `??` / `?.` desugaring (2.1) | Low | Fresh DefId synthesis in HIR |
+
+**Conflicts**: None with other streams. Touches `spark_types` and `spark_hir` primarily.
+
+### Stream B: Type System Foundations
+> Method resolution → Generics
+
+Foundational type system features. Method resolution is a prerequisite for many downstream features. Generics are the highest-effort item in the project.
+
+| Item | Effort | Dependencies |
+|------|--------|-------------|
+| Interface validation + method resolution (3.4) | Medium-High | None |
+| Generic instantiation / monomorphization (3.5) | High | Method resolution helps but not strictly required |
+
+**Conflicts with Stream C**: Both touch `spark_types` and `spark_resolve` heavily. If done in parallel with lambdas, coordinate carefully on type system changes (e.g., `Ty::Function` usage, method lookup paths). Method resolution is also a soft dependency for `via` pipeline (Stream C needs a way to look up named operations like `sort`, `take`).
+
+### Stream C: Lambdas & Functional Features
+> Lambdas → Partial application → `each`/`each via` → `via` pipeline
+
+The largest dependency chain. Everything here requires function-as-value semantics.
+
+| Item | Effort | Dependencies |
+|------|--------|-------------|
+| Function types as values (`Ty::Function`) | Medium | None |
+| Lambda/closure conversion (5.1) | High | Function types, LSP ScopeMap coordination |
+| Partial application | Medium | Lambdas |
+| `each`/`each via` (5.5) | Medium | Lambdas, partials |
+| `via` pipeline (5.6) | Medium | Lambdas, partials, method resolution (Stream B) |
+
+**Conflicts with Stream B**: Both modify how functions/methods are resolved and called. `via` specifically needs method resolution to look up named operations. LSP `ScopeMap` (from LSP team requirements) should be built alongside lambda scope handling in `spark_resolve`.
+
+### Stream D: Safety & Analysis
+> Independent analysis passes
+
+These are independent of each other and of most other streams.
+
+| Item | Effort | Dependencies |
+|------|--------|-------------|
+| `is` type test (2.2) | Low | None |
+| Match exhaustiveness checking (3.1) | Medium | None |
+| Lifetime elision rules (3.2) | Low | None |
+
+**Conflicts**: None. These are read-only analysis passes in `spark_types` and `spark_borrow`. Can safely run in parallel with any other stream.
+
+### Stream E: Optimization
+> Independent optimization crate
+
+Completely independent. Inserts between `spark_borrow` and `spark_codegen`.
+
+| Item | Effort | Dependencies |
+|------|--------|-------------|
+| `spark_opt` crate (4.1) | High | None |
+| Reborrowing / two-phase borrows (4.2) | Low | None |
+
+**Conflicts**: None. `spark_opt` operates on MIR which is stable. Reborrowing is isolated to `spark_borrow`.
+
+### Stream F: Syntax & Convenience
+
+| Item | Effort | Dependencies |
+|------|--------|-------------|
+| String interpolation (5.3) | Medium | None (lexer + parser only) |
+
+**Conflicts**: None. Purely lexer/parser changes, independent of all other streams.
+
+### Stream G: Concurrency
+> Blocked on Stream C (lambdas)
+
+| Item | Effort | Dependencies |
+|------|--------|-------------|
+| Async/await/spawn (5.2) | Very High | Lambdas (Stream C), runtime executor |
+
+**Conflicts with Stream C**: Directly depends on closures for spawn. Should start after lambda support is stable.
+
+---
+
+### Parallelism Summary
+
+```
+Can run simultaneously:
+  Stream A (Union types)  ─── no conflicts ───  Stream D (Safety)
+  Stream A (Union types)  ─── no conflicts ───  Stream E (Optimization)
+  Stream A (Union types)  ─── no conflicts ───  Stream F (String interpolation)
+  Stream D (Safety)       ─── no conflicts ───  Stream E (Optimization)
+  Stream D (Safety)       ─── no conflicts ───  Stream F (String interpolation)
+
+Must coordinate:
+  Stream B (Type system)  ─── shared code ────  Stream C (Lambdas)
+
+Sequential dependencies:
+  Stream C (Lambdas)      ─── blocks ─────────  Stream G (Async)
+  Stream B (Methods)      ─── soft blocks ────  Stream C (`via` pipeline)
+```
+
+**Recommended parallel tracks**:
+1. **Track 1**: Stream A + Stream D (union types + safety analysis) — low risk, high impact
+2. **Track 2**: Stream B (type system foundations) — prepare for lambdas
+3. **Track 3**: Stream E + Stream F (optimization + string interpolation) — fully independent
+
+Once Track 2 is stable, start Stream C (lambdas), then Stream G (async).

@@ -26,5 +26,8 @@ spark_borrow.workspace = true
 spark_codegen.workspace = true
 clap.workspace = true
 
+[dev-dependencies]
+spark_runtime = { path = "../spark_runtime" }
+
 [lints]
 workspace = true

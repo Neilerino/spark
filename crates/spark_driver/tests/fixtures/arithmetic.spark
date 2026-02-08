@@ -1,0 +1,7 @@
+fn main(): Int {
+    print(10 + 5)
+    print(10 - 5)
+    print(10 * 5)
+    print(10 / 5)
+    return 0
+}

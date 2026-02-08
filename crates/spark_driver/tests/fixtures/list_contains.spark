@@ -1,0 +1,6 @@
+fn main(): Int {
+    nums: List[Int] = [10, 20, 30]
+    print(nums.contains(20))
+    print(nums.contains(99))
+    return 0
+}
