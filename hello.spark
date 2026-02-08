@@ -1,4 +1,4 @@
-fn loop_with_break(n: Int): Void {
+fn loop_with_break(n: Int): Int {
     count: Int! = 0
     loop {
         if count >= n {
@@ -6,10 +6,13 @@ fn loop_with_break(n: Int): Void {
         }
         print(count)
         count += 1
+        if count == 5 {
+            return count
+        }
     }
+    count
 }
 
 fn main(): Int {
     loop_with_break(10)
-    0
 }
