@@ -21,3 +21,6 @@ Thumbs.db
 # Documentation build
 /docs/book/
 .grepai/
+
+# Editor extensions:
+**/node_modules/

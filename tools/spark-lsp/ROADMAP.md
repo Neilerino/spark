@@ -219,7 +219,7 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 ---
 
-## Phase 11: VS Code Extension
+## Phase 11: VS Code Extension ✅
 
 **Goal:** First-class VS Code support for Spark development.
 
@@ -229,11 +229,18 @@ This document tracks the incremental path toward full Language Server Protocol s
   - Language configuration (`.spark` file association)
   - Comment tokens (`//`), bracket pairs
   - Semantic token legend matching Phase 2
-- Extension TypeScript code that launches `spark-lsp` binary
+  - `spark.server.path` setting for custom binary location
+- Extension TypeScript code that launches `spark-lsp` binary via stdio
 - TextMate grammar for basic syntax highlighting (fallback when LSP is starting)
+- Language configuration: brackets, auto-closing pairs, indentation rules
 - Publish to VS Code marketplace
 
-**Status:** [ ] Not started
+**Implementation:**
+- Entry point: `src/extension.ts` — uses `vscode-languageclient` to spawn `spark-lsp` binary over stdio
+- TextMate grammar covers: keywords (31), constants, strings, characters, numbers, comments, type names, function definitions, operators
+- Configurable server path via `spark.server.path` (defaults to `spark-lsp` on PATH)
+
+**Status:** [x] Complete
 
 ---
 

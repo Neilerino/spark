@@ -1,0 +1,62 @@
+{
+  "name": "spark-lang",
+  "displayName": "Spark Language",
+  "description": "Language support for Spark — diagnostics, semantic highlighting, go-to-definition, hover, references, and document symbols.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:spark"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "spark",
+        "aliases": [
+          "Spark",
+          "spark"
+        ],
+        "extensions": [
+          ".spark"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "spark",
+        "scopeName": "source.spark",
+        "path": "./syntaxes/spark.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Spark",
+      "properties": {
+        "spark.server.path": {
+          "type": "string",
+          "default": "spark-lsp",
+          "description": "Path to the spark-lsp binary. Defaults to 'spark-lsp' on PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^3.2.0",
+    "typescript": "^5.7.0"
+  }
+}
