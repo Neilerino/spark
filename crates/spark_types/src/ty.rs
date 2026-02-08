@@ -8,6 +8,30 @@ use std::fmt;
 
 use spark_resolve::DefId;
 
+/// A lifetime identifier. `LifetimeId(0)` is the anonymous/inferred lifetime.
+///
+/// Lifetime IDs are interned in the [`TypeTable`](super::table::TypeTable) and
+/// used to track which borrows share the same lifetime region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LifetimeId(pub u32);
+
+impl LifetimeId {
+    /// The anonymous lifetime (inferred by borrow checker).
+    pub const ANONYMOUS: Self = Self(0);
+
+    /// Returns the raw index.
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    /// Returns true if this is the anonymous lifetime.
+    #[must_use]
+    pub const fn is_anonymous(self) -> bool {
+        self.0 == 0
+    }
+}
+
 /// A unique identifier for an interned type.
 ///
 /// `TypeId` is a handle into the [`TypeInterner`](super::intern::TypeInterner).
@@ -157,6 +181,8 @@ pub enum Ty {
         inner: TypeId,
         /// Whether this is a mutable reference.
         mutable: bool,
+        /// The lifetime of this reference.
+        lifetime: LifetimeId,
     },
 
     // === Functions ===

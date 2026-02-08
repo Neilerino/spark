@@ -913,7 +913,7 @@ pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -
         }
         Ty::Optional(inner) => format!("{}?", type_name(*inner, table, definitions)),
         Ty::Mutable(inner) => format!("{}!", type_name(*inner, table, definitions)),
-        Ty::Ref { inner, mutable } => {
+        Ty::Ref { inner, mutable, .. } => {
             if *mutable {
                 format!("Ref[{}]!", type_name(*inner, table, definitions))
             } else {

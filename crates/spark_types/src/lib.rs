@@ -67,7 +67,7 @@ use spark_resolve::{DefinitionTable, ResolvedAst};
 
 pub use checker::TypeCheckerOutput;
 pub use table::TypeTable;
-pub use ty::{FloatWidth, IntWidth, Ty, TypeId};
+pub use ty::{FloatWidth, IntWidth, LifetimeId, Ty, TypeId};
 
 /// Input to the type checker.
 #[derive(Debug)]

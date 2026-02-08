@@ -257,6 +257,34 @@ pub fn lower_expr(
             temp
         }
 
+        // ── References ────────────────────────────────────────────
+        HirExprKind::Borrow { operand, mutable } => {
+            let operand_local = lower_expr(operand, fb, mir, type_table, defs);
+            let temp = fb.fresh_temp(expr.ty, expr.span);
+            fb.push_assign(
+                Place::from_local(temp),
+                Rvalue::Ref {
+                    place: Place::from_local(operand_local),
+                    mutable: *mutable,
+                },
+                expr.span,
+            );
+            temp
+        }
+
+        HirExprKind::Deref(inner) => {
+            let inner_local = lower_expr(inner, fb, mir, type_table, defs);
+            let temp = fb.fresh_temp(expr.ty, expr.span);
+            let mut place = Place::from_local(inner_local);
+            place.projections.push(Projection::Deref);
+            fb.push_assign(
+                Place::from_local(temp),
+                Rvalue::Use(Operand::Copy(place)),
+                expr.span,
+            );
+            temp
+        }
+
         // ── Deferred features ────────────────────────────────────
         HirExprKind::Is { .. } => {
             emit_deferred(mir, "type test (`is`)", expr);
@@ -312,6 +340,12 @@ pub fn lower_place(
             let mut place = lower_place(base, fb, mir, type_table, defs);
             let index_local = lower_expr(index, fb, mir, type_table, defs);
             place.projections.push(Projection::Index(index_local));
+            place
+        }
+
+        HirExprKind::Deref(inner) => {
+            let mut place = lower_place(inner, fb, mir, type_table, defs);
+            place.projections.push(Projection::Deref);
             place
         }
 

@@ -245,6 +245,17 @@ pub enum HirExprKind {
     /// Spawn a concurrent task.
     Spawn(Box<HirExpr>),
 
+    // === References ===
+    /// Take a reference to a value.
+    Borrow {
+        /// The expression being borrowed.
+        operand: Box<HirExpr>,
+        /// Whether the borrow is mutable.
+        mutable: bool,
+    },
+    /// Dereference a reference.
+    Deref(Box<HirExpr>),
+
     // === Error recovery ===
     /// Error placeholder (from failed lowering).
     Error,

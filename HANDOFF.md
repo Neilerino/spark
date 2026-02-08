@@ -11,7 +11,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 
 ## Completed Work
 
-### Foundation Crates (9/10 compiler phases)
+### Foundation Crates (10/10 compiler phases through borrow checking)
 
 | Crate               | Purpose                                                        | Tests | Status   |
 | ------------------- | -------------------------------------------------------------- | ----- | -------- |
@@ -26,53 +26,55 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_types`       | Type checking: two-pass signature collection + body checking   | 72    | Complete |
 | `spark_hir`         | HIR lowering: desugar typed AST into core IR                   | 21    | Complete |
 | `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 32    | Complete |
+| `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 
-**Total: 478 tests passing across workspace.**
+**Total: 505 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
-### spark_mir Overview (Just Completed)
+### spark_borrow Overview (Just Completed)
 
-CFG-based MIR builder consuming HIR + TypeTable and producing one `MirFunction` per function:
+NLL-style borrow checker consuming MIR + TypeTable and validating reference safety:
 
-- **Input**: `Hir` + `TypeTable` (read-only) + `DefinitionTable`
-- **Output**: `Mir` (`HashMap<DefId, MirFunction>`) + `TypeTable` (passed through) + `Diagnostics`
-- **Pre-SSA**: One `Local` per variable — no phi nodes. `Local(0)` = return place, `1..=N` = params, rest = locals/temps.
-- **Calls are terminators**: Every `Call` splits the current block and creates a continuation block. This is correct for borrow checking (reason about before/after call).
-- **Expression lowering**: Every `HirExprKind` variant dispatched in `lower_expr()` → returns `Local` holding result. Leaf expressions produce constants; compound expressions allocate temporaries; control flow creates new blocks.
-- **Control flow**: `If` → `SwitchInt` + then/else/join blocks. `Loop` → header block + break block with `LoopContext` stack. `Return` → assign to `Local(0)` + `Return` terminator + dead block.
-- **Pattern matching**: Sequential test-and-branch chains per match arm. Wildcard/Binding always match; Literal uses `SwitchInt`; Variant reads discriminant; Struct/Tuple project fields recursively.
-- **Deferred features**: `is`, `lambda`, `await`, `spawn` emit warning diagnostics and produce void temps.
-- **Pretty printer**: `pretty_function()` produces human-readable MIR dumps for debugging and test assertions.
+- **Input**: `Mir` + `TypeTable` (read-only) + `DefinitionTable`
+- **Output**: `Mir` (passed through unchanged) + `TypeTable` (passed through) + `Diagnostics`
+- **Selective checking**: Only functions whose locals involve `Ty::Ref` types are analyzed. Functions using default copy semantics skip borrow checking entirely.
+- **Fact extraction**: Walk MIR CFG to extract loans (borrows), uses, moves, assignments, and CFG edges at each program point `(BlockId, statement_index)`.
+- **Liveness analysis**: Backward dataflow with worklist fixpoint. A local is live at a point if it may be read before reassignment on some path.
+- **Region inference**: NLL-style — each loan's region extends from its issue point through all CFG-reachable points where the reference local is live.
+- **Conflict detection**: Checks six rules at each program point:
+  1. No two active borrows of overlapping places where at least one is mutable
+  2. No mixed mutable + immutable borrows of overlapping places
+  3. No use of a moved value without intervening reassignment
+  4. No borrow of a moved value
+  5. No mutation through an immutable reference (deref of `Ref { mutable: false }`)
+- **Rich diagnostics**: Each error uses `Diagnostic::error()` with primary + secondary labels pointing to conflicting locations.
 
-**API**: `lower(MirInput) -> MirOutput`
+**Cross-crate changes made:**
+- `spark_types`: Added `LifetimeId` to `Ty::Ref`, lifetime interning in `TypeTable`
+- `spark_hir`: Added `HirExprKind::Borrow` and `HirExprKind::Deref` variants
+- `spark_mir`: Added MIR lowering for `Borrow` (→ `Rvalue::Ref`) and `Deref` (→ `Projection::Deref`)
+
+**API**: `check(BorrowInput) -> BorrowOutput`
 
 **Files**:
 ```
-crates/spark_mir/src/
-├── lib.rs            # Public API + integration tests
-├── mir.rs            # MIR node definitions (BlockId, Local, Place, Rvalue, Terminator, etc.)
-├── builder.rs        # MirBuilder + FunctionBuilder + LoopContext
-├── lower_function.rs # Function-level lowering orchestration
-├── lower_expr.rs     # HirExprKind -> Local (all 28 variants)
-├── lower_stmt.rs     # HirStmt lowering (Let, Assign, Expr)
-├── lower_pattern.rs  # Pattern matching compilation
-└── pretty.rs         # Debug printer for MIR
+crates/spark_borrow/src/
+├── lib.rs        # Public API: BorrowInput, BorrowOutput, check()
+├── facts.rs      # Fact extraction from MIR (loans, points, CFG edges)
+├── liveness.rs   # Backward dataflow liveness analysis
+├── regions.rs    # NLL-style region inference
+├── check.rs      # Conflict detection and validation rules
+└── errors.rs     # Diagnostic messages for borrow errors
 ```
 
 ## What's Next
 
-### Immediate: spark_borrow (NEXT MAIN TASK)
+### Immediate: spark_opt or spark_codegen (NEXT MAIN TASK)
 
-**Goal**: Borrow checking over the MIR CFG — enforce ownership, move semantics, and reference validity.
+**Option A: spark_opt** — Optimization passes over MIR (constant folding, dead code elimination, SSA construction).
 
-**Reference**: See Phase 8 in `docs/compiler-architecture.md`.
-
-**Key considerations**:
-- The MIR is pre-SSA (one Local per variable), so liveness analysis operates at the statement level
-- Calls are terminators, so reasoning about borrows across calls is straightforward (before-call vs after-call blocks)
-- Pattern match bindings create new locals via `compile_pattern`, so each arm's bindings are distinct
-- `Local(0)` (return place) is always written before `Return` terminator
+**Option B: spark_codegen** — Code generation from MIR (LLVM via inkwell, or Cranelift).
 
 ### Deferred Work
 
@@ -90,6 +92,10 @@ These can be added incrementally as later phases need them:
 - Decision-tree match compilation (sequential suffices initially)
 - Drop elaboration (separate pass)
 - Fresh `DefId` synthesis in desugared match arms
+- Reborrowing (error on attempted reborrow for now)
+- Two-phase borrows (optimization for method calls)
+- Explicit lifetime parameter syntax (`fn foo[A](...)`)
+- Lifetime elision rules
 
 ### Full Pipeline
 
@@ -100,8 +106,8 @@ These can be added incrementally as later phases need them:
 5. Type Checking (spark_types) ✅
 6. HIR Lowering (spark_hir) ✅
 7. MIR Construction (spark_mir) ✅
-8. **Borrow Checking (spark_borrow) <- NEXT**
-9. Optimization (spark_opt)
+8. Borrow Checking (spark_borrow) ✅
+9. **Optimization (spark_opt) <- NEXT**
 10. Code Generation (spark_codegen)
 
 ## Crate Dependencies
@@ -118,6 +124,7 @@ spark_resolve       (depends on span, intern, diagnostics, ast, modules)
 spark_types         (depends on span, intern, diagnostics, ast, modules, resolve)
 spark_hir           (depends on span, intern, diagnostics, ast, modules, resolve, types)
 spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, hir)
+spark_borrow        (depends on span, intern, diagnostics, resolve, types, mir)
 ```
 
 ## Key Implementation Details
@@ -130,12 +137,14 @@ spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, 
 6. **Parser limitation** - Deeply nested bare blocks with bindings (`{ { a: Int = 1 } }`) can misparse. Use `if`-blocks in tests to avoid this.
 7. **Pipeline API** - Each crate: `Input` struct → public `lower()`/`check()` fn → `Output` struct. Output passes `TypeTable` through for subsequent phases.
 8. **Double-parse workaround** - Type checker consumes ASTs, so test helpers re-parse + re-resolve for HIR/MIR input.
+9. **Lifetime system** - `LifetimeId` in `Ty::Ref`, interned in `TypeTable`. `LifetimeId::ANONYMOUS` (0) is the default inferred lifetime. Parser already extracts lifetimes from `Ref[T, A]` syntax.
+10. **Borrow checker architecture** - NLL-style: fact extraction → liveness → region inference → conflict detection. Functions without `Ref` types skip the analysis entirely.
 
 ## Notes for Next Agent
 
 1. **Read `docs/lang-spec.md`** - Full grammar and language semantics
 2. **Read `docs/compiler-architecture.md`** - Pipeline design with I/O schemas for each phase
-3. **MIR output** (`Mir` + `TypeTable`) is the starting point for borrow checking
+3. **Borrow checker output** (`Mir` + `TypeTable`) is the starting point for optimization/codegen
 4. **All phases use `Diagnostics`** for error accumulation — never panic on invalid input
 5. **`#![forbid(unsafe_code)]`** in every crate, clippy pedantic + nursery lints
 6. **MIR structure**: Each `MirFunction` has `locals: Vec<LocalDecl>` and `blocks: Vec<BasicBlock>`. Iterate blocks in order; each block has `statements` + `terminator`. Use `pretty_function()` to dump MIR for debugging.
@@ -144,8 +153,8 @@ spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, 
 
 ```bash
 cargo build                      # Build all
-cargo test                       # Test all (478 tests)
+cargo test                       # Test all (505 tests)
 cargo clippy                     # Lint all
-cargo test -p spark_mir          # Test specific crate
+cargo test -p spark_borrow       # Test borrow checker
 cargo doc --open                 # View documentation
 ```

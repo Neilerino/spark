@@ -9,7 +9,7 @@ use spark_resolve::DefId;
 use spark_span::Span;
 
 use crate::intern::TypeInterner;
-use crate::ty::{Ty, TypeId};
+use crate::ty::{LifetimeId, Ty, TypeId};
 
 /// The type table produced by the type checker.
 ///
@@ -33,6 +33,10 @@ pub struct TypeTable {
     pub(crate) enum_variants: FxHashMap<DefId, Vec<(Symbol, DefId)>>,
     /// Variant fields: variant `DefId` → `[(field_name, field_type)]`.
     pub(crate) variant_fields: FxHashMap<DefId, Vec<(Symbol, TypeId)>>,
+    /// Lifetime names: `LifetimeId` → name symbol.
+    pub(crate) lifetime_names: Vec<Symbol>,
+    /// Reverse map for lifetime deduplication.
+    pub(crate) lifetime_dedup: FxHashMap<Symbol, LifetimeId>,
 }
 
 impl Default for TypeTable {
@@ -45,6 +49,8 @@ impl TypeTable {
     /// Creates a new empty type table.
     #[must_use]
     pub fn new() -> Self {
+        // Pre-intern the anonymous lifetime at index 0.
+        let anon_sym = spark_intern::sym("");
         Self {
             interner: TypeInterner::new(),
             def_types: FxHashMap::default(),
@@ -52,6 +58,12 @@ impl TypeTable {
             struct_fields: FxHashMap::default(),
             enum_variants: FxHashMap::default(),
             variant_fields: FxHashMap::default(),
+            lifetime_names: vec![anon_sym],
+            lifetime_dedup: {
+                let mut m = FxHashMap::default();
+                m.insert(anon_sym, LifetimeId::ANONYMOUS);
+                m
+            },
         }
     }
 
@@ -119,6 +131,27 @@ impl TypeTable {
     #[must_use]
     pub fn get_variant_fields(&self, def_id: DefId) -> Option<&[(Symbol, TypeId)]> {
         self.variant_fields.get(&def_id).map(Vec::as_slice)
+    }
+
+    /// Interns a lifetime name and returns its [`LifetimeId`].
+    ///
+    /// If the same name has already been interned, returns the existing ID.
+    /// An empty-string symbol maps to [`LifetimeId::ANONYMOUS`].
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn intern_lifetime(&mut self, name: Symbol) -> LifetimeId {
+        if let Some(&id) = self.lifetime_dedup.get(&name) {
+            return id;
+        }
+        let id = LifetimeId(self.lifetime_names.len() as u32);
+        self.lifetime_names.push(name);
+        self.lifetime_dedup.insert(name, id);
+        id
+    }
+
+    /// Returns the name of a lifetime, if known.
+    #[must_use]
+    pub fn lifetime_name(&self, id: LifetimeId) -> Option<Symbol> {
+        self.lifetime_names.get(id.0 as usize).copied()
     }
 }
 

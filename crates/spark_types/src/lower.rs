@@ -76,11 +76,13 @@ pub fn lower_type_expr(
             })
         }
 
-        TypeExprKind::Ref { inner, mutable, .. } => {
+        TypeExprKind::Ref { inner, mutable, lifetime } => {
             let inner_id = lower_type_expr(inner, table, builtins, definitions, resolutions, diagnostics);
+            let lifetime_id = table.intern_lifetime(lifetime.name);
             table.intern(Ty::Ref {
                 inner: inner_id,
                 mutable: *mutable,
+                lifetime: lifetime_id,
             })
         }
 
