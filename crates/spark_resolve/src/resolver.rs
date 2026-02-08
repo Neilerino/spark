@@ -99,6 +99,20 @@ impl Resolver {
 
         // Store the builtin DefId so it can be added to ribs during resolution
         self.builtin_defs.push((kw::PRINT, def_id, DefinitionKind::BuiltinFunction));
+
+        // Register built-in methods (len, append, contains, remove, add).
+        // These are NOT added to ribs (can't be called as free functions),
+        // but need DefIds so MIR and codegen can reference them.
+        for &method_name in &[kw::LEN, kw::APPEND, kw::CONTAINS, kw::REMOVE, kw::ADD] {
+            let info = DefinitionInfo::new(
+                DefinitionKind::BuiltinMethod,
+                method_name,
+                Span::DUMMY,
+                Visibility::Public,
+                ModulePath::root(),
+            );
+            self.definitions.insert(info);
+        }
     }
 
     // ========================================================================

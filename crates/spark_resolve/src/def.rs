@@ -82,6 +82,8 @@ pub enum DefinitionKind {
     LifetimeParam,
     /// Built-in function (e.g., `print`).
     BuiltinFunction,
+    /// Built-in method on a collection or string type (e.g., `list.len()`).
+    BuiltinMethod,
 }
 
 impl DefinitionKind {

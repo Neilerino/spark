@@ -155,7 +155,7 @@ fn emit_constant<M: Module>(
 }
 
 /// Reads a value from a MIR place (local + projections).
-fn emit_place_read<M: Module>(
+pub fn emit_place_read<M: Module>(
     ctx: &mut FunctionContext<'_>,
     place: &Place,
     table: &TypeTable,
@@ -818,7 +818,7 @@ fn operand_type(operand: &Operand, ctx: &FunctionContext<'_>) -> TypeId {
 ///
 /// This is needed when calling runtime functions that expect pointers to values
 /// (e.g., `__spark_list_push(list, elem_ptr)`), but the value is in a register.
-fn store_scalar_to_temp(
+pub fn store_scalar_to_temp(
     ctx: &mut FunctionContext<'_>,
     val: Value,
     ty_id: TypeId,
@@ -843,7 +843,7 @@ fn store_scalar_to_temp(
 /// For scalars, stores the value into a temp stack slot and returns the address.
 /// For aggregates, the value *is* already an address.
 #[allow(clippy::too_many_arguments)]
-fn emit_operand_addr<M: Module>(
+pub fn emit_operand_addr<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operand: &Operand,
     operand_ty: TypeId,

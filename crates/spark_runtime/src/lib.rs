@@ -416,6 +416,238 @@ pub unsafe extern "C" fn __spark_set_insert(set: *mut u8, elem_ptr: *const u8) {
 }
 
 // =============================================================================
+// Collection methods — len, contains, remove
+// =============================================================================
+
+/// Returns the number of elements in a list.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_list_new`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn __spark_list_len(ptr: *mut u8) -> i64 {
+    let list = unsafe { &*(ptr.cast::<SparkList>()) };
+    list.len as i64
+}
+
+/// Returns 1 if the list contains the element at `elem_ptr`, 0 otherwise.
+/// Comparison is byte-level (`memcmp`).
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_list_new`.
+/// `elem_ptr` must point to at least `elem_size` bytes.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_list_contains(ptr: *mut u8, elem_ptr: *const u8) -> i8 {
+    let list = unsafe { &*(ptr.cast::<SparkList>()) };
+    for i in 0..list.len {
+        let existing = unsafe { list.data.add(i * list.elem_size) };
+        if unsafe { libc_memcmp(existing, elem_ptr, list.elem_size) } {
+            return 1;
+        }
+    }
+    0
+}
+
+/// Removes the element at `index` from the list. Aborts on out-of-bounds.
+/// If `elem_rc` is non-zero, decrements the RC of the removed element.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_list_new`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub unsafe extern "C" fn __spark_list_remove(ptr: *mut u8, index: i64, elem_rc: i8) {
+    let list = unsafe { &mut *(ptr.cast::<SparkList>()) };
+    let idx = index as usize;
+    if idx >= list.len {
+        eprintln!(
+            "spark: list remove index out of bounds: index {idx}, length {}",
+            list.len
+        );
+        std::process::abort();
+    }
+
+    let elem_addr = unsafe { list.data.add(idx * list.elem_size) };
+
+    // RC dec the removed element if it's reference-counted.
+    if elem_rc != 0 {
+        let inner = unsafe { *(elem_addr.cast::<*mut u8>()) };
+        if !inner.is_null() {
+            let rc_field = unsafe { &mut *(inner.cast::<usize>()) };
+            *rc_field -= 1;
+        }
+    }
+
+    // Shift remaining elements left.
+    let remaining = list.len - idx - 1;
+    if remaining > 0 {
+        let src = unsafe { elem_addr.add(list.elem_size) };
+        unsafe { std::ptr::copy(src, elem_addr, remaining * list.elem_size) };
+    }
+    list.len -= 1;
+}
+
+/// Returns the number of entries in a map.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_map_new`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn __spark_map_len(ptr: *mut u8) -> i64 {
+    let map = unsafe { &*(ptr.cast::<SparkMap>()) };
+    map.len as i64
+}
+
+/// Returns 1 if the map contains the given key, 0 otherwise.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_map_new`.
+/// `key_ptr` must point to at least `key_size` bytes.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_map_contains(ptr: *mut u8, key_ptr: *const u8) -> i8 {
+    let map = unsafe { &*(ptr.cast::<SparkMap>()) };
+    for i in 0..map.len {
+        let existing_key = unsafe { map.keys.add(i * map.key_size) };
+        if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
+            return 1;
+        }
+    }
+    0
+}
+
+/// Removes the entry with the given key from the map (swap-remove).
+/// If `key_rc` / `val_rc` are non-zero, decrements RC on removed key/value.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_map_new`.
+/// `key_ptr` must point to at least `key_size` bytes.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_map_remove(
+    ptr: *mut u8,
+    key_ptr: *const u8,
+    key_rc: i8,
+    val_rc: i8,
+) {
+    let map = unsafe { &mut *(ptr.cast::<SparkMap>()) };
+
+    for i in 0..map.len {
+        let existing_key = unsafe { map.keys.add(i * map.key_size) };
+        if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
+            // RC dec removed key/value.
+            if key_rc != 0 {
+                let inner = unsafe { *(existing_key.cast::<*mut u8>()) };
+                if !inner.is_null() {
+                    let rc = unsafe { &mut *(inner.cast::<usize>()) };
+                    *rc -= 1;
+                }
+            }
+            if val_rc != 0 {
+                let val_addr = unsafe { map.values.add(i * map.value_size) };
+                let inner = unsafe { *(val_addr.cast::<*mut u8>()) };
+                if !inner.is_null() {
+                    let rc = unsafe { &mut *(inner.cast::<usize>()) };
+                    *rc -= 1;
+                }
+            }
+
+            // Swap-remove: move last entry into the hole.
+            let last = map.len - 1;
+            if i != last {
+                let last_key = unsafe { map.keys.add(last * map.key_size) };
+                unsafe { std::ptr::copy_nonoverlapping(last_key, existing_key, map.key_size) };
+
+                let val_addr = unsafe { map.values.add(i * map.value_size) };
+                let last_val = unsafe { map.values.add(last * map.value_size) };
+                unsafe { std::ptr::copy_nonoverlapping(last_val, val_addr, map.value_size) };
+            }
+            map.len -= 1;
+            return;
+        }
+    }
+}
+
+/// Returns the number of elements in a set.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_set_new`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_set_len(ptr: *mut u8) -> i64 {
+    // A set is a SparkList internally.
+    unsafe { __spark_list_len(ptr) }
+}
+
+/// Returns 1 if the set contains the element, 0 otherwise.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_set_new`.
+/// `elem_ptr` must point to at least `elem_size` bytes.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_set_contains(ptr: *mut u8, elem_ptr: *const u8) -> i8 {
+    unsafe { __spark_list_contains(ptr, elem_ptr) }
+}
+
+/// Removes an element from the set (swap-remove by value).
+/// If `elem_rc` is non-zero, decrements the RC of the removed element.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_set_new`.
+/// `elem_ptr` must point to at least `elem_size` bytes.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_set_remove(ptr: *mut u8, elem_ptr: *const u8, elem_rc: i8) {
+    let set = unsafe { &mut *(ptr.cast::<SparkList>()) };
+
+    for i in 0..set.len {
+        let existing = unsafe { set.data.add(i * set.elem_size) };
+        if unsafe { libc_memcmp(existing, elem_ptr, set.elem_size) } {
+            // RC dec the removed element.
+            if elem_rc != 0 {
+                let inner = unsafe { *(existing.cast::<*mut u8>()) };
+                if !inner.is_null() {
+                    let rc = unsafe { &mut *(inner.cast::<usize>()) };
+                    *rc -= 1;
+                }
+            }
+
+            // Swap-remove: move last element into the hole.
+            let last_idx = set.len - 1;
+            if i != last_idx {
+                let last_elem = unsafe { set.data.add(last_idx * set.elem_size) };
+                unsafe { std::ptr::copy_nonoverlapping(last_elem, existing, set.elem_size) };
+            }
+            set.len -= 1;
+            return;
+        }
+    }
+}
+
+/// Returns the length in bytes of a string.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_string_new` or
+/// `__spark_string_from_literal`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn __spark_string_len(ptr: *mut u8) -> i64 {
+    let s = unsafe { &*(ptr.cast::<SparkString>()) };
+    s.len as i64
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 

@@ -5,6 +5,7 @@
 
 use spark_ast::{BinaryOp, Block, Expr, ExprKind, LiteralKind, UnaryOp};
 use spark_diagnostics::{Diagnostic, Label};
+use spark_intern::{kw, Symbol};
 use spark_resolve::{DefId, DefinitionTable, ResolutionMap};
 use spark_span::Span;
 
@@ -352,14 +353,15 @@ fn check_expr_inner(
             check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
         }
 
-        // === Deferred / simplified ===
-        ExprKind::MethodCall { receiver, args, .. } => {
-            let _ = check_expr(receiver, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            for arg in args {
-                let _ = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            }
-            // Method resolution deferred
-            TypeId::ERROR
+        // === Method calls on collections and strings ===
+        ExprKind::MethodCall { receiver, method, args } => {
+            let recv_ty = check_expr(receiver, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let arg_tys: Vec<TypeId> = args
+                .iter()
+                .map(|a| check_expr(&a.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret))
+                .collect();
+
+            check_method_call(recv_ty, method.name, &arg_tys, receiver.span, expr.span, table, builtins, diagnostics)
         }
 
         ExprKind::To { expr: inner, .. } => {
@@ -946,6 +948,206 @@ pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -
             .get(*def_id)
             .map_or_else(|| "<param>".to_string(), |info| info.name.to_string()),
         Ty::Error => "<error>".to_string(),
+    }
+}
+
+/// Type-checks a method call on a collection or string receiver.
+#[allow(clippy::too_many_arguments)]
+fn check_method_call(
+    recv_ty: TypeId,
+    method: Symbol,
+    arg_tys: &[TypeId],
+    recv_span: Span,
+    call_span: Span,
+    table: &TypeTable,
+    builtins: &BuiltinTypes,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if recv_ty.is_error() {
+        return TypeId::ERROR;
+    }
+
+    let (is_mutable, stripped) = match table.resolve(recv_ty).clone() {
+        Ty::Mutable(inner) => (true, table.resolve(inner).clone()),
+        other => (false, other),
+    };
+
+    match stripped {
+        Ty::List(elem) => check_list_method(method, elem, is_mutable, arg_tys, call_span, recv_span, table, builtins, diagnostics),
+        Ty::Map(k, v) => check_map_method(method, k, v, is_mutable, arg_tys, call_span, recv_span, table, builtins, diagnostics),
+        Ty::Set(elem) => check_set_method(method, elem, is_mutable, arg_tys, call_span, recv_span, table, builtins, diagnostics),
+        Ty::String => check_string_method(method, arg_tys, call_span, builtins, diagnostics),
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(format!("type has no method `{method}`"))
+                    .with_label(Label::primary(recv_span, "no methods available on this type")),
+            );
+            TypeId::ERROR
+        }
+    }
+}
+
+/// Checks a method call on `List[T]`.
+#[allow(clippy::too_many_arguments)]
+fn check_list_method(
+    method: Symbol,
+    elem: TypeId,
+    is_mutable: bool,
+    arg_tys: &[TypeId],
+    call_span: Span,
+    recv_span: Span,
+    table: &TypeTable,
+    builtins: &BuiltinTypes,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if method == kw::LEN {
+        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        builtins.int
+    } else if method == kw::APPEND {
+        expect_args(1, arg_tys.len(), call_span, diagnostics);
+        require_mutable("List", is_mutable, recv_span, diagnostics);
+        if !arg_tys.is_empty() && !is_compatible(arg_tys[0], elem, table) {
+            diagnostics.push(
+                Diagnostic::error("argument type does not match list element type")
+                    .with_label(Label::primary(call_span, "type mismatch")),
+            );
+        }
+        builtins.void
+    } else if method == kw::CONTAINS {
+        expect_args(1, arg_tys.len(), call_span, diagnostics);
+        builtins.bool_ty
+    } else if method == kw::REMOVE {
+        expect_args(1, arg_tys.len(), call_span, diagnostics);
+        require_mutable("List", is_mutable, recv_span, diagnostics);
+        builtins.void
+    } else {
+        diagnostics.push(
+            Diagnostic::error(format!("List has no method `{method}`"))
+                .with_label(Label::primary(call_span, "unknown method")),
+        );
+        TypeId::ERROR
+    }
+}
+
+/// Checks a method call on `Map[K, V]`.
+#[allow(clippy::too_many_arguments)]
+fn check_map_method(
+    method: Symbol,
+    _key: TypeId,
+    _value: TypeId,
+    is_mutable: bool,
+    arg_tys: &[TypeId],
+    call_span: Span,
+    recv_span: Span,
+    _table: &TypeTable,
+    builtins: &BuiltinTypes,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if method == kw::LEN {
+        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        builtins.int
+    } else if method == kw::CONTAINS {
+        expect_args(1, arg_tys.len(), call_span, diagnostics);
+        builtins.bool_ty
+    } else if method == kw::REMOVE {
+        expect_args(1, arg_tys.len(), call_span, diagnostics);
+        require_mutable("Map", is_mutable, recv_span, diagnostics);
+        builtins.void
+    } else {
+        diagnostics.push(
+            Diagnostic::error(format!("Map has no method `{method}`"))
+                .with_label(Label::primary(call_span, "unknown method")),
+        );
+        TypeId::ERROR
+    }
+}
+
+/// Checks a method call on `Set[T]`.
+#[allow(clippy::too_many_arguments)]
+fn check_set_method(
+    method: Symbol,
+    _elem: TypeId,
+    is_mutable: bool,
+    arg_tys: &[TypeId],
+    call_span: Span,
+    recv_span: Span,
+    _table: &TypeTable,
+    builtins: &BuiltinTypes,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if method == kw::LEN {
+        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        builtins.int
+    } else if method == kw::ADD {
+        expect_args(1, arg_tys.len(), call_span, diagnostics);
+        require_mutable("Set", is_mutable, recv_span, diagnostics);
+        builtins.void
+    } else if method == kw::CONTAINS {
+        expect_args(1, arg_tys.len(), call_span, diagnostics);
+        builtins.bool_ty
+    } else if method == kw::REMOVE {
+        expect_args(1, arg_tys.len(), call_span, diagnostics);
+        require_mutable("Set", is_mutable, recv_span, diagnostics);
+        builtins.void
+    } else {
+        diagnostics.push(
+            Diagnostic::error(format!("Set has no method `{method}`"))
+                .with_label(Label::primary(call_span, "unknown method")),
+        );
+        TypeId::ERROR
+    }
+}
+
+/// Checks a method call on `String`.
+fn check_string_method(
+    method: Symbol,
+    arg_tys: &[TypeId],
+    call_span: Span,
+    builtins: &BuiltinTypes,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if method == kw::LEN {
+        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        builtins.int
+    } else {
+        diagnostics.push(
+            Diagnostic::error(format!("String has no method `{method}`"))
+                .with_label(Label::primary(call_span, "unknown method")),
+        );
+        TypeId::ERROR
+    }
+}
+
+/// Reports an error if expected != actual argument count.
+fn expect_args(
+    expected: usize,
+    actual: usize,
+    span: Span,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) {
+    if actual != expected {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "expected {expected} argument{}, found {actual}",
+                if expected == 1 { "" } else { "s" }
+            ))
+            .with_label(Label::primary(span, "wrong number of arguments")),
+        );
+    }
+}
+
+/// Reports an error when calling a mutating method on an immutable receiver.
+fn require_mutable(
+    type_name: &str,
+    is_mutable: bool,
+    recv_span: Span,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) {
+    if !is_mutable {
+        diagnostics.push(
+            Diagnostic::error(format!("cannot mutate immutable {type_name}"))
+                .with_label(Label::primary(recv_span, "value is not mutable")),
+        );
     }
 }
 

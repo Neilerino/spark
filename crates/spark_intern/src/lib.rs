@@ -329,6 +329,12 @@ impl Interner {
             "_",
             // Built-in functions
             "print",
+            // Built-in method names
+            "len",
+            "append",
+            "contains",
+            "remove",
+            "add",
         ];
 
         for kw in keywords {
@@ -571,10 +577,28 @@ pub mod kw {
     /// `print`
     pub const PRINT: Symbol = Symbol(68);
 
+    // Built-in method names
+    /// `len`
+    pub const LEN: Symbol = Symbol(69);
+    /// `append`
+    pub const APPEND: Symbol = Symbol(70);
+    /// `contains`
+    pub const CONTAINS: Symbol = Symbol(71);
+    /// `remove`
+    pub const REMOVE: Symbol = Symbol(72);
+    /// `add`
+    pub const ADD: Symbol = Symbol(73);
+
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
     pub const fn is_builtin_function(sym: Symbol) -> bool {
         sym.0 == 68
+    }
+
+    /// Returns true if the given symbol is a built-in method name.
+    #[must_use]
+    pub const fn is_builtin_method(sym: Symbol) -> bool {
+        sym.0 >= 69 && sym.0 <= 73
     }
 
     /// Returns true if the given symbol is a keyword.

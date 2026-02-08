@@ -49,6 +49,26 @@ pub struct RuntimeStubs {
     pub list_cow: FuncId,
     /// `__spark_map_cow(ptr, i8, i8) -> ptr`
     pub map_cow: FuncId,
+    /// `__spark_list_len(ptr) -> i64`
+    pub list_len: FuncId,
+    /// `__spark_list_contains(ptr, ptr) -> i8`
+    pub list_contains: FuncId,
+    /// `__spark_list_remove(ptr, i64, i8) -> void`
+    pub list_remove: FuncId,
+    /// `__spark_map_len(ptr) -> i64`
+    pub map_len: FuncId,
+    /// `__spark_map_contains(ptr, ptr) -> i8`
+    pub map_contains: FuncId,
+    /// `__spark_map_remove(ptr, ptr, i8, i8) -> void`
+    pub map_remove: FuncId,
+    /// `__spark_set_len(ptr) -> i64`
+    pub set_len: FuncId,
+    /// `__spark_set_contains(ptr, ptr) -> i8`
+    pub set_contains: FuncId,
+    /// `__spark_set_remove(ptr, ptr, i8) -> void`
+    pub set_remove: FuncId,
+    /// `__spark_string_len(ptr) -> i64`
+    pub string_len: FuncId,
     /// `__spark_print_int(i64) -> void`
     pub print_int: FuncId,
     /// `__spark_print_string(ptr) -> void`
@@ -197,6 +217,76 @@ impl RuntimeStubs {
                 "__spark_map_cow",
                 &[ptr_type, types::I8, types::I8],
                 Some(ptr_type),
+                call_conv,
+            ),
+            list_len: declare_fn(
+                module,
+                "__spark_list_len",
+                &[ptr_type],
+                Some(types::I64),
+                call_conv,
+            ),
+            list_contains: declare_fn(
+                module,
+                "__spark_list_contains",
+                &[ptr_type, ptr_type],
+                Some(types::I8),
+                call_conv,
+            ),
+            list_remove: declare_fn(
+                module,
+                "__spark_list_remove",
+                &[ptr_type, types::I64, types::I8],
+                None,
+                call_conv,
+            ),
+            map_len: declare_fn(
+                module,
+                "__spark_map_len",
+                &[ptr_type],
+                Some(types::I64),
+                call_conv,
+            ),
+            map_contains: declare_fn(
+                module,
+                "__spark_map_contains",
+                &[ptr_type, ptr_type],
+                Some(types::I8),
+                call_conv,
+            ),
+            map_remove: declare_fn(
+                module,
+                "__spark_map_remove",
+                &[ptr_type, ptr_type, types::I8, types::I8],
+                None,
+                call_conv,
+            ),
+            set_len: declare_fn(
+                module,
+                "__spark_set_len",
+                &[ptr_type],
+                Some(types::I64),
+                call_conv,
+            ),
+            set_contains: declare_fn(
+                module,
+                "__spark_set_contains",
+                &[ptr_type, ptr_type],
+                Some(types::I8),
+                call_conv,
+            ),
+            set_remove: declare_fn(
+                module,
+                "__spark_set_remove",
+                &[ptr_type, ptr_type, types::I8],
+                None,
+                call_conv,
+            ),
+            string_len: declare_fn(
+                module,
+                "__spark_string_len",
+                &[ptr_type],
+                Some(types::I64),
                 call_conv,
             ),
             print_int: declare_fn(

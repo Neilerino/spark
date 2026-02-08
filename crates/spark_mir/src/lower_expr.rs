@@ -6,7 +6,7 @@
 use spark_diagnostics::{Diagnostic, Label};
 use spark_hir::{HirExpr, HirExprKind, HirLiteral};
 use spark_intern::Symbol;
-use spark_resolve::DefinitionTable;
+use spark_resolve::{DefinitionKind, DefinitionTable};
 use spark_types::TypeTable;
 
 use crate::builder::{FunctionBuilder, LoopContext, MirBuilder};
@@ -436,30 +436,22 @@ fn lower_method_call(
         all_args.push(Operand::Copy(Place::from_local(local)));
     }
 
-    // Method is represented as a function ref constant
-    let func_temp = fb.fresh_temp(expr.ty, expr.span);
-    fb.push_assign(
-        Place::from_local(func_temp),
-        Rvalue::Use(Operand::Constant(Constant::FunctionRef(
-            spark_resolve::DefId::DUMMY,
-        ))),
-        expr.span,
-    );
+    // Look up the builtin method DefId for this method name.
+    let method_def_id = find_builtin_method(defs, method)
+        .unwrap_or(spark_resolve::DefId::DUMMY);
 
     let dest = fb.fresh_temp(expr.ty, expr.span);
     let cont = fb.new_block();
 
+    // Use a constant FunctionRef directly in the Call terminator to avoid
+    // creating a temp with the wrong type (the expression type vs pointer type).
     fb.terminate(Terminator::Call {
-        func: Operand::Copy(Place::from_local(func_temp)),
+        func: Operand::Constant(Constant::FunctionRef(method_def_id)),
         args: all_args,
         destination: Place::from_local(dest),
         target: cont,
         span: expr.span,
     });
-
-    // Store the method name in a Nop for debugging (we don't have method
-    // resolution at this stage — it would come from a later pass).
-    let _ = method;
 
     fb.switch_to(cont);
     dest
@@ -733,4 +725,11 @@ fn void_temp(fb: &mut FunctionBuilder, expr: &HirExpr) -> Local {
         expr.span,
     );
     temp
+}
+
+/// Finds the `DefId` of a built-in method by name.
+fn find_builtin_method(defs: &DefinitionTable, name: Symbol) -> Option<spark_resolve::DefId> {
+    defs.iter()
+        .find(|(_, info)| matches!(info.kind, DefinitionKind::BuiltinMethod) && info.name == name)
+        .map(|(id, _)| id)
 }
