@@ -4,7 +4,7 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 ---
 
-## Phase 1: Diagnostics *(current)*
+## Phase 1: Diagnostics ✅
 
 **Goal:** Report compiler errors and warnings in real time as the user types.
 
@@ -21,11 +21,11 @@ This document tracks the incremental path toward full Language Server Protocol s
 - Parse errors prevent resolve/type-check (AST may be malformed), but we always report what we have
 - Convert `spark_diagnostics::Diagnostic` labels/spans to LSP positions using byte offset → line/character conversion
 
-**Status:** [ ] Not started
+**Status:** [x] Complete
 
 ---
 
-## Phase 2: Semantic Tokens
+## Phase 2: Semantic Tokens ✅
 
 **Goal:** Rich syntax highlighting driven by compiler knowledge (not regex).
 
@@ -34,28 +34,24 @@ This document tracks the incremental path toward full Language Server Protocol s
 
 **Core crate:** `spark_lexer` (`TokenKind` → semantic token type mapping)
 
-**Token type mapping:**
+**Token type mapping (implemented):**
 | `TokenKind` | LSP Semantic Token |
 |---|---|
-| `Fn`, `If`, `Else`, `Match`, `Return`, ... | `keyword` |
-| `Struct`, `Enum`, `Interface`, ... | `keyword` (declaration) |
+| `Fn`, `If`, `Else`, `Match`, `Return`, `True`, `False`, `Null`, ... | `keyword` |
+| `Struct`, `Enum`, `Interface`, ... | `keyword` |
 | `IntLiteral`, `FloatLiteral` | `number` |
-| `StringLiteral` | `string` |
-| `CharLiteral` | `string` |
-| `True`, `False` | `keyword` |
-| `Ident` (type position) | `type` |
-| `Ident` (function call) | `function` |
-| `Ident` (variable) | `variable` |
-| `Ident` (parameter) | `parameter` |
-| Comments | `comment` |
+| `StringLiteral`, `CharLiteral` | `string` |
+| `DocComment` | `comment` |
+| `+`, `-`, `==`, `->`, `=>`, ... | `operator` |
+| `Ident` | `variable` |
 
-**Notes:** Basic token-level coloring uses only the lexer. For context-aware classification (distinguishing function names from variables), we need resolver data from Phase 3+.
+**Notes:** Basic token-level coloring uses only the lexer. All identifiers are classified as `variable`. Context-aware classification (distinguishing function/type/parameter names) requires resolver data and will be enhanced in later phases.
 
-**Status:** [ ] Not started
+**Status:** [x] Complete
 
 ---
 
-## Phase 3: Go-to-Definition
+## Phase 3: Go-to-Definition *(current)*
 
 **Goal:** Jump from a name usage to its definition.
 

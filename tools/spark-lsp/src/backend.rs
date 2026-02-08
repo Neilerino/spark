@@ -1,8 +1,8 @@
 //! LSP backend — implements the `LanguageServer` trait.
 //!
-//! Phase 1: Provides real-time diagnostics by running the compiler's
-//! frontend pipeline (lex → parse → resolve → type-check) on every
-//! document change.
+//! Provides real-time diagnostics by running the compiler's frontend
+//! pipeline (lex → parse → resolve → type-check) on every document
+//! change, and lexer-driven semantic token highlighting.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,8 +11,10 @@ use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
     self, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, InitializedParams, MessageType, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    InitializeParams, InitializeResult, InitializedParams, MessageType,
+    SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -25,6 +27,7 @@ use spark_span::{FileId, SourceMap};
 use spark_types::TypeCheckerInput;
 
 use crate::document::{self, DocumentState};
+use crate::semantic_tokens;
 
 /// The LSP server backend.
 ///
@@ -151,6 +154,16 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: semantic_tokens::legend(),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            range: Some(false),
+                            ..Default::default()
+                        },
+                    ),
+                ),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -169,6 +182,27 @@ impl LanguageServer for Backend {
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = &params.text_document.uri;
+        let source = self
+            .documents
+            .get(uri)
+            .map(|doc| doc.rope.to_string());
+
+        let tokens = source
+            .as_deref()
+            .map(semantic_tokens::compute_semantic_tokens)
+            .unwrap_or_default();
+
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data: tokens,
+        })))
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
