@@ -11,6 +11,7 @@ use spark_mir::{BlockId, Local, MirFunction};
 use spark_types::{TypeId, TypeTable};
 
 use crate::abi;
+use crate::cranelift::runtime::RuntimeStubs;
 use crate::cranelift::types as clif_types;
 use crate::layout::LayoutCache;
 
@@ -41,6 +42,8 @@ pub struct FunctionContext<'a> {
     pub table: &'a TypeTable,
     /// The MIR function being compiled.
     pub mir_func: &'a MirFunction,
+    /// Runtime function stubs.
+    pub stubs: &'a RuntimeStubs,
 }
 
 impl<'a> FunctionContext<'a> {
@@ -53,6 +56,7 @@ impl<'a> FunctionContext<'a> {
         table: &'a TypeTable,
         ptr_type: ClifType,
         mut layouts: LayoutCache,
+        stubs: &'a RuntimeStubs,
     ) -> Self {
         // Create one Cranelift block per MIR basic block.
         let blocks: Vec<Block> = (0..mir_func.blocks.len())
@@ -94,6 +98,7 @@ impl<'a> FunctionContext<'a> {
             layouts,
             table,
             mir_func,
+            stubs,
         }
     }
 

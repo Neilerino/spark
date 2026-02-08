@@ -80,6 +80,8 @@ pub enum DefinitionKind {
     GenericParam,
     /// Lifetime parameter (for Ref types).
     LifetimeParam,
+    /// Built-in function (e.g., `print`).
+    BuiltinFunction,
 }
 
 impl DefinitionKind {
@@ -111,6 +113,7 @@ impl DefinitionKind {
                 | Self::Const
                 | Self::Local
                 | Self::Parameter
+                | Self::BuiltinFunction
         )
     }
 }

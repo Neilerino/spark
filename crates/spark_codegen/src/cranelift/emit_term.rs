@@ -7,9 +7,10 @@ use cranelift_codegen::ir::{AbiParam, InstBuilder, Signature, TrapCode, Value};
 use cranelift_module::{FuncId, Module};
 use rustc_hash::FxHashMap;
 use spark_diagnostics::Diagnostics;
+use spark_intern::kw;
 use spark_mir::{BlockId, Operand, Place, Terminator};
-use spark_resolve::DefinitionTable;
-use spark_types::TypeTable;
+use spark_resolve::{DefinitionKind, DefinitionTable};
+use spark_types::{Ty, TypeTable};
 
 use super::context::FunctionContext;
 use super::emit_rvalue;
@@ -115,6 +116,18 @@ fn emit_call<M: Module>(
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) {
+    // Intercept built-in `print` calls for type-based dispatch.
+    // The func operand is typically `Copy(place)` of a local that was assigned
+    // a `Constant::FunctionRef(def_id)`, so we resolve the DefId from the MIR.
+    if let Some(callee_def_id) = resolve_callee_def_id(func, ctx) {
+        if let Some(info) = definitions.get(callee_def_id) {
+            if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::PRINT {
+                emit_builtin_print(ctx, args, target, table, definitions, func_ids, module);
+                return;
+            }
+        }
+    }
+
     let func_val = emit_rvalue::emit_operand(ctx, func, table, definitions, func_ids, module);
 
     let arg_vals: Vec<Value> = args
@@ -133,6 +146,96 @@ fn emit_call<M: Module>(
         if destination.projections.is_empty() {
             ctx.write_local(destination.local, result_val);
         }
+    }
+
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+}
+
+/// Resolves the [`DefId`] of a function reference from a call operand.
+///
+/// The MIR typically stores function references as `Copy(Place::from_local(l))`
+/// where `l` was assigned `Rvalue::Use(Operand::Constant(Constant::FunctionRef(def_id)))`.
+/// This scans the MIR blocks to recover the `DefId`.
+fn resolve_callee_def_id(
+    func: &Operand,
+    ctx: &FunctionContext<'_>,
+) -> Option<spark_resolve::DefId> {
+    // Direct constant case (rare but handle it).
+    if let spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(def_id)) = func {
+        return Some(*def_id);
+    }
+
+    // Copy/Move of a local — scan statements for the assignment.
+    let local = match func {
+        spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place) => {
+            if place.projections.is_empty() {
+                place.local
+            } else {
+                return None;
+            }
+        }
+        spark_mir::Operand::Constant(_) => return None,
+    };
+
+    for block in &ctx.mir_func.blocks {
+        for stmt in &block.statements {
+            if let spark_mir::Statement::Assign { place, rvalue, .. } = stmt {
+                if place.local == local && place.projections.is_empty() {
+                    if let spark_mir::Rvalue::Use(spark_mir::Operand::Constant(
+                        spark_mir::Constant::FunctionRef(def_id),
+                    )) = rvalue
+                    {
+                        return Some(*def_id);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Emits a built-in `print` call, dispatching to the correct runtime stub
+/// based on the argument's type.
+#[allow(clippy::too_many_arguments)]
+fn emit_builtin_print<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    args: &[Operand],
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) {
+    // Evaluate the single argument.
+    let arg_val = args
+        .first()
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, module));
+
+    if let Some(val) = arg_val {
+        // Determine the argument's type from the MIR operand.
+        let resolved_ty = match &args[0] {
+            spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place) => {
+                table.resolve(ctx.local_type_id(place.local))
+            }
+            spark_mir::Operand::Constant(c) => match c {
+                spark_mir::Constant::Float(_) => &Ty::Float(spark_types::FloatWidth::F64),
+                spark_mir::Constant::Bool(_) => &Ty::Bool,
+                spark_mir::Constant::String(_) => &Ty::String,
+                _ => &Ty::Int(spark_types::IntWidth::I64),
+            },
+        };
+
+        let stub_id = match resolved_ty {
+            Ty::String => ctx.stubs.print_string,
+            Ty::Bool => ctx.stubs.print_bool,
+            Ty::Float(_) => ctx.stubs.print_float,
+            _ => ctx.stubs.print_int,
+        };
+
+        let func_ref = module.declare_func_in_func(stub_id, ctx.builder.func);
+        ctx.builder.ins().call(func_ref, &[val]);
     }
 
     let target_block = ctx.clif_block(target);

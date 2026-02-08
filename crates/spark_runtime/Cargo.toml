@@ -1,0 +1,19 @@
+[package]
+name = "spark_runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["staticlib"]
+
+# Override workspace lint: this crate requires #[no_mangle] and raw pointers
+# for its FFI boundary — it cannot forbid unsafe_code.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

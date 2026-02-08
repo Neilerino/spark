@@ -327,6 +327,8 @@ impl Interner {
             "self",
             "Self",
             "_",
+            // Built-in functions
+            "print",
         ];
 
         for kw in keywords {
@@ -564,6 +566,16 @@ pub mod kw {
     pub const SELF_UPPER: Symbol = Symbol(66);
     /// `_` (underscore/wildcard)
     pub const UNDERSCORE: Symbol = Symbol(67);
+
+    // Built-in functions
+    /// `print`
+    pub const PRINT: Symbol = Symbol(68);
+
+    /// Returns true if the given symbol is a built-in function name.
+    #[must_use]
+    pub const fn is_builtin_function(sym: Symbol) -> bool {
+        sym.0 == 68
+    }
 
     /// Returns true if the given symbol is a keyword.
     #[must_use]

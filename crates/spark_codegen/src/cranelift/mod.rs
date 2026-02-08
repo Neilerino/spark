@@ -113,6 +113,9 @@ impl CraneliftBackend {
             }
         }
 
+        // Note: built-in functions like `print` are handled by type-based
+        // dispatch in emit_term.rs, so they are NOT mapped to a single FuncId here.
+
         func_ids
     }
 
@@ -125,6 +128,7 @@ impl CraneliftBackend {
         table: &TypeTable,
         definitions: &DefinitionTable,
         func_ids: &FxHashMap<DefId, FuncId>,
+        stubs: &runtime::RuntimeStubs,
         diagnostics: &mut Diagnostics,
     ) {
         let ptr_type = self.module.target_config().pointer_type();
@@ -153,7 +157,7 @@ impl CraneliftBackend {
 
         let layouts = LayoutCache::new(ptr_type.bytes());
 
-        let mut fctx = FunctionContext::new(builder, mir_func, table, ptr_type, layouts);
+        let mut fctx = FunctionContext::new(builder, mir_func, table, ptr_type, layouts, stubs);
 
         // Set up the entry block with parameters.
         let entry_block = fctx.clif_block(spark_mir::BlockId::ENTRY);
@@ -253,6 +257,10 @@ impl CodegenBackend for CraneliftBackend {
         definitions: &DefinitionTable,
         diagnostics: &mut Diagnostics,
     ) -> Vec<u8> {
+        // Phase 0: Declare runtime stubs.
+        let call_conv = self.module.isa().default_call_conv();
+        let stubs = runtime::RuntimeStubs::declare_all(&mut self.module, call_conv);
+
         // Phase 1: Declare all functions.
         let func_ids = self.declare_all_functions(mir, table, definitions, diagnostics);
 
@@ -265,6 +273,7 @@ impl CodegenBackend for CraneliftBackend {
                     table,
                     definitions,
                     &func_ids,
+                    &stubs,
                     diagnostics,
                 );
             }

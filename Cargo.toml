@@ -15,6 +15,7 @@ members = [
     "crates/spark_borrow",
     "crates/spark_codegen",
     "crates/spark_driver",
+    "crates/spark_runtime",
     # "crates/spark_cli",
 ]
 

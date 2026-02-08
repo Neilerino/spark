@@ -145,6 +145,7 @@ mod tests {
         let output = resolve(input);
 
         assert!(!output.diagnostics.has_errors());
-        assert!(output.definitions.is_empty());
+        // Built-in functions (e.g., print) are always registered
+        assert!(output.definitions.len() >= 1);
     }
 }

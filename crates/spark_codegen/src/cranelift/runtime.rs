@@ -23,6 +23,14 @@ pub struct RuntimeStubs {
     pub set_new: FuncId,
     /// `__spark_rc_release(ptr) -> void`
     pub rc_release: FuncId,
+    /// `__spark_print_int(i64) -> void`
+    pub print_int: FuncId,
+    /// `__spark_print_string(ptr) -> void`
+    pub print_string: FuncId,
+    /// `__spark_print_bool(i8) -> void`
+    pub print_bool: FuncId,
+    /// `__spark_print_float(f64) -> void`
+    pub print_float: FuncId,
 }
 
 impl RuntimeStubs {
@@ -52,6 +60,34 @@ impl RuntimeStubs {
                 module,
                 "__spark_rc_release",
                 &[ptr_type],
+                None,
+                call_conv,
+            ),
+            print_int: declare_fn(
+                module,
+                "__spark_print_int",
+                &[types::I64],
+                None,
+                call_conv,
+            ),
+            print_string: declare_fn(
+                module,
+                "__spark_print_string",
+                &[ptr_type],
+                None,
+                call_conv,
+            ),
+            print_bool: declare_fn(
+                module,
+                "__spark_print_bool",
+                &[types::I8],
+                None,
+                call_conv,
+            ),
+            print_float: declare_fn(
+                module,
+                "__spark_print_float",
+                &[types::F64],
                 None,
                 call_conv,
             ),

@@ -108,7 +108,7 @@ fn emit_constant<M: Module>(
         Constant::Null => Some(ctx.builder.ins().iconst(ctx.ptr_type, 0)),
         Constant::Void => None, // Zero-sized — no value
         Constant::String(sym) => {
-            // Create a data object for the string literal.
+            // Create a data object for the string literal bytes.
             let name = format!(".str.{}", sym.as_raw());
             let bytes = sym.as_str().as_bytes();
 
@@ -122,8 +122,15 @@ fn emit_constant<M: Module>(
                 .define_data(data_id, &data_desc)
                 .expect("data definition should succeed");
 
+            // Get pointer to static data and the length.
             let gv = module.declare_data_in_func(data_id, ctx.builder.func);
-            Some(ctx.builder.ins().symbol_value(ctx.ptr_type, gv))
+            let data_ptr = ctx.builder.ins().symbol_value(ctx.ptr_type, gv);
+            let len = ctx.builder.ins().iconst(types::I64, bytes.len() as i64);
+
+            // Call __spark_string_from_literal(ptr, len) to create a heap String.
+            let func_ref = module.declare_func_in_func(ctx.stubs.string_from_literal, ctx.builder.func);
+            let call = ctx.builder.ins().call(func_ref, &[data_ptr, len]);
+            Some(ctx.builder.inst_results(call)[0])
         }
         Constant::FunctionRef(def_id) => {
             if let Some(&func_id) = func_ids.get(def_id) {

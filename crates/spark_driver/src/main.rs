@@ -124,8 +124,51 @@ fn read_source(path: &Path) -> Result<String, ()> {
     }
 }
 
+/// Locates `libspark_runtime.a` for linking.
+///
+/// Search order:
+/// 1. `SPARK_RUNTIME_DIR` environment variable
+/// 2. Next to the `spark` binary (works for `cargo run` where both live in target/debug/)
+/// 3. `target/debug/` relative to the current directory (works for installed binaries
+///    run from the project root)
+fn find_runtime_lib() -> Result<PathBuf, ()> {
+    let lib_name = "libspark_runtime.a";
+
+    // Check env override first.
+    if let Ok(dir) = std::env::var("SPARK_RUNTIME_DIR") {
+        let path = PathBuf::from(dir).join(lib_name);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    // Check next to the spark binary (target/debug/ or target/release/).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let path = dir.join(lib_name);
+            if path.exists() {
+                return Ok(path);
+            }
+        }
+    }
+
+    // Check target/debug/ and target/release/ relative to cwd (for installed binaries).
+    for profile in &["debug", "release"] {
+        let path = Path::new("target").join(profile).join(lib_name);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+
+    eprintln!("error: could not find libspark_runtime.a");
+    eprintln!("hint: run `cargo build -p spark_runtime` first, or set SPARK_RUNTIME_DIR");
+    Err(())
+}
+
 /// Links an object file into an executable by invoking `cc`.
 fn link_object(object_bytes: &[u8], output_path: &Path) -> Result<(), ()> {
+    let runtime_lib = find_runtime_lib()?;
+
     // Write object to a temp file
     let tmp_obj = std::env::temp_dir().join("spark_output.o");
     if fs::write(&tmp_obj, object_bytes).is_err() {
@@ -135,6 +178,7 @@ fn link_object(object_bytes: &[u8], output_path: &Path) -> Result<(), ()> {
 
     let status = Command::new("cc")
         .arg(&tmp_obj)
+        .arg(&runtime_lib)
         .arg("-o")
         .arg(output_path)
         .status();

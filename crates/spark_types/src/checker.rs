@@ -12,11 +12,15 @@ use spark_modules::ModuleGraph;
 use spark_resolve::{DefinitionTable, ResolvedAst};
 use spark_span::FileId;
 
+use spark_intern::kw;
+use spark_resolve::DefinitionKind;
+
 use crate::builtins::{register_builtins, BuiltinTypes};
 use crate::check_decl::collect_item;
 use crate::check_expr::{check_block, check_expr};
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
+use crate::ty::{FloatWidth, IntWidth, Ty};
 
 /// The main type checker.
 ///
@@ -62,6 +66,7 @@ impl TypeChecker {
     #[must_use]
     pub fn check(mut self) -> TypeCheckerOutput {
         self.collect_signatures();
+        self.register_builtin_functions();
         self.check_bodies();
 
         TypeCheckerOutput {
@@ -91,6 +96,32 @@ impl TypeChecker {
 
         // Put asts back
         self.resolved.asts = asts;
+    }
+
+    /// Registers type signatures for built-in functions (e.g., `print`).
+    ///
+    /// Called after `collect_signatures()` so that built-in function types
+    /// are available during body checking.
+    fn register_builtin_functions(&mut self) {
+        for (def_id, info) in self.definitions.iter() {
+            if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::PRINT {
+                // print(Int | Float | Bool | String): Void
+                let int_type = self.table.intern(Ty::Int(IntWidth::I64));
+                let float_type = self.table.intern(Ty::Float(FloatWidth::F64));
+                let bool_type = self.table.intern(Ty::Bool);
+                let string_type = self.builtins.string;
+                let param_type = self.table.intern(Ty::Union(vec![
+                    int_type, float_type, bool_type, string_type,
+                ]));
+                let void_type = self.table.intern(Ty::Void);
+                let fn_type = self.table.intern(Ty::Function {
+                    params: vec![param_type],
+                    ret: void_type,
+                    is_async: false,
+                });
+                self.table.set_def_type(def_id, fn_type);
+            }
+        }
     }
 
     /// Pass 2: Check all function bodies.

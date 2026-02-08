@@ -48,6 +48,8 @@ pub struct Resolver {
     module_defs: FxHashMap<ModulePath, Vec<(Symbol, DefId, DefinitionKind)>>,
     /// Per-file import `DefId`s (`file_id` -> [(`local_name`, `def_id`)]).
     file_imports: FxHashMap<FileId, Vec<(Symbol, DefId, DefinitionKind)>>,
+    /// Built-in function definitions to inject into every module rib.
+    builtin_defs: Vec<(Symbol, DefId, DefinitionKind)>,
 }
 
 impl Resolver {
@@ -64,16 +66,39 @@ impl Resolver {
             current_file: FileId::new(0),
             module_defs: FxHashMap::default(),
             file_imports: FxHashMap::default(),
+            builtin_defs: Vec::new(),
         }
     }
 
     /// Runs the full resolution process.
     pub fn resolve(&mut self) {
+        // Register built-in functions (e.g., print)
+        self.register_builtins();
+
         // Pass 1: Collect all top-level definitions
         self.collect_definitions();
 
         // Pass 2: Resolve all references
         self.resolve_references();
+    }
+
+    /// Registers built-in functions as definitions in a prelude rib.
+    ///
+    /// The prelude rib sits below all module ribs, so user definitions
+    /// can shadow built-in names.
+    fn register_builtins(&mut self) {
+        // Register `print` as a built-in function
+        let info = DefinitionInfo::new(
+            DefinitionKind::BuiltinFunction,
+            kw::PRINT,
+            Span::DUMMY,
+            Visibility::Public,
+            ModulePath::root(),
+        );
+        let def_id = self.definitions.insert(info);
+
+        // Store the builtin DefId so it can be added to ribs during resolution
+        self.builtin_defs.push((kw::PRINT, def_id, DefinitionKind::BuiltinFunction));
     }
 
     // ========================================================================
@@ -316,6 +341,14 @@ impl Resolver {
 
             // Push module rib and populate with collected defs
             self.rib_stack.push_rib(RibKind::Module);
+
+            // Inject built-in functions into the module rib
+            for (name, def_id, kind) in &self.builtin_defs {
+                if kind.is_value() {
+                    self.rib_stack.define_value(*name, *def_id);
+                }
+            }
+
             if let Some(defs) = self.module_defs.get(module_path).cloned() {
                 for (name, def_id, kind) in &defs {
                     if kind.is_type() {
@@ -1148,7 +1181,8 @@ mod tests {
         let output = resolver.into_output();
 
         assert!(!output.diagnostics.has_errors());
-        assert!(output.definitions.is_empty());
+        // Built-in functions (e.g., print) are always registered
+        assert!(output.definitions.len() >= 1);
     }
 
     #[test]

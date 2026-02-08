@@ -11,7 +11,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 
 ## Completed Work
 
-### Foundation Crates (10/10 compiler phases through borrow checking)
+### All Crates
 
 | Crate               | Purpose                                                        | Tests | Status   |
 | ------------------- | -------------------------------------------------------------- | ----- | -------- |
@@ -28,106 +28,53 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 32    | Complete |
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
+| `spark_runtime`     | `extern "C"` runtime library (print, strings)                  | —     | Complete |
+| `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
 **Total: 540+ tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
-### spark_borrow Overview (Just Completed)
+### Runtime & Driver
 
-NLL-style borrow checker consuming MIR + TypeTable and validating reference safety:
+- **`spark_runtime`**: Static library (`libspark_runtime.a`) with `extern "C"` FFI functions for print, strings, and collection/RC stubs. Strings are `Box<String>` behind an opaque `*mut u8` pointer. `__spark_string_from_literal(ptr, len)` creates a heap string; `__spark_print_string/int/bool/float` dispatch at codegen time based on argument type.
+- **`spark_driver`**: CLI binary (`spark build <file> [-o out]`, `spark run <file>`). Chains the full pipeline, writes the object file to a temp path, invokes `cc` to link against `libspark_runtime.a`, and optionally runs the result.
+- **`install.sh`**: Builds in release mode and copies `spark` + `libspark_runtime.a` to a prefix directory (default `~/.local`).
 
-- **Input**: `Mir` + `TypeTable` (read-only) + `DefinitionTable`
-- **Output**: `Mir` (passed through unchanged) + `TypeTable` (passed through) + `Diagnostics`
-- **Selective checking**: Only functions whose locals involve `Ty::Ref` types are analyzed. Functions using default copy semantics skip borrow checking entirely.
-- **Fact extraction**: Walk MIR CFG to extract loans (borrows), uses, moves, assignments, and CFG edges at each program point `(BlockId, statement_index)`.
-- **Liveness analysis**: Backward dataflow with worklist fixpoint. A local is live at a point if it may be read before reassignment on some path.
-- **Region inference**: NLL-style — each loan's region extends from its issue point through all CFG-reachable points where the reference local is live.
-- **Conflict detection**: Checks six rules at each program point:
-  1. No two active borrows of overlapping places where at least one is mutable
-  2. No mixed mutable + immutable borrows of overlapping places
-  3. No use of a moved value without intervening reassignment
-  4. No borrow of a moved value
-  5. No mutation through an immutable reference (deref of `Ref { mutable: false }`)
-- **Rich diagnostics**: Each error uses `Diagnostic::error()` with primary + secondary labels pointing to conflicting locations.
+### Recent: Real String Support
 
-**Cross-crate changes made:**
-- `spark_types`: Added `LifetimeId` to `Ty::Ref`, lifetime interning in `TypeTable`
-- `spark_hir`: Added `HirExprKind::Borrow` and `HirExprKind::Deref` variants
-- `spark_mir`: Added MIR lowering for `Borrow` (→ `Rvalue::Ref`) and `Deref` (→ `Projection::Deref`)
+String literals now work end-to-end. `print("hello world")` produces output.
 
-**API**: `check(BorrowInput) -> BorrowOutput`
-
-**Files**:
-```
-crates/spark_borrow/src/
-├── lib.rs        # Public API: BorrowInput, BorrowOutput, check()
-├── facts.rs      # Fact extraction from MIR (loans, points, CFG edges)
-├── liveness.rs   # Backward dataflow liveness analysis
-├── regions.rs    # NLL-style region inference
-├── check.rs      # Conflict detection and validation rules
-└── errors.rs     # Diagnostic messages for borrow errors
-```
-
-### spark_codegen Overview (Just Completed)
-
-Native code generation from MIR to object files via Cranelift:
-
-- **Input**: `Mir` + `TypeTable` (read-only) + `DefinitionTable` + `TargetSpec`
-- **Output**: `Vec<u8>` (native object file) + `Diagnostics`
-- **Backend-agnostic**: `CodegenBackend` trait allows swapping Cranelift for LLVM
-- **Two-phase compilation**: All functions declared first (forward references), then defined
-- **Type layout**: Backend-independent `LayoutCache` with C-style struct/enum layout
-- **ABI mapping**: All Spark types mapped to Cranelift IR types
-- **MIR coverage**: Constants, locals, parameters, binary/unary ops, control flow (goto, switchint, return), function calls (direct + indirect), aggregates (struct, enum, tuple), discriminant reads, type casts, references
-- **Runtime stubs**: String/collection/RC functions declared as external imports
-- **Deferred**: Closures, async/spawn, `is`/`as` type ops emit diagnostics
-
-**API**: `generate(CodegenInput) -> CodegenOutput`
-
-**Files**:
-```
-crates/spark_codegen/src/
-├── lib.rs              # Public API: CodegenInput, CodegenOutput, generate()
-├── backend.rs          # CodegenBackend trait
-├── layout.rs           # TypeLayout, StructLayout, EnumLayout, LayoutCache
-├── abi.rs              # Spark types → Cranelift ABI mapping
-└── cranelift/
-    ├── mod.rs          # CraneliftBackend implementing CodegenBackend
-    ├── context.rs      # Per-function compilation context
-    ├── types.rs        # Cranelift type utilities
-    ├── emit_stmt.rs    # Statement lowering
-    ├── emit_term.rs    # Terminator lowering
-    ├── emit_rvalue.rs  # Rvalue lowering
-    └── runtime.rs      # Runtime function stubs
-```
+**Changes made:**
+- `spark_runtime`: `__spark_string_new` / `__spark_string_from_literal` allocate real `Box<String>`; added `__spark_print_string`
+- `spark_codegen/cranelift/runtime.rs`: Declared `print_string`, `print_bool`, `print_float` stubs
+- `spark_codegen/cranelift/context.rs`: `FunctionContext` now carries `&RuntimeStubs`
+- `spark_codegen/cranelift/emit_rvalue.rs`: `Constant::String` calls `__spark_string_from_literal(ptr, len)` instead of returning a raw pointer
+- `spark_codegen/cranelift/emit_term.rs`: Built-in `print` dispatches by argument type (`Ty::String` → `print_string`, `Ty::Bool` → `print_bool`, `Ty::Float` → `print_float`, default → `print_int`). Uses `resolve_callee_def_id()` to trace function references through MIR locals.
+- `spark_types/checker.rs`: `print` signature broadened from `(Int): Void` to `(Int | Float | Bool | String): Void`
 
 ## What's Next
 
-### Immediate: spark_opt (NEXT MAIN TASK)
+### Suggested Next Steps (in rough priority order)
 
-Optimization passes over MIR (constant folding, dead code elimination, SSA construction). Can be inserted transparently between `spark_borrow` and `spark_codegen` since both consume `Mir + TypeTable`.
+1. **Runtime: collection functions** — `List`, `Map`, `Set` stubs in `spark_runtime` are still placeholders (return null). Implement real backing (`Vec<u8>` type-erased or monomorphized) and wire through codegen like strings.
+2. **Drop elaboration** — `Statement::Drop` exists in MIR but is a no-op in codegen (`emit_stmt.rs:56`). Insert drops at scope exits, emit `__spark_rc_release` for heap types. Needed to avoid leaking strings/collections.
+3. **`??` / `?.` desugaring** — HIR stubs exist (`desugar.rs:35`, `desugar.rs:80`) but need a `DefId` allocator for synthetic bindings.
+4. **`is` type test** — MIR stub (`lower_expr.rs:289`). Lower to discriminant extraction + comparison. Codegen already handles `Rvalue::Discriminant` and `SwitchInt`.
+5. **Match exhaustiveness checking** — Would go in `spark_types`. Report missing/unreachable patterns.
+6. **Method resolution & interface bindings** — Dot-call syntax, `binding Foo for Bar` validation.
+7. **`!` propagation operator** — Needs union type analysis to distinguish success/error variants.
+8. **Generic instantiation** — `Ty::Param` exists but isn't used. Needs monomorphization.
+9. **`spark_opt`** — MIR optimization passes (constant folding, DCE, SSA, copy propagation). Inserts between borrow and codegen. Performance-only; correctness is unaffected.
+10. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support.
+11. **Async/await/spawn** — Future types, state machine transform, runtime executor.
+12. **String interpolation** — Lexer + parser changes for `"hello {expr}"` syntax.
 
-### Deferred Work
+### Deferred Design Decisions
 
-These can be added incrementally as later phases need them:
-
-- Generic instantiation and constraint solving
-- Match exhaustiveness checking
-- Interface binding validation (`binding` implementations)
-- Method resolution (type-directed lookup)
-- `to` operator / `!` propagation type narrowing
-- `is`/`as` type operations (MIR stubs exist, emit warnings)
-- Lambda/closure conversion (MIR stubs exist, emit warnings)
-- Async state machines (MIR stubs exist, emit warnings)
-- SSA construction / phi nodes (optimization pass)
-- Decision-tree match compilation (sequential suffices initially)
-- Drop elaboration (separate pass)
-- Fresh `DefId` synthesis in desugared match arms
-- Reborrowing (error on attempted reborrow for now)
-- Two-phase borrows (optimization for method calls)
+- Reborrowing / two-phase borrows (borrow checker rejects; workarounds exist)
 - Explicit lifetime parameter syntax (`fn foo[A](...)`)
-- Lifetime elision rules
+- Lifetime elision rules (all lifetimes are `LifetimeId::ANONYMOUS` currently)
 
 ### Full Pipeline
 
@@ -140,7 +87,9 @@ These can be added incrementally as later phases need them:
 7. MIR Construction (spark_mir) ✅
 8. Borrow Checking (spark_borrow) ✅
 9. Code Generation (spark_codegen) ✅
-10. **Optimization (spark_opt) <- NEXT** (inserts between borrow + codegen)
+10. Runtime (spark_runtime) ✅ (strings + print working; collections stubbed)
+11. Driver (spark_driver) ✅ (`spark build` / `spark run`)
+12. Optimization (spark_opt) — not started, optional
 
 ## Crate Dependencies
 
@@ -158,6 +107,8 @@ spark_hir           (depends on span, intern, diagnostics, ast, modules, resolve
 spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, hir)
 spark_borrow        (depends on span, intern, diagnostics, resolve, types, mir)
 spark_codegen       (depends on span, intern, diagnostics, ast, resolve, types, mir + cranelift)
+spark_runtime       (no internal dependencies — standalone staticlib)
+spark_driver        (depends on all pipeline crates + codegen + clap)
 ```
 
 ## Key Implementation Details
@@ -177,10 +128,65 @@ spark_codegen       (depends on span, intern, diagnostics, ast, resolve, types, 
 
 1. **Read `docs/lang-spec.md`** - Full grammar and language semantics
 2. **Read `docs/compiler-architecture.md`** - Pipeline design with I/O schemas for each phase
-3. **Borrow checker output** (`Mir` + `TypeTable`) is the starting point for optimization/codegen
+3. **Read `docs/roadmap.md`** - Prioritized list of remaining work with status
 4. **All phases use `Diagnostics`** for error accumulation — never panic on invalid input
-5. **`#![forbid(unsafe_code)]`** in every crate, clippy pedantic + nursery lints
+5. **`#![forbid(unsafe_code)]`** in every crate (except `spark_runtime`), clippy pedantic + nursery lints
 6. **MIR structure**: Each `MirFunction` has `locals: Vec<LocalDecl>` and `blocks: Vec<BasicBlock>`. Iterate blocks in order; each block has `statements` + `terminator`. Use `pretty_function()` to dump MIR for debugging.
+7. **Built-in function dispatch**: `print` is handled specially in codegen — `resolve_callee_def_id()` traces the callee through MIR locals, then `emit_builtin_print()` dispatches by argument type. New built-in functions should follow this pattern.
+
+## Installing & Running Spark Programs
+
+### Quick start (from source tree)
+
+```bash
+cargo build -p spark_driver -p spark_runtime
+
+# Compile and run a .spark file (runtime lib found automatically next to binary)
+cargo run -p spark_driver -- run hello.spark
+
+# Or compile to an executable
+cargo run -p spark_driver -- build hello.spark -o hello
+./hello
+```
+
+### Install system-wide
+
+```bash
+./install.sh              # installs to ~/.local/bin + ~/.local/lib
+./install.sh /usr/local   # installs to /usr/local/bin + /usr/local/lib
+```
+
+After installing, set `SPARK_RUNTIME_DIR` so the compiler can find `libspark_runtime.a`:
+
+```bash
+export SPARK_RUNTIME_DIR="$HOME/.local/lib"   # add to your shell profile
+```
+
+Then:
+
+```bash
+spark run hello.spark          # compile + run
+spark build hello.spark -o hello   # compile to executable
+```
+
+### What `print` supports
+
+`print` accepts `Int`, `Float`, `Bool`, or `String`:
+
+```
+fn main(): Int {
+    print("hello world")
+    print(42)
+    print(3.14)
+    print(true)
+    0
+}
+```
+
+### Requirements
+
+- Rust toolchain (for building from source)
+- A C compiler accessible as `cc` (Xcode CLI tools on macOS, `gcc`/`clang` on Linux) — used by the linker step
 
 ## Build Commands
 
