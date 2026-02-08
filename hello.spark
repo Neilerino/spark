@@ -13,6 +13,9 @@ fn loop_with_break(n: Int): Int {
     count
 }
 
-fn main(): Int {
-    loop_with_break(10)
+fn main(): Void {
+    items: List[Int] = [1, 2, 3]
+    items each (item: Int): Void {
+        print(item)
+    }
 }

@@ -28,7 +28,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 32    | Complete |
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
-| `spark_runtime`     | `extern "C"` runtime library (print, strings)                  | —     | Complete |
+| `spark_runtime`     | `extern "C"` runtime library (print, strings, collections)     | —     | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
 **Total: 540+ tests passing across workspace.**
@@ -37,13 +37,26 @@ All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
 ### Runtime & Driver
 
-- **`spark_runtime`**: Static library (`libspark_runtime.a`) with `extern "C"` FFI functions for print, strings, and collection/RC stubs. Strings are `Box<String>` behind an opaque `*mut u8` pointer. `__spark_string_from_literal(ptr, len)` creates a heap string; `__spark_print_string/int/bool/float` dispatch at codegen time based on argument type.
+- **`spark_runtime`**: Static library (`libspark_runtime.a`) with `extern "C"` FFI functions for print, strings, and collections. Strings are `Box<String>` behind an opaque `*mut u8` pointer. `__spark_string_from_literal(ptr, len)` creates a heap string; `__spark_print_string/int/bool/float` dispatch at codegen time based on argument type. Collections use type-erased backing: `SparkList` (growable array), `SparkMap` (linear-scan), `SparkSet` (list + dedup). All parameterized by element byte size.
 - **`spark_driver`**: CLI binary (`spark build <file> [-o out]`, `spark run <file>`). Chains the full pipeline, writes the object file to a temp path, invokes `cc` to link against `libspark_runtime.a`, and optionally runs the result.
 - **`install.sh`**: Builds in release mode and copies `spark` + `libspark_runtime.a` to a prefix directory (default `~/.local`).
 
-### Recent: Real String Support
+### Recent: Collection Support (List, Map, Set)
 
-String literals now work end-to-end. `print("hello world")` produces output.
+Collection literals and index access work end-to-end. `[10, 20, 30]` creates a real heap-backed list.
+
+**Changes made:**
+- `spark_runtime/src/lib.rs`: Replaced collection stubs with real type-erased implementations:
+  - `SparkList`: `__spark_list_new(elem_size)`, `__spark_list_push(list, elem_ptr)`, `__spark_list_get(list, index)` — growable array with bounds checking
+  - `SparkMap`: `__spark_map_new(key_size, value_size)`, `__spark_map_insert(map, key, val)`, `__spark_map_get(map, key)` — linear-scan with memcmp
+  - `SparkSet`: `__spark_set_new(elem_size)`, `__spark_set_insert(set, elem)` — list-backed with dedup
+- `spark_codegen/cranelift/runtime.rs`: Updated `RuntimeStubs` — `list_new`/`map_new`/`set_new` now accept size parameters; added `list_push`, `list_get`, `map_insert`, `map_get`, `set_insert` FuncIds
+- `spark_codegen/cranelift/emit_rvalue.rs`: Threaded `module` through `emit_place_addr`/`emit_place_read`/`emit_discriminant`. `AggregateKind::List` calls `list_new` + `list_push` per element (scalars stored to temp stack slots for pointer passing). Map/Set follow same pattern. `Projection::Index` for `List` calls `list_get`; for `Map` calls `map_get`.
+- Added `store_scalar_to_temp` and `emit_operand_addr` helpers for passing register values as pointers to runtime functions
+
+### Earlier: Real String Support
+
+String literals work end-to-end. `print("hello world")` produces output.
 
 **Changes made:**
 - `spark_runtime`: `__spark_string_new` / `__spark_string_from_literal` allocate real `Box<String>`; added `__spark_print_string`
@@ -57,12 +70,12 @@ String literals now work end-to-end. `print("hello world")` produces output.
 
 ### Suggested Next Steps (in rough priority order)
 
-1. **Runtime: collection functions** — `List`, `Map`, `Set` stubs in `spark_runtime` are still placeholders (return null). Implement real backing (`Vec<u8>` type-erased or monomorphized) and wire through codegen like strings.
-2. **Drop elaboration** — `Statement::Drop` exists in MIR but is a no-op in codegen (`emit_stmt.rs:56`). Insert drops at scope exits, emit `__spark_rc_release` for heap types. Needed to avoid leaking strings/collections.
+1. **Drop elaboration** — `Statement::Drop` exists in MIR but is a no-op in codegen (`emit_stmt.rs:56`). Insert drops at scope exits, emit `__spark_rc_release` (or type-specific drop functions) for heap types. Needed to avoid leaking strings/collections.
+2. **Collection methods** — `.append()`, `.len()`, `.remove()`, `.contains()`, etc. Need method resolution infrastructure or special-cased built-in dispatch (like `print`). Runtime stubs straightforward to add; the challenge is method call syntax resolution.
 3. **`??` / `?.` desugaring** — HIR stubs exist (`desugar.rs:35`, `desugar.rs:80`) but need a `DefId` allocator for synthetic bindings.
 4. **`is` type test** — MIR stub (`lower_expr.rs:289`). Lower to discriminant extraction + comparison. Codegen already handles `Rvalue::Discriminant` and `SwitchInt`.
 5. **Match exhaustiveness checking** — Would go in `spark_types`. Report missing/unreachable patterns.
-6. **Method resolution & interface bindings** — Dot-call syntax, `binding Foo for Bar` validation.
+6. **Method resolution & interface bindings** — Dot-call syntax, `binding Foo for Bar` validation. Prerequisite for collection methods via normal syntax.
 7. **`!` propagation operator** — Needs union type analysis to distinguish success/error variants.
 8. **Generic instantiation** — `Ty::Param` exists but isn't used. Needs monomorphization.
 9. **`spark_opt`** — MIR optimization passes (constant folding, DCE, SSA, copy propagation). Inserts between borrow and codegen. Performance-only; correctness is unaffected.
@@ -87,7 +100,7 @@ String literals now work end-to-end. `print("hello world")` produces output.
 7. MIR Construction (spark_mir) ✅
 8. Borrow Checking (spark_borrow) ✅
 9. Code Generation (spark_codegen) ✅
-10. Runtime (spark_runtime) ✅ (strings + print working; collections stubbed)
+10. Runtime (spark_runtime) ✅ (strings, print, collections working; RC stubs remain)
 11. Driver (spark_driver) ✅ (`spark build` / `spark run`)
 12. Optimization (spark_opt) — not started, optional
 

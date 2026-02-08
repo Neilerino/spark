@@ -15,12 +15,22 @@ pub struct RuntimeStubs {
     pub string_new: FuncId,
     /// `__spark_string_from_literal(data: ptr, len: i64) -> ptr`
     pub string_from_literal: FuncId,
-    /// `__spark_list_new() -> ptr`
+    /// `__spark_list_new(elem_size: i64) -> ptr`
     pub list_new: FuncId,
-    /// `__spark_map_new() -> ptr`
+    /// `__spark_list_push(list: ptr, elem_ptr: ptr) -> void`
+    pub list_push: FuncId,
+    /// `__spark_list_get(list: ptr, index: i64) -> ptr`
+    pub list_get: FuncId,
+    /// `__spark_map_new(key_size: i64, value_size: i64) -> ptr`
     pub map_new: FuncId,
-    /// `__spark_set_new() -> ptr`
+    /// `__spark_map_insert(map: ptr, key_ptr: ptr, value_ptr: ptr) -> void`
+    pub map_insert: FuncId,
+    /// `__spark_map_get(map: ptr, key_ptr: ptr) -> ptr`
+    pub map_get: FuncId,
+    /// `__spark_set_new(elem_size: i64) -> ptr`
     pub set_new: FuncId,
+    /// `__spark_set_insert(set: ptr, elem_ptr: ptr) -> void`
+    pub set_insert: FuncId,
     /// `__spark_rc_release(ptr) -> void`
     pub rc_release: FuncId,
     /// `__spark_print_int(i64) -> void`
@@ -35,6 +45,7 @@ pub struct RuntimeStubs {
 
 impl RuntimeStubs {
     /// Declares all runtime stubs in the given module.
+    #[allow(clippy::too_many_lines)]
     pub fn declare_all<M: Module>(module: &mut M, call_conv: CallConv) -> Self {
         let ptr_type = module.target_config().pointer_type();
 
@@ -53,9 +64,62 @@ impl RuntimeStubs {
                 Some(ptr_type),
                 call_conv,
             ),
-            list_new: declare_fn(module, "__spark_list_new", &[], Some(ptr_type), call_conv),
-            map_new: declare_fn(module, "__spark_map_new", &[], Some(ptr_type), call_conv),
-            set_new: declare_fn(module, "__spark_set_new", &[], Some(ptr_type), call_conv),
+            list_new: declare_fn(
+                module,
+                "__spark_list_new",
+                &[types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            list_push: declare_fn(
+                module,
+                "__spark_list_push",
+                &[ptr_type, ptr_type],
+                None,
+                call_conv,
+            ),
+            list_get: declare_fn(
+                module,
+                "__spark_list_get",
+                &[ptr_type, types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            map_new: declare_fn(
+                module,
+                "__spark_map_new",
+                &[types::I64, types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            map_insert: declare_fn(
+                module,
+                "__spark_map_insert",
+                &[ptr_type, ptr_type, ptr_type],
+                None,
+                call_conv,
+            ),
+            map_get: declare_fn(
+                module,
+                "__spark_map_get",
+                &[ptr_type, ptr_type],
+                Some(ptr_type),
+                call_conv,
+            ),
+            set_new: declare_fn(
+                module,
+                "__spark_set_new",
+                &[types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            set_insert: declare_fn(
+                module,
+                "__spark_set_insert",
+                &[ptr_type, ptr_type],
+                None,
+                call_conv,
+            ),
             rc_release: declare_fn(
                 module,
                 "__spark_rc_release",

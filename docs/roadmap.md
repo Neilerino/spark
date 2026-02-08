@@ -11,10 +11,11 @@ Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR �
   ✅       ✅      ✅       ✅        ✅        ✅     ✅    ✅      ✅        ✅       ✅
 ```
 
-**What works**: 540+ tests pass. Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, and enums compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. Install script (`install.sh`) provided.
+**What works**: 540+ tests pass. Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Install script (`install.sh`) provided.
 
 ```spark
 fn main(): Int {
+    numbers: List[Int] = [10, 20, 30]
     print("hello world")
     print(42)
     print(true)
@@ -22,7 +23,7 @@ fn main(): Int {
 }
 ```
 
-**What's missing**: Collection types (List, Map, Set) are stubbed. Drop elaboration not implemented (heap values leak). Several language features deferred with stubs/warnings (closures, async, generics, method resolution).
+**What's missing**: Drop elaboration not implemented (heap values leak). Collection methods (`.append()`, `.len()`) not yet supported. Several language features deferred with stubs/warnings (closures, async, generics, method resolution).
 
 ---
 
@@ -32,42 +33,43 @@ fn main(): Int {
 
 `spark_driver` implements `spark build <file> [-o out]` and `spark run <file>`. Chains all pipeline phases, invokes `cc` to link against `libspark_runtime.a`.
 
-### ~~1.2 Runtime Library (`spark_runtime`)~~ — Partially Complete
+### ~~1.2 Runtime Library (`spark_runtime`)~~ — Complete
 
-String functions are implemented (`__spark_string_new`, `__spark_string_from_literal`, `__spark_print_string/int/bool/float`). Strings are `Box<String>` behind `*mut u8`.
+String functions implemented (`__spark_string_new`, `__spark_string_from_literal`, `__spark_print_string/int/bool/float`). Strings are `Box<String>` behind `*mut u8`.
 
-**Still stubbed** (return null pointers):
-- `__spark_list_new`, `__spark_map_new`, `__spark_set_new`
-- `__spark_rc_release` (no-op)
+Collection functions implemented using **type-erased** approach (raw bytes + element size):
+- **`SparkList`** — growable array: `__spark_list_new(elem_size)`, `__spark_list_push(list, elem_ptr)`, `__spark_list_get(list, index)`. Bounds-checked (aborts on OOB). Doubling growth strategy, minimum capacity 4.
+- **`SparkMap`** — linear-scan map: `__spark_map_new(key_size, value_size)`, `__spark_map_insert(map, key_ptr, value_ptr)`, `__spark_map_get(map, key_ptr)`. Key comparison via memcmp. Returns null on missing key. O(n) scan — hash-based can replace it later without FFI changes.
+- **`SparkSet`** — backed by `SparkList` with uniqueness: `__spark_set_new(elem_size)`, `__spark_set_insert(set, elem_ptr)`. Deduplication via memcmp.
 
-**Collection generics** (when implementing): Three possible approaches:
-1. **Type-erased** (simplest) — store raw bytes + element size, memcpy operations
-2. **Monomorphized** (fastest) — codegen emits `__spark_list_new_i64`, etc.
-3. **Fat pointer** (most flexible) — pass vtable alongside collection pointer
+**Still stubbed**: `__spark_rc_release` (no-op until drop elaboration).
 
-Type-erased is the pragmatic starting point.
+**Not yet implemented**: Collection methods (`.append()`, `.len()`, `.remove()`, etc.), proper `Optional` wrapping on index access, set literals (parser ambiguity with blocks).
 
 ---
 
-## Priority 1: Resource Management & Collections
+## Priority 1: Resource Management
 
-### 1.1 Drop Elaboration
+### ~~1.1 Collection Runtime Functions~~ — Complete
+
+Type-erased collection backing implemented. List/Map/Set construction and index access work end-to-end. See section 1.2 above for details.
+
+### 1.2 Drop Elaboration
 
 **Status**: `Statement::Drop` exists in MIR but is a no-op in codegen
 **Location**: `spark_codegen/src/cranelift/emit_stmt.rs:56`
-**Impact**: All heap-allocated values (strings, future collections) leak
+**Impact**: All heap-allocated values (strings, collections) leak
 
 **Fix**: Two parts:
 1. **MIR pass**: Insert `Statement::Drop` at scope exits, before returns, and after moves
-2. **Codegen**: Emit calls to `__spark_rc_release` (or a dedicated `__spark_string_drop`) for heap types, no-op for scalars
+2. **Codegen**: Emit calls to `__spark_rc_release` (or dedicated drop functions for strings/collections) for heap types, no-op for scalars
 
-### 1.2 Collection Runtime Functions
+### 1.3 Collection Methods
 
-**Status**: Stubs return null pointers
-**Location**: `spark_runtime/src/lib.rs`
-**Impact**: Any program using `List`, `Map`, or `Set` will segfault
+**Status**: Not implemented
+**Impact**: No `.append()`, `.len()`, `.remove()`, `.contains()`, etc.
 
-Implement `__spark_list_new`, `__spark_map_new`, `__spark_set_new` with real backing types, plus element access, append, length, etc. Wire new stubs through `RuntimeStubs` and codegen.
+Needs method resolution infrastructure (P3.4) or special-cased built-in method dispatch similar to `print`.
 
 ---
 
@@ -248,8 +250,9 @@ These are deliberate design decisions per the language spec — Spark requires e
 |----------|---------|--------|--------|--------|
 | ~~P1~~ | ~~Compiler driver~~ | ~~Medium~~ | ~~Enables running any program~~ | Done |
 | ~~P1~~ | ~~Runtime library (strings)~~ | ~~Medium~~ | ~~Enables String printing~~ | Done |
+| ~~P1~~ | ~~Runtime collections~~ | ~~Medium~~ | ~~Enables List/Map/Set~~ | Done |
 | **P1** | Drop elaboration | Medium | Prevents memory leaks | Not started |
-| **P1** | Runtime collections | Medium | Enables List/Map/Set | Stubbed |
+| **P1** | Collection methods | Medium | `.append()`, `.len()`, etc. | Not started |
 | **P2** | `??` / `?.` desugaring | Low | Fixes null-handling operators | Partial |
 | **P2** | `is` type test | Low | Enables type checking expressions | MIR stub |
 | **P3** | Match exhaustiveness | Medium | Safety — catches missing cases | Not started |
