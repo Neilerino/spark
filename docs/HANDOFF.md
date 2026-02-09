@@ -30,9 +30,10 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
 | `spark_drop`        | Type queries for RC/drop decisions (`needs_rc`, etc.)          | 11    | Complete |
 | `spark_runtime`     | `extern "C"` runtime library (print, strings, collections, RC) | —     | Complete |
+| `spark_opt`         | MIR optimization passes (5 passes, 2 iterations)              | 75    | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
-**Total: 568 tests passing across workspace.**
+**Total: 641 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
@@ -79,10 +80,9 @@ String literals work end-to-end. `print("hello world")` produces output.
 6. **Method resolution & interface bindings** — Dot-call syntax, `binding Foo for Bar` validation. Prerequisite for collection methods via normal syntax.
 7. **`!` propagation operator** — Needs union type analysis to distinguish success/error variants.
 8. **Generic instantiation** — `Ty::Param` exists but isn't used. Needs monomorphization.
-9. **`spark_opt`** — MIR optimization passes (constant folding, DCE, SSA, copy propagation, RC elision). Inserts between borrow and codegen. Performance-only; correctness is unaffected.
-10. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support.
-11. **Async/await/spawn** — Future types, state machine transform, runtime executor.
-12. **String interpolation** — Lexer + parser changes for `"hello {expr}"` syntax.
+9. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support.
+10. **Async/await/spawn** — Future types, state machine transform, runtime executor.
+11. **String interpolation** — Lexer + parser changes for `"hello {expr}"` syntax.
 
 ### Deferred Design Decisions
 
@@ -100,10 +100,10 @@ String literals work end-to-end. `print("hello world")` produces output.
 6. HIR Lowering (spark_hir) ✅
 7. MIR Construction (spark_mir) ✅
 8. Borrow Checking (spark_borrow) ✅
-9. Code Generation (spark_codegen) ✅
-10. Runtime (spark_runtime) ✅ (strings, print, collections, RC implemented)
-11. Driver (spark_driver) ✅ (`spark build` / `spark run`)
-12. Optimization (spark_opt) — not started, optional
+9. Optimization (spark_opt) ✅ (nop elim, const fold, CFG simplify, DCE, copy prop; `--no-opt` to skip)
+10. Code Generation (spark_codegen) ✅
+11. Runtime (spark_runtime) ✅ (strings, print, collections, RC implemented)
+12. Driver (spark_driver) ✅ (`spark build` / `spark run`)
 
 ## Crate Dependencies
 
@@ -121,9 +121,10 @@ spark_hir           (depends on span, intern, diagnostics, ast, modules, resolve
 spark_drop          (depends on types)
 spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, hir, drop)
 spark_borrow        (depends on span, intern, diagnostics, resolve, types, mir)
+spark_opt           (depends on span, intern, diagnostics, ast, resolve, types, mir)
 spark_codegen       (depends on span, intern, diagnostics, ast, resolve, types, mir, drop + cranelift)
 spark_runtime       (no internal dependencies — standalone staticlib)
-spark_driver        (depends on all pipeline crates + codegen + clap)
+spark_driver        (depends on all pipeline crates + opt + codegen + clap)
 ```
 
 ## Key Implementation Details
@@ -208,7 +209,7 @@ fn main(): Int {
 
 ```bash
 cargo build                      # Build all
-cargo test                       # Test all (568 tests)
+cargo test                       # Test all (641 tests)
 cargo clippy                     # Lint all
 cargo test -p spark_codegen      # Test code generator
 cargo doc --open                 # View documentation

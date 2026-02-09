@@ -23,6 +23,7 @@ spark_types.workspace = true
 spark_hir.workspace = true
 spark_mir.workspace = true
 spark_borrow.workspace = true
+spark_opt.workspace = true
 spark_codegen.workspace = true
 clap.workspace = true
 

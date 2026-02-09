@@ -36,11 +36,17 @@ enum Cmd {
         /// Output path for the executable (defaults to input stem).
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Disable optimization passes.
+        #[arg(long)]
+        no_opt: bool,
     },
     /// Compile and run a Spark program.
     Run {
         /// Path to the input `.spark` source file.
         input: PathBuf,
+        /// Disable optimization passes.
+        #[arg(long)]
+        no_opt: bool,
         /// Arguments to forward to the program.
         #[arg(last = true)]
         args: Vec<String>,
@@ -51,22 +57,44 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Cmd::Build { input, output } => {
+        Cmd::Build {
+            input,
+            output,
+            no_opt,
+        } => {
             let output_path = output.unwrap_or_else(|| default_output_path(&input));
-            match cmd_build(&input, &output_path) {
+            let opt_level = if no_opt {
+                spark_opt::OptLevel::None
+            } else {
+                spark_opt::OptLevel::default()
+            };
+            match cmd_build(&input, &output_path, opt_level) {
                 Ok(()) => {}
                 Err(()) => process::exit(1),
             }
         }
-        Cmd::Run { input, args } => {
-            let code = cmd_run(&input, &args);
+        Cmd::Run {
+            input,
+            no_opt,
+            args,
+        } => {
+            let opt_level = if no_opt {
+                spark_opt::OptLevel::None
+            } else {
+                spark_opt::OptLevel::default()
+            };
+            let code = cmd_run(&input, &args, opt_level);
             process::exit(code);
         }
     }
 }
 
 /// Compiles `input` to an executable at `output_path`.
-fn cmd_build(input: &Path, output_path: &Path) -> Result<(), ()> {
+fn cmd_build(
+    input: &Path,
+    output_path: &Path,
+    opt_level: spark_opt::OptLevel,
+) -> Result<(), ()> {
     let source = read_source(input)?;
     let file_name = input
         .file_name()
@@ -74,13 +102,17 @@ fn cmd_build(input: &Path, output_path: &Path) -> Result<(), ()> {
         .unwrap_or("<unknown>")
         .to_string();
 
-    let result = pipeline::compile(pipeline::CompileInput { source, file_name })?;
+    let result = pipeline::compile(pipeline::CompileInput {
+        source,
+        file_name,
+        opt_level,
+    })?;
 
     link_object(&result.object_bytes, output_path)
 }
 
 /// Compiles and runs `input`, returning the program's exit code.
-fn cmd_run(input: &Path, args: &[String]) -> i32 {
+fn cmd_run(input: &Path, args: &[String], opt_level: spark_opt::OptLevel) -> i32 {
     // Compile to a temp directory
     let tmp_dir = std::env::temp_dir().join("spark_run");
     if fs::create_dir_all(&tmp_dir).is_err() {
@@ -94,7 +126,7 @@ fn cmd_run(input: &Path, args: &[String]) -> i32 {
         .unwrap_or("a.out");
     let exe_path = tmp_dir.join(exe_name);
 
-    if cmd_build(input, &exe_path).is_err() {
+    if cmd_build(input, &exe_path, opt_level).is_err() {
         return 1;
     }
 

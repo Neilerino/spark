@@ -7,8 +7,8 @@ This document tracks all features remaining to be implemented, organized by prio
 The compiler has a complete pipeline from source to native executables:
 
 ```
-Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR → Borrow → Codegen → Link
-  ✅       ✅      ✅       ✅        ✅        ✅     ✅    ✅      ✅        ✅       ✅
+Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR → Borrow → Opt → Codegen → Link
+  ✅       ✅      ✅       ✅        ✅        ✅     ✅    ✅      ✅      ✅      ✅       ✅
 ```
 
 **What works**: 576 tests pass (including 8 end-to-end tests). Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Collection methods (`.len()`, `.append()`, `.contains()`, `.remove()`) work for List/Map/Set/String with COW enforcement on mutating operations. Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. E2E test framework in `spark_driver/tests/e2e.rs`. LSP with semantic tokens in `tools/spark-lsp`. Install script (`install.sh`) provided.
@@ -196,18 +196,19 @@ Needs:
 
 ## Priority 4: Optimization
 
-### 4.1 `spark_opt` — MIR Optimization Passes
+### ~~4.1 `spark_opt` — MIR Optimization Passes~~ — Complete
 
-**Status**: Not started (planned as next main crate)
-**Location**: Inserts between `spark_borrow` and `spark_codegen`
-**Impact**: Performance only — correctness is unaffected
+`spark_opt` sits between `spark_borrow` and `spark_codegen`. Five passes run in two fixed iterations:
 
-Planned passes:
-- **Constant folding**: Evaluate constant expressions at compile time
-- **Dead code elimination**: Remove unreachable blocks and unused assignments
-- **SSA construction**: Convert pre-SSA MIR to SSA form with phi nodes
-- **Copy propagation**: Eliminate redundant copies
-- **Decision-tree match compilation**: Optimize sequential pattern tests into switch trees
+1. **Nop elimination** — remove `Statement::Nop` placeholders
+2. **Constant folding** — evaluate constant `BinaryOp`/`UnaryOp` at compile time (Int, Float, Bool; division-by-zero and overflow left to runtime)
+3. **CFG simplification** — fold constant `SwitchInt`, merge goto chains, forward empty goto blocks
+4. **Dead code elimination** — remove unreachable blocks (BFS from entry) and dead assignments
+5. **Copy propagation** — replace single-def temp copies with source locals (conservative, single-block)
+
+`OptLevel::None` / `OptLevel::Basic` controls whether passes run. CLI flag: `--no-opt`.
+
+75 unit tests + full-pipeline integration tests. Zero regressions across 641 workspace tests.
 
 ### 4.2 Reborrowing and Two-Phase Borrows
 
@@ -304,7 +305,7 @@ These are deliberate design decisions per the language spec — Spark requires e
 | **P3** | `to` type narrowing | Low-Medium | Union type error handling | Parsed, deferred |
 | **P3** | Method resolution | Medium-High | User-defined methods + interfaces | Partial (builtins done) |
 | **P3** | Generics | High | Enables parameterized types | Not started |
-| **P4** | `spark_opt` passes | High | Performance optimization | Not started |
+| ~~P4~~ | ~~`spark_opt` passes~~ | ~~High~~ | ~~Performance optimization~~ | Done |
 | **P4** | Reborrowing | Low | Borrow checker ergonomics | Not started |
 | **P5** | Lambdas/closures | High | First-class functions | MIR stub |
 | **P5** | `each`/`each via` | Medium | Collection iteration | Blocked on lambdas |
@@ -384,7 +385,7 @@ Completely independent. Inserts between `spark_borrow` and `spark_codegen`.
 
 | Item | Effort | Dependencies |
 |------|--------|-------------|
-| `spark_opt` crate (4.1) | High | None |
+| ~~`spark_opt` crate (4.1)~~ | ~~High~~ | ~~None~~ | **Done** |
 | Reborrowing / two-phase borrows (4.2) | Low | None |
 
 **Conflicts**: None. `spark_opt` operates on MIR which is stable. Reborrowing is isolated to `spark_borrow`.

@@ -26,6 +26,8 @@ pub struct CompileInput {
     pub source: String,
     /// The file name for diagnostics (e.g., `"hello.spark"`).
     pub file_name: String,
+    /// Optimization level (`None` to skip all passes).
+    pub opt_level: spark_opt::OptLevel,
 }
 
 /// Successful output from the compilation pipeline.
@@ -44,7 +46,11 @@ pub struct CompileOutput {
 /// Returns `Err(())` if any phase produces errors. Diagnostics are emitted
 /// to stderr before returning.
 pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
-    let CompileInput { source, file_name } = input;
+    let CompileInput {
+        source,
+        file_name,
+        opt_level,
+    } = input;
 
     // -- Source registration --------------------------------------------------
     let mut source_map = SourceMap::new();
@@ -139,10 +145,19 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     }
     emit_warnings(&borrow_output.diagnostics, &source_map);
 
-    // -- Phase 11: Code generation --------------------------------------------
-    let codegen_output = spark_codegen::generate(CodegenInput {
+    // -- Phase 10.5: Optimization ---------------------------------------------
+    let opt_output = spark_opt::optimize(spark_opt::OptInput {
         mir: borrow_output.mir,
         table: borrow_output.table,
+        definitions: resolve2.definitions.clone(),
+        opt_level,
+    });
+    emit_warnings(&opt_output.diagnostics, &source_map);
+
+    // -- Phase 11: Code generation --------------------------------------------
+    let codegen_output = spark_codegen::generate(CodegenInput {
+        mir: opt_output.mir,
+        table: opt_output.table,
         definitions: resolve2.definitions,
         target: TargetSpec::host(),
     });
