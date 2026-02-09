@@ -172,7 +172,7 @@ fn rvalue_reads_local(rvalue: &spark_mir::Rvalue, local: Local) -> bool {
         spark_mir::Rvalue::Ref { place, .. } | spark_mir::Rvalue::Discriminant(place) => {
             place.local == local || place_projections_read_local(place, local)
         }
-        spark_mir::Rvalue::Aggregate(_, ops) => {
+        spark_mir::Rvalue::Aggregate(_, ops) | spark_mir::Rvalue::StringInterp(ops) => {
             ops.iter().any(|op| operand_reads_local(op, local))
         }
         spark_mir::Rvalue::Cast { operand, .. } => operand_reads_local(operand, local),
@@ -260,7 +260,7 @@ fn replace_local_in_rvalue(rvalue: &mut spark_mir::Rvalue, from: Local, to: Loca
         spark_mir::Rvalue::Ref { place, .. } | spark_mir::Rvalue::Discriminant(place) => {
             replace_local_in_place(place, from, to)
         }
-        spark_mir::Rvalue::Aggregate(_, ops) => {
+        spark_mir::Rvalue::Aggregate(_, ops) | spark_mir::Rvalue::StringInterp(ops) => {
             let mut changed = false;
             for op in ops {
                 changed |= replace_local_in_operand(op, from, to);

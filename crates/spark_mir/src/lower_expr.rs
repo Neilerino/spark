@@ -310,6 +310,11 @@ pub fn lower_expr(
             void_temp(fb, expr)
         }
 
+        // ── String interpolation ──────────────────────────────────
+        HirExprKind::StringInterp { parts } => {
+            lower_string_interp(parts, expr, fb, mir, type_table, defs)
+        }
+
         // ── Error recovery ───────────────────────────────────────
         HirExprKind::Error => void_temp(fb, expr),
     }
@@ -358,6 +363,38 @@ pub fn lower_place(
             Place::from_local(local)
         }
     }
+}
+
+// ── String interpolation ─────────────────────────────────────────────────
+
+/// Lowers a `StringInterp` HIR node into a `Rvalue::StringInterp`.
+///
+/// Each part is lowered to a local. The resulting rvalue carries all parts
+/// as operands; the codegen is responsible for emitting to-string conversions
+/// and the concat chain.
+fn lower_string_interp(
+    parts: &[HirExpr],
+    expr: &HirExpr,
+    fb: &mut FunctionBuilder,
+    mir: &mut MirBuilder<'_>,
+    type_table: &TypeTable,
+    defs: &DefinitionTable,
+) -> Local {
+    let operands: Vec<Operand> = parts
+        .iter()
+        .map(|part| {
+            let local = lower_expr(part, fb, mir, type_table, defs);
+            Operand::Copy(Place::from_local(local))
+        })
+        .collect();
+
+    let temp = fb.fresh_temp(expr.ty, expr.span);
+    fb.push_assign(
+        Place::from_local(temp),
+        Rvalue::StringInterp(operands),
+        expr.span,
+    );
+    temp
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

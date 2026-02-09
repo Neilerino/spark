@@ -232,7 +232,7 @@ fn collect_rvalue_uses(rvalue: &Rvalue, point: Point, facts: &mut BorrowFacts) {
             facts.uses.push((point, place.local));
             collect_place_uses(place, point, facts);
         }
-        Rvalue::Aggregate(_, operands) => {
+        Rvalue::Aggregate(_, operands) | Rvalue::StringInterp(operands) => {
             for op in operands {
                 collect_operand_uses(op, point, facts);
             }

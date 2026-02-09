@@ -77,6 +77,14 @@ pub struct RuntimeStubs {
     pub print_bool: FuncId,
     /// `__spark_print_float(f64) -> void`
     pub print_float: FuncId,
+    /// `__spark_string_concat(ptr, ptr) -> ptr`
+    pub string_concat: FuncId,
+    /// `__spark_int_to_string(i64) -> ptr`
+    pub int_to_string: FuncId,
+    /// `__spark_float_to_string(f64) -> ptr`
+    pub float_to_string: FuncId,
+    /// `__spark_bool_to_string(i8) -> ptr`
+    pub bool_to_string: FuncId,
 }
 
 impl RuntimeStubs {
@@ -315,6 +323,34 @@ impl RuntimeStubs {
                 "__spark_print_float",
                 &[types::F64],
                 None,
+                call_conv,
+            ),
+            string_concat: declare_fn(
+                module,
+                "__spark_string_concat",
+                &[ptr_type, ptr_type],
+                Some(ptr_type),
+                call_conv,
+            ),
+            int_to_string: declare_fn(
+                module,
+                "__spark_int_to_string",
+                &[types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            float_to_string: declare_fn(
+                module,
+                "__spark_float_to_string",
+                &[types::F64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            bool_to_string: declare_fn(
+                module,
+                "__spark_bool_to_string",
+                &[types::I8],
+                Some(ptr_type),
                 call_conv,
             ),
         }

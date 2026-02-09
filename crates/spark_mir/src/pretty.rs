@@ -188,6 +188,11 @@ impl PrettyPrinter<'_> {
                 self.print_operand(operand);
                 let _ = write!(self.out, " as ty{}", target_ty.as_u32());
             }
+            Rvalue::StringInterp(ops) => {
+                self.out.push_str("StringInterp(");
+                self.print_operand_list(ops);
+                self.out.push(')');
+            }
         }
     }
 

@@ -648,6 +648,79 @@ pub unsafe extern "C" fn __spark_string_len(ptr: *mut u8) -> i64 {
 }
 
 // =============================================================================
+// String interpolation — concat and to_string conversions
+// =============================================================================
+
+/// Concatenates two strings, returning a new string (rc = 1).
+///
+/// Does NOT consume `a` or `b` — the caller manages their reference counts.
+///
+/// # Safety
+///
+/// Both pointers must be valid `SparkString` pointers.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_concat(a: *mut u8, b: *mut u8) -> *mut u8 {
+    let sa = unsafe { &*(a.cast::<SparkString>()) };
+    let sb = unsafe { &*(b.cast::<SparkString>()) };
+
+    let new_len = sa.len + sb.len;
+
+    if new_len == 0 {
+        return __spark_string_new();
+    }
+
+    let align = std::mem::align_of::<u64>();
+    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(new_len, align) };
+    let buf = unsafe { std::alloc::alloc(layout) };
+    if buf.is_null() {
+        eprintln!("spark: out of memory allocating string");
+        std::process::abort();
+    }
+
+    if sa.len > 0 {
+        unsafe { std::ptr::copy_nonoverlapping(sa.data, buf, sa.len) };
+    }
+    if sb.len > 0 {
+        unsafe { std::ptr::copy_nonoverlapping(sb.data, buf.add(sa.len), sb.len) };
+    }
+
+    let s = Box::new(SparkString {
+        rc: 1,
+        data: buf,
+        len: new_len,
+        cap: new_len,
+    });
+    Box::into_raw(s).cast::<u8>()
+}
+
+/// Converts an integer to a string (rc = 1).
+#[no_mangle]
+pub extern "C" fn __spark_int_to_string(val: i64) -> *mut u8 {
+    let text = val.to_string();
+    let bytes = text.as_bytes();
+    unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
+}
+
+/// Converts a float to a string (rc = 1).
+#[no_mangle]
+pub extern "C" fn __spark_float_to_string(val: f64) -> *mut u8 {
+    let text = val.to_string();
+    let bytes = text.as_bytes();
+    unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
+}
+
+/// Converts a boolean to a string (rc = 1).
+///
+/// Returns `"true"` for non-zero, `"false"` for zero.
+#[no_mangle]
+pub extern "C" fn __spark_bool_to_string(val: i8) -> *mut u8 {
+    let text = if val != 0 { "true" } else { "false" };
+    let bytes = text.as_bytes();
+    unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
@@ -1018,4 +1091,98 @@ pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8, key_rc: i8, val_rc: i8) -
 pub extern "C" fn __spark_rc_release(_ptr: *mut u8) {
     // No-op — kept for backward compatibility.
     // New code should use __spark_string_rc_dec, __spark_list_rc_dec, etc.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: read the string content from a SparkString pointer.
+    unsafe fn read_spark_string(ptr: *mut u8) -> String {
+        let s = unsafe { &*(ptr.cast::<SparkString>()) };
+        if s.len == 0 {
+            return String::new();
+        }
+        let slice = unsafe { std::slice::from_raw_parts(s.data, s.len) };
+        std::str::from_utf8(slice).unwrap().to_owned()
+    }
+
+    #[test]
+    fn string_concat_basic() {
+        unsafe {
+            let a = __spark_string_from_literal("hello ".as_ptr(), 6);
+            let b = __spark_string_from_literal("world".as_ptr(), 5);
+            let result = __spark_string_concat(a, b);
+            assert_eq!(read_spark_string(result), "hello world");
+            __spark_string_rc_dec(a);
+            __spark_string_rc_dec(b);
+            __spark_string_rc_dec(result);
+        }
+    }
+
+    #[test]
+    fn string_concat_empty() {
+        unsafe {
+            let a = __spark_string_new();
+            let b = __spark_string_from_literal("text".as_ptr(), 4);
+            let result = __spark_string_concat(a, b);
+            assert_eq!(read_spark_string(result), "text");
+            __spark_string_rc_dec(a);
+            __spark_string_rc_dec(b);
+            __spark_string_rc_dec(result);
+        }
+    }
+
+    #[test]
+    fn string_concat_both_empty() {
+        unsafe {
+            let a = __spark_string_new();
+            let b = __spark_string_new();
+            let result = __spark_string_concat(a, b);
+            assert_eq!(read_spark_string(result), "");
+            __spark_string_rc_dec(a);
+            __spark_string_rc_dec(b);
+            __spark_string_rc_dec(result);
+        }
+    }
+
+    #[test]
+    fn int_to_string() {
+        unsafe {
+            let result = __spark_int_to_string(42);
+            assert_eq!(read_spark_string(result), "42");
+            __spark_string_rc_dec(result);
+
+            let neg = __spark_int_to_string(-7);
+            assert_eq!(read_spark_string(neg), "-7");
+            __spark_string_rc_dec(neg);
+
+            let zero = __spark_int_to_string(0);
+            assert_eq!(read_spark_string(zero), "0");
+            __spark_string_rc_dec(zero);
+        }
+    }
+
+    #[test]
+    fn float_to_string() {
+        unsafe {
+            let result = __spark_float_to_string(3.14);
+            let text = read_spark_string(result);
+            assert!(text.starts_with("3.14"), "expected 3.14..., got {text}");
+            __spark_string_rc_dec(result);
+        }
+    }
+
+    #[test]
+    fn bool_to_string() {
+        unsafe {
+            let t = __spark_bool_to_string(1);
+            assert_eq!(read_spark_string(t), "true");
+            __spark_string_rc_dec(t);
+
+            let f = __spark_bool_to_string(0);
+            assert_eq!(read_spark_string(f), "false");
+            __spark_string_rc_dec(f);
+        }
+    }
 }

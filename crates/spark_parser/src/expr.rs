@@ -24,7 +24,7 @@
 
 use spark_ast::{
     BinaryOp, Block, CallArg, Expr, ExprKind, FieldInit, FnParam, Ident, Literal, LiteralKind,
-    MapEntry, MatchArm, PartialArg, Path, StringLiteral, ToHandler, UnaryOp,
+    MapEntry, MatchArm, PartialArg, Path, StringLiteral, StringPart, ToHandler, UnaryOp,
 };
 use spark_intern::sym;
 use spark_lexer::TokenKind;
@@ -618,6 +618,7 @@ impl Parser {
             TokenKind::IntLiteral => self.parse_int_literal(),
             TokenKind::FloatLiteral => self.parse_float_literal(),
             TokenKind::StringLiteral => self.parse_string_literal(),
+            TokenKind::StringStart => self.parse_interpolated_string(),
             TokenKind::CharLiteral => self.parse_char_literal(),
             TokenKind::True => {
                 self.advance();
@@ -749,6 +750,56 @@ impl Parser {
             .unwrap_or_else(|| sym(""));
         let lit = Literal::new(LiteralKind::String(StringLiteral::simple(text)), token.span);
         Expr::new(ExprKind::Literal(lit), token.span)
+    }
+
+    /// Parses an interpolated string: `StringStart (StringText | InterpStart expr RBrace)* StringEnd`
+    fn parse_interpolated_string(&mut self) -> Expr {
+        let start = self.current_span();
+        self.advance(); // consume StringStart
+
+        let mut parts = Vec::new();
+
+        loop {
+            match self.current_kind() {
+                TokenKind::StringText => {
+                    let token = self.advance();
+                    let text = token
+                        .value
+                        .as_ref()
+                        .and_then(spark_lexer::TokenValue::as_symbol)
+                        .unwrap_or_else(|| sym(""));
+                    parts.push(StringPart::Text(text));
+                }
+                TokenKind::InterpStart => {
+                    self.advance(); // consume InterpStart
+                    let expr = self.parse_expr();
+                    self.expect(TokenKind::RBrace);
+                    parts.push(StringPart::Interpolation(Box::new(expr)));
+                }
+                TokenKind::StringEnd => {
+                    self.advance();
+                    break;
+                }
+                TokenKind::Eof => {
+                    self.error("unterminated string interpolation");
+                    break;
+                }
+                _ => {
+                    self.error("unexpected token in string interpolation");
+                    self.advance();
+                    break;
+                }
+            }
+        }
+
+        let span = self.span_from(start);
+        let string_lit = StringLiteral {
+            parts,
+            is_raw: false,
+            is_multiline: false,
+        };
+        let lit = Literal::new(LiteralKind::String(string_lit), span);
+        Expr::new(ExprKind::Literal(lit), span)
     }
 
     fn parse_char_literal(&mut self) -> Expr {
@@ -1562,5 +1613,89 @@ mod tests {
         assert!(!diags.has_errors());
         // Outer should be propagate
         assert!(matches!(expr.kind, ExprKind::Propagate(_)));
+    }
+
+    // ====================================================================
+    // String Interpolation Tests
+    // ====================================================================
+
+    #[test]
+    fn simple_string_is_simple() {
+        let (expr, diags) = parse_expr_str(r#""hello""#);
+        assert!(!diags.has_errors());
+        if let ExprKind::Literal(lit) = &expr.kind {
+            if let LiteralKind::String(s) = &lit.kind {
+                assert!(s.is_simple());
+                assert_eq!(s.parts.len(), 1);
+            } else {
+                panic!("expected string literal");
+            }
+        } else {
+            panic!("expected literal");
+        }
+    }
+
+    #[test]
+    fn interpolated_string_with_ident() {
+        let (expr, diags) = parse_expr_str(r#""hello {name}""#);
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        if let ExprKind::Literal(lit) = &expr.kind {
+            if let LiteralKind::String(s) = &lit.kind {
+                assert!(!s.is_simple());
+                assert_eq!(s.parts.len(), 2);
+                // First part: Text("hello ")
+                assert!(matches!(&s.parts[0], spark_ast::StringPart::Text(sym) if sym.as_str() == "hello "));
+                // Second part: Interpolation(Ident(name))
+                if let spark_ast::StringPart::Interpolation(expr) = &s.parts[1] {
+                    assert!(matches!(&expr.kind, ExprKind::Ident(id) if id.name.as_str() == "name"));
+                } else {
+                    panic!("expected interpolation part");
+                }
+            } else {
+                panic!("expected string literal");
+            }
+        } else {
+            panic!("expected literal");
+        }
+    }
+
+    #[test]
+    fn interpolated_string_with_binary_expr() {
+        let (expr, diags) = parse_expr_str(r#""result: {1 + 2}""#);
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        if let ExprKind::Literal(lit) = &expr.kind {
+            if let LiteralKind::String(s) = &lit.kind {
+                assert_eq!(s.parts.len(), 2);
+                // First part: Text
+                assert!(matches!(&s.parts[0], spark_ast::StringPart::Text(_)));
+                // Second part: Interpolation with Binary expr
+                if let spark_ast::StringPart::Interpolation(expr) = &s.parts[1] {
+                    assert!(matches!(&expr.kind, ExprKind::Binary { op: BinaryOp::Add, .. }));
+                } else {
+                    panic!("expected interpolation part");
+                }
+            } else {
+                panic!("expected string literal");
+            }
+        } else {
+            panic!("expected literal");
+        }
+    }
+
+    #[test]
+    fn interpolated_string_multiple_parts() {
+        let (expr, diags) = parse_expr_str(r#""{x}{y}""#);
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        if let ExprKind::Literal(lit) = &expr.kind {
+            if let LiteralKind::String(s) = &lit.kind {
+                assert_eq!(s.parts.len(), 2);
+                assert!(matches!(&s.parts[0], spark_ast::StringPart::Interpolation(_)));
+                assert!(matches!(&s.parts[1], spark_ast::StringPart::Interpolation(_)));
+            } else {
+                panic!("expected string literal");
+            }
+        } else {
+            panic!("expected literal");
+        }
     }
 }

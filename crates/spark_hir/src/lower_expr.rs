@@ -72,7 +72,7 @@ fn lower_expr_kind(
 ) -> HirExprKind {
     match &expr.kind {
         // === Literals ===
-        ExprKind::Literal(lit) => HirExprKind::Literal(lower_literal(&lit.kind)),
+        ExprKind::Literal(lit) => lower_literal_expr(&lit.kind, expr, table, definitions, resolutions, diagnostics, current_fn_ret),
 
         // === Identifiers -> Local(DefId) ===
         ExprKind::Ident(ident) => {
@@ -453,6 +453,45 @@ fn lower_to_pattern(
     }
 }
 
+/// Lowers a literal expression, producing either a simple `HirExprKind::Literal`
+/// or a `HirExprKind::StringInterp` for interpolated strings.
+#[allow(clippy::too_many_arguments)]
+fn lower_literal_expr(
+    kind: &LiteralKind,
+    expr: &Expr,
+    table: &TypeTable,
+    definitions: &mut DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> HirExprKind {
+    match kind {
+        LiteralKind::String(s) if !s.is_simple() => {
+            // Interpolated string: produce StringInterp with parts.
+            let string_ty = expr_type(expr.span, table);
+            let parts = s
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    StringPart::Text(sym) => Some(HirExpr::new(
+                        HirExprKind::Literal(HirLiteral::String(*sym)),
+                        string_ty,
+                        expr.span,
+                    )),
+                    StringPart::Interpolation(sub_expr) => {
+                        let lowered = lower_expr(
+                            sub_expr, table, definitions, resolutions, diagnostics, current_fn_ret,
+                        );
+                        Some(lowered)
+                    }
+                })
+                .collect();
+            HirExprKind::StringInterp { parts }
+        }
+        _ => HirExprKind::Literal(lower_literal(kind)),
+    }
+}
+
 /// Lowers a literal value.
 fn lower_literal(kind: &LiteralKind) -> HirLiteral {
     match kind {
@@ -462,8 +501,6 @@ fn lower_literal(kind: &LiteralKind) -> HirLiteral {
         LiteralKind::Char(v) => HirLiteral::Char(*v),
         LiteralKind::Null => HirLiteral::Null,
         LiteralKind::String(s) => {
-            // For simple strings, extract the text symbol.
-            // Interpolated strings are deferred.
             if let Some(StringPart::Text(sym)) = s.parts.first() {
                 HirLiteral::String(*sym)
             } else {

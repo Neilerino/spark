@@ -145,7 +145,7 @@ fn collect_used_in_rvalue(rvalue: &spark_mir::Rvalue, used: &mut FxHashSet<Local
             used.insert(place.local);
             collect_used_in_place_projections(place, used);
         }
-        spark_mir::Rvalue::Aggregate(_, ops) => {
+        spark_mir::Rvalue::Aggregate(_, ops) | spark_mir::Rvalue::StringInterp(ops) => {
             for op in ops {
                 collect_used_in_operand(op, used);
             }

@@ -70,6 +70,10 @@ pub fn emit_rvalue<M: Module>(
             let src_ty = operand_type(operand, ctx);
             Some(emit_cast(ctx, val, src_ty, *target_ty, table))
         }
+
+        Rvalue::StringInterp(operands) => {
+            emit_string_interp(ctx, operands, table, definitions, func_ids, module)
+        }
     }
 }
 
@@ -859,6 +863,85 @@ pub fn emit_operand_addr<M: Module>(
         // Aggregate — val is already a pointer to the data.
         Some(val)
     }
+}
+
+/// Emits a string interpolation: converts each part to a string pointer,
+/// then chains `__spark_string_concat` calls left-to-right.
+#[allow(clippy::too_many_arguments)]
+fn emit_string_interp<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    operands: &[Operand],
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) -> Option<Value> {
+    if operands.is_empty() {
+        // Empty interpolation → empty string.
+        let func_ref = module.declare_func_in_func(ctx.stubs.string_new, ctx.builder.func);
+        let call = ctx.builder.ins().call(func_ref, &[]);
+        return Some(ctx.builder.inst_results(call)[0]);
+    }
+
+    // Convert each part to a string pointer.
+    let mut string_vals: Vec<Value> = Vec::with_capacity(operands.len());
+    for operand in operands {
+        let val = emit_operand(ctx, operand, table, definitions, func_ids, module);
+        let part_ty = operand_type(operand, ctx);
+        let (_, resolved) = clif_types::unwrap_mutable(part_ty, table);
+
+        let string_ptr = match resolved {
+            Ty::String => {
+                // Already a string pointer — use directly.
+                val?
+            }
+            Ty::Int(_) => {
+                let v = val?;
+                let func_ref = module.declare_func_in_func(ctx.stubs.int_to_string, ctx.builder.func);
+                let call = ctx.builder.ins().call(func_ref, &[v]);
+                ctx.builder.inst_results(call)[0]
+            }
+            Ty::Float(_) => {
+                let v = val?;
+                let func_ref = module.declare_func_in_func(ctx.stubs.float_to_string, ctx.builder.func);
+                let call = ctx.builder.ins().call(func_ref, &[v]);
+                ctx.builder.inst_results(call)[0]
+            }
+            Ty::Bool => {
+                let v = val?;
+                let func_ref = module.declare_func_in_func(ctx.stubs.bool_to_string, ctx.builder.func);
+                let call = ctx.builder.ins().call(func_ref, &[v]);
+                ctx.builder.inst_results(call)[0]
+            }
+            Ty::Char => {
+                // Char → treat as Int for now (char code to string).
+                let v = val?;
+                // Extend i32 char to i64 for int_to_string.
+                let wide = ctx.builder.ins().sextend(types::I64, v);
+                let func_ref = module.declare_func_in_func(ctx.stubs.int_to_string, ctx.builder.func);
+                let call = ctx.builder.ins().call(func_ref, &[wide]);
+                ctx.builder.inst_results(call)[0]
+            }
+            _ => {
+                // Unsupported type — emit empty string as fallback.
+                let func_ref = module.declare_func_in_func(ctx.stubs.string_new, ctx.builder.func);
+                let call = ctx.builder.ins().call(func_ref, &[]);
+                ctx.builder.inst_results(call)[0]
+            }
+        };
+        string_vals.push(string_ptr);
+    }
+
+    // Chain concat calls: result = concat(parts[0], parts[1]), then
+    // result = concat(result, parts[2]), etc.
+    let concat_ref = module.declare_func_in_func(ctx.stubs.string_concat, ctx.builder.func);
+    let mut result = string_vals[0];
+    for part in &string_vals[1..] {
+        let call = ctx.builder.ins().call(concat_ref, &[result, *part]);
+        result = ctx.builder.inst_results(call)[0];
+    }
+
+    Some(result)
 }
 
 /// Rounds `offset` up to the next multiple of `align`.

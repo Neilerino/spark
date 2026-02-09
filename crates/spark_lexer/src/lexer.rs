@@ -1,10 +1,23 @@
 //! The main lexer implementation.
 
+use std::collections::VecDeque;
+
 use crate::cursor::Cursor;
 use crate::token::{Token, TokenKind, TokenValue};
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_intern::sym;
 use spark_span::{FileId, Span};
+
+/// The mode the lexer is currently in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LexerMode {
+    /// Normal tokenization.
+    Normal,
+    /// Inside a string literal, scanning text segments.
+    InString,
+    /// Inside an interpolated expression `{expr}`, tracking brace depth.
+    InInterpolation(u32),
+}
 
 /// The Spark lexer.
 ///
@@ -16,6 +29,15 @@ pub struct Lexer<'a> {
     cursor: Cursor<'a>,
     /// Collected diagnostics.
     diagnostics: Diagnostics,
+    /// Current lexer mode for string interpolation.
+    mode: LexerMode,
+    /// Stack of saved modes for nested string interpolation.
+    /// When a string literal appears inside an interpolation, we push the
+    /// current `InInterpolation` mode here and restore it when the inner
+    /// string finishes.
+    mode_stack: Vec<LexerMode>,
+    /// Buffered tokens from string interpolation scanning.
+    pending: VecDeque<Token>,
 }
 
 impl<'a> Lexer<'a> {
@@ -26,6 +48,9 @@ impl<'a> Lexer<'a> {
             file_id,
             cursor: Cursor::new(source),
             diagnostics: Diagnostics::new(),
+            mode: LexerMode::Normal,
+            mode_stack: Vec::new(),
+            pending: VecDeque::new(),
         }
     }
 
@@ -62,6 +87,20 @@ impl<'a> Lexer<'a> {
     /// Scans the next token.
     #[allow(clippy::too_many_lines)]
     pub fn next_token(&mut self) -> Token {
+        // Drain pending tokens from interpolation scanning.
+        if let Some(token) = self.pending.pop_front() {
+            return token;
+        }
+
+        // Handle string interpolation modes.
+        match self.mode.clone() {
+            LexerMode::InString => return self.scan_string_text(),
+            LexerMode::InInterpolation(depth) => {
+                return self.scan_interpolation_token(depth);
+            }
+            LexerMode::Normal => {}
+        }
+
         // Skip whitespace and comments
         self.skip_whitespace_and_comments();
 
@@ -268,8 +307,27 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Scans a string literal.
+    /// Scans a string literal, detecting interpolation.
+    ///
+    /// If the string contains no unescaped `{`, emits a single `StringLiteral`.
+    /// Otherwise, emits `StringStart` and switches to `InString` mode so that
+    /// subsequent `next_token()` calls produce `StringText`, `InterpStart`,
+    /// interpolated expression tokens, and finally `StringEnd`.
     fn scan_string(&mut self, start: u32) -> Token {
+        // Peek ahead to determine if this string contains interpolation.
+        // We do this by scanning a copy of the cursor.
+        if self.string_has_interpolation() {
+            // Interpolated string: emit StringStart and switch to InString mode.
+            // If we're currently in an interpolation, push that mode so we can
+            // restore it when the string ends.
+            if self.mode != LexerMode::Normal {
+                self.mode_stack.push(self.mode.clone());
+            }
+            self.mode = LexerMode::InString;
+            return Token::new(TokenKind::StringStart, self.span(start));
+        }
+
+        // Simple string: scan as before into a single StringLiteral.
         let mut value = String::new();
 
         loop {
@@ -300,6 +358,288 @@ impl<'a> Lexer<'a> {
             self.span(start),
             TokenValue::String(symbol),
         )
+    }
+
+    /// Checks whether the current string (cursor positioned after opening `"`)
+    /// contains any unescaped `{` before the closing `"`.
+    fn string_has_interpolation(&self) -> bool {
+        let mut chars = self.cursor.rest_chars();
+        loop {
+            match chars.next() {
+                None | Some('\n') => return false,
+                Some('"') => return false,
+                Some('\\') => {
+                    // Skip the escaped character
+                    chars.next();
+                }
+                Some('{') => return true,
+                Some(_) => {}
+            }
+        }
+    }
+
+    /// Scans a text segment inside an interpolated string (InString mode).
+    ///
+    /// Called when `self.mode == LexerMode::InString`. Scans text until
+    /// hitting `{` (start interpolation), `"` (end string), or EOF/newline (error).
+    fn scan_string_text(&mut self) -> Token {
+        let start = self.cursor.pos();
+        let mut value = String::new();
+
+        loop {
+            if self.cursor.is_eof() {
+                self.error("unterminated string literal", self.span(start));
+                self.mode = self.mode_stack.pop().unwrap_or(LexerMode::Normal);
+                break;
+            }
+
+            match self.cursor.peek() {
+                '"' => {
+                    // End of string. Emit text if any, then StringEnd.
+                    let restored_mode = self.mode_stack.pop()
+                        .unwrap_or(LexerMode::Normal);
+                    if !value.is_empty() {
+                        let symbol = sym(&value);
+                        let text_token = Token::with_value(
+                            TokenKind::StringText,
+                            self.span(start),
+                            TokenValue::String(symbol),
+                        );
+                        let end_start = self.cursor.pos();
+                        self.cursor.bump(); // consume "
+                        self.pending.push_back(Token::new(
+                            TokenKind::StringEnd,
+                            self.span(end_start),
+                        ));
+                        self.mode = restored_mode;
+                        return text_token;
+                    }
+                    // No text before closing quote - just emit StringEnd.
+                    self.cursor.bump(); // consume "
+                    self.mode = restored_mode;
+                    return Token::new(TokenKind::StringEnd, self.span(start));
+                }
+                '{' => {
+                    // Start of interpolation. Emit text if any, then InterpStart.
+                    if !value.is_empty() {
+                        let symbol = sym(&value);
+                        let text_token = Token::with_value(
+                            TokenKind::StringText,
+                            self.span(start),
+                            TokenValue::String(symbol),
+                        );
+                        let interp_start = self.cursor.pos();
+                        self.cursor.bump(); // consume {
+                        self.pending.push_back(Token::new(
+                            TokenKind::InterpStart,
+                            self.span(interp_start),
+                        ));
+                        self.mode = LexerMode::InInterpolation(0);
+                        return text_token;
+                    }
+                    // No text before { - just emit InterpStart.
+                    self.cursor.bump(); // consume {
+                    self.mode = LexerMode::InInterpolation(0);
+                    return Token::new(TokenKind::InterpStart, self.span(start));
+                }
+                '\\' => {
+                    self.cursor.bump(); // consume backslash
+                    if let Some(escaped) = self.scan_escape() {
+                        value.push(escaped);
+                    }
+                }
+                '\n' => {
+                    self.error("unterminated string literal", self.span(start));
+                    self.mode = self.mode_stack.pop().unwrap_or(LexerMode::Normal);
+                    break;
+                }
+                _ => {
+                    let c = self.cursor.bump();
+                    value.push(c);
+                }
+            }
+        }
+
+        // Error case: return what we have as text, or an error token.
+        if !value.is_empty() {
+            let symbol = sym(&value);
+            Token::with_value(
+                TokenKind::StringText,
+                self.span(start),
+                TokenValue::String(symbol),
+            )
+        } else {
+            Token::new(TokenKind::Error, self.span(start))
+        }
+    }
+
+    /// Scans a token while inside an interpolation `{expr}`.
+    ///
+    /// Tracks brace depth so nested `{...}` inside the expression don't
+    /// prematurely close the interpolation. When the matching `}` is found
+    /// at depth 0, switches back to `InString` mode.
+    fn scan_interpolation_token(&mut self, depth: u32) -> Token {
+        // Skip whitespace and comments inside interpolation.
+        self.skip_whitespace_and_comments();
+
+        let start = self.cursor.pos();
+
+        if self.cursor.is_eof() {
+            self.error("unterminated string interpolation", self.span(start));
+            self.mode = LexerMode::Normal;
+            return Token::new(TokenKind::Eof, self.span(start));
+        }
+
+        let c = self.cursor.bump();
+
+        match c {
+            '}' if depth == 0 => {
+                // Matching close brace: end interpolation, switch to InString.
+                self.mode = LexerMode::InString;
+                Token::new(TokenKind::RBrace, self.span(start))
+            }
+            '}' => {
+                // Nested close brace: decrement depth.
+                self.mode = LexerMode::InInterpolation(depth - 1);
+                Token::new(TokenKind::RBrace, self.span(start))
+            }
+            '{' => {
+                // Nested open brace: increment depth.
+                self.mode = LexerMode::InInterpolation(depth + 1);
+                Token::new(TokenKind::LBrace, self.span(start))
+            }
+            '"' => {
+                // String literal inside interpolation.
+                // scan_string() will push our current mode on the stack if
+                // it detects interpolation, so nesting is handled correctly.
+                self.scan_string(start)
+            }
+            // Everything else: delegate to the normal token logic.
+            _ => self.scan_normal_token(start, c, depth),
+        }
+    }
+
+    /// Scans a non-special token inside an interpolation expression.
+    /// This mirrors the logic in `next_token()` for all non-brace/non-string tokens.
+    #[allow(clippy::too_many_lines)]
+    fn scan_normal_token(&mut self, start: u32, c: char, depth: u32) -> Token {
+        // Restore mode (it was consumed by the caller).
+        self.mode = LexerMode::InInterpolation(depth);
+
+        match c {
+            '(' => Token::new(TokenKind::LParen, self.span(start)),
+            ')' => Token::new(TokenKind::RParen, self.span(start)),
+            '[' => Token::new(TokenKind::LBracket, self.span(start)),
+            ']' => Token::new(TokenKind::RBracket, self.span(start)),
+            ',' => Token::new(TokenKind::Comma, self.span(start)),
+            ';' => Token::new(TokenKind::Semicolon, self.span(start)),
+            '~' => Token::new(TokenKind::Tilde, self.span(start)),
+            '@' => Token::new(TokenKind::At, self.span(start)),
+            ':' => {
+                if self.cursor.eat(':') {
+                    Token::new(TokenKind::ColonColon, self.span(start))
+                } else {
+                    Token::new(TokenKind::Colon, self.span(start))
+                }
+            }
+            '.' => {
+                if self.cursor.eat('.') {
+                    if self.cursor.eat('=') {
+                        Token::new(TokenKind::DotDotEq, self.span(start))
+                    } else if self.cursor.eat('.') {
+                        Token::new(TokenKind::Ellipsis, self.span(start))
+                    } else {
+                        Token::new(TokenKind::DotDot, self.span(start))
+                    }
+                } else {
+                    Token::new(TokenKind::Dot, self.span(start))
+                }
+            }
+            '-' => {
+                if self.cursor.eat('>') {
+                    Token::new(TokenKind::Arrow, self.span(start))
+                } else if self.cursor.eat('=') {
+                    Token::new(TokenKind::MinusEq, self.span(start))
+                } else {
+                    Token::new(TokenKind::Minus, self.span(start))
+                }
+            }
+            '+' => {
+                if self.cursor.eat('=') {
+                    Token::new(TokenKind::PlusEq, self.span(start))
+                } else {
+                    Token::new(TokenKind::Plus, self.span(start))
+                }
+            }
+            '*' => {
+                if self.cursor.eat('=') {
+                    Token::new(TokenKind::StarEq, self.span(start))
+                } else {
+                    Token::new(TokenKind::Star, self.span(start))
+                }
+            }
+            '/' => {
+                if self.cursor.eat('=') {
+                    Token::new(TokenKind::SlashEq, self.span(start))
+                } else {
+                    Token::new(TokenKind::Slash, self.span(start))
+                }
+            }
+            '%' => Token::new(TokenKind::Percent, self.span(start)),
+            '=' => {
+                if self.cursor.eat('=') {
+                    Token::new(TokenKind::EqEq, self.span(start))
+                } else if self.cursor.eat('>') {
+                    Token::new(TokenKind::FatArrow, self.span(start))
+                } else {
+                    Token::new(TokenKind::Eq, self.span(start))
+                }
+            }
+            '!' => {
+                if self.cursor.eat('=') {
+                    Token::new(TokenKind::BangEq, self.span(start))
+                } else {
+                    Token::new(TokenKind::Bang, self.span(start))
+                }
+            }
+            '<' => {
+                if self.cursor.eat('=') {
+                    Token::new(TokenKind::LtEq, self.span(start))
+                } else if self.cursor.eat('<') {
+                    Token::new(TokenKind::LtLt, self.span(start))
+                } else {
+                    Token::new(TokenKind::Lt, self.span(start))
+                }
+            }
+            '>' => {
+                if self.cursor.eat('=') {
+                    Token::new(TokenKind::GtEq, self.span(start))
+                } else if self.cursor.eat('>') {
+                    Token::new(TokenKind::GtGt, self.span(start))
+                } else {
+                    Token::new(TokenKind::Gt, self.span(start))
+                }
+            }
+            '?' => {
+                if self.cursor.eat('?') {
+                    Token::new(TokenKind::QuestionQuestion, self.span(start))
+                } else if self.cursor.eat('.') {
+                    Token::new(TokenKind::QuestionDot, self.span(start))
+                } else {
+                    Token::new(TokenKind::Question, self.span(start))
+                }
+            }
+            '&' => Token::new(TokenKind::Ampersand, self.span(start)),
+            '|' => Token::new(TokenKind::Pipe, self.span(start)),
+            '^' => Token::new(TokenKind::Caret, self.span(start)),
+            '\'' => self.scan_char(start),
+            '0'..='9' => self.scan_number(start, c),
+            c if is_ident_start(c) => self.scan_identifier(start),
+            _ => {
+                self.error(format!("unexpected character `{c}`"), self.span(start));
+                Token::new(TokenKind::Error, self.span(start))
+            }
+        }
     }
 
     /// Scans an escape sequence, returning the escaped character.
@@ -764,5 +1104,200 @@ mod tests {
 
         assert!(tokens.iter().any(|t| t.kind == TokenKind::Error));
         assert!(lexer.diagnostics().has_errors());
+    }
+
+    // ====================================================================
+    // String Interpolation Tests
+    // ====================================================================
+
+    #[test]
+    fn simple_string_unchanged() {
+        // Strings without interpolation are still single StringLiteral tokens.
+        let tokens = lex(r#""hello""#);
+        assert_eq!(tokens[0].kind, TokenKind::StringLiteral);
+        let val = tokens[0].value.as_ref().unwrap().as_symbol().unwrap();
+        assert_eq!(val.as_str(), "hello");
+    }
+
+    #[test]
+    fn empty_string_unchanged() {
+        let tokens = lex(r#""""#);
+        assert_eq!(tokens[0].kind, TokenKind::StringLiteral);
+        let val = tokens[0].value.as_ref().unwrap().as_symbol().unwrap();
+        assert_eq!(val.as_str(), "");
+    }
+
+    #[test]
+    fn escaped_brace_no_interpolation() {
+        // \{ should produce a simple string literal with a literal {
+        let tokens = lex(r#""\{brace}""#);
+        assert_eq!(tokens[0].kind, TokenKind::StringLiteral);
+        let val = tokens[0].value.as_ref().unwrap().as_symbol().unwrap();
+        assert_eq!(val.as_str(), "{brace}");
+    }
+
+    #[test]
+    fn interpolated_string_simple() {
+        // "hello {name}" -> StringStart, StringText("hello "), InterpStart, Ident(name), RBrace, StringEnd
+        let kinds = lex_kinds(r#""hello {name}""#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::StringStart,
+                TokenKind::StringText,
+                TokenKind::InterpStart,
+                TokenKind::Identifier,
+                TokenKind::RBrace,
+                TokenKind::StringEnd,
+                TokenKind::Eof,
+            ]
+        );
+
+        // Check the text value.
+        let tokens = lex(r#""hello {name}""#);
+        let text_val = tokens[1].value.as_ref().unwrap().as_symbol().unwrap();
+        assert_eq!(text_val.as_str(), "hello ");
+    }
+
+    #[test]
+    fn interpolated_string_multiple() {
+        // "a {x} b {y}" -> StringStart, Text("a "), InterpStart, Ident(x), RBrace,
+        //                   Text(" b "), InterpStart, Ident(y), RBrace, StringEnd
+        let kinds = lex_kinds(r#""a {x} b {y}""#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::StringStart,
+                TokenKind::StringText,
+                TokenKind::InterpStart,
+                TokenKind::Identifier,
+                TokenKind::RBrace,
+                TokenKind::StringText,
+                TokenKind::InterpStart,
+                TokenKind::Identifier,
+                TokenKind::RBrace,
+                TokenKind::StringEnd,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn interpolated_string_expr() {
+        // "{x + 1}" -> StringStart, InterpStart, Ident(x), Plus, IntLiteral(1), RBrace, StringEnd
+        let kinds = lex_kinds(r#""{x + 1}""#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::StringStart,
+                TokenKind::InterpStart,
+                TokenKind::Identifier,
+                TokenKind::Plus,
+                TokenKind::IntLiteral,
+                TokenKind::RBrace,
+                TokenKind::StringEnd,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn interpolated_string_trailing_text() {
+        // "{x}!" -> StringStart, InterpStart, Ident(x), RBrace, StringText("!"), StringEnd
+        let kinds = lex_kinds(r#""{x}!""#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::StringStart,
+                TokenKind::InterpStart,
+                TokenKind::Identifier,
+                TokenKind::RBrace,
+                TokenKind::StringText,
+                TokenKind::StringEnd,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn interpolated_string_nested_braces() {
+        // "result: {foo({x})}" -> nested call with braces should work
+        // The { inside foo( is LBrace depth tracking
+        // Actually foo({x}) has ( ) not { }, so let's test Map literal:
+        // "{a}" where a is an ident
+        // For actual nested braces, we need block expressions: "{ {1} }"
+        let kinds = lex_kinds(r#""val: { {1} }""#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::StringStart,
+                TokenKind::StringText,   // "val: "
+                TokenKind::InterpStart,  // {
+                TokenKind::LBrace,       // { (inner, depth goes to 1)
+                TokenKind::IntLiteral,   // 1
+                TokenKind::RBrace,       // } (inner, depth back to 0)
+                TokenKind::RBrace,       // } (closes interpolation)
+                TokenKind::StringEnd,    // "
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn interpolated_string_adjacent_interps() {
+        // "{x}{y}" -> StringStart, InterpStart, Ident(x), RBrace, InterpStart, Ident(y), RBrace, StringEnd
+        let kinds = lex_kinds(r#""{x}{y}""#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::StringStart,
+                TokenKind::InterpStart,
+                TokenKind::Identifier,
+                TokenKind::RBrace,
+                TokenKind::InterpStart,
+                TokenKind::Identifier,
+                TokenKind::RBrace,
+                TokenKind::StringEnd,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn interpolated_string_with_string_inside() {
+        // Simple string inside interpolation: "hello {"world"}"
+        let kinds = lex_kinds(r#""hello {"world"}""#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::StringStart,
+                TokenKind::StringText,    // "hello "
+                TokenKind::InterpStart,   // {
+                TokenKind::StringLiteral, // "world" (simple string, no interp)
+                TokenKind::RBrace,        // }
+                TokenKind::StringEnd,     // "
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn interpolated_string_after_normal_tokens() {
+        // Tokens before and after interpolated string.
+        let kinds = lex_kinds(r#"x = "val: {y}""#);
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Identifier,    // x
+                TokenKind::Eq,            // =
+                TokenKind::StringStart,   // "
+                TokenKind::StringText,    // "val: "
+                TokenKind::InterpStart,   // {
+                TokenKind::Identifier,    // y
+                TokenKind::RBrace,        // }
+                TokenKind::StringEnd,     // "
+                TokenKind::Eof,
+            ]
+        );
     }
 }
