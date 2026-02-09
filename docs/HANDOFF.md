@@ -15,17 +15,17 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 
 | Crate               | Purpose                                                        | Tests | Status   |
 | ------------------- | -------------------------------------------------------------- | ----- | -------- |
-| `spark_span`        | Source locations (`FileId`, `Span`, `SourceMap`)               | 13    | Complete |
-| `spark_intern`      | String interning (`Symbol`, `Interner`, pre-interned keywords) | 14    | Complete |
-| `spark_diagnostics` | Error reporting with ariadne rendering                         | 12    | Complete |
-| `spark_lexer`       | Tokenization (keywords, literals, operators, comments)         | 33    | Complete |
+| `spark_span`        | Source locations (`FileId`, `Span`, `SourceMap`)               | 16    | Complete |
+| `spark_intern`      | String interning (`Symbol`, `Interner`, pre-interned keywords) | 20    | Complete |
+| `spark_diagnostics` | Error reporting with ariadne rendering                         | 14    | Complete |
+| `spark_lexer`       | Tokenization (keywords, literals, operators, comments)         | 34    | Complete |
 | `spark_ast`         | AST node definitions for all language constructs               | 53    | Complete |
-| `spark_parser`      | Recursive descent parser with Pratt expression parsing         | 125   | Complete |
+| `spark_parser`      | Recursive descent parser with Pratt expression parsing         | 127   | Complete |
 | `spark_modules`     | Module resolution, dependency graph, cycle detection           | 38    | Complete |
 | `spark_resolve`     | Name resolution: scoping, DefIds, imports                      | 56    | Complete |
-| `spark_types`       | Type checking: two-pass signature collection + body checking   | 105   | Complete |
+| `spark_types`       | Type checking: two-pass signature collection + body checking   | 127   | Complete |
 | `spark_hir`         | HIR lowering: desugar typed AST into core IR                   | 28    | Complete |
-| `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 37    | Complete |
+| `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 41    | Complete |
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
 | `spark_drop`        | Type queries for RC/drop decisions (`needs_rc`, etc.)          | 11    | Complete |
@@ -33,7 +33,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_opt`         | MIR optimization passes (5 passes, 2 iterations)               | 75    | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
-**Total: 705+ tests passing across workspace.**
+**Total: 750 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
@@ -93,8 +93,6 @@ Complete implementation of `??`, `?.`, `!`, and `to` expression desugaring for u
 String literals work end-to-end. `print("hello world")` produces output.
 
 ## What's Next
-
-### Suggested Next Steps (in rough priority order)
 
 ### Suggested Next Steps (in rough priority order)
 
@@ -243,7 +241,7 @@ fn main(): Int {
 
 ```bash
 cargo build                      # Build all
-cargo test                       # Test all (705 tests)
+cargo test                       # Test all (750 tests)
 cargo clippy                     # Lint all
 cargo test -p spark_codegen      # Test code generator
 cargo doc --open                 # View documentation

@@ -11,7 +11,7 @@ Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR �
   ✅       ✅      ✅       ✅        ✅        ✅     ✅    ✅      ✅      ✅      ✅       ✅
 ```
 
-**What works**: 705+ tests pass (including 11 end-to-end tests). Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Collection methods (`.len()`, `.append()`, `.contains()`, `.remove()`) work for List/Map/Set/String with COW enforcement on mutating operations. Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. Union type handling complete: `??` coalesce, `?.` optional chain, `!` propagation, and `to` type narrowing all desugar to match expressions with proper bindings. `is` type tests work at runtime for enums, unions, and optionals. Match exhaustiveness checking catches missing patterns at compile time. Lifetime elision infers output lifetimes from input references. E2E test framework in `spark_driver/tests/e2e.rs`. LSP with semantic tokens in `tools/spark-lsp`. Install script (`install.sh`) provided.
+**What works**: 750 tests pass (including 11 end-to-end tests). Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Collection methods (`.len()`, `.append()`, `.contains()`, `.remove()`) work for List/Map/Set/String with COW enforcement on mutating operations. Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. Union type handling complete: `??` coalesce, `?.` optional chain, `!` propagation, and `to` type narrowing all desugar to match expressions with proper bindings. `is` type tests work at runtime for enums, unions, and optionals. Match exhaustiveness checking catches missing patterns at compile time. Lifetime elision infers output lifetimes from input references. E2E test framework in `spark_driver/tests/e2e.rs`. LSP with semantic tokens in `tools/spark-lsp`. Install script (`install.sh`) provided.
 
 ```spark
 fn main(): Int {
@@ -164,7 +164,7 @@ Needs:
 
 `OptLevel::None` / `OptLevel::Basic` controls whether passes run. CLI flag: `--no-opt`.
 
-75 unit tests + full-pipeline integration tests. Zero regressions across 641 workspace tests.
+75 unit tests + full-pipeline integration tests. Zero regressions across workspace tests.
 
 ### 4.2 Reborrowing and Two-Phase Borrows
 
@@ -281,16 +281,16 @@ These are deliberate design decisions per the language spec — Spark requires e
 Remaining items grouped into parallelizable streams. Streams are independent unless a dependency is noted.
 
 ### ~~Stream A: Union Type Handling~~ — Complete
-> ~~`!` propagation → `to` type narrowing → `??`/`?.` desugaring~~
 
-All items complete. Infrastructure added: `DefinitionTable::next_synthetic_id()` for fresh DefIds during desugaring, `spark_types::union` module (`strip_null`, `split_union`, `is_nullable`, `union_members`), `HirPattern::TypeNarrow` for union member matching, `check_expr_expected` for binding-type-driven union splitting, `&mut DefinitionTable` threading through HIR lowering.
+All items complete (`??`, `?.`, `!`, `to`). Infrastructure: `spark_types::union` module, `HirPattern::TypeNarrow`, synthetic DefId allocation.
 
-| Item | Status |
-|------|--------|
-| Union type analysis infrastructure | Done — `spark_types::union` |
-| `!` propagation (3.3) | Done |
-| `to` type narrowing (3.6) | Done |
-| `??` / `?.` desugaring (2.1) | Done |
+### ~~Stream D: Safety & Analysis~~ — Complete
+
+All items complete (`is` type test, match exhaustiveness, lifetime elision). Also fixed resolver enum variant path resolution.
+
+### ~~Stream E: Optimization~~ — Mostly Complete
+
+`spark_opt` crate complete (5 passes, 2 iterations, 75 tests). Reborrowing/two-phase borrows (4.2) still TODO — low priority ergonomics.
 
 ### Stream B: Type System Foundations
 > Method resolution → Generics
@@ -319,27 +319,6 @@ The largest dependency chain. Everything here requires function-as-value semanti
 
 **Conflicts with Stream B**: Both modify how functions/methods are resolved and called. `via` specifically needs method resolution to look up named operations. LSP `ScopeMap` (from LSP team requirements) should be built alongside lambda scope handling in `spark_resolve`.
 
-### ~~Stream D: Safety & Analysis~~ — Complete
-
-All three items implemented:
-- **`is` type test (2.2)**: MIR lowering with discriminant checks for enums, unions, optionals; compile-time constants for primitives.
-- **Match exhaustiveness checking (3.1)**: Coverage-based analysis in `spark_types/src/exhaustive.rs` with enum variant, union member, optional, and boolean support. Unreachable arm warnings.
-- **Lifetime elision rules (3.2)**: Rust-like elision in `spark_types/src/lower.rs` integrated into signature collection.
-
-Also fixed: resolver now resolves `Enum.Variant` paths to individual variant `DefId`s (was resolving to the enum's `DefId`), enabling proper enum exhaustiveness checking end-to-end.
-
-### Stream E: Optimization
-> Independent optimization crate
-
-Completely independent. Inserts between `spark_borrow` and `spark_codegen`.
-
-| Item | Effort | Dependencies |
-|------|--------|-------------|
-| ~~`spark_opt` crate (4.1)~~ | ~~High~~ | ~~None~~ | **Done** |
-| Reborrowing / two-phase borrows (4.2) | Low | None |
-
-**Conflicts**: None. `spark_opt` operates on MIR which is stable. Reborrowing is isolated to `spark_borrow`.
-
 ### Stream F: Syntax & Convenience
 
 | Item | Effort | Dependencies |
@@ -363,8 +342,7 @@ Completely independent. Inserts between `spark_borrow` and `spark_codegen`.
 
 ```
 Can run simultaneously:
-  Stream A (Union types)  ─── no conflicts ───  Stream E (Optimization)
-  Stream A (Union types)  ─── no conflicts ───  Stream F (String interpolation)
+  Stream B (Type system)  ─── no conflicts ───  Stream F (String interpolation)
 
 Must coordinate:
   Stream B (Type system)  ─── shared code ────  Stream C (Lambdas)
@@ -374,21 +352,16 @@ Sequential dependencies:
   Stream B (Methods)      ─── soft blocks ────  Stream C (`via` pipeline)
 
 Completed:
-  Stream D (Safety)       ─── DONE ────────────  `is`, exhaustiveness, lifetime elision
+  Stream A (Union types)  ─── DONE
+  Stream D (Safety)       ─── DONE
+  Stream E (Optimization) ─── DONE (reborrowing deferred)
 ```
-
-**Recommended parallel tracks**:
-1. **Track 1**: Stream A (union types) — low risk, high impact
-2. **Track 2**: Stream B (type system foundations) — prepare for lambdas
-3. **Track 3**: Stream E + Stream F (optimization + string interpolation) — fully independent
-
-Once Track 2 is stable, start Stream C (lambdas), then Stream G (async).
 
 ---
 
 ## Recommended Implementation Order
 
-The streams above can be parallelized, but for the **critical path** (features that unlock the most downstream work), the recommended sequential order is:
+The **critical path** (features that unlock the most downstream work):
 
 1. **Method resolution & interface bindings (Stream B, 3.4)** — Foundation for user-defined types. Many features need to look up methods by receiver type. Should come before lambdas because lambda support will need method-like call dispatch.
 
@@ -400,4 +373,4 @@ The streams above can be parallelized, but for the **critical path** (features t
 
 5. **Async/await/spawn (Stream G, 5.2)** — Requires stable closures for `spawn`. State machine transformation is the largest remaining infrastructure piece.
 
-Streams A (union types), E (optimization), and F (string interpolation) can run **in parallel with any step above** since they touch independent parts of the codebase. Stream D (safety analysis) is complete.
+Stream F (string interpolation) can run **in parallel with any step above** since it touches only the lexer/parser.
