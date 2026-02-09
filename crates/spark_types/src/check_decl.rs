@@ -49,6 +49,10 @@ fn collect_function(
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
+    // Register generic parameter types before lowering param/return types,
+    // so that references to `T` in the signature resolve to `Ty::Param`.
+    let generic_param_def_ids = collect_generic_params(&func.generics, table, resolutions);
+
     let param_types: Vec<TypeId> = func
         .params
         .iter()
@@ -71,6 +75,11 @@ fn collect_function(
     if let Some(def_id) = find_def_by_name_and_kind(func.name.name, &DefinitionKind::Function, definitions) {
         table.set_def_type(def_id, fn_type);
 
+        // Store generic param list for this function
+        if !generic_param_def_ids.is_empty() {
+            table.set_generic_params(def_id, generic_param_def_ids);
+        }
+
         // Also register parameter types
         for (i, param) in func.params.iter().enumerate() {
             if let Some(param_def) = find_param_def(param.name.name, def_id, definitions) {
@@ -90,8 +99,16 @@ fn collect_struct(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     if let Some(def_id) = find_def_by_name_and_kind(struct_def.name.name, &DefinitionKind::Struct, definitions) {
+        // Register generic parameter types before lowering field types.
+        let generic_param_def_ids = collect_generic_params(&struct_def.generics, table, resolutions);
+
         let struct_type = table.intern(Ty::Struct(def_id));
         table.set_def_type(def_id, struct_type);
+
+        // Store generic param list for this struct
+        if !generic_param_def_ids.is_empty() {
+            table.set_generic_params(def_id, generic_param_def_ids);
+        }
 
         // Collect field types
         let mut fields = Vec::with_capacity(struct_def.fields.len());
@@ -118,8 +135,16 @@ fn collect_enum(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     if let Some(def_id) = find_def_by_name_and_kind(enum_def.name.name, &DefinitionKind::Enum, definitions) {
+        // Register generic parameter types before lowering variant field types.
+        let generic_param_def_ids = collect_generic_params(&enum_def.generics, table, resolutions);
+
         let enum_type = table.intern(Ty::Enum(def_id));
         table.set_def_type(def_id, enum_type);
+
+        // Store generic param list for this enum
+        if !generic_param_def_ids.is_empty() {
+            table.set_generic_params(def_id, generic_param_def_ids);
+        }
 
         let mut variants = Vec::with_capacity(enum_def.variants.len());
 
@@ -362,6 +387,33 @@ fn validate_interface_methods(
     // have both the interface AST and the binding AST available (in checker.rs).
     // For now, this is a placeholder that can be enhanced later.
     let _ = (iface_name, iface_span, binding_methods, diagnostics);
+}
+
+// === Generic parameter collection ===
+
+/// Collects generic parameter `DefId`s from the AST and registers their
+/// types as `Ty::Param(def_id)` in the type table.
+///
+/// Returns the ordered list of generic param `DefId`s.
+fn collect_generic_params(
+    generics: &[spark_ast::GenericParam],
+    table: &mut TypeTable,
+    resolutions: Option<&ResolutionMap>,
+) -> Vec<DefId> {
+    if generics.is_empty() {
+        return Vec::new();
+    }
+
+    let mut param_def_ids = Vec::with_capacity(generics.len());
+    for generic in generics {
+        if let Some(def_id) = resolutions.and_then(|res| res.get_binding(generic.name.span)) {
+            // Register the param type: T → Ty::Param(def_id)
+            let param_ty = table.intern(Ty::Param(def_id));
+            table.set_def_type(def_id, param_ty);
+            param_def_ids.push(def_id);
+        }
+    }
+    param_def_ids
 }
 
 // === Helper functions for finding DefIds ===

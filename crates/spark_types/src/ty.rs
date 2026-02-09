@@ -196,9 +196,16 @@ pub enum Ty {
         is_async: bool,
     },
 
-    // === Generics (placeholder) ===
+    // === Generics ===
     /// An unresolved generic type parameter.
     Param(DefId),
+    /// An instantiated generic type: `Box[Int]`, `Pair[String, Float]`.
+    Applied {
+        /// The base definition (struct or enum `DefId`).
+        base: DefId,
+        /// Concrete type arguments.
+        args: Vec<TypeId>,
+    },
 
     // === Error recovery ===
     /// An error type, compatible with all other types.

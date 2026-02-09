@@ -133,7 +133,9 @@ impl LayoutCache {
             | Ty::Ref { .. }
             | Ty::Function { .. }
             // Generic parameter — treat as pointer-sized
-            | Ty::Param(_) => TypeLayout {
+            | Ty::Param(_)
+            // Instantiated generic — treat as struct (aggregate → pointer-sized)
+            | Ty::Applied { .. } => TypeLayout {
                 size: self.ptr_size,
                 align: self.ptr_size,
             },

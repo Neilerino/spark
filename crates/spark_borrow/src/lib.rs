@@ -145,6 +145,7 @@ fn type_involves_ref(type_id: spark_types::TypeId, table: &TypeTable) -> bool {
             params.iter().any(|p| type_involves_ref(*p, table))
                 || type_involves_ref(*ret, table)
         }
+        Ty::Applied { args, .. } => args.iter().any(|a| type_involves_ref(*a, table)),
         _ => false,
     }
 }

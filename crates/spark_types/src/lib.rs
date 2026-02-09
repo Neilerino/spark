@@ -60,6 +60,7 @@ pub mod checker;
 pub mod exhaustive;
 pub mod intern;
 pub mod lower;
+pub mod substitute;
 pub mod table;
 pub mod ty;
 pub mod union;
@@ -640,6 +641,140 @@ mod tests {
              Foo binds IGetX {\n\
                  fn getX(self: Foo): Int { return \"wrong\" }\n\
              }",
+        );
+        assert!(output.diagnostics.has_errors());
+    }
+
+    // ── Generic types ────────────────────────────────────────────
+
+    #[test]
+    fn generic_struct_field_access() {
+        let output = check_source(
+            "struct Box[T] { value: T }\n\
+             fn get(b: Box[Int]): Int { return b.value }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn generic_struct_init_inferred() {
+        let output = check_source(
+            "struct Box[T] { value: T }\n\
+             fn make(): Box[Int] { return Box { value: 42 } }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn generic_struct_init_string() {
+        let output = check_source(
+            "struct Box[T] { value: T }\n\
+             fn make(): Box[String] { return Box { value: \"hello\" } }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn generic_struct_two_params() {
+        let output = check_source(
+            "struct Pair[A, B] { first: A, second: B }\n\
+             fn make(): Pair[Int, String] { return Pair { first: 1, second: \"hello\" } }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn generic_struct_nested() {
+        let output = check_source(
+            "struct Box[T] { value: T }\n\
+             fn make(): Box[List[Int]] { return Box { value: [1, 2, 3] } }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn generic_struct_missing_type_args() {
+        let output = check_source(
+            "struct Box[T] { value: T }\n\
+             fn get(b: Box): Int { return 0 }",
+        );
+        assert!(output.diagnostics.has_errors());
+        let msgs: Vec<_> = output.diagnostics.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("missing type arguments")),
+            "Expected 'missing type arguments' error, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn generic_struct_wrong_arity() {
+        let output = check_source(
+            "struct Box[T] { value: T }\n\
+             fn get(b: Box[Int, String]): Int { return 0 }",
+        );
+        assert!(output.diagnostics.has_errors());
+        let msgs: Vec<_> = output.diagnostics.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("type argument")),
+            "Expected type argument arity error, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn generic_function_inference() {
+        let output = check_source(
+            "fn identity[T](x: T): T { return x }\n\
+             fn main(): Int { return identity(42) }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn generic_function_inference_string() {
+        let output = check_source(
+            "fn identity[T](x: T): T { return x }\n\
+             fn main(): String { return identity(\"hello\") }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn generic_function_two_params() {
+        let output = check_source(
+            "fn make_pair[A, B](a: A, b: B): A { return a }\n\
+             fn main(): Int { return make_pair(42, \"hello\") }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn generic_type_compatibility() {
+        // Box[Int] and Box[String] should not be compatible
+        let output = check_source(
+            "struct Box[T] { value: T }\n\
+             fn take_int_box(b: Box[Int]): Void { }\n\
+             fn main(): Void { take_int_box(Box { value: \"wrong\" }) }",
+        );
+        // The struct init infers Box[String], which is incompatible with Box[Int]
+        assert!(output.diagnostics.has_errors());
+    }
+
+    #[test]
+    fn generic_struct_field_access_substituted() {
+        // Accessing a field on Box[String] should return String, not T
+        let output = check_source(
+            "struct Box[T] { value: T }\n\
+             fn get(b: Box[String]): String { return b.value }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn generic_struct_field_type_mismatch() {
+        // Accessing a field on Box[Int] should return Int, not String
+        let output = check_source(
+            "struct Box[T] { value: T }\n\
+             fn get(b: Box[Int]): String { return b.value }",
         );
         assert!(output.diagnostics.has_errors());
     }

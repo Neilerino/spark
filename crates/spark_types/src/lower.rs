@@ -192,18 +192,63 @@ fn lower_named_def(
     match &info.kind {
         DefinitionKind::Struct => {
             if !type_args.is_empty() {
-                // Generic instantiation deferred — just use the base struct type
-                let _ = type_args.iter().map(|t| {
-                    lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics)
-                }).collect::<Vec<_>>();
+                let arg_types: Vec<TypeId> = type_args.iter()
+                    .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
+                    .collect();
+                // Validate arity against registered generic params
+                if let Some(params) = table.get_generic_params(def_id) {
+                    if arg_types.len() != params.len() {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "expected {} type argument{}, found {}",
+                                params.len(),
+                                if params.len() == 1 { "" } else { "s" },
+                                arg_types.len()
+                            ))
+                            .with_label(Label::primary(type_expr.span, "wrong number of type arguments")),
+                        );
+                        return TypeId::ERROR;
+                    }
+                }
+                return table.intern(Ty::Applied { base: def_id, args: arg_types });
+            }
+            // Check if this type requires type args
+            if table.get_generic_params(def_id).is_some_and(|p| !p.is_empty()) {
+                diagnostics.push(
+                    Diagnostic::error(format!("missing type arguments for generic type `{}`", info.name))
+                        .with_label(Label::primary(type_expr.span, "requires type arguments")),
+                );
+                return TypeId::ERROR;
             }
             table.intern(Ty::Struct(def_id))
         }
         DefinitionKind::Enum => {
             if !type_args.is_empty() {
-                let _ = type_args.iter().map(|t| {
-                    lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics)
-                }).collect::<Vec<_>>();
+                let arg_types: Vec<TypeId> = type_args.iter()
+                    .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
+                    .collect();
+                if let Some(params) = table.get_generic_params(def_id) {
+                    if arg_types.len() != params.len() {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "expected {} type argument{}, found {}",
+                                params.len(),
+                                if params.len() == 1 { "" } else { "s" },
+                                arg_types.len()
+                            ))
+                            .with_label(Label::primary(type_expr.span, "wrong number of type arguments")),
+                        );
+                        return TypeId::ERROR;
+                    }
+                }
+                return table.intern(Ty::Applied { base: def_id, args: arg_types });
+            }
+            if table.get_generic_params(def_id).is_some_and(|p| !p.is_empty()) {
+                diagnostics.push(
+                    Diagnostic::error(format!("missing type arguments for generic type `{}`", info.name))
+                        .with_label(Label::primary(type_expr.span, "requires type arguments")),
+                );
+                return TypeId::ERROR;
             }
             table.intern(Ty::Enum(def_id))
         }
@@ -366,6 +411,7 @@ fn has_anonymous_ref(ty: TypeId, table: &TypeTable) -> bool {
         Ty::Ref { lifetime, .. } => lifetime.is_anonymous(),
         Ty::Optional(inner) | Ty::Mutable(inner) => has_anonymous_ref(inner, table),
         Ty::Tuple(elems) => elems.iter().any(|e| has_anonymous_ref(*e, table)),
+        Ty::Applied { args, .. } => args.iter().any(|a| has_anonymous_ref(*a, table)),
         _ => false,
     }
 }

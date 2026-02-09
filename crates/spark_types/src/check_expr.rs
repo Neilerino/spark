@@ -605,7 +605,7 @@ fn check_unary_op(
     }
 }
 
-/// Checks a function call.
+/// Checks a function call, including generic function inference.
 #[allow(clippy::too_many_arguments)]
 fn check_call(
     callee_ty: TypeId,
@@ -630,6 +630,61 @@ fn check_call(
     let callee_resolved = table.resolve(callee_ty).clone();
     match callee_resolved {
         Ty::Function { params, ret, .. } => {
+            // Check if this is a generic function by finding its DefId.
+            let callee_def_id = find_callee_def_id(callee_span, resolutions);
+            let generic_params = callee_def_id
+                .and_then(|did| table.get_generic_params(did).map(<[_]>::to_vec));
+
+            if let Some(gparams) = generic_params.filter(|p| !p.is_empty()) {
+                // Generic function — type-check args first, then infer type params.
+                let arg_types: Vec<TypeId> = args.iter()
+                    .map(|a| check_expr(&a.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret))
+                    .collect();
+
+                if args.len() != params.len() {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "expected {} argument{}, found {}",
+                            params.len(),
+                            if params.len() == 1 { "" } else { "s" },
+                            args.len()
+                        ))
+                        .with_label(Label::primary(call_span, "wrong number of arguments")),
+                    );
+                    return TypeId::ERROR;
+                }
+
+                if let Some(subst) = crate::substitute::infer_type_args(&gparams, &params, &arg_types, table) {
+                    // Re-check args against substituted param types
+                    for (i, arg) in args.iter().enumerate() {
+                        if let Some(&declared) = params.get(i) {
+                            let expected = crate::substitute::substitute_mut(declared, &subst, table);
+                            if !is_compatible(arg_types[i], expected, table) {
+                                let expected_name = type_name(expected, table, definitions);
+                                let found_name = type_name(arg_types[i], table, definitions);
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
+                                    ))
+                                    .with_label(Label::primary(arg.value.span, format!("expected `{expected_name}`"))),
+                                );
+                            }
+                        }
+                    }
+
+                    // Return the substituted return type
+                    return crate::substitute::substitute_mut(ret, &subst, table);
+                }
+
+                // Inference failed — report error
+                diagnostics.push(
+                    Diagnostic::error("cannot infer type arguments for generic function")
+                        .with_label(Label::primary(call_span, "type inference failed")),
+                );
+                return TypeId::ERROR;
+            }
+
+            // Non-generic function call
             if args.len() != params.len() {
                 diagnostics.push(
                     Diagnostic::error(format!(
@@ -680,12 +735,22 @@ fn check_call(
     }
 }
 
+/// Tries to find the `DefId` for a callee expression (for generic function lookup).
+fn find_callee_def_id(
+    callee_span: Span,
+    resolutions: Option<&ResolutionMap>,
+) -> Option<DefId> {
+    let res = resolutions?;
+    // Try both path and ident resolution (callee could be either)
+    res.get_path(callee_span).or_else(|| res.get_ident(callee_span))
+}
+
 /// Checks struct field access.
 fn check_field_access(
     base_ty: TypeId,
     field_name: spark_intern::Symbol,
     field_span: Span,
-    table: &TypeTable,
+    table: &mut TypeTable,
     definitions: &DefinitionTable,
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) -> TypeId {
@@ -693,19 +758,38 @@ fn check_field_access(
         return TypeId::ERROR;
     }
 
-    let resolved = table.resolve(strip_mutable(base_ty, table));
+    let resolved = table.resolve(strip_mutable(base_ty, table)).clone();
     match resolved {
         Ty::Struct(def_id) => {
-            let def_id = *def_id;
             if let Some(fields) = table.get_struct_fields(def_id) {
-                for (name, ty) in fields {
-                    if *name == field_name {
-                        return *ty;
+                for &(name, ty) in fields {
+                    if name == field_name {
+                        return ty;
                     }
                 }
             }
             let type_name = definitions
                 .get(def_id)
+                .map_or("<unknown>", |info| info.name.as_str());
+            diagnostics.push(
+                Diagnostic::error(format!("no field `{field_name}` on type `{type_name}`"))
+                    .with_label(Label::primary(field_span, "unknown field")),
+            );
+            TypeId::ERROR
+        }
+        Ty::Applied { base, args } => {
+            if let Some(fields) = table.get_struct_fields(base) {
+                let fields = fields.to_vec();
+                let params = table.get_generic_params(base).map(<[_]>::to_vec).unwrap_or_default();
+                let subst = crate::substitute::build_subst_map(&params, &args);
+                for (name, ty) in fields {
+                    if name == field_name {
+                        return crate::substitute::substitute_mut(ty, &subst, table);
+                    }
+                }
+            }
+            let type_name = definitions
+                .get(base)
                 .map_or("<unknown>", |info| info.name.as_str());
             diagnostics.push(
                 Diagnostic::error(format!("no field `{field_name}` on type `{type_name}`"))
@@ -736,7 +820,7 @@ fn check_struct_init(
     path: &spark_ast::Path,
     fields: &[spark_ast::FieldInit],
     spread: Option<&Expr>,
-    _init_span: Span,
+    init_span: Span,
     table: &mut TypeTable,
     builtins: &BuiltinTypes,
     definitions: &DefinitionTable,
@@ -762,13 +846,22 @@ fn check_struct_init(
 
     let struct_type = table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
 
-    // Check each field
+    // Check if this is a generic struct — if so, infer type args from field values.
+    let generic_params = table.get_generic_params(def_id).map(<[_]>::to_vec);
+    let is_generic = generic_params.as_ref().is_some_and(|p| !p.is_empty());
+
+    // Check each field and collect value types for inference.
     if let Some(struct_fields) = table.get_struct_fields(def_id) {
         let struct_fields = struct_fields.to_vec();
+        let mut field_val_types: Vec<(Symbol, TypeId)> = Vec::new();
+
         for field in fields {
             let val_ty = check_expr(&field.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
             if let Some((_, expected_ty)) = struct_fields.iter().find(|(name, _)| *name == field.name.name) {
-                if !is_compatible(val_ty, *expected_ty, table) {
+                field_val_types.push((field.name.name, val_ty));
+
+                // For generic structs, defer compatibility check until after inference.
+                if !is_generic && !is_compatible(val_ty, *expected_ty, table) {
                     let expected_name = type_name(*expected_ty, table, definitions);
                     let found_name = type_name(val_ty, table, definitions);
                     diagnostics.push(
@@ -785,6 +878,47 @@ fn check_struct_init(
                         .with_label(Label::primary(field.name.span, "not a field of this struct")),
                 );
             }
+        }
+
+        // For generic structs: infer type args and check substituted field types.
+        if is_generic {
+            let params = generic_params.as_deref().unwrap_or_default();
+            // Build declared and actual type vectors for inference, in field order.
+            let mut declared_types = Vec::new();
+            let mut actual_types = Vec::new();
+            for (field_name, val_ty) in &field_val_types {
+                if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| n == field_name) {
+                    declared_types.push(*field_ty);
+                    actual_types.push(*val_ty);
+                }
+            }
+
+            if let Some(subst) = crate::substitute::infer_type_args(params, &declared_types, &actual_types, table) {
+                // Re-check fields with substituted types
+                for (field_name, val_ty) in &field_val_types {
+                    if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| n == field_name) {
+                        let substituted = crate::substitute::substitute_mut(*field_ty, &subst, table);
+                        if !is_compatible(*val_ty, substituted, table) {
+                            let expected_name = type_name(substituted, table, definitions);
+                            let found_name = type_name(*val_ty, table, definitions);
+                            diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "field `{field_name}` type mismatch: expected `{expected_name}`, found `{found_name}`"
+                                ))
+                                .with_label(Label::primary(init_span, format!("expected `{expected_name}`"))),
+                            );
+                        }
+                    }
+                }
+
+                // Build the Applied type
+                let args: Vec<TypeId> = params.iter().map(|p| subst[p]).collect();
+                if let Some(spread) = spread {
+                    let _ = check_expr(spread, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                }
+                return table.intern(Ty::Applied { base: def_id, args });
+            }
+            // Inference failed — fall through and return the plain struct type
         }
     }
 
@@ -871,6 +1005,15 @@ pub fn is_compatible(actual: TypeId, expected: TypeId, table: &TypeTable) -> boo
             if is_compatible(actual, member, table) {
                 return true;
             }
+        }
+    }
+
+    // Applied types are compatible if same base + pairwise compatible args
+    if let (Ty::Applied { base: b1, args: a1 }, Ty::Applied { base: b2, args: a2 }) =
+        (actual_ty, expected_ty)
+    {
+        if b1 == b2 && a1.len() == a2.len() {
+            return a1.iter().zip(a2.iter()).all(|(a, e)| is_compatible(*a, *e, table));
         }
     }
 
@@ -1006,6 +1149,13 @@ pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -
         Ty::Param(def_id) => definitions
             .get(*def_id)
             .map_or_else(|| "<param>".to_string(), |info| info.name.to_string()),
+        Ty::Applied { base, args } => {
+            let base_name = definitions
+                .get(*base)
+                .map_or_else(|| "<generic>".to_string(), |info| info.name.to_string());
+            let arg_names: Vec<_> = args.iter().map(|a| type_name(*a, table, definitions)).collect();
+            format!("{}[{}]", base_name, arg_names.join(", "))
+        }
         Ty::Error => "<error>".to_string(),
     }
 }
@@ -1039,6 +1189,9 @@ fn check_method_call(
         Ty::String => check_string_method(method, arg_tys, call_span, builtins, diagnostics),
         Ty::Struct(def_id) | Ty::Enum(def_id) => {
             check_user_method_call(def_id, method, arg_tys, recv_span, call_span, table, definitions, diagnostics)
+        }
+        Ty::Applied { base, .. } => {
+            check_user_method_call(base, method, arg_tys, recv_span, call_span, table, definitions, diagnostics)
         }
         _ => {
             diagnostics.push(

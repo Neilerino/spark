@@ -171,6 +171,21 @@ pub fn check_exhaustiveness(
         Ty::Enum(def_id) => check_enum_exhaustiveness(
             *def_id, &coverage, match_span, table, definitions, diagnostics,
         ),
+        Ty::Applied { base, .. } => {
+            // Delegate to the base type's exhaustiveness rules
+            let base_ty = table.get_def_type(*base).unwrap_or(TypeId::ERROR);
+            if matches!(table.resolve(base_ty), Ty::Enum(_)) {
+                check_enum_exhaustiveness(
+                    *base, &coverage, match_span, table, definitions, diagnostics,
+                );
+            } else {
+                diagnostics.push(
+                    Diagnostic::error("non-exhaustive match")
+                        .with_label(Label::primary(match_span, "match is not exhaustive"))
+                        .with_note("add a wildcard arm `_ ->` to cover remaining values"),
+                );
+            }
+        }
         Ty::Union(members) => check_union_exhaustiveness(
             members, &coverage, match_span, table, definitions, diagnostics,
         ),

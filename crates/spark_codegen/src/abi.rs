@@ -41,7 +41,8 @@ pub fn spark_type_to_clif(ty_id: TypeId, table: &TypeTable, ptr_type: ClifType) 
         | Ty::Tuple(_)
         | Ty::Optional(_)
         | Ty::Union(_)
-        | Ty::Param(_) => Some(ptr_type),
+        | Ty::Param(_)
+        | Ty::Applied { .. } => Some(ptr_type),
 
         // Mutable wrapping is transparent at runtime
         Ty::Mutable(inner) => spark_type_to_clif(*inner, table, ptr_type),

@@ -41,6 +41,8 @@ pub struct TypeTable {
     pub(crate) type_methods: FxHashMap<DefId, Vec<(Symbol, DefId)>>,
     /// Resolved method `DefId` for each method call site (keyed by call `Span`).
     pub(crate) method_resolutions: FxHashMap<Span, DefId>,
+    /// Maps a generic definition (struct/enum/function `DefId`) to its ordered generic param `DefId`s.
+    pub(crate) generic_params: FxHashMap<DefId, Vec<DefId>>,
 }
 
 impl Default for TypeTable {
@@ -70,6 +72,7 @@ impl TypeTable {
             },
             type_methods: FxHashMap::default(),
             method_resolutions: FxHashMap::default(),
+            generic_params: FxHashMap::default(),
         }
     }
 
@@ -165,6 +168,17 @@ impl TypeTable {
     #[must_use]
     pub fn get_method_resolution(&self, span: Span) -> Option<DefId> {
         self.method_resolutions.get(&span).copied()
+    }
+
+    /// Records the generic parameter `DefId`s for a generic definition.
+    pub fn set_generic_params(&mut self, def_id: DefId, params: Vec<DefId>) {
+        self.generic_params.insert(def_id, params);
+    }
+
+    /// Returns the generic parameter `DefId`s for a definition, if any.
+    #[must_use]
+    pub fn get_generic_params(&self, def_id: DefId) -> Option<&[DefId]> {
+        self.generic_params.get(&def_id).map(Vec::as_slice)
     }
 
     /// Interns a lifetime name and returns its [`LifetimeId`].
