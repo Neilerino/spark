@@ -244,9 +244,9 @@ fn lower_expr_kind(
         }
 
         // === Type operations ===
-        ExprKind::Is { expr: inner, .. } => HirExprKind::Is {
+        ExprKind::Is { expr: inner, ty } => HirExprKind::Is {
             expr: Box::new(lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret)),
-            target_ty: expr_type(expr.span, table),
+            target_ty: lower_type_expr(ty, table),
         },
 
         ExprKind::As { expr: inner, ty } => HirExprKind::As {

@@ -123,10 +123,29 @@ fn string_len() {
 }
 
 // ============================================================================
+// Match expressions
+// ============================================================================
+
+#[test]
+fn match_bool() {
+    assert_output("match_bool.spark", "yes");
+}
+
+// ============================================================================
 // Error cases
 // ============================================================================
 
 #[test]
 fn immutable_append_error() {
     assert_compile_error("immutable_append.spark", "not mutable");
+}
+
+#[test]
+fn match_nonexhaustive_bool() {
+    assert_compile_error("match_nonexhaustive_bool.spark", "non-exhaustive");
+}
+
+#[test]
+fn match_nonexhaustive_int() {
+    assert_compile_error("match_nonexhaustive_int.spark", "non-exhaustive");
 }

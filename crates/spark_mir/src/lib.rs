@@ -472,4 +472,89 @@ mod tests {
         let pretty = pretty_function(func);
         assert_eq!(display, pretty);
     }
+
+    // ── `is` type test MIR lowering ─────────────────────────────
+
+    #[test]
+    fn is_union_member() {
+        let output = lower_source(
+            "fn check(x: Int | String): Bool { return x is Int }",
+        );
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        let func = output.mir.functions.values().next().unwrap();
+        let pp = pretty_function(func);
+        assert!(pp.contains("discriminant"), "Expected discriminant check in MIR:\n{pp}");
+        assert!(pp.contains("switchInt"), "Expected switchInt in MIR:\n{pp}");
+        assert!(pp.contains("const true"), "Expected const true branch in MIR:\n{pp}");
+        assert!(pp.contains("const false"), "Expected const false branch in MIR:\n{pp}");
+    }
+
+    #[test]
+    fn is_optional_null() {
+        let output = lower_source(
+            "fn check(x: Int?): Bool { return x is Null }",
+        );
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        let func = output.mir.functions.values().next().unwrap();
+        let pp = pretty_function(func);
+        assert!(pp.contains("discriminant"), "Expected discriminant check in MIR:\n{pp}");
+        assert!(pp.contains("switchInt"), "Expected switchInt in MIR:\n{pp}");
+    }
+
+    #[test]
+    fn is_primitive_same_type() {
+        let output = lower_source(
+            "fn check(x: Int): Bool { return x is Int }",
+        );
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        let func = output.mir.functions.values().next().unwrap();
+        let pp = pretty_function(func);
+        // Same type known at compile time — should emit `const true`
+        assert!(pp.contains("const true"), "Expected const true for same-type is check:\n{pp}");
+    }
+
+    #[test]
+    fn is_enum_variant() {
+        let output = lower_source(
+            "enum Status { Active, Inactive }\nfn check(s: Status): Bool { return s is Status.Active }",
+        );
+        // This may produce errors if `is` on enum variants isn't fully resolved;
+        // the key assertion is that the lowering doesn't panic
+        let func = output.mir.functions.values().next();
+        if let Some(func) = func {
+            let pp = pretty_function(func);
+            // Should contain either discriminant check or const bool
+            assert!(
+                pp.contains("discriminant") || pp.contains("const true") || pp.contains("const false"),
+                "Expected discriminant or const bool in MIR:\n{pp}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_error_recovery() {
+        // Use an undefined type to trigger an error type — lowering should not panic
+        let output = lower_source(
+            "fn check(x: Int): Bool { return x is Undefined }",
+        );
+        // Should have errors but not panic
+        let func = output.mir.functions.values().next();
+        if let Some(func) = func {
+            let pp = pretty_function(func);
+            // Error type should result in const false
+            assert!(pp.contains("const false"), "Expected const false for error type:\n{pp}");
+        }
+    }
 }

@@ -173,7 +173,7 @@ fn check_expr_inner(
 
         // === Match expression ===
         ExprKind::Match { scrutinee, arms } => {
-            let _scrutinee_ty = check_expr(scrutinee, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let scrutinee_ty = check_expr(scrutinee, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
 
             let mut arm_types = Vec::with_capacity(arms.len());
             for arm in arms {
@@ -181,6 +181,12 @@ fn check_expr_inner(
                 let body_ty = check_expr(&arm.body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
                 arm_types.push(body_ty);
             }
+
+            // Check exhaustiveness
+            crate::exhaustive::check_exhaustiveness(
+                scrutinee_ty, arms, expr.span,
+                table, builtins, definitions, resolutions, diagnostics,
+            );
 
             if arm_types.is_empty() {
                 builtins.never
@@ -286,8 +292,9 @@ fn check_expr_inner(
         }
 
         // === Is ===
-        ExprKind::Is { expr: inner_expr, .. } => {
+        ExprKind::Is { expr: inner_expr, ty } => {
             let _ = check_expr(inner_expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = lower_type_expr(ty, table, builtins, definitions, resolutions, diagnostics);
             builtins.bool_ty
         }
 
