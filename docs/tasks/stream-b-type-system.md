@@ -1,97 +1,63 @@
-# Stream B: Type System Foundations
+# Stream B: Type System Foundations — Mostly Complete
 
-> Method resolution → Generics
+> ~~Method resolution~~ → Generics (type checking done, MIR mono remaining)
 
 ## Overview
 
-Foundational type system features. Method resolution is a prerequisite for many downstream features (notably `via` pipeline in Stream C). Generics are the highest-effort single item in the project.
-
-**Conflicts with Stream C**: Both touch `spark_types` and `spark_resolve` heavily. If done in parallel with lambdas, coordinate carefully on type system changes (e.g., `Ty::Function` usage, method lookup paths).
-
-**Recommended order**: Method resolution first, then generics (see roadmap "Recommended Implementation Order").
+Foundational type system features. Method resolution is complete. Generics type checking is complete; MIR monomorphization and codegen remain.
 
 ---
 
-## Item 1: Interface Validation & Method Resolution (P3.4)
+## ~~Item 1: Interface Validation & Method Resolution (P3.4)~~ — Complete
 
-**Status**: Partial — built-in collection methods work, user-defined methods do not.
+User-defined method resolution via `binding` declarations works end-to-end:
+
+- `DefinitionKind::BindingMethod(DefId)` tracks binding methods
+- Resolver: `collect_binding_methods()` allocates DefIds for each binding target method
+- TypeTable: `type_methods` maps type DefId → `[(method_name, method_def_id)]`; `method_resolutions` maps call Span → method DefId
+- Type checker pass 1: `collect_binding()` lowers method signatures, registers in `type_methods`
+- Type checker pass 2: `check_user_method_call()` resolves `receiver.method()` by looking up `type_methods`
+- Interface type checking validates that bindings implement all required methods with correct signatures
+- HIR: `lower_binding()` lowers method bodies as regular `HirFunction`s
+- MIR: `lower_method_call()` checks `method_resolutions` after builtin lookup
+- Codegen: no changes needed — binding methods compile as regular functions
+
+---
+
+## Item 2: Generic Instantiation (P3.5) — Type Checking Complete
+
+**Status**: Type checking phase works; MIR monomorphization and codegen pending.
 
 ### What's Done
 
-Built-in method dispatch for collection types via `DefinitionKind::BuiltinMethod`:
-- `check_method_call()` at `spark_types/src/check_expr.rs:956-988` — routes by receiver type
-- `check_list_method()` at `spark_types/src/check_expr.rs:992-1030`
-- `check_map_method()` at `spark_types/src/check_expr.rs:1034-1063`
-- `check_set_method()` at `spark_types/src/check_expr.rs:1067-1099`
-- `check_string_method()` follows Set methods
+- `Ty::Applied { base: DefId, args: Vec<TypeId> }` — instantiated generic types
+- `Ty::Param(DefId)` — generic type parameters
+- `substitute.rs` — `SubstMap`, `build_subst_map()`, `substitute()`/`substitute_mut()`, `infer_type_args()`
+- `check_decl.rs` — `collect_generic_params()` extracts DefIds from AST generics, registers `Ty::Param` types
+- `lower.rs` — `lower_named_def()` creates `Ty::Applied` when type args present, validates arity
+- `check_expr.rs`:
+  - `check_field_access()` handles `Ty::Applied` with type substitution
+  - `check_struct_init()` infers type args from field values for generic structs
+  - `check_call()` infers type args for generic function calls
+- `is_compatible()`, `type_name()`, `exhaustive.rs`, `union.rs` — all handle `Ty::Applied`
+- `spark_borrow` — `type_involves_ref()` handles `Ty::Applied`
+- 13 new tests covering generic structs, functions, inference, arity errors, nested generics
 
 ### What's Remaining
 
-Two parts:
+1. **MIR monomorphization pass** (`spark_mir/src/monomorphize.rs`):
+   - Collect instantiation requests from `TypeTable`
+   - Deduplicate by `(DefId, Vec<TypeId>)`
+   - Clone source `MirFunction`, substitute all `TypeId`s in locals, return type, rvalues
+   - Allocate fresh DefIds for monomorphized functions
+   - Rewrite call sites to target monomorphized DefIds
+   - Remove original generic functions (they contain `Ty::Param` types codegen can't handle)
 
-#### Part A: Interface Validation
+2. **Codegen for `Ty::Applied`** (`spark_codegen/src/layout.rs`):
+   - Compute struct/enum layout from substituted field types
+   - Handle in `emit_aggregate()`, `emit_field_access()`
 
-When a `binding Foo for Bar { ... }` is declared, verify that all methods required by interface `Foo` are implemented.
-
-**Parser already handles this**:
-- `parse_interface()` in `spark_parser/src/decl.rs` — parses `interface Name { methods }`
-- `parse_binding()` in `spark_parser/src/decl.rs` — parses `binding Interface for Type { methods }`
-- AST types: `InterfaceDef` and `BindingDef` in `spark_ast/src/decl.rs`
-
-**What's needed**: In `spark_types`, after collecting all interface and binding definitions, check:
-1. Every method in the interface has a corresponding method in the binding
-2. Signatures match (parameter types, return type)
-3. Report missing methods and signature mismatches as diagnostics
-
-#### Part B: User-Defined Method Resolution
-
-When `expr.method(args)` is encountered and the receiver type is a user-defined struct/enum:
-
-1. Look up all bindings for the receiver type
-2. Search those bindings for a method matching the name
-3. Type-check the call using the found method's signature
-
-Currently `check_method_call()` only dispatches to the built-in type-specific checkers. Extend it with a fallback path that searches binding definitions.
-
-**Key consideration**: Method resolution must work for both direct type methods (`binding for MyStruct { fn foo() ... }`) and interface methods (`binding Printable for MyStruct { fn print() ... }`).
-
-### Integration Points
-
-- `spark_resolve` — binding definitions are collected during resolution. The resolver currently creates `DefinitionKind::Function` entries for binding methods; may need a new `DefinitionKind::Method` or to track the receiver type.
-- `spark_types` — the type checker needs to query "what methods does type X have?"
-- `spark_hir` — method calls need to resolve to specific function DefIds
-- `spark_mir` — method calls lower to regular function calls (with receiver as first arg)
-
----
-
-## Item 2: Generic Instantiation (P3.5)
-
-**Status**: Type args parsed but ignored. This is the highest-effort item in the project.
-
-### Current State
-
-- Generics are parsed into AST:
-  - `GenericParam` and `GenericConstraint` in `spark_ast/src/types.rs:124-160`
-  - `FunctionDef.generics`, `StructDef.generics`, `EnumDef.generics`, `InterfaceDef.generics`, `BindingDef.generics` — all fields exist in `spark_ast/src/decl.rs`
-- `Ty::Param` exists in `spark_types/src/ty.rs` but isn't used
-- Type arguments on function calls and type expressions are parsed but ignored
-
-### What's Needed
-
-1. **Generic parameter tracking**: When type-checking a generic function/struct, register `Ty::Param` entries for each generic parameter. These act as type variables during checking.
-
-2. **Type argument inference**: At call sites, infer type arguments from argument types, or accept explicit type annotations.
-
-3. **Monomorphization pass**: Clone function bodies with type parameters substituted with concrete types. This happens at or after MIR — for each unique instantiation, create a new copy of the function with concrete types.
-
-4. **Constraint checking**: If a generic has constraints (`T: Comparable`), verify the concrete type satisfies those interfaces. Requires method resolution (Item 1) to be working.
-
-### Approach
-
-Consider implementing in stages:
-1. First: explicit type arguments only (no inference) — `foo[Int](x)`
-2. Then: basic inference from argument types
-3. Then: constraint checking
+3. **Constraint checking** (`T: Comparable`) — deferred until needed
 
 ---
 
@@ -99,17 +65,16 @@ Consider implementing in stages:
 
 | Purpose | Path |
 |---------|------|
-| Method call type checking | `crates/spark_types/src/check_expr.rs:956+` |
-| Built-in method checkers | `crates/spark_types/src/check_expr.rs:992+` |
-| Interface AST | `crates/spark_ast/src/decl.rs` (InterfaceDef) |
-| Binding AST | `crates/spark_ast/src/decl.rs` (BindingDef) |
-| Interface parser | `crates/spark_parser/src/decl.rs` (parse_interface) |
-| Binding parser | `crates/spark_parser/src/decl.rs` (parse_binding) |
-| Generic param AST | `crates/spark_ast/src/types.rs:124-160` |
 | Type definitions | `crates/spark_types/src/ty.rs` |
 | Type table | `crates/spark_types/src/table.rs` |
+| Type substitution | `crates/spark_types/src/substitute.rs` |
+| Generic param collection | `crates/spark_types/src/check_decl.rs` |
+| Type lowering (Applied creation) | `crates/spark_types/src/lower.rs` |
+| Expression checking (field access, struct init, calls) | `crates/spark_types/src/check_expr.rs` |
+| Method call type checking | `crates/spark_types/src/check_expr.rs` |
+| Binding AST | `crates/spark_ast/src/decl.rs` (BindingDef) |
+| Interface AST | `crates/spark_ast/src/decl.rs` (InterfaceDef) |
 | Resolver | `crates/spark_resolve/src/lib.rs` |
-| Definition table | `crates/spark_resolve/src/lib.rs` (DefinitionTable) |
 
 ## Reference Docs
 
