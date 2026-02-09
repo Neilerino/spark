@@ -1017,8 +1017,18 @@ impl Resolver {
             let first = path.segments[0].name;
             if let Some(def_id) = self.rib_stack.lookup_value(first) {
                 self.record_path(path.span, def_id);
-            } else if let Some(def_id) = self.rib_stack.lookup_type(first) {
-                self.record_path(path.span, def_id);
+            } else if let Some(parent_id) = self.rib_stack.lookup_type(first) {
+                // Try to resolve as Enum.Variant
+                if path.segments.len() == 2 {
+                    let variant_name = path.segments[1].name;
+                    if let Some(variant_id) = self.find_enum_variant(parent_id, variant_name) {
+                        self.record_path(path.span, variant_id);
+                    } else {
+                        self.record_path(path.span, parent_id);
+                    }
+                } else {
+                    self.record_path(path.span, parent_id);
+                }
             } else {
                 self.error_undefined_name(first, path.segments[0].span);
             }
@@ -1038,16 +1048,54 @@ impl Resolver {
                 self.error_undefined_type(name, path.span);
             }
         } else {
-            // Multi-segment type path (e.g., module.Type)
+            // Multi-segment type path (e.g., Color.Red)
             let first = path.segments[0].name;
-            if let Some(def_id) = self.rib_stack.lookup_type(first) {
-                self.record_path(path.span, def_id);
+            if let Some(parent_id) = self.rib_stack.lookup_type(first) {
+                // If this is a 2-segment path like Enum.Variant, try to resolve
+                // the second segment as an enum variant.
+                if path.segments.len() == 2 {
+                    let variant_name = path.segments[1].name;
+                    if let Some(variant_id) = self.find_enum_variant(parent_id, variant_name) {
+                        self.record_path(path.span, variant_id);
+                    } else {
+                        // Fall back to recording the parent (e.g., module.Type)
+                        self.record_path(path.span, parent_id);
+                    }
+                } else {
+                    self.record_path(path.span, parent_id);
+                }
             } else if kw::is_builtin_type(first) {
                 // Built-in types — skip
             } else {
                 self.error_undefined_type(first, path.segments[0].span);
             }
         }
+    }
+
+    // ========================================================================
+    // Lookup helpers
+    // ========================================================================
+
+    /// Finds an enum variant by parent enum `DefId` and variant name.
+    ///
+    /// Returns `None` if the parent isn't an enum or has no such variant.
+    fn find_enum_variant(&self, parent_id: DefId, variant_name: Symbol) -> Option<DefId> {
+        // Verify the parent is actually an enum
+        let parent_info = self.definitions.get(parent_id)?;
+        if !matches!(parent_info.kind, DefinitionKind::Enum) {
+            return None;
+        }
+
+        // Search for a variant with matching parent and name
+        self.definitions.iter().find_map(|(id, info)| {
+            if matches!(info.kind, DefinitionKind::EnumVariant(pid) if pid == parent_id)
+                && info.name == variant_name
+            {
+                Some(id)
+            } else {
+                None
+            }
+        })
     }
 
     // ========================================================================

@@ -11,7 +11,7 @@ Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR �
   ✅       ✅      ✅       ✅        ✅        ✅     ✅    ✅      ✅      ✅      ✅       ✅
 ```
 
-**What works**: 632 tests pass (including 8 end-to-end tests). Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Collection methods (`.len()`, `.append()`, `.contains()`, `.remove()`) work for List/Map/Set/String with COW enforcement on mutating operations. Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. Union type handling complete: `??` coalesce, `?.` optional chain, `!` propagation, and `to` type narrowing all desugar to match expressions with proper bindings. E2E test framework in `spark_driver/tests/e2e.rs`. LSP with semantic tokens in `tools/spark-lsp`. Install script (`install.sh`) provided.
+**What works**: 705+ tests pass (including 11 end-to-end tests). Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Collection methods (`.len()`, `.append()`, `.contains()`, `.remove()`) work for List/Map/Set/String with COW enforcement on mutating operations. Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. Union type handling complete: `??` coalesce, `?.` optional chain, `!` propagation, and `to` type narrowing all desugar to match expressions with proper bindings. `is` type tests work at runtime for enums, unions, and optionals. Match exhaustiveness checking catches missing patterns at compile time. Lifetime elision infers output lifetimes from input references. E2E test framework in `spark_driver/tests/e2e.rs`. LSP with semantic tokens in `tools/spark-lsp`. Install script (`install.sh`) provided.
 
 ```spark
 fn main(): Int {
@@ -93,18 +93,9 @@ These features were deferred because downstream pipeline stages didn't exist yet
 
 Desugared in HIR to match expressions with synthetic `DefId` bindings. `x ?? default` becomes `match x { v -> v, Null -> default }`. `x?.field` becomes `match x { v -> v.field, Null -> Null }`. Works for both `Optional(T)` and `Union([..., Null, ...])` types.
 
-### 2.2 `is` Type Test
+### ~~2.2 `is` Type Test~~ — Complete
 
-**Status**: Warning in MIR lowering
-**Location**: `spark_mir/src/lower_expr.rs:289`
-**Blocker was**: No codegen to verify generated discriminant checks
-
-**Fix**: MIR already has `Rvalue::Discriminant` and `SwitchInt`. Lower `HirExprKind::Is` to:
-1. Extract discriminant from the value
-2. Compare against the target type's variant tag
-3. Return Bool result
-
-For enum/union types this is a straightforward integer comparison. Codegen already handles all the pieces.
+Implemented in Stream D. Type checker now lowers the target type, HIR passes it through correctly, and MIR emits discriminant-based type checks for enums, unions, and optionals, with compile-time constant results for primitive types.
 
 ### ~~2.3 Drop Elaboration~~ — Complete (moved to P1.2)
 
@@ -116,28 +107,13 @@ Implemented as part of the RC infrastructure. See P1.2 above.
 
 These were deferred for complexity, not because of pipeline dependencies.
 
-### 3.1 Match Exhaustiveness Checking
+### ~~3.1 Match Exhaustiveness Checking~~ — Complete
 
-**Status**: Not implemented
-**Location**: Would go in `spark_types`
-**Impact**: Programs with non-exhaustive matches compile but hit `Unreachable` trap at runtime
+Implemented in Stream D. `spark_types/src/exhaustive.rs` analyzes match arms using a coverage-based approach. Supports enum variants, union members, optionals, booleans, and wildcards. Reports missing patterns as errors and unreachable arms as warnings. Integrated into the type checker's match expression handling.
 
-Pure analysis pass in the type checker. For each match expression:
-- Collect scrutinee type and all patterns
-- Verify all variants/values are covered
-- Report missing patterns as errors
-- Report unreachable arms as warnings
+### ~~3.2 Lifetime Elision Rules~~ — Complete
 
-### 3.2 Lifetime Elision Rules
-
-**Status**: Not implemented — all lifetimes are `LifetimeId::ANONYMOUS`
-**Location**: Would go in `spark_types`
-**Impact**: Borrow checker works but requires explicit lifetimes for multi-reference functions
-
-Rules:
-- Single input reference → lifetime applies to output
-- Multiple input references → require explicit lifetimes
-- `self` parameter → implicit lifetime on output
+Implemented in Stream D. `spark_types/src/lower.rs:apply_lifetime_elision()` applies Rust-like elision rules during signature collection: single input ref shares lifetime with output, self parameter donates its lifetime, multiple input refs produce an error. Integrated into `check_decl.rs`.
 
 ### ~~3.3 Propagate `!` Operator~~ — Complete
 
@@ -278,9 +254,9 @@ These are deliberate design decisions per the language spec — Spark requires e
 | ~~P1~~ | ~~COW mutation hooks~~ | ~~Low~~ | ~~Safe mutation of shared values~~ | Done |
 | ~~P1~~ | ~~Collection methods~~ | ~~Medium~~ | ~~`.append()`, `.len()`, etc.~~ | Done |
 | ~~P2~~ | ~~`??` / `?.` desugaring~~ | ~~Low~~ | ~~Fixes null-handling operators~~ | Done |
-| **P2** | `is` type test | Low | Enables type checking expressions | MIR stub |
-| **P3** | Match exhaustiveness | Medium | Safety — catches missing cases | Not started |
-| **P3** | Lifetime elision | Low | Ergonomics for references | Not started |
+| ~~P2~~ | ~~`is` type test~~ | ~~Low~~ | ~~Enables type checking expressions~~ | Done |
+| ~~P3~~ | ~~Match exhaustiveness~~ | ~~Medium~~ | ~~Safety — catches missing cases~~ | Done |
+| ~~P3~~ | ~~Lifetime elision~~ | ~~Low~~ | ~~Ergonomics for references~~ | Done |
 | ~~P3~~ | ~~`!` propagation~~ | ~~Medium~~ | ~~Error handling ergonomics~~ | Done |
 | ~~P3~~ | ~~`to` type narrowing~~ | ~~Low-Medium~~ | ~~Union type error handling~~ | Done |
 | **P3** | Method resolution | Medium-High | User-defined methods + interfaces | Partial (builtins done) |
@@ -294,7 +270,7 @@ These are deliberate design decisions per the language spec — Spark requires e
 | **P5** | String interpolation | Medium | Syntax convenience | Not started |
 
 ### Infrastructure
-- **E2E test framework**: `spark_driver/tests/e2e.rs` — 8 tests running `.spark` fixtures end-to-end
+- **E2E test framework**: `spark_driver/tests/e2e.rs` — 11 tests running `.spark` fixtures end-to-end
 - **LSP**: `tools/spark-lsp` — semantic tokens, diagnostics
 - **Design notes**: `docs/design-notes/lambdas-closures-each.md` — captures lambda/each/via/LSP ScopeMap requirements
 
@@ -343,18 +319,14 @@ The largest dependency chain. Everything here requires function-as-value semanti
 
 **Conflicts with Stream B**: Both modify how functions/methods are resolved and called. `via` specifically needs method resolution to look up named operations. LSP `ScopeMap` (from LSP team requirements) should be built alongside lambda scope handling in `spark_resolve`.
 
-### Stream D: Safety & Analysis
-> Independent analysis passes
+### ~~Stream D: Safety & Analysis~~ — Complete
 
-These are independent of each other and of most other streams.
+All three items implemented:
+- **`is` type test (2.2)**: MIR lowering with discriminant checks for enums, unions, optionals; compile-time constants for primitives.
+- **Match exhaustiveness checking (3.1)**: Coverage-based analysis in `spark_types/src/exhaustive.rs` with enum variant, union member, optional, and boolean support. Unreachable arm warnings.
+- **Lifetime elision rules (3.2)**: Rust-like elision in `spark_types/src/lower.rs` integrated into signature collection.
 
-| Item | Effort | Dependencies |
-|------|--------|-------------|
-| `is` type test (2.2) | Low | None |
-| Match exhaustiveness checking (3.1) | Medium | None |
-| Lifetime elision rules (3.2) | Low | None |
-
-**Conflicts**: None. These are read-only analysis passes in `spark_types` and `spark_borrow`. Can safely run in parallel with any other stream.
+Also fixed: resolver now resolves `Enum.Variant` paths to individual variant `DefId`s (was resolving to the enum's `DefId`), enabling proper enum exhaustiveness checking end-to-end.
 
 ### Stream E: Optimization
 > Independent optimization crate
@@ -391,11 +363,8 @@ Completely independent. Inserts between `spark_borrow` and `spark_codegen`.
 
 ```
 Can run simultaneously:
-  Stream A (Union types)  ─── no conflicts ───  Stream D (Safety)
   Stream A (Union types)  ─── no conflicts ───  Stream E (Optimization)
   Stream A (Union types)  ─── no conflicts ───  Stream F (String interpolation)
-  Stream D (Safety)       ─── no conflicts ───  Stream E (Optimization)
-  Stream D (Safety)       ─── no conflicts ───  Stream F (String interpolation)
 
 Must coordinate:
   Stream B (Type system)  ─── shared code ────  Stream C (Lambdas)
@@ -403,10 +372,13 @@ Must coordinate:
 Sequential dependencies:
   Stream C (Lambdas)      ─── blocks ─────────  Stream G (Async)
   Stream B (Methods)      ─── soft blocks ────  Stream C (`via` pipeline)
+
+Completed:
+  Stream D (Safety)       ─── DONE ────────────  `is`, exhaustiveness, lifetime elision
 ```
 
 **Recommended parallel tracks**:
-1. **Track 1**: Stream A + Stream D (union types + safety analysis) — low risk, high impact
+1. **Track 1**: Stream A (union types) — low risk, high impact
 2. **Track 2**: Stream B (type system foundations) — prepare for lambdas
 3. **Track 3**: Stream E + Stream F (optimization + string interpolation) — fully independent
 
@@ -428,4 +400,4 @@ The streams above can be parallelized, but for the **critical path** (features t
 
 5. **Async/await/spawn (Stream G, 5.2)** — Requires stable closures for `spawn`. State machine transformation is the largest remaining infrastructure piece.
 
-Streams A (union types), D (safety analysis), E (optimization), and F (string interpolation) can run **in parallel with any step above** since they touch independent parts of the codebase.
+Streams A (union types), E (optimization), and F (string interpolation) can run **in parallel with any step above** since they touch independent parts of the codebase. Stream D (safety analysis) is complete.

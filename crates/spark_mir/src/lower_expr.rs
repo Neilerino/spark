@@ -7,7 +7,7 @@ use spark_diagnostics::{Diagnostic, Label};
 use spark_hir::{HirExpr, HirExprKind, HirLiteral};
 use spark_intern::Symbol;
 use spark_resolve::{DefinitionKind, DefinitionTable};
-use spark_types::TypeTable;
+use spark_types::{Ty, TypeId, TypeTable};
 
 use crate::builder::{FunctionBuilder, LoopContext, MirBuilder};
 use crate::lower_pattern::lower_match;
@@ -290,10 +290,9 @@ pub fn lower_expr(
             temp
         }
 
-        // ── Deferred features ────────────────────────────────────
-        HirExprKind::Is { .. } => {
-            emit_deferred(mir, "type test (`is`)", expr);
-            void_temp(fb, expr)
+        // ── Type test ─────────────────────────────────────────────
+        HirExprKind::Is { expr: inner, target_ty } => {
+            lower_is_expr(inner, *target_ty, expr, fb, mir, type_table, defs)
         }
 
         HirExprKind::Lambda { .. } => {
@@ -565,6 +564,194 @@ fn lower_if(
 
     fb.switch_to(join_bb);
     result
+}
+
+/// Lowers an `is` type test expression.
+///
+/// Emits a discriminant check for enum, union, and optional types, branching
+/// to assign `Bool(true)` or `Bool(false)`. For types that can be resolved
+/// at compile time (e.g. `42 is Int`), emits a constant directly.
+///
+/// ```text
+/// current_bb:
+///   disc = Discriminant(inner)
+///   SwitchInt(disc) -> [tag: true_bb, otherwise: false_bb]
+///
+/// true_bb:
+///   result = true
+///   Goto -> join_bb
+///
+/// false_bb:
+///   result = false
+///   Goto -> join_bb
+///
+/// join_bb:
+///   (continues)
+/// ```
+#[allow(clippy::too_many_arguments)]
+fn lower_is_expr(
+    inner: &HirExpr,
+    target_ty: TypeId,
+    expr: &HirExpr,
+    fb: &mut FunctionBuilder,
+    mir: &mut MirBuilder<'_>,
+    type_table: &TypeTable,
+    defs: &DefinitionTable,
+) -> Local {
+    let inner_local = lower_expr(inner, fb, mir, type_table, defs);
+    let result = fb.fresh_temp(expr.ty, expr.span);
+
+    // If either type is Error, return false without branching
+    if inner.ty.is_error() || target_ty.is_error() {
+        fb.push_assign(
+            Place::from_local(result),
+            Rvalue::Use(Operand::Constant(Constant::Bool(false))),
+            expr.span,
+        );
+        return result;
+    }
+
+    let inner_ty = type_table.resolve(inner.ty);
+
+    match inner_ty {
+        // Enum: check discriminant against target variant's DefId
+        Ty::Enum(enum_def_id) => {
+            // The target type should also be this enum (user wrote `x is Variant`)
+            // Find which variant DefId matches the target_ty
+            if let Some(variants) = type_table.get_enum_variants(*enum_def_id) {
+                // Look for a variant whose type matches target_ty
+                let target_resolved = type_table.resolve(target_ty);
+                let matching_variant = if let Ty::Enum(target_def) = target_resolved {
+                    // target_ty is the enum itself — always true
+                    if *target_def == *enum_def_id {
+                        // `x is EnumType` — always true since x is already that enum
+                        fb.push_assign(
+                            Place::from_local(result),
+                            Rvalue::Use(Operand::Constant(Constant::Bool(true))),
+                            expr.span,
+                        );
+                        return result;
+                    }
+                    // target is a specific variant — find it
+                    variants.iter().find(|(_, vid)| {
+                        type_table.get_def_type(*vid) == Some(target_ty)
+                    })
+                } else {
+                    // Target might be found via variant DefId matching
+                    variants.iter().find(|(_, vid)| {
+                        type_table.get_def_type(*vid) == Some(target_ty)
+                    })
+                };
+
+                if let Some((_, variant_def_id)) = matching_variant {
+                    emit_discriminant_check(inner_local, i128::from(variant_def_id.as_u32()), result, expr, fb);
+                } else {
+                    // No matching variant — always false
+                    fb.push_assign(
+                        Place::from_local(result),
+                        Rvalue::Use(Operand::Constant(Constant::Bool(false))),
+                        expr.span,
+                    );
+                }
+            } else {
+                fb.push_assign(
+                    Place::from_local(result),
+                    Rvalue::Use(Operand::Constant(Constant::Bool(false))),
+                    expr.span,
+                );
+            }
+        }
+
+        // Union: check discriminant against the target member's index
+        Ty::Union(members) => {
+            if let Some(idx) = members.iter().position(|&m| m == target_ty) {
+                emit_discriminant_check(inner_local, idx as i128, result, expr, fb);
+            } else {
+                // Target type is not a member — always false
+                fb.push_assign(
+                    Place::from_local(result),
+                    Rvalue::Use(Operand::Constant(Constant::Bool(false))),
+                    expr.span,
+                );
+            }
+        }
+
+        // Optional: discriminant 0 = Null, 1 = value
+        Ty::Optional(inner_type) => {
+            let target_resolved = type_table.resolve(target_ty);
+            if matches!(target_resolved, Ty::Null) {
+                // `x is Null` — check discriminant == 0
+                emit_discriminant_check(inner_local, 0, result, expr, fb);
+            } else if target_ty == *inner_type {
+                // `x is T` where T is the inner type — check discriminant == 1
+                emit_discriminant_check(inner_local, 1, result, expr, fb);
+            } else {
+                // Unknown target — always false
+                fb.push_assign(
+                    Place::from_local(result),
+                    Rvalue::Use(Operand::Constant(Constant::Bool(false))),
+                    expr.span,
+                );
+            }
+        }
+
+        // Same type known at compile time — always true or false
+        _ => {
+            let same = inner.ty == target_ty;
+            fb.push_assign(
+                Place::from_local(result),
+                Rvalue::Use(Operand::Constant(Constant::Bool(same))),
+                expr.span,
+            );
+        }
+    }
+
+    result
+}
+
+/// Emits a discriminant check: extracts discriminant from `scrut`, compares
+/// against `expected_tag`, and assigns `true` or `false` to `result`.
+fn emit_discriminant_check(
+    scrut: Local,
+    expected_tag: i128,
+    result: Local,
+    expr: &HirExpr,
+    fb: &mut FunctionBuilder,
+) {
+    let disc_temp = fb.fresh_temp(TypeId::ERROR, expr.span);
+    fb.push_assign(
+        Place::from_local(disc_temp),
+        Rvalue::Discriminant(Place::from_local(scrut)),
+        expr.span,
+    );
+
+    let true_bb = fb.new_block();
+    let false_bb = fb.new_block();
+    let join_bb = fb.new_block();
+
+    fb.terminate(Terminator::SwitchInt {
+        discriminant: Operand::Copy(Place::from_local(disc_temp)),
+        targets: vec![(expected_tag, true_bb)],
+        otherwise: false_bb,
+    });
+
+    fb.switch_to(true_bb);
+    fb.push_assign(
+        Place::from_local(result),
+        Rvalue::Use(Operand::Constant(Constant::Bool(true))),
+        expr.span,
+    );
+    fb.terminate(Terminator::Goto { target: join_bb });
+
+    fb.switch_to(false_bb);
+    fb.push_assign(
+        Place::from_local(result),
+        Rvalue::Use(Operand::Constant(Constant::Bool(false))),
+        expr.span,
+    );
+    fb.terminate(Terminator::Goto { target: join_bb });
+
+    fb.switch_to(join_bb);
 }
 
 /// Lowers a loop expression.

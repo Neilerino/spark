@@ -57,6 +57,7 @@ pub mod check_decl;
 pub mod check_expr;
 pub mod check_stmt;
 pub mod checker;
+pub mod exhaustive;
 pub mod intern;
 pub mod lower;
 pub mod table;
@@ -423,5 +424,115 @@ mod tests {
              fn caller(): Bool { x: Int | String = get()!\n return true }",
         );
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    // ── Match exhaustiveness (full pipeline) ────────────────────
+
+    #[test]
+    fn match_enum_with_wildcard() {
+        let output = check_source(
+            "enum Color { Red, Green, Blue }\n\
+             fn f(c: Color): Int {\n\
+                 return match c {\n\
+                     Color.Red -> 1,\n\
+                     _ -> 0,\n\
+                 }\n\
+             }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn match_enum_all_variants_exhaustive() {
+        let output = check_source(
+            "enum Color { Red, Green, Blue }\n\
+             fn f(c: Color): Int {\n\
+                 return match c {\n\
+                     Color.Red -> 1,\n\
+                     Color.Green -> 2,\n\
+                     Color.Blue -> 3,\n\
+                 }\n\
+             }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn match_enum_missing_variant_error() {
+        let output = check_source(
+            "enum Color { Red, Green, Blue }\n\
+             fn f(c: Color): Int {\n\
+                 return match c {\n\
+                     Color.Red -> 1,\n\
+                     Color.Green -> 2,\n\
+                 }\n\
+             }",
+        );
+        assert!(output.diagnostics.has_errors());
+        let msgs: Vec<_> = output.diagnostics.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("non-exhaustive")),
+            "Expected non-exhaustive error, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn match_optional_with_wildcard() {
+        let output = check_source(
+            "fn f(x: Int?): Int {\n\
+                 return match x {\n\
+                     _ -> 0,\n\
+                 }\n\
+             }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn match_bool_exhaustive() {
+        let output = check_source(
+            "fn f(x: Bool): Int {\n\
+                 return match x {\n\
+                     true -> 1,\n\
+                     false -> 0,\n\
+                 }\n\
+             }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn match_bool_non_exhaustive() {
+        let output = check_source(
+            "fn f(x: Bool): Int {\n\
+                 return match x {\n\
+                     true -> 1,\n\
+                 }\n\
+             }",
+        );
+        assert!(output.diagnostics.has_errors());
+        let msgs: Vec<_> = output.diagnostics.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("non-exhaustive")),
+            "Expected non-exhaustive error, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn match_int_without_wildcard_error() {
+        let output = check_source(
+            "fn f(x: Int): Int {\n\
+                 return match x {\n\
+                     1 -> 10,\n\
+                     2 -> 20,\n\
+                 }\n\
+             }",
+        );
+        assert!(output.diagnostics.has_errors());
+        let msgs: Vec<_> = output.diagnostics.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("non-exhaustive")),
+            "Expected non-exhaustive error, got: {msgs:?}"
+        );
     }
 }

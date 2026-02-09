@@ -1,0 +1,8 @@
+fn main(): Int {
+    x: Bool = true
+    match x {
+        true -> print("yes"),
+        false -> print("no")
+    }
+    return 0
+}

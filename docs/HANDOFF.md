@@ -22,10 +22,10 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_ast`         | AST node definitions for all language constructs               | 53    | Complete |
 | `spark_parser`      | Recursive descent parser with Pratt expression parsing         | 125   | Complete |
 | `spark_modules`     | Module resolution, dependency graph, cycle detection           | 38    | Complete |
-| `spark_resolve`     | Name resolution: scoping, DefIds, imports                      | 51    | Complete |
-| `spark_types`       | Type checking: two-pass signature collection + body checking   | 97    | Complete |
+| `spark_resolve`     | Name resolution: scoping, DefIds, imports                      | 56    | Complete |
+| `spark_types`       | Type checking: two-pass signature collection + body checking   | 105   | Complete |
 | `spark_hir`         | HIR lowering: desugar typed AST into core IR                   | 28    | Complete |
-| `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 36    | Complete |
+| `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 37    | Complete |
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
 | `spark_drop`        | Type queries for RC/drop decisions (`needs_rc`, etc.)          | 11    | Complete |
@@ -33,7 +33,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_opt`         | MIR optimization passes (5 passes, 2 iterations)               | 75    | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
-**Total: 705 tests passing across workspace.**
+**Total: 705+ tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
@@ -98,21 +98,31 @@ String literals work end-to-end. `print("hello world")` produces output.
 
 ### Suggested Next Steps (in rough priority order)
 
-1. **COW mutation hooks** — Runtime COW functions (`__spark_string_cow`, `__spark_list_cow`, `__spark_map_cow`) are prepared but not wired into codegen. Wire up when mutable collection operations are implemented: before any mutation, emit COW uniqueness check (if RC>1, copy buffer first).
-2. **Collection methods** — `.append()`, `.len()`, `.remove()`, `.contains()`, etc. Need method resolution infrastructure or special-cased built-in dispatch (like `print`). Each mutation method should emit COW check first.
-3. **`is` type test** — MIR stub (`lower_expr.rs:289`). Lower to discriminant extraction + comparison. Codegen already handles `Rvalue::Discriminant` and `SwitchInt`.
-4. **Match exhaustiveness checking** — Would go in `spark_types`. Report missing/unreachable patterns.
-5. **Method resolution & interface bindings** — Dot-call syntax, `binding Foo for Bar` validation. Prerequisite for collection methods via normal syntax.
-6. **Generic instantiation** — `Ty::Param` exists but isn't used. Needs monomorphization.
-7. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support.
-8. **Async/await/spawn** — Future types, state machine transform, runtime executor.
-9. **String interpolation** — Lexer + parser changes for `"hello {expr}"` syntax.
+1. **Method resolution & interface bindings** — Dot-call syntax, `binding Foo for Bar` validation. Prerequisite for collection methods via normal syntax.
+2. **Generic instantiation** — `Ty::Param` exists but isn't used. Needs monomorphization.
+3. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support.
+4. **Async/await/spawn** — Future types, state machine transform, runtime executor.
+5. **String interpolation** — Lexer + parser changes for `"hello {expr}"` syntax.
+
+### Recently Completed (Stream A: Union Type Handling)
+
+- **`??` coalesce** — Desugared in HIR to match expressions with synthetic `DefId` bindings.
+- **`?.` optional chain** — Desugared to match with Null propagation.
+- **`!` propagation** — Full union type analysis with `split_union` for success/error classification.
+- **`to` type narrowing** — Desugared to match on union error variants.
+
+### Recently Completed (Stream D: Safety & Analysis)
+
+- **`is` type test** — MIR lowering with discriminant checks for enums, unions, optionals. Compile-time constants for primitive types.
+- **Match exhaustiveness checking** — `spark_types/src/exhaustive.rs`. Coverage-based analysis for enum variants, union members, optionals, booleans. Reports missing patterns and unreachable arms.
+- **Lifetime elision rules** — `spark_types/src/lower.rs:apply_lifetime_elision()`. Rust-like rules: single input ref → shared output lifetime, self parameter → output gets self's lifetime, multiple input refs → error.
+- **Resolver enum variant paths** — `resolve_value_path` and `resolve_type_path` now resolve `Enum.Variant` to the variant's individual `DefId`, enabling proper enum exhaustiveness checking.
+- **`lower_type_expr` span recording** — Type expressions now record their lowered type in the span→type map, fixing `is`/`as` expressions in the HIR.
 
 ### Deferred Design Decisions
 
 - Reborrowing / two-phase borrows (borrow checker rejects; workarounds exist)
 - Explicit lifetime parameter syntax (`fn foo[A](...)`)
-- Lifetime elision rules (all lifetimes are `LifetimeId::ANONYMOUS` currently)
 
 ### Full Pipeline
 

@@ -57,6 +57,10 @@ fn collect_function(
 
     let ret_type = lower_type_expr(&func.ret_type, table, builtins, definitions, resolutions, diagnostics);
 
+    let (param_types, ret_type) = crate::lower::apply_lifetime_elision(
+        &param_types, ret_type, func.span, table, diagnostics,
+    );
+
     let fn_type = table.intern(Ty::Function {
         params: param_types.clone(),
         ret: ret_type,
