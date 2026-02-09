@@ -123,7 +123,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
 
     let definitions = hir_output.definitions;
 
-    // -- Phase 9: MIR construction --------------------------------------------
+    // -- Phase 9: MIR construction + monomorphization ---------------------------
     let mir_output = spark_mir::lower(MirInput {
         hir: hir_output.hir,
         table: hir_output.table,
@@ -134,6 +134,9 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
         return Err(());
     }
     emit_warnings(&mir_output.diagnostics, &source_map);
+
+    // Use definitions from MIR output (may contain monomorphized entries).
+    let definitions = mir_output.definitions;
 
     // -- Phase 10: Borrow checking --------------------------------------------
     let borrow_output = spark_borrow::check(BorrowInput {

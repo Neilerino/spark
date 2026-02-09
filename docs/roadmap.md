@@ -11,7 +11,7 @@ Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR �
   ✅       ✅      ✅       ✅        ✅        ✅     ✅    ✅      ✅      ✅      ✅       ✅
 ```
 
-**What works**: 799 tests pass (including 11 end-to-end tests). Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. String interpolation (`"hello {name}"`) works end-to-end. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Collection methods (`.len()`, `.append()`, `.contains()`, `.remove()`) work for List/Map/Set/String with COW enforcement on mutating operations. User-defined methods via `binding` declarations work with dot-call syntax. Generic structs and functions with type inference work at the type-checking level (`struct Box[T] { value: T }`, `fn identity[T](x: T): T`). Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. Union type handling complete: `??` coalesce, `?.` optional chain, `!` propagation, and `to` type narrowing all desugar to match expressions with proper bindings. `is` type tests work at runtime for enums, unions, and optionals. Match exhaustiveness checking catches missing patterns at compile time. Lifetime elision infers output lifetimes from input references. Interface type checking validates that bindings implement required methods. E2E test framework in `spark_driver/tests/e2e.rs`. LSP with semantic tokens in `tools/spark-lsp`. Install script (`install.sh`) provided.
+**What works**: 802 tests pass (including 11 end-to-end tests). Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. String interpolation (`"hello {name}"`) works end-to-end. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Collection methods (`.len()`, `.append()`, `.contains()`, `.remove()`) work for List/Map/Set/String with COW enforcement on mutating operations. User-defined methods via `binding` declarations work with dot-call syntax. Generic structs and functions with type inference work end-to-end via monomorphization (`struct Box[T] { value: T }`, `fn identity[T](x: T): T`). Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. Union type handling complete: `??` coalesce, `?.` optional chain, `!` propagation, and `to` type narrowing all desugar to match expressions with proper bindings. `is` type tests work at runtime for enums, unions, and optionals. Match exhaustiveness checking catches missing patterns at compile time. Lifetime elision infers output lifetimes from input references. Interface type checking validates that bindings implement required methods. E2E test framework in `spark_driver/tests/e2e.rs`. LSP with semantic tokens in `tools/spark-lsp`. Install script (`install.sh`) provided.
 
 ```spark
 fn main(): Int {
@@ -24,7 +24,7 @@ fn main(): Int {
 }
 ```
 
-**What's missing**: `each`/`each via` iteration (blocked on lambdas/closures — see `docs/design-notes/lambdas-closures-each.md`). MIR monomorphization for generics (type checking works, codegen pending). Several language features deferred with stubs/warnings (closures, async).
+**What's missing**: `each`/`each via` iteration (blocked on lambdas/closures — see `docs/design-notes/lambdas-closures-each.md`). Generic constraint validation (`T: Comparable`). Several language features deferred with stubs/warnings (closures, async).
 
 ---
 
@@ -129,26 +129,14 @@ Note: `to` was previously overloaded for both type narrowing and pipeline compos
 
 User-defined method resolution via `binding` declarations works end-to-end. `DefinitionKind::BindingMethod(DefId)` tracks binding methods. Resolver collects binding methods, type checker resolves `receiver.method()` via `type_methods` map, HIR lowers method bodies as regular functions, MIR/codegen handle them transparently. Interface type checking validates that bindings implement all required methods with correct signatures.
 
-### 3.5 Generic Instantiation — Type Checking Complete
+### ~~3.5 Generic Instantiation (Monomorphization)~~ — Complete
 
-**Status**: Type checking phase works; MIR monomorphization and codegen pending
-**Location**: `spark_types`
+Generic structs and functions work end-to-end via monomorphization:
 
-**Done**:
-- `Ty::Applied { base, args }` for instantiated generic types
-- `Ty::Param(DefId)` for generic parameters
-- Generic parameter collection in `check_decl.rs`
-- Type argument validation and `Ty::Applied` creation in `lower.rs`
-- Type substitution via `substitute.rs` (`SubstMap`, `substitute()`, `substitute_mut()`, `infer_type_args()`)
-- Generic struct field access with substitution
-- Generic struct init with type arg inference from field values
-- Generic function call with type arg inference from arguments
-- `is_compatible()`, `type_name()`, exhaustive matching for `Ty::Applied`
-
-**Remaining**:
-- MIR monomorphization pass (clone functions with concrete types substituted)
-- Codegen layout computation for `Ty::Applied`
-- Constraint checking (`T: Comparable`) — deferred until needed
+- **Type checking**: `Ty::Applied { base, args }` for instantiated generic types. `Ty::Param(DefId)` for parameters. Type substitution via `substitute.rs`. Generic struct field access, struct init, and function calls with type arg inference.
+- **MIR monomorphization**: `spark_mir/src/monomorphize.rs` — 4-phase pass: collect/dedup instances, clone+substitute function bodies, rewrite call sites, remove generic originals. `MirOutput.definitions` flows monomorphized entries through pipeline.
+- **Codegen**: `LayoutCache::applied_struct_layout_of()` computes struct layout from substituted field types. `field_offset_for_type()` handles both `Ty::Struct` and `Ty::Applied`. `emit_place_addr`/`resolve_place_type`/`emit_aggregate` all handle Applied types.
+- **Deferred**: Constraint checking (`T: Comparable`)
 
 ---
 
@@ -259,7 +247,7 @@ These are deliberate design decisions per the language spec — Spark requires e
 | ~~P3~~ | ~~`!` propagation~~ | ~~Medium~~ | ~~Error handling ergonomics~~ | Done |
 | ~~P3~~ | ~~`to` type narrowing~~ | ~~Low-Medium~~ | ~~Union type error handling~~ | Done |
 | ~~P3~~ | ~~Method resolution~~ | ~~Medium-High~~ | ~~User-defined methods + interfaces~~ | Done |
-| **P3** | Generics | High | Enables parameterized types | Type checking done; MIR mono pending |
+| ~~P3~~ | ~~Generics~~ | ~~High~~ | ~~Enables parameterized types~~ | Done |
 | ~~P4~~ | ~~`spark_opt` passes~~ | ~~High~~ | ~~Performance optimization~~ | Done |
 | **P4** | Reborrowing | Low | Borrow checker ergonomics | Not started |
 | **P5** | Lambdas/closures | High | First-class functions | MIR stub |
@@ -291,15 +279,15 @@ All items complete (`is` type test, match exhaustiveness, lifetime elision). Als
 
 `spark_opt` crate complete (5 passes, 2 iterations, 75 tests). Reborrowing/two-phase borrows (4.2) still TODO — low priority ergonomics.
 
-### Stream B: Type System Foundations — Mostly Complete
-> ~~Method resolution~~ → Generics (type checking done, MIR mono remaining)
+### ~~Stream B: Type System Foundations~~ — Complete
+> ~~Method resolution~~ → ~~Generics (monomorphization)~~
 
-Method resolution and interface bindings are complete. Generics type checking works (inference, substitution, `Ty::Applied`). Remaining: MIR monomorphization pass to clone function bodies with concrete types, and codegen layout for `Ty::Applied`.
+Method resolution, interface bindings, and generic instantiation via monomorphization all complete.
 
 | Item | Effort | Dependencies | Status |
 |------|--------|-------------|--------|
 | ~~Interface validation + method resolution (3.4)~~ | ~~Medium-High~~ | ~~None~~ | Done |
-| Generic instantiation / monomorphization (3.5) | Medium | None | Type checking done; MIR mono + codegen remaining |
+| ~~Generic instantiation / monomorphization (3.5)~~ | ~~High~~ | ~~None~~ | Done |
 
 ### Stream C: Lambdas & Functional Features
 > Lambdas → Partial application → `each`/`each via` → `via` pipeline
@@ -314,7 +302,7 @@ The largest dependency chain. Everything here requires function-as-value semanti
 | `each`/`each via` (5.5) | Medium | Lambdas, partials |
 | `via` pipeline (5.6) | Medium | Lambdas, partials, method resolution (Stream B) |
 
-**Conflicts with Stream B**: Both modify how functions/methods are resolved and called. `via` specifically needs method resolution to look up named operations. LSP `ScopeMap` (from LSP team requirements) should be built alongside lambda scope handling in `spark_resolve`.
+**Note**: `via` needs method resolution to look up named operations (already complete in Stream B). LSP `ScopeMap` (from LSP team requirements) should be built alongside lambda scope handling in `spark_resolve`.
 
 ### ~~Stream F: Syntax & Convenience~~ — Complete
 
@@ -334,15 +322,12 @@ String interpolation implemented end-to-end (lexer, parser, HIR, codegen).
 ### Parallelism Summary
 
 ```
-Must coordinate:
-  Stream B (Generics MIR)  ─── shared code ────  Stream C (Lambdas)
-
 Sequential dependencies:
   Stream C (Lambdas)       ─── blocks ─────────  Stream G (Async)
 
 Completed:
   Stream A (Union types)   ─── DONE
-  Stream B (Type system)   ─── MOSTLY DONE (MIR mono remaining)
+  Stream B (Type system)   ─── DONE
   Stream D (Safety)        ─── DONE
   Stream E (Optimization)  ─── DONE (reborrowing deferred)
   Stream F (Interpolation) ─── DONE
@@ -354,10 +339,8 @@ Completed:
 
 The **critical path** (features that unlock the most downstream work):
 
-1. **Generics MIR monomorphization (Stream B, 3.5)** — Type checking works. Remaining: MIR pass to clone function bodies with concrete types, codegen layout for `Ty::Applied`. Enables generic structs/functions to compile and run.
+1. **Lambdas/closures (Stream C, 5.1)** — Unlocks all functional features. Requires function types as first-class values, capture analysis, closure environments, and LSP `ScopeMap` integration.
 
-2. **Lambdas/closures (Stream C, 5.1)** — Unlocks all functional features. Requires function types as first-class values, capture analysis, closure environments, and LSP `ScopeMap` integration.
+2. **`each`/`each via`/`via`/partial application (Stream C, 5.5/5.6)** — Once lambdas land, these follow naturally. Partial application desugars into lambda + captured args.
 
-3. **`each`/`each via`/`via`/partial application (Stream C, 5.5/5.6)** — Once lambdas land, these follow naturally. Partial application desugars into lambda + captured args.
-
-4. **Async/await/spawn (Stream G, 5.2)** — Requires stable closures for `spawn`. State machine transformation is the largest remaining infrastructure piece.
+3. **Async/await/spawn (Stream G, 5.2)** — Requires stable closures for `spawn`. State machine transformation is the largest remaining infrastructure piece.

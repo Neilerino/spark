@@ -37,6 +37,7 @@ pub mod lower_function;
 pub mod lower_pattern;
 pub mod lower_stmt;
 pub mod mir;
+pub mod monomorphize;
 pub mod pretty;
 
 use spark_diagnostics::Diagnostics;
@@ -66,8 +67,10 @@ pub struct MirInput {
 pub struct MirOutput {
     /// The lowered MIR.
     pub mir: Mir,
-    /// The type table (passed through).
+    /// The type table (passed through, may have new types from monomorphization).
     pub table: TypeTable,
+    /// Definition table (may have new entries from monomorphization).
+    pub definitions: DefinitionTable,
     /// Diagnostics accumulated during lowering.
     pub diagnostics: Diagnostics,
 }
@@ -80,8 +83,8 @@ pub struct MirOutput {
 pub fn lower(input: MirInput) -> MirOutput {
     let MirInput {
         hir,
-        table,
-        definitions,
+        mut table,
+        mut definitions,
     } = input;
 
     let mut functions = std::collections::HashMap::new();
@@ -103,9 +106,15 @@ pub fn lower(input: MirInput) -> MirOutput {
         diagnostics = mir_builder.diagnostics;
     }
 
+    let mut mir = Mir { functions };
+
+    // Run monomorphization to instantiate generic functions with concrete types.
+    monomorphize::monomorphize(&mut mir, &mut table, &mut definitions);
+
     MirOutput {
-        mir: Mir { functions },
+        mir,
         table,
+        definitions,
         diagnostics,
     }
 }

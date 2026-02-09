@@ -6,6 +6,7 @@
 
 use rustc_hash::FxHashMap;
 use spark_resolve::DefId;
+use spark_types::substitute::{build_subst_map, substitute};
 use spark_types::{FloatWidth, IntWidth, Ty, TypeId, TypeTable};
 
 /// The memory layout of a type (size and alignment in bytes).
@@ -50,6 +51,8 @@ pub struct LayoutCache {
     struct_layouts: FxHashMap<DefId, StructLayout>,
     /// Cached enum layouts.
     enum_layouts: FxHashMap<DefId, EnumLayout>,
+    /// Cached struct layouts for instantiated generic types (`Ty::Applied`).
+    applied_struct_layouts: FxHashMap<TypeId, StructLayout>,
 }
 
 impl LayoutCache {
@@ -61,6 +64,7 @@ impl LayoutCache {
             type_layouts: FxHashMap::default(),
             struct_layouts: FxHashMap::default(),
             enum_layouts: FxHashMap::default(),
+            applied_struct_layouts: FxHashMap::default(),
         }
     }
 
@@ -113,6 +117,95 @@ impl LayoutCache {
         Some(sl.field_offsets[field_idx])
     }
 
+    /// Computes (or returns cached) the struct layout for an instantiated generic type.
+    ///
+    /// For `Ty::Applied { base, args }`, builds a substitution map from the base
+    /// type's generic params and computes the layout using substituted field types.
+    pub fn applied_struct_layout_of(&mut self, applied_ty_id: TypeId, table: &TypeTable) -> StructLayout {
+        if let Some(cached) = self.applied_struct_layouts.get(&applied_ty_id) {
+            return cached.clone();
+        }
+
+        let (base, args) = match table.resolve(applied_ty_id) {
+            Ty::Applied { base, args } => (*base, args.clone()),
+            // Not an Applied type — fall back to regular struct layout.
+            Ty::Struct(def_id) => return self.struct_layout_of(*def_id, table),
+            _ => {
+                return StructLayout {
+                    layout: TypeLayout { size: 0, align: 1 },
+                    field_offsets: Vec::new(),
+                };
+            }
+        };
+
+        let fields = table
+            .get_struct_fields(base)
+            .map(<[_]>::to_vec)
+            .unwrap_or_default();
+
+        if fields.is_empty() {
+            let layout = StructLayout {
+                layout: TypeLayout { size: 0, align: 1 },
+                field_offsets: Vec::new(),
+            };
+            self.applied_struct_layouts.insert(applied_ty_id, layout.clone());
+            return layout;
+        }
+
+        // Build substitution map from generic params → concrete type args.
+        let params = table
+            .get_generic_params(base)
+            .map(<[_]>::to_vec)
+            .unwrap_or_default();
+        let subst = build_subst_map(&params, &args);
+
+        let mut offset = 0u32;
+        let mut max_align = 1u32;
+        let mut field_offsets = Vec::with_capacity(fields.len());
+
+        for (_, field_ty) in &fields {
+            let concrete_ty = substitute(*field_ty, &subst, table);
+            let field_layout = self.layout_of(concrete_ty, table);
+            offset = align_to(offset, field_layout.align);
+            field_offsets.push(offset);
+            offset += field_layout.size;
+            max_align = max_align.max(field_layout.align);
+        }
+
+        let total_size = align_to(offset, max_align);
+        let layout = StructLayout {
+            layout: TypeLayout {
+                size: total_size,
+                align: max_align,
+            },
+            field_offsets,
+        };
+        self.applied_struct_layouts.insert(applied_ty_id, layout.clone());
+        layout
+    }
+
+    /// Computes the byte offset of a named field, handling both `Ty::Struct`
+    /// and `Ty::Applied` types.
+    pub fn field_offset_for_type(
+        &mut self,
+        ty_id: TypeId,
+        field_name: spark_intern::Symbol,
+        table: &TypeTable,
+    ) -> Option<u32> {
+        let ty = table.resolve(ty_id);
+        match ty {
+            Ty::Struct(def_id) => self.field_offset(*def_id, field_name, table),
+            Ty::Applied { base, .. } => {
+                let base = *base;
+                let fields = table.get_struct_fields(base)?;
+                let field_idx = fields.iter().position(|(name, _)| *name == field_name)?;
+                let sl = self.applied_struct_layout_of(ty_id, table);
+                Some(sl.field_offsets[field_idx])
+            }
+            _ => None,
+        }
+    }
+
     fn compute_layout(&mut self, ty_id: TypeId, table: &TypeTable) -> TypeLayout {
         let ty = table.resolve(ty_id);
         match ty {
@@ -133,12 +226,20 @@ impl LayoutCache {
             | Ty::Ref { .. }
             | Ty::Function { .. }
             // Generic parameter — treat as pointer-sized
-            | Ty::Param(_)
-            // Instantiated generic — treat as struct (aggregate → pointer-sized)
-            | Ty::Applied { .. } => TypeLayout {
+            | Ty::Param(_) => TypeLayout {
                 size: self.ptr_size,
                 align: self.ptr_size,
             },
+
+            // Instantiated generic struct/enum — compute layout from substituted fields.
+            Ty::Applied { base, .. } => {
+                let base = *base;
+                let sl = self.applied_struct_layout_of(ty_id, table);
+                // If the base has no fields registered, fall back to checking
+                // if it's an enum. For now, struct is the common case.
+                let _ = base;
+                sl.layout
+            }
 
             // User-defined
             Ty::Struct(def_id) => {

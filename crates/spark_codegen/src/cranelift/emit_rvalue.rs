@@ -224,6 +224,24 @@ fn emit_place_addr<M: Module>(
                             }
                         }
                     }
+                    Ty::Applied { base, args } => {
+                        let base = *base;
+                        let args = args.clone();
+                        if let Some(offset) = ctx.layouts.field_offset_for_type(unwrapped_id, *field_name, table) {
+                            addr = ctx.builder.ins().iadd_imm(addr, i64::from(offset));
+                        }
+                        // Update current type to the substituted field type.
+                        if let Some(fields) = table.get_struct_fields(base) {
+                            if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
+                                let params = table
+                                    .get_generic_params(base)
+                                    .map(<[_]>::to_vec)
+                                    .unwrap_or_default();
+                                let subst = spark_types::substitute::build_subst_map(&params, &args);
+                                current_ty = spark_types::substitute::substitute(*field_ty, &subst, table);
+                            }
+                        }
+                    }
                     _ => {
                         // For enums or other types with field access, we'd handle
                         // similarly. For now, just offset by 0.
@@ -291,12 +309,27 @@ fn resolve_place_type(ctx: &FunctionContext<'_>, place: &Place, table: &TypeTabl
         let (_, unwrapped) = clif_types::unwrap_mutable(current_ty, table);
         match proj {
             Projection::Field(field_name) => {
-                if let Ty::Struct(def_id) = unwrapped {
-                    if let Some(fields) = table.get_struct_fields(*def_id) {
-                        if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
-                            current_ty = *field_ty;
+                match unwrapped {
+                    Ty::Struct(def_id) => {
+                        if let Some(fields) = table.get_struct_fields(*def_id) {
+                            if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
+                                current_ty = *field_ty;
+                            }
                         }
                     }
+                    Ty::Applied { base, args } => {
+                        if let Some(fields) = table.get_struct_fields(*base) {
+                            if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
+                                let params = table
+                                    .get_generic_params(*base)
+                                    .map(<[_]>::to_vec)
+                                    .unwrap_or_default();
+                                let subst = spark_types::substitute::build_subst_map(&params, &args.clone());
+                                current_ty = spark_types::substitute::substitute(*field_ty, &subst, table);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             Projection::Index(_) => {
@@ -482,7 +515,17 @@ fn emit_aggregate<M: Module>(
     match kind {
         AggregateKind::Struct { def_id, fields } => {
             let dest_addr = ctx.local_stack_addr(dest_local)?;
-            let sl = ctx.layouts.struct_layout_of(*def_id, table);
+
+            // Check if the dest local has an Applied type (generic struct instantiation).
+            // If so, compute layout with substituted field types.
+            let dest_ty = ctx.local_type_id(dest_local);
+            let (_, unwrapped) = clif_types::unwrap_mutable(dest_ty, table);
+            let sl = if matches!(unwrapped, Ty::Applied { .. }) {
+                let (unwrapped_id, _) = clif_types::unwrap_mutable(dest_ty, table);
+                ctx.layouts.applied_struct_layout_of(unwrapped_id, table)
+            } else {
+                ctx.layouts.struct_layout_of(*def_id, table)
+            };
 
             for (i, operand) in operands.iter().enumerate() {
                 if let Some(val) = emit_operand(ctx, operand, table, definitions, func_ids, module) {

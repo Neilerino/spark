@@ -25,7 +25,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_resolve`     | Name resolution: scoping, DefIds, imports                      | 56    | Complete |
 | `spark_types`       | Type checking: two-pass signature collection + body checking   | 155   | Complete |
 | `spark_hir`         | HIR lowering: desugar typed AST into core IR                   | 28    | Complete |
-| `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 41    | Complete |
+| `spark_mir`         | MIR construction + monomorphization: CFG-based IR              | 44    | Complete |
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
 | `spark_drop`        | Type queries for RC/drop decisions (`needs_rc`, etc.)          | 11    | Complete |
@@ -33,7 +33,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_opt`         | MIR optimization passes (5 passes, 2 iterations)               | 75    | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
-**Total: 799 tests passing across workspace.**
+**Total: 802 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
@@ -96,17 +96,17 @@ String literals work end-to-end. `print("hello world")` produces output.
 
 ### Suggested Next Steps (in rough priority order)
 
-1. **Generic MIR monomorphization** — Type checking works (`Ty::Applied`, substitution, inference). Remaining: MIR pass to clone function bodies with concrete types, codegen layout for `Ty::Applied`.
-2. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support.
-3. **`each`/`each via` iteration** — Blocked on lambdas/closures.
-4. **Async/await/spawn** — Future types, state machine transform, runtime executor.
+1. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support. Unlocks all functional features.
+2. **`each`/`each via` iteration** — Blocked on lambdas/closures.
+3. **Async/await/spawn** — Future types, state machine transform, runtime executor.
+4. **Generic constraint validation** (`T: Comparable`) — deferred, low priority.
 
 ### Recently Completed
 
+- **Generic monomorphization** — MIR-level monomorphization pass clones generic function bodies with concrete type substitutions, rewrites call sites, and removes generic originals. Codegen computes layouts for `Ty::Applied` via substituted field types. 3 new monomorphization tests.
+- **Generic type checking** — `Ty::Applied { base, args }` for instantiated generic types. Type substitution via `substitute.rs`. Generic struct field access, struct init, and function calls with type arg inference all work.
 - **String interpolation** — Lexer tokenizes `"hello {expr}"` syntax, parser produces `StringPart::Interpolation`, HIR desugars to runtime string concatenation calls. Works end-to-end.
-- **Generic type checking** — `Ty::Applied { base, args }` for instantiated generic types. Type substitution via `substitute.rs`. Generic struct field access, struct init, and function calls with type arg inference all work. 13 new tests.
 - **Method resolution & interface bindings** — `DefinitionKind::BindingMethod(DefId)` for user-defined methods. `binding Foo for IBar { fn method() { ... } }` works end-to-end. Interface type checking validates bindings implement all required methods.
-- **Interface type checking** — Validates that `binding` declarations implement all required interface methods with correct signatures.
 
 ### Earlier Completed (Stream A: Union Type Handling)
 
@@ -156,7 +156,7 @@ spark_resolve       (depends on span, intern, diagnostics, ast, modules)
 spark_types         (depends on span, intern, diagnostics, ast, modules, resolve)
 spark_hir           (depends on span, intern, diagnostics, ast, modules, resolve, types)
 spark_drop          (depends on types)
-spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, hir, drop)
+spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, hir, drop, modules)
 spark_borrow        (depends on span, intern, diagnostics, resolve, types, mir)
 spark_opt           (depends on span, intern, diagnostics, ast, resolve, types, mir)
 spark_codegen       (depends on span, intern, diagnostics, ast, resolve, types, mir, drop + cranelift)
@@ -246,7 +246,7 @@ fn main(): Int {
 
 ```bash
 cargo build                      # Build all
-cargo test                       # Test all (799 tests)
+cargo test                       # Test all (802 tests)
 cargo clippy                     # Lint all
 cargo test -p spark_codegen      # Test code generator
 cargo doc --open                 # View documentation

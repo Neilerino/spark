@@ -705,6 +705,11 @@ fn check_call(
                         }
                     }
 
+                    // Record this mono instance for MIR monomorphization.
+                    if let Some(def_id) = callee_def_id {
+                        table.set_mono_instance(call_span, def_id, subst.clone());
+                    }
+
                     // Return the substituted return type
                     return crate::substitute::substitute_mut(ret, &subst, table);
                 }

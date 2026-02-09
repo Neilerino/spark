@@ -15,12 +15,12 @@ spark_resolve = { workspace = true }
 spark_types = { workspace = true }
 spark_hir = { workspace = true }
 spark_drop = { workspace = true }
+spark_modules = { workspace = true }
 rustc-hash = { workspace = true }
 
 [dev-dependencies]
 spark_lexer = { workspace = true }
 spark_parser = { workspace = true }
-spark_modules = { workspace = true }
 
 [lints]
 workspace = true

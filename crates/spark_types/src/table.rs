@@ -43,6 +43,9 @@ pub struct TypeTable {
     pub(crate) method_resolutions: FxHashMap<Span, DefId>,
     /// Maps a generic definition (struct/enum/function `DefId`) to its ordered generic param `DefId`s.
     pub(crate) generic_params: FxHashMap<DefId, Vec<DefId>>,
+    /// Monomorphization instances: call-site `Span` → (callee `DefId`, substitution map).
+    /// Populated during type checking for generic function calls, consumed during MIR monomorphization.
+    pub(crate) mono_instances: FxHashMap<Span, (DefId, FxHashMap<DefId, TypeId>)>,
 }
 
 impl Default for TypeTable {
@@ -73,6 +76,7 @@ impl TypeTable {
             type_methods: FxHashMap::default(),
             method_resolutions: FxHashMap::default(),
             generic_params: FxHashMap::default(),
+            mono_instances: FxHashMap::default(),
         }
     }
 
@@ -179,6 +183,25 @@ impl TypeTable {
     #[must_use]
     pub fn get_generic_params(&self, def_id: DefId) -> Option<&[DefId]> {
         self.generic_params.get(&def_id).map(Vec::as_slice)
+    }
+
+    /// Records a monomorphization instance for a generic function call.
+    ///
+    /// Keyed by the call expression `Span`, stores the callee `DefId` and
+    /// the substitution map from generic param `DefId`s to concrete `TypeId`s.
+    pub fn set_mono_instance(
+        &mut self,
+        span: Span,
+        def_id: DefId,
+        subst: FxHashMap<DefId, TypeId>,
+    ) {
+        self.mono_instances.insert(span, (def_id, subst));
+    }
+
+    /// Returns all monomorphization instances recorded during type checking.
+    #[must_use]
+    pub const fn mono_instances(&self) -> &FxHashMap<Span, (DefId, FxHashMap<DefId, TypeId>)> {
+        &self.mono_instances
     }
 
     /// Interns a lifetime name and returns its [`LifetimeId`].

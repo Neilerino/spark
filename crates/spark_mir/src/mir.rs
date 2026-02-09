@@ -70,7 +70,7 @@ pub struct Mir {
 }
 
 /// A single function in MIR form.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MirFunction {
     /// The definition ID of this function.
     pub def_id: DefId,
@@ -87,7 +87,7 @@ pub struct MirFunction {
 }
 
 /// Declaration of a local variable or temporary.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LocalDecl {
     /// The local identifier.
     pub local: Local,
@@ -106,7 +106,7 @@ pub struct LocalDecl {
 // ── Basic blocks ─────────────────────────────────────────────────────────
 
 /// A basic block: a sequence of statements followed by a terminator.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BasicBlock {
     /// Statements executed sequentially.
     pub statements: Vec<Statement>,
@@ -119,7 +119,7 @@ pub struct BasicBlock {
 // ── Statements ───────────────────────────────────────────────────────────
 
 /// A single statement within a basic block.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Statement {
     /// Assign an rvalue to a place: `place = rvalue`.
     Assign {
@@ -191,7 +191,7 @@ pub enum Projection {
 // ── Rvalues ──────────────────────────────────────────────────────────────
 
 /// A right-hand-side value that can be assigned to a place.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Rvalue {
     /// Use an operand directly.
     Use(Operand),
@@ -224,7 +224,7 @@ pub enum Rvalue {
 }
 
 /// The kind of aggregate being constructed.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AggregateKind {
     /// Struct construction.
     Struct {
@@ -287,7 +287,7 @@ pub enum Constant {
 // ── Terminators ──────────────────────────────────────────────────────────
 
 /// A block terminator — how control leaves a basic block.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Terminator {
     /// Unconditional jump.
     Goto {
