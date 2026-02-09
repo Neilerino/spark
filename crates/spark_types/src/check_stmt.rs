@@ -8,7 +8,7 @@ use spark_diagnostics::{Diagnostic, Label};
 use spark_resolve::{DefinitionTable, ResolutionMap};
 
 use crate::builtins::BuiltinTypes;
-use crate::check_expr::{check_expr, is_compatible, type_name};
+use crate::check_expr::{check_expr, check_expr_expected, is_compatible, type_name};
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
 use crate::ty::{Ty, TypeId};
@@ -29,8 +29,9 @@ pub fn check_stmt(
             // Lower the declared type
             let declared_ty = lower_type_expr(ty, table, builtins, definitions, resolutions, diagnostics);
 
-            // Check the value expression
-            let value_ty = check_expr(value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            // Check the value expression, passing the declared type as context
+            // so that propagation (!) can use it to split union types.
+            let value_ty = check_expr_expected(value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret, Some(declared_ty));
 
             // Verify compatibility
             if !is_compatible(value_ty, declared_ty, table) {

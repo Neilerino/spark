@@ -112,7 +112,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     // -- Phase 8: HIR lowering ------------------------------------------------
     let hir_output = spark_hir::lower(HirInput {
         resolved: resolve2.resolved,
-        definitions: resolve2.definitions.clone(),
+        definitions: resolve2.definitions,
         table,
     });
     if hir_output.diagnostics.has_errors() {
@@ -121,11 +121,13 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     }
     emit_warnings(&hir_output.diagnostics, &source_map);
 
+    let definitions = hir_output.definitions;
+
     // -- Phase 9: MIR construction --------------------------------------------
     let mir_output = spark_mir::lower(MirInput {
         hir: hir_output.hir,
         table: hir_output.table,
-        definitions: resolve2.definitions.clone(),
+        definitions: definitions.clone(),
     });
     if mir_output.diagnostics.has_errors() {
         mir_output.diagnostics.emit_all(&source_map);
@@ -137,7 +139,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     let borrow_output = spark_borrow::check(BorrowInput {
         mir: mir_output.mir,
         table: mir_output.table,
-        definitions: resolve2.definitions.clone(),
+        definitions: definitions.clone(),
     });
     if borrow_output.diagnostics.has_errors() {
         borrow_output.diagnostics.emit_all(&source_map);
@@ -149,7 +151,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     let opt_output = spark_opt::optimize(spark_opt::OptInput {
         mir: borrow_output.mir,
         table: borrow_output.table,
-        definitions: resolve2.definitions.clone(),
+        definitions: definitions.clone(),
         opt_level,
     });
     emit_warnings(&opt_output.diagnostics, &source_map);
@@ -158,7 +160,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     let codegen_output = spark_codegen::generate(CodegenInput {
         mir: opt_output.mir,
         table: opt_output.table,
-        definitions: resolve2.definitions,
+        definitions,
         target: TargetSpec::host(),
     });
     if codegen_output.diagnostics.has_errors() {
@@ -176,11 +178,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
 ///
 /// For single-file programs we create a synthetic root module containing just
 /// the one file. Multi-file compilation will be added later.
-fn resolve_modules(
-    file_id: FileId,
-    ast: spark_ast::Ast,
-    file_name: &str,
-) -> ModuleResolverOutput {
+fn resolve_modules(file_id: FileId, ast: spark_ast::Ast, file_name: &str) -> ModuleResolverOutput {
     let mut asts = HashMap::new();
     asts.insert(file_id, ast);
 

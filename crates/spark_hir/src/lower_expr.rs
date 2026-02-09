@@ -3,14 +3,14 @@
 //! Converts AST [`Expr`] nodes into HIR [`HirExpr`] nodes, resolving
 //! identifiers to [`DefId`]s and looking up types from the [`TypeTable`].
 
-use spark_ast::{Expr, ExprKind, LiteralKind, StringPart};
+use spark_ast::{Expr, ExprKind, LiteralKind, StringPart, ToHandler};
 use spark_diagnostics::Diagnostics;
 use spark_resolve::{DefinitionTable, ResolutionMap};
 use spark_span::Span;
 use spark_types::{TypeId, TypeTable};
 
 use crate::desugar;
-use crate::hir::{HirExpr, HirExprKind, HirLiteral, HirMatchArm, HirParam, HirStmt};
+use crate::hir::{HirExpr, HirExprKind, HirLiteral, HirMatchArm, HirParam, HirPattern, HirStmt};
 use crate::lower_pattern::lower_pattern_with_guard;
 use crate::lower_stmt::lower_stmt;
 use crate::lower_type_expr;
@@ -20,7 +20,7 @@ use crate::lower_type_expr;
 pub fn lower_expr(
     expr: &Expr,
     table: &TypeTable,
-    definitions: &DefinitionTable,
+    definitions: &mut DefinitionTable,
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut Diagnostics,
     current_fn_ret: Option<TypeId>,
@@ -34,7 +34,7 @@ pub fn lower_expr(
 pub fn lower_block(
     block: &spark_ast::Block,
     table: &TypeTable,
-    definitions: &DefinitionTable,
+    definitions: &mut DefinitionTable,
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut Diagnostics,
     current_fn_ret: Option<TypeId>,
@@ -65,7 +65,7 @@ pub fn lower_block(
 fn lower_expr_kind(
     expr: &Expr,
     table: &TypeTable,
-    definitions: &DefinitionTable,
+    definitions: &mut DefinitionTable,
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut Diagnostics,
     current_fn_ret: Option<TypeId>,
@@ -273,21 +273,23 @@ fn lower_expr_kind(
             let lhs_hir = lower_expr(lhs, table, definitions, resolutions, diagnostics, current_fn_ret);
             let rhs_hir = lower_expr(rhs, table, definitions, resolutions, diagnostics, current_fn_ret);
             let ty = expr_type(expr.span, table);
-            desugar::desugar_coalesce(lhs_hir, rhs_hir, expr.span, ty).kind
+            desugar::desugar_coalesce(lhs_hir, rhs_hir, expr.span, ty, definitions).kind
         }
 
         // === Desugared: OptionalField (?.) ===
         ExprKind::OptionalField { base, field } => {
             let base_hir = lower_expr(base, table, definitions, resolutions, diagnostics, current_fn_ret);
             let ty = expr_type(expr.span, table);
-            desugar::desugar_optional_field(base_hir, field.name, expr.span, ty).kind
+            let inner_ty = spark_types::union::strip_null(base_hir.ty, table);
+            desugar::desugar_optional_field(base_hir, field.name, expr.span, ty, inner_ty, definitions).kind
         }
 
         // === Desugared: Propagate (!) ===
         ExprKind::Propagate(inner) => {
             let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
             let ty = expr_type(expr.span, table);
-            desugar::desugar_propagate(inner_hir, current_fn_ret, expr.span, ty).kind
+            let inner_ty = inner_hir.ty;
+            desugar_propagate_expr(inner_hir, inner_ty, ty, current_fn_ret, expr.span, table, definitions)
         }
 
         // === Deferred constructs -> Error ===
@@ -298,9 +300,10 @@ fn lower_expr_kind(
             HirExprKind::Error
         }
 
-        ExprKind::To { expr: inner, .. } => {
-            let _ = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
-            HirExprKind::Error
+        ExprKind::To { expr: inner, handler } => {
+            let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let ty = expr_type(expr.span, table);
+            lower_to_expr(inner_hir, handler, ty, table, definitions, resolutions, diagnostics, current_fn_ret, expr.span)
         }
 
         ExprKind::Partial { callee, args } => {
@@ -318,6 +321,135 @@ fn lower_expr_kind(
         }
 
         ExprKind::Error => HirExprKind::Error,
+    }
+}
+
+/// Desugars a propagate expression (`expr!`) by inspecting the inner type.
+fn desugar_propagate_expr(
+    inner_hir: HirExpr,
+    inner_ty: TypeId,
+    result_ty: TypeId,
+    current_fn_ret: Option<TypeId>,
+    span: Span,
+    table: &TypeTable,
+    definitions: &mut DefinitionTable,
+) -> HirExprKind {
+    use spark_types::ty::Ty;
+
+    let resolved = table.resolve(inner_ty);
+    match resolved {
+        Ty::Optional(success) => {
+            let success_ty = *success;
+            let null_ty = table.lookup(&spark_types::ty::Ty::Null).unwrap_or(TypeId::ERROR);
+            desugar::desugar_propagate_optional(inner_hir, span, success_ty, null_ty, definitions).kind
+        }
+        Ty::Union(_) => {
+            if let Some((success_ty, error_types)) =
+                spark_types::union::split_union(inner_ty, Some(result_ty), current_fn_ret, table)
+            {
+                desugar::desugar_propagate_union(inner_hir, span, success_ty, &error_types, definitions).kind
+            } else {
+                // Can't split — fallback to simple binding
+                let fresh_id = definitions.next_synthetic_id(span);
+                HirExprKind::Match {
+                    scrutinee: Box::new(inner_hir),
+                    arms: vec![HirMatchArm {
+                        pattern: HirPattern::Binding { def_id: fresh_id },
+                        guard: None,
+                        body: HirExpr::new(HirExprKind::Local(fresh_id), result_ty, span),
+                        span,
+                    }],
+                }
+            }
+        }
+        _ => {
+            // Not optional or union — just pass through
+            inner_hir.kind
+        }
+    }
+}
+
+/// Lowers a `to` expression into a match.
+#[allow(clippy::too_many_arguments)]
+fn lower_to_expr(
+    inner_hir: HirExpr,
+    handler: &ToHandler,
+    ty: TypeId,
+    table: &TypeTable,
+    definitions: &mut DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut Diagnostics,
+    current_fn_ret: Option<TypeId>,
+    span: Span,
+) -> HirExprKind {
+    match handler {
+        ToHandler::Narrowing(arms) => {
+            let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len() + 1);
+
+            for arm in arms {
+                let pattern = lower_to_pattern(&arm.pattern, definitions, resolutions, table);
+                let body = lower_expr(&arm.body, table, definitions, resolutions, diagnostics, current_fn_ret);
+                hir_arms.push(HirMatchArm {
+                    pattern,
+                    guard: None,
+                    body,
+                    span: arm.span,
+                });
+            }
+
+            // Add a passthrough arm for unhandled members
+            let pass_id = definitions.next_synthetic_id(span);
+            hir_arms.push(HirMatchArm {
+                pattern: HirPattern::Binding { def_id: pass_id },
+                guard: None,
+                body: HirExpr::new(HirExprKind::Local(pass_id), ty, span),
+                span,
+            });
+
+            HirExprKind::Match {
+                scrutinee: Box::new(inner_hir),
+                arms: hir_arms,
+            }
+        }
+        ToHandler::Pipeline { .. } => {
+            // Pipeline handlers are deferred
+            HirExprKind::Error
+        }
+    }
+}
+
+/// Lowers a pattern from a `to` expression handler arm.
+fn lower_to_pattern(
+    pattern: &spark_ast::Pattern,
+    definitions: &mut DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    table: &TypeTable,
+) -> HirPattern {
+    match &pattern.kind {
+        spark_ast::PatternKind::TypeNarrowing { name, ty } => {
+            let def_id = resolutions
+                .and_then(|res| res.get_binding(name.span))
+                .unwrap_or_else(|| definitions.next_synthetic_id(pattern.span));
+            let narrowed_ty = table.get_expr_type(ty.span).unwrap_or(TypeId::ERROR);
+            HirPattern::TypeNarrow { def_id, ty: narrowed_ty }
+        }
+        spark_ast::PatternKind::Variant { path, fields } => {
+            let def_id = resolutions
+                .and_then(|res| res.get_path(path.span))
+                .unwrap_or(spark_resolve::DefId::DUMMY);
+            HirPattern::Variant {
+                def_id,
+                fields: fields.iter().map(|f| lower_to_pattern(f, definitions, resolutions, table)).collect(),
+            }
+        }
+        spark_ast::PatternKind::Ident { name, .. } => {
+            let def_id = resolutions
+                .and_then(|res| res.get_binding(name.span))
+                .unwrap_or(spark_resolve::DefId::DUMMY);
+            HirPattern::Binding { def_id }
+        }
+        spark_ast::PatternKind::Wildcard => HirPattern::Wildcard,
+        _ => crate::lower_pattern::lower_pattern(pattern, resolutions),
     }
 }
 

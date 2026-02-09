@@ -16,7 +16,7 @@ use crate::lower_expr::lower_expr;
 pub fn lower_stmt(
     stmt: &Stmt,
     table: &TypeTable,
-    definitions: &DefinitionTable,
+    definitions: &mut DefinitionTable,
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut Diagnostics,
     current_fn_ret: Option<TypeId>,

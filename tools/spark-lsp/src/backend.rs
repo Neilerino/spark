@@ -191,6 +191,7 @@ fn format_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Opti
         DefinitionKind::GenericParam => name.to_string(),
         DefinitionKind::LifetimeParam => format!("'{name}"),
         DefinitionKind::BuiltinFunction => format!("fn {name}(...)"),
+        DefinitionKind::BuiltinMethod => format!("fn .{name}(...)"),
     };
 
     Some(content)

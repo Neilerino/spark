@@ -290,6 +290,23 @@ fn compile_pattern(
             }
         }
 
+        HirPattern::TypeNarrow { def_id, ty } => {
+            // Type narrowing: bind the scrutinee with the narrowed type.
+            // Full runtime type testing is deferred — for now, we bind and proceed.
+            let name = defs.get(*def_id).map(|info| info.name);
+            let local = match name {
+                Some(sym) => fb.fresh_local(*ty, sym, false, spark_span::Span::DUMMY),
+                None => fb.fresh_temp(*ty, spark_span::Span::DUMMY),
+            };
+            fb.register_def(*def_id, local);
+            fb.push_stmt(Statement::Assign {
+                place: Place::from_local(local),
+                rvalue: Rvalue::Use(Operand::Copy(Place::from_local(scrut))),
+                span: spark_span::Span::DUMMY,
+            });
+            fb.terminate(Terminator::Goto { target: match_bb });
+        }
+
         HirPattern::Error => {
             fb.terminate(Terminator::Goto { target: match_bb });
         }

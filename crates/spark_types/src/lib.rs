@@ -61,6 +61,7 @@ pub mod intern;
 pub mod lower;
 pub mod table;
 pub mod ty;
+pub mod union;
 
 use spark_modules::ModuleGraph;
 use spark_resolve::{DefinitionTable, ResolvedAst};
@@ -339,6 +340,88 @@ mod tests {
     #[test]
     fn explicit_return_on_all_paths() {
         let output = check_source("fn f(x: Bool): Int { if x { return 1 } else { return 2 } }");
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    // === Coalesce (??) ===
+
+    #[test]
+    fn coalesce_optional_int() {
+        let output = check_source("fn f(x: Int?): Int { return x ?? 0 }");
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn coalesce_non_optional_is_error() {
+        let output = check_source("fn f(x: Int): Int { return x ?? 0 }");
+        assert!(output.diagnostics.has_errors());
+    }
+
+    #[test]
+    fn coalesce_optional_string() {
+        let output = check_source("fn f(x: String?): String { return x ?? \"default\" }");
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    // === Optional field (?.) ===
+
+    #[test]
+    fn optional_field_access() {
+        let output = check_source(
+            "struct User { name: String }\nfn f(u: User?): String? { return u?.name }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    // === Propagate (!) ===
+
+    #[test]
+    fn propagate_optional() {
+        let output = check_source("fn f(x: Int?): Int? { return x! }");
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    // === Union types ===
+
+    #[test]
+    fn union_type_annotation() {
+        let output = check_source("fn f(): Void { x: Int | String = 42 }");
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn union_type_with_null() {
+        let output = check_source("fn f(): Void { x: Int | Null = Null }");
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn coalesce_union_with_null() {
+        // Int | Null should work with ?? just like Int?
+        let output = check_source("fn f(x: Int | Null): Int { return x ?? 0 }");
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    // === Propagation with expected type from binding ===
+
+    #[test]
+    fn propagate_union_split_by_binding_type() {
+        // The binding annotation `Int` tells propagation that Int is the success
+        // type, so String is propagated to the function return type.
+        let output = check_source(
+            "fn get(): Int | String { return 42 }\n\
+             fn caller(): String { x: Int = get()!\n return \"done\" }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn propagate_union_split_by_binding_union() {
+        // Binding expects Int | String, so Bool is the propagated error type.
+        let output = check_source(
+            "fn get(): Int | String | Bool { return 42 }\n\
+             fn caller(): Bool { x: Int | String = get()!\n return true }",
+        );
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 }
