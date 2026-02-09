@@ -190,7 +190,7 @@ mod tests {
         lower(MirInput {
             hir: hir_output.hir,
             table: hir_output.table,
-            definitions: DefinitionTable::new(),
+            definitions: hir_output.definitions,
         })
     }
 
@@ -471,5 +471,59 @@ mod tests {
         let display = format!("{func}");
         let pretty = pretty_function(func);
         assert_eq!(display, pretty);
+    }
+
+    // === Union/Optional operator end-to-end through MIR ===
+
+    #[test]
+    fn mir_null_coalesce() {
+        let output = lower_source("fn f(x: Int?): Int { return x ?? 0 }");
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        let func = output.mir.functions.values().next().unwrap();
+        let pp = pretty_function(func);
+        // Should contain a switch (from match desugaring) and the literal 0
+        assert!(pp.contains("switch") || pp.contains("goto"), "Expected branch in MIR:\n{pp}");
+    }
+
+    #[test]
+    fn mir_optional_field() {
+        let output = lower_source(
+            "struct User { name: String }\nfn f(u: User?): String? { return u?.name }",
+        );
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert_eq!(output.mir.functions.len(), 1);
+    }
+
+    #[test]
+    fn mir_propagate_optional() {
+        let output = lower_source("fn f(x: Int?): Int? { return x! }");
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        let func = output.mir.functions.values().next().unwrap();
+        let pp = pretty_function(func);
+        // Propagate desugars to match, which creates branches
+        assert!(pp.contains("return"), "Expected return in MIR:\n{pp}");
+    }
+
+    #[test]
+    fn mir_coalesce_string() {
+        let output = lower_source("fn f(x: String?): String { return x ?? \"default\" }");
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert_eq!(output.mir.functions.len(), 1);
     }
 }

@@ -106,7 +106,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     // -- Phase 8: HIR lowering ------------------------------------------------
     let hir_output = spark_hir::lower(HirInput {
         resolved: resolve2.resolved,
-        definitions: resolve2.definitions.clone(),
+        definitions: resolve2.definitions,
         table,
     });
     if hir_output.diagnostics.has_errors() {
@@ -115,11 +115,13 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     }
     emit_warnings(&hir_output.diagnostics, &source_map);
 
+    let definitions = hir_output.definitions;
+
     // -- Phase 9: MIR construction --------------------------------------------
     let mir_output = spark_mir::lower(MirInput {
         hir: hir_output.hir,
         table: hir_output.table,
-        definitions: resolve2.definitions.clone(),
+        definitions: definitions.clone(),
     });
     if mir_output.diagnostics.has_errors() {
         mir_output.diagnostics.emit_all(&source_map);
@@ -131,7 +133,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     let borrow_output = spark_borrow::check(BorrowInput {
         mir: mir_output.mir,
         table: mir_output.table,
-        definitions: resolve2.definitions.clone(),
+        definitions: definitions.clone(),
     });
     if borrow_output.diagnostics.has_errors() {
         borrow_output.diagnostics.emit_all(&source_map);
@@ -143,7 +145,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     let codegen_output = spark_codegen::generate(CodegenInput {
         mir: borrow_output.mir,
         table: borrow_output.table,
-        definitions: resolve2.definitions,
+        definitions,
         target: TargetSpec::host(),
     });
     if codegen_output.diagnostics.has_errors() {

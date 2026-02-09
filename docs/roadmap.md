@@ -11,7 +11,7 @@ Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR �
   ✅       ✅      ✅       ✅        ✅        ✅     ✅    ✅      ✅        ✅       ✅
 ```
 
-**What works**: 576 tests pass (including 8 end-to-end tests). Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Collection methods (`.len()`, `.append()`, `.contains()`, `.remove()`) work for List/Map/Set/String with COW enforcement on mutating operations. Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. E2E test framework in `spark_driver/tests/e2e.rs`. LSP with semantic tokens in `tools/spark-lsp`. Install script (`install.sh`) provided.
+**What works**: 632 tests pass (including 8 end-to-end tests). Programs using scalars (Int, Float, Bool, Char), strings, function calls, if/else, loops, match, structs, enums, and collection literals (List, Map, Set) compile to native executables and run correctly. `print` supports Int, Float, Bool, and String arguments. List/Map index access (`list[i]`, `map[key]`) works via runtime calls. Collection methods (`.len()`, `.append()`, `.contains()`, `.remove()`) work for List/Map/Set/String with COW enforcement on mutating operations. Reference counting and drop elaboration prevent memory leaks for all heap-allocated types. Union type handling complete: `??` coalesce, `?.` optional chain, `!` propagation, and `to` type narrowing all desugar to match expressions with proper bindings. E2E test framework in `spark_driver/tests/e2e.rs`. LSP with semantic tokens in `tools/spark-lsp`. Install script (`install.sh`) provided.
 
 ```spark
 fn main(): Int {
@@ -89,18 +89,9 @@ Mutating methods enforce mutable receivers at type-check time.
 
 These features were deferred because downstream pipeline stages didn't exist yet. Now that the full pipeline is complete, they can be implemented.
 
-### 2.1 Coalesce `??` and Optional Chain `?.`
+### ~~2.1 Coalesce `??` and Optional Chain `?.`~~ — Complete
 
-**Status**: Partially desugared in HIR with `HirExprKind::Error` placeholders
-**Location**: `spark_hir/src/desugar.rs:35` (coalesce), `spark_hir/src/desugar.rs:80` (optional chain)
-**Blocker was**: Fresh `DefId` synthesis — desugaring creates match arms that need bindings, but can't allocate new `DefId`s
-
-**Fix**: Add a `DefId` allocator to the HIR lowering context. When desugaring `x ?? default`:
-```
-// Current (broken):    match x { _ -> Error, Null -> default }
-// Needed:              match x { v -> v, Null -> default }
-```
-Create a synthetic `DefId` for the binding `v`, register it in the `DefinitionTable`.
+Desugared in HIR to match expressions with synthetic `DefId` bindings. `x ?? default` becomes `match x { v -> v, Null -> default }`. `x?.field` becomes `match x { v -> v.field, Null -> Null }`. Works for both `Optional(T)` and `Union([..., Null, ...])` types.
 
 ### 2.2 `is` Type Test
 
@@ -148,24 +139,13 @@ Rules:
 - Multiple input references → require explicit lifetimes
 - `self` parameter → implicit lifetime on output
 
-### 3.3 Propagate `!` Operator
+### ~~3.3 Propagate `!` Operator~~ — Complete
 
-**Status**: Partially desugared in HIR
-**Location**: `spark_hir/src/desugar.rs:118`
-**Impact**: Union-type error propagation doesn't work
+Desugared in HIR with full union type analysis. For `Optional(T)`, desugars to `match expr { v -> v, Null -> return Null }`. For union types like `User | DbError | NotFound`, uses `split_union` with expected type from binding annotation and function return type to classify success vs error members, then generates `TypeNarrow` match arms per error type. `HirPattern::TypeNarrow { def_id, ty }` added for union member matching.
 
-Needs union type analysis to distinguish success vs error variants, then desugar to:
-```
-match expr { ok -> ok, err -> return err }
-```
+### ~~3.6 `to` Type Narrowing~~ — Complete
 
-### 3.6 `to` Type Narrowing
-
-**Status**: Parsed (`ExprKind::To` with `ToHandler::Narrowing`), deferred in HIR
-**Location**: Parser done, HIR lowering emits `HirExprKind::Error`
-**Impact**: No union type narrowing syntax
-
-`result to { NotFound -> ..., DbError(e) -> ... }` desugars to a `match` on the union type's error variants. Shares union type analysis infrastructure with `!` propagation (3.3). Does **not** depend on lambdas.
+`result to { NotFound -> ..., DbError(e) -> ... }` desugars to a `match` on the union type's error variants. Type checking validates handler patterns against union members and computes unhandled members. HIR lowering generates match arms per handler plus a wildcard passthrough arm for unhandled members. `ToHandler::Pipeline` (for `via` syntax) remains deferred — see 5.6.
 
 Note: `to` was previously overloaded for both type narrowing and pipeline composition. Pipeline operations (`to sort`, `to take{...}`) have been moved to the `via` keyword (see 5.6).
 
@@ -296,12 +276,12 @@ These are deliberate design decisions per the language spec — Spark requires e
 | ~~P1~~ | ~~Drop elaboration & RC~~ | ~~Medium~~ | ~~Prevents memory leaks~~ | Done |
 | ~~P1~~ | ~~COW mutation hooks~~ | ~~Low~~ | ~~Safe mutation of shared values~~ | Done |
 | ~~P1~~ | ~~Collection methods~~ | ~~Medium~~ | ~~`.append()`, `.len()`, etc.~~ | Done |
-| **P2** | `??` / `?.` desugaring | Low | Fixes null-handling operators | Partial |
+| ~~P2~~ | ~~`??` / `?.` desugaring~~ | ~~Low~~ | ~~Fixes null-handling operators~~ | Done |
 | **P2** | `is` type test | Low | Enables type checking expressions | MIR stub |
 | **P3** | Match exhaustiveness | Medium | Safety — catches missing cases | Not started |
 | **P3** | Lifetime elision | Low | Ergonomics for references | Not started |
-| **P3** | `!` propagation | Medium | Error handling ergonomics | Partial |
-| **P3** | `to` type narrowing | Low-Medium | Union type error handling | Parsed, deferred |
+| ~~P3~~ | ~~`!` propagation~~ | ~~Medium~~ | ~~Error handling ergonomics~~ | Done |
+| ~~P3~~ | ~~`to` type narrowing~~ | ~~Low-Medium~~ | ~~Union type error handling~~ | Done |
 | **P3** | Method resolution | Medium-High | User-defined methods + interfaces | Partial (builtins done) |
 | **P3** | Generics | High | Enables parameterized types | Not started |
 | **P4** | `spark_opt` passes | High | Performance optimization | Not started |
@@ -323,19 +303,17 @@ These are deliberate design decisions per the language spec — Spark requires e
 
 Remaining items grouped into parallelizable streams. Streams are independent unless a dependency is noted.
 
-### Stream A: Union Type Handling
-> `!` propagation → `to` type narrowing → `??`/`?.` desugaring
+### ~~Stream A: Union Type Handling~~ — Complete
+> ~~`!` propagation → `to` type narrowing → `??`/`?.` desugaring~~
 
-These all need union type analysis (distinguishing success vs error variants in union types) and fresh `DefId` synthesis in HIR desugaring. They share infrastructure and should be done together.
+All items complete. Infrastructure added: `DefinitionTable::next_synthetic_id()` for fresh DefIds during desugaring, `spark_types::union` module (`strip_null`, `split_union`, `is_nullable`, `union_members`), `HirPattern::TypeNarrow` for union member matching, `check_expr_expected` for binding-type-driven union splitting, `&mut DefinitionTable` threading through HIR lowering.
 
-| Item | Effort | Dependencies |
-|------|--------|-------------|
-| Union type analysis infrastructure | Medium | None |
-| `!` propagation (3.3) | Medium | Union type analysis |
-| `to` type narrowing (3.6) | Low-Medium | Union type analysis |
-| `??` / `?.` desugaring (2.1) | Low | Fresh DefId synthesis in HIR |
-
-**Conflicts**: None with other streams. Touches `spark_types` and `spark_hir` primarily.
+| Item | Status |
+|------|--------|
+| Union type analysis infrastructure | Done — `spark_types::union` |
+| `!` propagation (3.3) | Done |
+| `to` type narrowing (3.6) | Done |
+| `??` / `?.` desugaring (2.1) | Done |
 
 ### Stream B: Type System Foundations
 > Method resolution → Generics

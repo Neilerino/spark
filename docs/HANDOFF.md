@@ -23,16 +23,16 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_parser`      | Recursive descent parser with Pratt expression parsing         | 125   | Complete |
 | `spark_modules`     | Module resolution, dependency graph, cycle detection           | 38    | Complete |
 | `spark_resolve`     | Name resolution: scoping, DefIds, imports                      | 51    | Complete |
-| `spark_types`       | Type checking: two-pass signature collection + body checking   | 72    | Complete |
-| `spark_hir`         | HIR lowering: desugar typed AST into core IR                   | 21    | Complete |
-| `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 32    | Complete |
+| `spark_types`       | Type checking: two-pass signature collection + body checking   | 97    | Complete |
+| `spark_hir`         | HIR lowering: desugar typed AST into core IR                   | 28    | Complete |
+| `spark_mir`         | MIR construction: CFG-based IR for borrow checking             | 36    | Complete |
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
 | `spark_drop`        | Type queries for RC/drop decisions (`needs_rc`, etc.)          | 11    | Complete |
 | `spark_runtime`     | `extern "C"` runtime library (print, strings, collections, RC) | —     | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
-**Total: 568 tests passing across workspace.**
+**Total: 632 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
@@ -63,6 +63,26 @@ COW value semantics with reference counting (Swift model). All heap-allocated va
 
 Collection literals and index access work end-to-end. `[10, 20, 30]` creates a real heap-backed list.
 
+### Recent: Union Type Handling (Stream A)
+
+Complete implementation of `??`, `?.`, `!`, and `to` expression desugaring for union/optional types.
+
+**New infrastructure:**
+- `spark_resolve/src/def.rs`: `DefinitionTable::next_synthetic_id()` for allocating fresh DefIds during HIR desugaring
+- `spark_types/src/union.rs`: **New module** — `strip_null`, `split_union`, `is_nullable`, `union_members` utilities
+- `spark_types/src/check_expr.rs`: `check_expr_expected()` entry point threads expected type from binding annotations to propagation splitting
+- `spark_hir/src/hir.rs`: `HirPattern::TypeNarrow { def_id, ty }` for union member matching
+
+**Changes made:**
+- `spark_hir/src/lower.rs`: `Lowerer` holds `&mut DefinitionTable` (was `&DefinitionTable`)
+- `spark_hir/src/desugar.rs`: `desugar_coalesce` and `desugar_optional_field` create proper Binding/Local arms with synthetic DefIds. Replaced `desugar_propagate` with `desugar_propagate_optional` and `desugar_propagate_union`.
+- `spark_hir/src/lower_expr.rs`: `ExprKind::To` fully lowered via `lower_to_expr`/`lower_to_pattern` (was Error stub). Propagate dispatches to optional vs union paths.
+- `spark_hir/src/lower_pattern.rs`: `PatternKind::TypeNarrowing` → `HirPattern::TypeNarrow`
+- `spark_types/src/check_expr.rs`: `unwrap_optional` handles `Ty::Union` with Null. `Propagate` uses `split_union` with expected type. New `check_to_expr` for `to` type checking.
+- `spark_mir/src/lower_pattern.rs`: `HirPattern::TypeNarrow` compiled to MIR (bind + assign)
+- `spark_driver/src/pipeline.rs`: Uses `hir_output.definitions` (with synthetic entries) for downstream phases
+- `spark_hir/src/lib.rs`: `HirOutput` includes `definitions` field
+
 ### Earlier: Real String Support
 
 String literals work end-to-end. `print("hello world")` produces output.
@@ -71,18 +91,14 @@ String literals work end-to-end. `print("hello world")` produces output.
 
 ### Suggested Next Steps (in rough priority order)
 
-1. **COW mutation hooks** — Runtime COW functions (`__spark_string_cow`, `__spark_list_cow`, `__spark_map_cow`) are prepared but not wired into codegen. Wire up when mutable collection operations are implemented: before any mutation, emit COW uniqueness check (if RC>1, copy buffer first).
-2. **Collection methods** — `.append()`, `.len()`, `.remove()`, `.contains()`, etc. Need method resolution infrastructure or special-cased built-in dispatch (like `print`). Each mutation method should emit COW check first.
-3. **`??` / `?.` desugaring** — HIR stubs exist (`desugar.rs:35`, `desugar.rs:80`) but need a `DefId` allocator for synthetic bindings.
-4. **`is` type test** — MIR stub (`lower_expr.rs:289`). Lower to discriminant extraction + comparison. Codegen already handles `Rvalue::Discriminant` and `SwitchInt`.
-5. **Match exhaustiveness checking** — Would go in `spark_types`. Report missing/unreachable patterns.
-6. **Method resolution & interface bindings** — Dot-call syntax, `binding Foo for Bar` validation. Prerequisite for collection methods via normal syntax.
-7. **`!` propagation operator** — Needs union type analysis to distinguish success/error variants.
-8. **Generic instantiation** — `Ty::Param` exists but isn't used. Needs monomorphization.
-9. **`spark_opt`** — MIR optimization passes (constant folding, DCE, SSA, copy propagation, RC elision). Inserts between borrow and codegen. Performance-only; correctness is unaffected.
-10. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support.
-11. **Async/await/spawn** — Future types, state machine transform, runtime executor.
-12. **String interpolation** — Lexer + parser changes for `"hello {expr}"` syntax.
+1. **`is` type test** — MIR stub (`lower_expr.rs:289`). Lower to discriminant extraction + comparison. Codegen already handles `Rvalue::Discriminant` and `SwitchInt`.
+2. **Match exhaustiveness checking** — Would go in `spark_types`. Report missing/unreachable patterns.
+3. **Method resolution & interface bindings** — Dot-call syntax, `binding Foo for Bar` validation. Prerequisite for collection methods via normal syntax.
+4. **Generic instantiation** — `Ty::Param` exists but isn't used. Needs monomorphization.
+5. **`spark_opt`** — MIR optimization passes (constant folding, DCE, SSA, copy propagation, RC elision). Inserts between borrow and codegen. Performance-only; correctness is unaffected.
+6. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support.
+7. **Async/await/spawn** — Future types, state machine transform, runtime executor.
+8. **String interpolation** — Lexer + parser changes for `"hello {expr}"` syntax.
 
 ### Deferred Design Decisions
 
@@ -208,7 +224,7 @@ fn main(): Int {
 
 ```bash
 cargo build                      # Build all
-cargo test                       # Test all (568 tests)
+cargo test                       # Test all (632 tests)
 cargo clippy                     # Lint all
 cargo test -p spark_codegen      # Test code generator
 cargo doc --open                 # View documentation

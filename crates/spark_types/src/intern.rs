@@ -80,6 +80,12 @@ impl TypeInterner {
         self.types.get(id.0 as usize)
     }
 
+    /// Looks up a type without interning it. Returns `None` if not found.
+    #[must_use]
+    pub fn lookup(&self, ty: &Ty) -> Option<TypeId> {
+        self.dedup.get(ty).copied()
+    }
+
     /// Returns the number of interned types.
     #[must_use]
     pub const fn len(&self) -> usize {

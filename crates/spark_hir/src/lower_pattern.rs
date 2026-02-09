@@ -22,7 +22,7 @@ pub fn lower_pattern_with_guard(
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut Diagnostics,
     table: &TypeTable,
-    definitions: &DefinitionTable,
+    definitions: &mut DefinitionTable,
     current_fn_ret: Option<TypeId>,
 ) -> (HirPattern, Option<HirExpr>) {
     match &pattern.kind {
@@ -103,8 +103,16 @@ pub fn lower_pattern(
         // Guard is handled in lower_pattern_with_guard
         PatternKind::Guard { pattern: inner, .. } => lower_pattern(inner, resolutions),
 
+        PatternKind::TypeNarrowing { name, ty: _ } => {
+            let def_id = resolutions
+                .and_then(|res| res.get_binding(name.span))
+                .unwrap_or(spark_resolve::DefId::DUMMY);
+            let narrowed_ty = spark_types::TypeId::ERROR; // Placeholder — type lookup requires TypeTable
+            HirPattern::TypeNarrow { def_id, ty: narrowed_ty }
+        }
+
         // Deferred / error
-        PatternKind::TypeNarrowing { .. } | PatternKind::List { .. } | PatternKind::Error => {
+        PatternKind::List { .. } | PatternKind::Error => {
             HirPattern::Error
         }
     }

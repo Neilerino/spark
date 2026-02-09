@@ -346,6 +346,16 @@ pub enum HirPattern {
     Tuple(Vec<Self>),
     /// Matches one of several patterns: `A | B`.
     Or(Vec<Self>),
+    /// Matches a union member by type and binds the narrowed value.
+    ///
+    /// Used in desugared `!` (propagate) and `to` (type narrowing) to
+    /// match a specific type within a union.
+    TypeNarrow {
+        /// The binding for the narrowed value.
+        def_id: DefId,
+        /// The type to match against.
+        ty: TypeId,
+    },
     /// Error placeholder.
     Error,
 }

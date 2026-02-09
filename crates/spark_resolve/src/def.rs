@@ -238,6 +238,23 @@ impl DefinitionTable {
         self.defs.is_empty()
     }
 
+    /// Allocates a fresh `DefId` for a synthetic local variable.
+    ///
+    /// Used during HIR lowering to create bindings for desugared constructs
+    /// (e.g., the bound variable in `match a { v -> v, Null -> b }` from `a ?? b`).
+    /// The synthetic name is `__synth_N` where N is the `DefId` index.
+    pub fn next_synthetic_id(&mut self, span: Span) -> DefId {
+        let index = self.defs.len() as u32;
+        let name = spark_intern::sym(&format!("__synth_{index}"));
+        self.insert(DefinitionInfo::new(
+            DefinitionKind::Local,
+            name,
+            span,
+            Visibility::Private,
+            ModulePath::root(),
+        ))
+    }
+
     /// Iterates over all definitions with their `DefId`s.
     pub fn iter(&self) -> impl Iterator<Item = (DefId, &DefinitionInfo)> {
         self.defs

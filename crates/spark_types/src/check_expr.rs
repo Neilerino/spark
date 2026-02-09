@@ -3,7 +3,7 @@
 //! Walks expression trees and returns the type of each expression,
 //! recording the result in the type table's `expr_types` map.
 
-use spark_ast::{BinaryOp, Block, Expr, ExprKind, LiteralKind, UnaryOp};
+use spark_ast::{BinaryOp, Block, Expr, ExprKind, LiteralKind, ToHandler, UnaryOp};
 use spark_diagnostics::{Diagnostic, Label};
 use spark_intern::{kw, Symbol};
 use spark_resolve::{DefId, DefinitionTable, ResolutionMap};
@@ -29,7 +29,25 @@ pub fn check_expr(
     diagnostics: &mut spark_diagnostics::Diagnostics,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
-    let ty = check_expr_inner(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+    check_expr_expected(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret, None)
+}
+
+/// Type-checks an expression with an expected type hint from context.
+///
+/// The `expected_ty` is used by propagation (`!`) to determine which union
+/// members are the "success" type vs error types to propagate.
+#[allow(clippy::too_many_arguments)]
+pub fn check_expr_expected(
+    expr: &Expr,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+    expected_ty: Option<TypeId>,
+) -> TypeId {
+    let ty = check_expr_inner(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret, expected_ty);
     table.set_expr_type(expr.span, ty);
     ty
 }
@@ -44,6 +62,7 @@ fn check_expr_inner(
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut spark_diagnostics::Diagnostics,
     current_fn_ret: Option<TypeId>,
+    expected_ty: Option<TypeId>,
 ) -> TypeId {
     match &expr.kind {
         // === Literals ===
@@ -281,7 +300,23 @@ fn check_expr_inner(
         // === Propagate (!) ===
         ExprKind::Propagate(inner_expr) => {
             let inner_ty = check_expr(inner_expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            // Simplified: unwrap optional or union, return the "success" type
+
+            // For Optional(T) → success type is T
+            if let Ty::Optional(success) = table.resolve(inner_ty) {
+                return *success;
+            }
+
+            // For Union types → use split_union to determine success type
+            if matches!(table.resolve(inner_ty), Ty::Union(_)) {
+                // Try to split using the expected type (from context) or fn return type
+                if let Some((success_ty, _errors)) =
+                    crate::union::split_union(inner_ty, expected_ty, current_fn_ret, table)
+                {
+                    return success_ty;
+                }
+            }
+
+            // Fallback: unwrap nullable
             unwrap_optional(inner_ty, table)
         }
 
@@ -364,9 +399,9 @@ fn check_expr_inner(
             check_method_call(recv_ty, method.name, &arg_tys, receiver.span, expr.span, table, builtins, diagnostics)
         }
 
-        ExprKind::To { expr: inner, .. } => {
-            let _ = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            TypeId::ERROR
+        ExprKind::To { expr: inner, handler } => {
+            let inner_ty = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            check_to_expr(inner_ty, handler, expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
         }
 
         ExprKind::Each { iterable, body, .. }
@@ -887,12 +922,29 @@ fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
     }
 }
 
-/// Unwraps `Optional(T)` → `T`. Returns the input unchanged if not optional.
+/// Unwraps `Optional(T)` → `T`, or `Union([..., Null, ...])` → the non-null type.
+/// Returns the input unchanged if not optional/nullable.
 fn unwrap_optional(ty: TypeId, table: &TypeTable) -> TypeId {
-    if let Ty::Optional(inner) = table.resolve(ty) {
-        *inner
-    } else {
-        ty
+    match table.resolve(ty) {
+        Ty::Optional(inner) => *inner,
+        Ty::Union(members) => {
+            let null_id = table.lookup(&Ty::Null);
+            let non_null: Vec<TypeId> = members
+                .iter()
+                .copied()
+                .filter(|&m| Some(m) != null_id)
+                .collect();
+            match non_null.len() {
+                0 => ty,
+                1 => non_null[0],
+                _ => {
+                    // Check if the non-null union is already interned
+                    let candidate = Ty::Union(non_null);
+                    table.lookup(&candidate).unwrap_or(ty)
+                }
+            }
+        }
+        _ => ty,
     }
 }
 
@@ -1133,6 +1185,96 @@ fn expect_args(
             ))
             .with_label(Label::primary(span, "wrong number of arguments")),
         );
+    }
+}
+
+/// Type-checks a `to` expression.
+///
+/// For narrowing handlers (`to { NotFound -> ..., DbError(e) -> ... }`):
+/// - The inner expression must be a union type
+/// - Each handler arm handles one or more union members
+/// - Unhandled members pass through
+/// - Result is the unified handler body types + unhandled member types
+#[allow(clippy::too_many_arguments)]
+fn check_to_expr(
+    inner_ty: TypeId,
+    handler: &ToHandler,
+    span: Span,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    match handler {
+        ToHandler::Narrowing(arms) => {
+            let members = crate::union::union_members(inner_ty, table);
+
+            if members.len() <= 1 && !matches!(table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_)) {
+                diagnostics.push(
+                    Diagnostic::error("'to' expression requires a union type")
+                        .with_label(Label::primary(span, "not a union type")),
+                );
+            }
+
+            let mut body_types = Vec::with_capacity(arms.len());
+            let mut handled_types = Vec::new();
+
+            for arm in arms {
+                // Check the pattern — for type narrowing patterns, resolve the type
+                if let spark_ast::PatternKind::TypeNarrowing { ty: pat_ty, .. } = &arm.pattern.kind {
+                    let narrowed_ty = crate::lower::lower_type_expr(
+                        pat_ty, table, builtins, definitions, resolutions, diagnostics,
+                    );
+                    handled_types.push(narrowed_ty);
+                } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
+                    // Enum variant pattern — resolve it
+                    let variant_ty = resolutions
+                        .and_then(|res| res.get_path(path.span))
+                        .and_then(|def_id| table.get_def_type(def_id))
+                        .unwrap_or(TypeId::ERROR);
+                    if !variant_ty.is_error() {
+                        handled_types.push(variant_ty);
+                    }
+                }
+
+                let body_ty = check_expr(&arm.body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                body_types.push(body_ty);
+            }
+
+            // Determine unhandled member types
+            let unhandled: Vec<TypeId> = members
+                .iter()
+                .copied()
+                .filter(|m| !handled_types.contains(m))
+                .collect();
+
+            // Unify all body types
+            let mut result_ty = if let Some(&first) = body_types.first() {
+                first
+            } else {
+                builtins.void
+            };
+            for &bty in &body_types[1..] {
+                result_ty = unify_branches(result_ty, bty, table, builtins);
+            }
+
+            // If there are unhandled types, the result includes them
+            if unhandled.is_empty() {
+                result_ty
+            } else {
+                // Result is union of handler body types + unhandled types
+                for &u in &unhandled {
+                    result_ty = unify_branches(result_ty, u, table, builtins);
+                }
+                result_ty
+            }
+        }
+        ToHandler::Pipeline { .. } => {
+            // Pipeline handlers are deferred for now
+            TypeId::ERROR
+        }
     }
 }
 

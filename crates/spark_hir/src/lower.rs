@@ -20,8 +20,8 @@ use crate::lower_expr::lower_expr;
 pub struct Lowerer<'a> {
     /// The type table (read-only).
     pub(crate) table: &'a TypeTable,
-    /// Definition table (read-only).
-    pub(crate) definitions: &'a DefinitionTable,
+    /// Definition table (mutable, for allocating synthetic `DefId`s during desugaring).
+    pub(crate) definitions: &'a mut DefinitionTable,
     /// The resolved AST.
     resolved: &'a ResolvedAst,
     /// Accumulated diagnostics.
@@ -33,7 +33,7 @@ impl<'a> Lowerer<'a> {
     #[must_use]
     pub fn new(
         table: &'a TypeTable,
-        definitions: &'a DefinitionTable,
+        definitions: &'a mut DefinitionTable,
         resolved: &'a ResolvedAst,
     ) -> Self {
         Self {
@@ -121,7 +121,7 @@ impl<'a> Lowerer<'a> {
         let hir_body = crate::lower_expr::lower_block(
             body,
             self.table,
-            self.definitions,
+            &mut *self.definitions,
             resolutions,
             &mut self.diagnostics,
             Some(ret_type),
@@ -157,7 +157,7 @@ impl<'a> Lowerer<'a> {
         let value = lower_expr(
             &const_def.value,
             self.table,
-            self.definitions,
+            &mut *self.definitions,
             resolutions,
             &mut self.diagnostics,
             None,

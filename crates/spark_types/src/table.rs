@@ -78,6 +78,12 @@ impl TypeTable {
         self.interner.resolve(id)
     }
 
+    /// Looks up a type without interning it. Returns `None` if not found.
+    #[must_use]
+    pub fn lookup(&self, ty: &Ty) -> Option<TypeId> {
+        self.interner.lookup(ty)
+    }
+
     /// Records the type of a definition.
     pub fn set_def_type(&mut self, def_id: DefId, type_id: TypeId) {
         self.def_types.insert(def_id, type_id);

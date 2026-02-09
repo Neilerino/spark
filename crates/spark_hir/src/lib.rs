@@ -85,6 +85,8 @@ pub struct HirOutput {
     pub hir: Hir,
     /// The type table (passed through from input).
     pub table: TypeTable,
+    /// The definition table (may have new synthetic entries from desugaring).
+    pub definitions: DefinitionTable,
     /// Diagnostics accumulated during lowering.
     pub diagnostics: spark_diagnostics::Diagnostics,
 }
@@ -94,10 +96,10 @@ pub struct HirOutput {
 /// This is the main entry point for HIR lowering. It takes the resolver
 /// and type checker outputs and produces a desugared [`Hir`].
 #[must_use]
-pub fn lower(input: HirInput) -> HirOutput {
+pub fn lower(mut input: HirInput) -> HirOutput {
     let lowerer = lower::Lowerer::new(
         &input.table,
-        &input.definitions,
+        &mut input.definitions,
         &input.resolved,
     );
     let (hir, diagnostics) = lowerer.lower_all();
@@ -105,6 +107,7 @@ pub fn lower(input: HirInput) -> HirOutput {
     HirOutput {
         hir,
         table: input.table,
+        definitions: input.definitions,
         diagnostics,
     }
 }
@@ -274,14 +277,188 @@ mod tests {
         assert_eq!(output.hir.functions.len(), 2);
     }
 
-    #[test]
-    fn lower_null_coalesce() {
-        let output = lower_source("fn f(x: Int?): Int { return x ?? 0 }");
+    // ── Helpers for inspecting HIR structure ──────────────────────
+
+    /// Finds the first `Match` expression inside a function body (recursive).
+    fn find_match(expr: &HirExpr) -> Option<&[HirMatchArm]> {
+        match &expr.kind {
+            HirExprKind::Match { arms, .. } => Some(arms),
+            HirExprKind::Block { stmts, expr: trailing } => {
+                for stmt in stmts {
+                    let inner = match stmt {
+                        HirStmt::Let { value, .. } => find_match(value),
+                        HirStmt::Assign { value, .. } => find_match(value),
+                        HirStmt::Expr(e) => find_match(e),
+                    };
+                    if inner.is_some() {
+                        return inner;
+                    }
+                }
+                trailing.as_ref().and_then(|e| find_match(e))
+            }
+            HirExprKind::Return(Some(inner)) => find_match(inner),
+            _ => None,
+        }
+    }
+
+    /// Returns the single function from an HirOutput, panicking with diagnostics if errors.
+    fn get_function(output: &HirOutput) -> &HirFunction {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
             output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
-        // The body should contain a Match (desugared from ??)
+        assert_eq!(output.hir.functions.len(), 1, "Expected exactly 1 function");
+        output.hir.functions.values().next().unwrap()
+    }
+
+    // ── Coalesce (??) ────────────────────────────────────────────
+
+    #[test]
+    fn lower_null_coalesce_structure() {
+        // `x ?? 0` should desugar into:
+        //   match x { Null -> 0, v -> v }
+        // where the non-null arm uses Binding+Local (not Wildcard/Error)
+        let output = lower_source("fn f(x: Int?): Int { return x ?? 0 }");
+        let func = get_function(&output);
+        let arms = find_match(&func.body).expect("Expected a Match from ?? desugaring");
+
+        assert_eq!(arms.len(), 2, "Coalesce should produce 2 arms");
+
+        // First arm: Null literal pattern
+        assert!(
+            matches!(arms[0].pattern, HirPattern::Literal(HirLiteral::Null)),
+            "First arm should match Null, got: {:?}", arms[0].pattern
+        );
+        // Null arm body should be the default value (literal 0)
+        assert!(
+            matches!(arms[0].body.kind, HirExprKind::Literal(HirLiteral::Int(0))),
+            "Null arm body should be literal 0, got: {:?}", arms[0].body.kind
+        );
+
+        // Second arm: Binding pattern (not Wildcard)
+        let binding_def = match &arms[1].pattern {
+            HirPattern::Binding { def_id } => *def_id,
+            other => panic!("Non-null arm should be Binding, got: {other:?}"),
+        };
+        // Binding arm body should reference the same DefId via Local
+        match &arms[1].body.kind {
+            HirExprKind::Local(id) => assert_eq!(*id, binding_def,
+                "Binding arm body should reference the bound variable"),
+            other => panic!("Binding arm body should be Local, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lower_null_coalesce_creates_synthetic_def() {
+        let output = lower_source("fn f(x: Int?): Int { return x ?? 0 }");
+        assert!(!output.diagnostics.has_errors(),
+            "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        // The ?? desugaring should have created at least one synthetic DefId
+        let synth_count = output.definitions.iter()
+            .filter(|(_, info)| info.name.as_str().starts_with("__synth_"))
+            .count();
+        assert!(synth_count >= 1, "Expected at least 1 synthetic definition, found {synth_count}");
+    }
+
+    // ── Optional field (?.) ──────────────────────────────────────
+
+    #[test]
+    fn lower_optional_field_structure() {
+        // `u?.name` should desugar into:
+        //   match u { Null -> Null, v -> v.name }
+        // where the field arm accesses .name through a Local (not Error)
+        let output = lower_source(
+            "struct User { name: String }\nfn f(u: User?): String? { return u?.name }",
+        );
+        let func = output.hir.functions.values()
+            .find(|f| output.definitions.get(f.def_id).map_or(false, |i| i.name.as_str() == "f"))
+            .expect("Expected function 'f'");
+        let arms = find_match(&func.body).expect("Expected a Match from ?. desugaring");
+
+        assert_eq!(arms.len(), 2, "OptionalField should produce 2 arms");
+
+        // First arm: Null
+        assert!(
+            matches!(arms[0].pattern, HirPattern::Literal(HirLiteral::Null)),
+            "First arm should match Null, got: {:?}", arms[0].pattern
+        );
+
+        // Second arm: Binding with field access body
+        let binding_def = match &arms[1].pattern {
+            HirPattern::Binding { def_id } => *def_id,
+            other => panic!("Field arm should be Binding, got: {other:?}"),
+        };
+        // Body should be FieldAccess on the bound variable
+        match &arms[1].body.kind {
+            HirExprKind::FieldAccess { base, field } => {
+                assert_eq!(field.as_str(), "name", "Should access field 'name'");
+                match &base.kind {
+                    HirExprKind::Local(id) => assert_eq!(*id, binding_def,
+                        "Field base should reference the bound variable"),
+                    other => panic!("Field base should be Local, got: {other:?}"),
+                }
+            }
+            other => panic!("Field arm body should be FieldAccess, got: {other:?}"),
+        }
+    }
+
+    // ── Propagate (!) ────────────────────────────────────────────
+
+    #[test]
+    fn lower_propagate_optional_structure() {
+        // `x!` on Int? should desugar into:
+        //   match x { Null -> return Null, v -> v }
+        let output = lower_source("fn f(x: Int?): Int? { return x! }");
+        let func = get_function(&output);
+        let arms = find_match(&func.body).expect("Expected a Match from ! desugaring");
+
+        assert_eq!(arms.len(), 2, "Propagate on optional should produce 2 arms");
+
+        // First arm: Null with return
+        assert!(
+            matches!(arms[0].pattern, HirPattern::Literal(HirLiteral::Null)),
+            "First arm should match Null, got: {:?}", arms[0].pattern
+        );
+        assert!(
+            matches!(arms[0].body.kind, HirExprKind::Return(_)),
+            "Null arm should return, got: {:?}", arms[0].body.kind
+        );
+
+        // Second arm: Binding that returns the value
+        let binding_def = match &arms[1].pattern {
+            HirPattern::Binding { def_id } => *def_id,
+            other => panic!("Success arm should be Binding, got: {other:?}"),
+        };
+        match &arms[1].body.kind {
+            HirExprKind::Local(id) => assert_eq!(*id, binding_def,
+                "Success arm body should reference the bound variable"),
+            other => panic!("Success arm body should be Local, got: {other:?}"),
+        }
+    }
+
+    // ── Other cases (no-error) ───────────────────────────────────
+
+    #[test]
+    fn lower_coalesce_string() {
+        let output = lower_source("fn f(x: String?): String { return x ?? \"default\" }");
+        let func = get_function(&output);
+        let arms = find_match(&func.body).expect("Expected a Match from ?? desugaring");
+        assert_eq!(arms.len(), 2);
+        // Null arm body should be the string literal
+        assert!(
+            matches!(arms[0].body.kind, HirExprKind::Literal(HirLiteral::String(_))),
+            "Null arm body should be string literal, got: {:?}", arms[0].body.kind
+        );
+    }
+
+    #[test]
+    fn lower_union_type_binding() {
+        let output = lower_source("fn f(): Void { x: Int | String = 42 }");
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 }
