@@ -37,6 +37,10 @@ pub struct TypeTable {
     pub(crate) lifetime_names: Vec<Symbol>,
     /// Reverse map for lifetime deduplication.
     pub(crate) lifetime_dedup: FxHashMap<Symbol, LifetimeId>,
+    /// Methods available on user-defined types: type `DefId` → `[(method_name, method_def_id)]`.
+    pub(crate) type_methods: FxHashMap<DefId, Vec<(Symbol, DefId)>>,
+    /// Resolved method `DefId` for each method call site (keyed by call `Span`).
+    pub(crate) method_resolutions: FxHashMap<Span, DefId>,
 }
 
 impl Default for TypeTable {
@@ -64,6 +68,8 @@ impl TypeTable {
                 m.insert(anon_sym, LifetimeId::ANONYMOUS);
                 m
             },
+            type_methods: FxHashMap::default(),
+            method_resolutions: FxHashMap::default(),
         }
     }
 
@@ -137,6 +143,28 @@ impl TypeTable {
     #[must_use]
     pub fn get_variant_fields(&self, def_id: DefId) -> Option<&[(Symbol, TypeId)]> {
         self.variant_fields.get(&def_id).map(Vec::as_slice)
+    }
+
+    /// Records the methods available on a user-defined type.
+    pub fn set_type_methods(&mut self, def_id: DefId, methods: Vec<(Symbol, DefId)>) {
+        self.type_methods.insert(def_id, methods);
+    }
+
+    /// Returns the methods available on a user-defined type.
+    #[must_use]
+    pub fn get_type_methods(&self, def_id: DefId) -> Option<&[(Symbol, DefId)]> {
+        self.type_methods.get(&def_id).map(Vec::as_slice)
+    }
+
+    /// Records the resolved method `DefId` for a method call site.
+    pub fn set_method_resolution(&mut self, span: Span, def_id: DefId) {
+        self.method_resolutions.insert(span, def_id);
+    }
+
+    /// Returns the resolved method `DefId` for a method call site.
+    #[must_use]
+    pub fn get_method_resolution(&self, span: Span) -> Option<DefId> {
+        self.method_resolutions.get(&span).copied()
     }
 
     /// Interns a lifetime name and returns its [`LifetimeId`].

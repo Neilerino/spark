@@ -403,7 +403,7 @@ fn check_expr_inner(
                 .map(|a| check_expr(&a.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret))
                 .collect();
 
-            check_method_call(recv_ty, method.name, &arg_tys, receiver.span, expr.span, table, builtins, diagnostics)
+            check_method_call(recv_ty, method.name, &arg_tys, receiver.span, expr.span, table, builtins, definitions, diagnostics)
         }
 
         ExprKind::To { expr: inner, handler } => {
@@ -1010,7 +1010,7 @@ pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -
     }
 }
 
-/// Type-checks a method call on a collection or string receiver.
+/// Type-checks a method call on a collection, string, or user-defined type receiver.
 #[allow(clippy::too_many_arguments)]
 fn check_method_call(
     recv_ty: TypeId,
@@ -1018,8 +1018,9 @@ fn check_method_call(
     arg_tys: &[TypeId],
     recv_span: Span,
     call_span: Span,
-    table: &TypeTable,
+    table: &mut TypeTable,
     builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) -> TypeId {
     if recv_ty.is_error() {
@@ -1036,6 +1037,9 @@ fn check_method_call(
         Ty::Map(k, v) => check_map_method(method, k, v, is_mutable, arg_tys, call_span, recv_span, table, builtins, diagnostics),
         Ty::Set(elem) => check_set_method(method, elem, is_mutable, arg_tys, call_span, recv_span, table, builtins, diagnostics),
         Ty::String => check_string_method(method, arg_tys, call_span, builtins, diagnostics),
+        Ty::Struct(def_id) | Ty::Enum(def_id) => {
+            check_user_method_call(def_id, method, arg_tys, recv_span, call_span, table, definitions, diagnostics)
+        }
         _ => {
             diagnostics.push(
                 Diagnostic::error(format!("type has no method `{method}`"))
@@ -1175,6 +1179,94 @@ fn check_string_method(
         );
         TypeId::ERROR
     }
+}
+
+/// Checks a method call on a user-defined type (struct or enum with bindings).
+///
+/// Looks up the method in `TypeTable::type_methods`, validates arguments,
+/// stores the resolved method `DefId` in `method_resolutions`, and returns
+/// the method's return type.
+#[allow(clippy::too_many_arguments)]
+fn check_user_method_call(
+    type_def_id: DefId,
+    method: Symbol,
+    arg_tys: &[TypeId],
+    recv_span: Span,
+    call_span: Span,
+    table: &mut TypeTable,
+    definitions: &DefinitionTable,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    // Look up available methods for this type
+    let methods = table.get_type_methods(type_def_id).map(<[(spark_intern::Symbol, DefId)]>::to_vec);
+
+    if let Some(methods) = methods {
+        // Search for the method by name
+        if let Some((_, method_def_id)) = methods.iter().find(|(name, _)| *name == method) {
+            let method_def_id = *method_def_id;
+
+            // Get the method's function type
+            if let Some(fn_type_id) = table.get_def_type(method_def_id) {
+                let fn_ty = table.resolve(fn_type_id).clone();
+                if let Ty::Function { params, ret, .. } = fn_ty {
+                    // The first parameter is the receiver (e.g., `self: Foo`),
+                    // remaining parameters are the call arguments.
+                    let call_params = if params.is_empty() {
+                        &[][..]
+                    } else {
+                        &params[1..]
+                    };
+
+                    // Check argument count (excluding receiver)
+                    if arg_tys.len() != call_params.len() {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "expected {} argument{}, found {}",
+                                call_params.len(),
+                                if call_params.len() == 1 { "" } else { "s" },
+                                arg_tys.len()
+                            ))
+                            .with_label(Label::primary(call_span, "wrong number of arguments")),
+                        );
+                    }
+
+                    // Check argument types
+                    for (i, arg_ty) in arg_tys.iter().enumerate() {
+                        if let Some(&expected) = call_params.get(i) {
+                            if !is_compatible(*arg_ty, expected, table) {
+                                let expected_name = type_name(expected, table, definitions);
+                                let found_name = type_name(*arg_ty, table, definitions);
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
+                                    ))
+                                    .with_label(Label::primary(call_span, format!("expected `{expected_name}`"))),
+                                );
+                            }
+                        }
+                    }
+
+                    // Store the method resolution for MIR lowering
+                    table.set_method_resolution(call_span, method_def_id);
+
+                    return ret;
+                }
+            }
+
+            // Method found but no type — shouldn't happen, return error
+            return TypeId::ERROR;
+        }
+    }
+
+    // No method found
+    let type_name_str = definitions
+        .get(type_def_id)
+        .map_or("<unknown>", |info| info.name.as_str());
+    diagnostics.push(
+        Diagnostic::error(format!("type `{type_name_str}` has no method `{method}`"))
+            .with_label(Label::primary(recv_span, "no such method")),
+    );
+    TypeId::ERROR
 }
 
 /// Reports an error if expected != actual argument count.

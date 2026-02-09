@@ -248,8 +248,84 @@ impl TypeChecker {
                     );
                 }
             }
+            Item::Binding(binding) => {
+                self.check_binding_bodies(binding, resolutions);
+            }
             // Other items don't have bodies to check
             _ => {}
+        }
+    }
+
+    /// Type-checks all method bodies in a binding.
+    fn check_binding_bodies(
+        &mut self,
+        binding: &spark_ast::BindingDef,
+        resolutions: Option<&spark_resolve::ResolutionMap>,
+    ) {
+        for target in &binding.bindings {
+            for method in &target.methods {
+                if let Some(body) = &method.body {
+                    // Get the method's return type from its function type
+                    let ret_type = lower_type_expr(
+                        &method.ret_type,
+                        &mut self.table,
+                        &self.builtins,
+                        &self.definitions,
+                        resolutions,
+                        &mut self.diagnostics,
+                    );
+
+                    // Register parameter types for the body scope
+                    for param in &method.params {
+                        let param_ty = lower_type_expr(
+                            &param.ty,
+                            &mut self.table,
+                            &self.builtins,
+                            &self.definitions,
+                            resolutions,
+                            &mut self.diagnostics,
+                        );
+                        if let Some(res) = resolutions {
+                            if let Some(def_id) = res.get_binding(param.name.span) {
+                                self.table.set_def_type(def_id, param_ty);
+                            }
+                        }
+                    }
+
+                    // Check the body
+                    let body_ty = check_block(
+                        body,
+                        &mut self.table,
+                        &self.builtins,
+                        &self.definitions,
+                        resolutions,
+                        &mut self.diagnostics,
+                        Some(ret_type),
+                    );
+
+                    // Validate return completeness
+                    let body_resolved = self.table.resolve(body_ty);
+                    if ret_type != self.builtins.void
+                        && !matches!(body_resolved, crate::Ty::Never)
+                    {
+                        let ret_name = crate::check_expr::type_name(
+                            ret_type,
+                            &self.table,
+                            &self.definitions,
+                        );
+                        self.diagnostics.push(
+                            spark_diagnostics::Diagnostic::error(format!(
+                                "missing `return` in method `{}` with return type `{ret_name}`",
+                                method.name.name
+                            ))
+                            .with_label(spark_diagnostics::Label::primary(
+                                body.span,
+                                "method body does not return a value on all paths",
+                            )),
+                        );
+                    }
+                }
+            }
         }
     }
 }

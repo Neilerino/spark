@@ -84,6 +84,8 @@ pub enum DefinitionKind {
     BuiltinFunction,
     /// Built-in method on a collection or string type (e.g., `list.len()`).
     BuiltinMethod,
+    /// Method from an interface binding (contains the bound type's `DefId`).
+    BindingMethod(DefId),
 }
 
 impl DefinitionKind {

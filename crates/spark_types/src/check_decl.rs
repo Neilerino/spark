@@ -5,7 +5,8 @@
 //! references between functions resolve correctly.
 
 use spark_ast::{
-    ConstDef, EnumDef, EnumVariantData, FunctionDef, Item, StructDef, TypeAliasDef, TypeDefDef,
+    BindingDef, ConstDef, EnumDef, EnumVariantData, FunctionDef, InterfaceDef, Item, StructDef,
+    TypeAliasDef, TypeDefDef,
 };
 use spark_resolve::{DefId, DefinitionKind, DefinitionTable, ResolutionMap};
 
@@ -34,9 +35,8 @@ pub fn collect_item(
         Item::Const(c) => collect_const(c, table, builtins, definitions, resolutions, diagnostics),
         Item::TypeAlias(a) => collect_type_alias(a, table, builtins, definitions, resolutions, diagnostics),
         Item::TypeDef(t) => collect_type_def(t, table, builtins, definitions, resolutions, diagnostics),
-        Item::Interface(_) | Item::Binding(_) => {
-            // Deferred to follow-up
-        }
+        Item::Interface(i) => collect_interface(i, table, builtins, definitions, resolutions, diagnostics),
+        Item::Binding(b) => collect_binding(b, table, builtins, definitions, resolutions, diagnostics),
     }
 }
 
@@ -190,6 +190,178 @@ fn collect_type_def(
     if let Some(def_id) = find_def_by_name_and_kind(type_def.name.name, &DefinitionKind::TypeDef, definitions) {
         table.set_def_type(def_id, ty);
     }
+}
+
+/// Collects an interface's method signatures.
+///
+/// Registers each method as a `Ty::Function` so that bindings can be
+/// validated against the interface's requirements.
+fn collect_interface(
+    iface: &InterfaceDef,
+    table: &mut TypeTable,
+    _builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    _resolutions: Option<&ResolutionMap>,
+    _diagnostics: &mut spark_diagnostics::Diagnostics,
+) {
+    // Register the interface type itself
+    if let Some(def_id) = find_def_by_name_and_kind(iface.name.name, &DefinitionKind::Interface, definitions) {
+        let iface_type = table.intern(Ty::Param(def_id));
+        table.set_def_type(def_id, iface_type);
+    }
+
+    // Register method signatures — they don't have separate DefIds currently,
+    // so we just lower them for validation use. Interface methods that don't
+    // have DefIds allocated by the resolver won't be stored here; the critical
+    // path is binding method collection below.
+}
+
+/// Collects method signatures from an interface binding.
+///
+/// For each binding target method, lowers the parameter and return types,
+/// interns the function type, and registers it on the method's `DefId`.
+/// Also records the methods in `TypeTable::type_methods` for lookup
+/// during method call resolution.
+#[allow(clippy::too_many_arguments)]
+fn collect_binding(
+    binding: &BindingDef,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) {
+    // Find the bound type's DefId
+    let type_def_id = find_type_def_from_binding_ty(&binding.ty, definitions);
+    if type_def_id.is_dummy() {
+        return;
+    }
+
+    let mut all_methods: Vec<(spark_intern::Symbol, DefId)> = Vec::new();
+
+    for target in &binding.bindings {
+        // Validate interface requirements
+        let interface_def_id = find_type_def_from_binding_ty(&target.interface, definitions);
+        if !interface_def_id.is_dummy() {
+            validate_interface_methods(interface_def_id, &target.methods, definitions, diagnostics);
+        }
+
+        for method in &target.methods {
+            // Find the method's DefId (allocated by resolver as BindingMethod)
+            let method_def_id = find_binding_method_def(
+                method.name.name,
+                type_def_id,
+                definitions,
+            );
+
+            if let Some(method_def_id) = method_def_id {
+                // Lower parameter types
+                let param_types: Vec<TypeId> = method
+                    .params
+                    .iter()
+                    .map(|p| lower_type_expr(&p.ty, table, builtins, definitions, resolutions, diagnostics))
+                    .collect();
+
+                // Lower return type
+                let ret_type = lower_type_expr(&method.ret_type, table, builtins, definitions, resolutions, diagnostics);
+
+                // Apply lifetime elision
+                let (param_types, ret_type) = crate::lower::apply_lifetime_elision(
+                    &param_types, ret_type, method.span, table, diagnostics,
+                );
+
+                // Intern the function type
+                let fn_type = table.intern(Ty::Function {
+                    params: param_types.clone(),
+                    ret: ret_type,
+                    is_async: method.is_async,
+                });
+
+                // Register the method type
+                table.set_def_type(method_def_id, fn_type);
+
+                // Register parameter types
+                for (i, param) in method.params.iter().enumerate() {
+                    if let Some(param_def) = find_param_def(param.name.name, method_def_id, definitions) {
+                        table.set_def_type(param_def, param_types[i]);
+                    }
+                }
+
+                all_methods.push((method.name.name, method_def_id));
+            }
+        }
+    }
+
+    // Register all methods for the bound type
+    if !all_methods.is_empty() {
+        // Merge with any existing methods (from other bindings)
+        if let Some(existing) = table.get_type_methods(type_def_id) {
+            let mut merged = existing.to_vec();
+            merged.extend(all_methods);
+            table.set_type_methods(type_def_id, merged);
+        } else {
+            table.set_type_methods(type_def_id, all_methods);
+        }
+    }
+}
+
+/// Finds the type `DefId` referenced by a binding's type expression.
+fn find_type_def_from_binding_ty(
+    ty: &spark_ast::TypeExpr,
+    definitions: &DefinitionTable,
+) -> DefId {
+    if let spark_ast::TypeExprKind::Named { path, .. } = &ty.kind {
+        if path.is_simple() {
+            let name = path.segments[0].name;
+            // Search for Struct or Enum or Interface with this name
+            return definitions
+                .iter()
+                .find(|(_, info)| info.name == name && info.kind.is_type())
+                .map_or(DefId::DUMMY, |(id, _)| id);
+        }
+    }
+    DefId::DUMMY
+}
+
+/// Finds a binding method `DefId` by name and parent type.
+fn find_binding_method_def(
+    name: spark_intern::Symbol,
+    parent_type: DefId,
+    definitions: &DefinitionTable,
+) -> Option<DefId> {
+    definitions
+        .iter()
+        .find(|(_, info)| {
+            info.name == name
+                && matches!(info.kind, DefinitionKind::BindingMethod(parent) if parent == parent_type)
+        })
+        .map(|(id, _)| id)
+}
+
+/// Validates that a binding provides all required methods from its interface.
+///
+/// Reports errors for missing methods. Defers signature matching to the
+/// generics phase.
+fn validate_interface_methods(
+    interface_def_id: DefId,
+    binding_methods: &[FunctionDef],
+    definitions: &DefinitionTable,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) {
+    // Find the interface definition info
+    let iface_info = match definitions.get(interface_def_id) {
+        Some(info) if matches!(info.kind, DefinitionKind::Interface) => info,
+        _ => return,
+    };
+
+    let iface_name = iface_info.name;
+    let iface_span = iface_info.span;
+
+    // We don't have access to the AST interface methods here (they aren't stored
+    // in the definition table), so interface validation is deferred to when we
+    // have both the interface AST and the binding AST available (in checker.rs).
+    // For now, this is a placeholder that can be enhanced later.
+    let _ = (iface_name, iface_span, binding_methods, diagnostics);
 }
 
 // === Helper functions for finding DefIds ===

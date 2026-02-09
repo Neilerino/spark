@@ -535,4 +535,112 @@ mod tests {
             "Expected non-exhaustive error, got: {msgs:?}"
         );
     }
+
+    // ── User-defined method resolution via bindings ─────────────
+
+    #[test]
+    fn binding_method_call_on_struct() {
+        let output = check_source(
+            "interface IGetX {\n\
+                 fn getX(self: _): Int\n\
+             }\n\
+             struct Foo { x: Int }\n\
+             Foo binds IGetX {\n\
+                 fn getX(self: Foo): Int { return self.x }\n\
+             }\n\
+             fn main(): Int {\n\
+                 f: Foo = Foo { x: 42 }\n\
+                 return f.getX()\n\
+             }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn binding_method_call_with_args() {
+        let output = check_source(
+            "interface IAdd {\n\
+                 fn addTo(self: _, n: Int): Int\n\
+             }\n\
+             struct Counter { value: Int }\n\
+             Counter binds IAdd {\n\
+                 fn addTo(self: Counter, n: Int): Int { return self.value + n }\n\
+             }\n\
+             fn main(): Int {\n\
+                 c: Counter = Counter { value: 10 }\n\
+                 return c.addTo(5)\n\
+             }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn binding_method_not_found_error() {
+        let output = check_source(
+            "struct Foo { x: Int }\n\
+             fn main(): Int {\n\
+                 f: Foo = Foo { x: 1 }\n\
+                 return f.nonexistent()\n\
+             }",
+        );
+        assert!(output.diagnostics.has_errors());
+        let msgs: Vec<_> = output.diagnostics.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("no method")),
+            "Expected 'no method' error, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn binding_method_wrong_arg_count() {
+        let output = check_source(
+            "interface IGetX {\n\
+                 fn getX(self: _): Int\n\
+             }\n\
+             struct Foo { x: Int }\n\
+             Foo binds IGetX {\n\
+                 fn getX(self: Foo): Int { return self.x }\n\
+             }\n\
+             fn main(): Int {\n\
+                 f: Foo = Foo { x: 42 }\n\
+                 return f.getX(1, 2)\n\
+             }",
+        );
+        assert!(output.diagnostics.has_errors());
+    }
+
+    #[test]
+    fn binding_multiple_methods() {
+        let output = check_source(
+            "interface IShape {\n\
+                 fn area(self: _): Int\n\
+                 fn name(self: _): String\n\
+             }\n\
+             struct Rect { w: Int, h: Int }\n\
+             Rect binds IShape {\n\
+                 fn area(self: Rect): Int { return self.w * self.h }\n\
+                 fn name(self: Rect): String { return \"rect\" }\n\
+             }\n\
+             fn main(): Int {\n\
+                 r: Rect = Rect { w: 3, h: 4 }\n\
+                 return r.area()\n\
+             }",
+        );
+        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn binding_method_body_type_checked() {
+        // The method body returns a String but declares Int — should error
+        let output = check_source(
+            "interface IGetX {\n\
+                 fn getX(self: _): Int\n\
+             }\n\
+             struct Foo { x: Int }\n\
+             Foo binds IGetX {\n\
+                 fn getX(self: Foo): Int { return \"wrong\" }\n\
+             }",
+        );
+        assert!(output.diagnostics.has_errors());
+    }
 }

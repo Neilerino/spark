@@ -435,8 +435,9 @@ fn lower_method_call(
         all_args.push(Operand::Copy(Place::from_local(local)));
     }
 
-    // Look up the builtin method DefId for this method name.
+    // Look up the method DefId: first try builtins, then user-defined methods.
     let method_def_id = find_builtin_method(defs, method)
+        .or_else(|| type_table.get_method_resolution(expr.span))
         .unwrap_or(spark_resolve::DefId::DUMMY);
 
     let dest = fb.fresh_temp(expr.ty, expr.span);

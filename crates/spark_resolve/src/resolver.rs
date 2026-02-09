@@ -10,8 +10,8 @@ use std::collections::HashMap;
 
 use rustc_hash::FxHashMap;
 use spark_ast::{
-    Ast, Block, Expr, ExprKind, FunctionDef, GenericConstraint, Item, Pattern, PatternKind, Stmt,
-    StmtKind, ToHandler, TypeExpr, TypeExprKind,
+    Ast, BindingDef, Block, Expr, ExprKind, FunctionDef, GenericConstraint, Item, Pattern,
+    PatternKind, Stmt, StmtKind, ToHandler, TypeExpr, TypeExprKind,
 };
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_intern::{kw, Symbol};
@@ -182,7 +182,10 @@ impl Resolver {
                     DefinitionKind::Const,
                     Visibility::from(c.visibility),
                 ),
-                Item::Binding(_) => continue,
+                Item::Binding(b) => {
+                    self.collect_binding_methods(file_id, b, module_path);
+                    continue;
+                }
             };
 
             let span = item.span();
@@ -272,6 +275,80 @@ impl Resolver {
                 .get_or_create_resolutions(file_id)
                 .record_binding(variant.name.span, variant_def_id);
         }
+    }
+
+    /// Registers definitions for methods in an interface binding.
+    ///
+    /// For `Foo binds IBar { fn method(...) { ... } }`, allocates `DefId`s
+    /// for each method as `BindingMethod(type_def_id)`. Methods are NOT
+    /// added to symbol ribs — they are resolved via dot syntax in the type checker.
+    fn collect_binding_methods(
+        &mut self,
+        file_id: FileId,
+        binding: &BindingDef,
+        module_path: &ModulePath,
+    ) {
+        // Find the DefId for the bound type by examining the type expression.
+        let type_def_id = self.find_type_def_from_type_expr(&binding.ty, module_path);
+        if type_def_id.is_dummy() {
+            return;
+        }
+
+        for target in &binding.bindings {
+            for method in &target.methods {
+                let info = DefinitionInfo::new(
+                    DefinitionKind::BindingMethod(type_def_id),
+                    method.name.name,
+                    method.name.span,
+                    Visibility::Private,
+                    module_path.clone(),
+                );
+                let method_def_id = self.definitions.insert(info);
+                self.resolved
+                    .get_or_create_resolutions(file_id)
+                    .record_binding(method.name.span, method_def_id);
+
+                // Also register parameter DefIds
+                for param in &method.params {
+                    let param_info = DefinitionInfo::new(
+                        DefinitionKind::Parameter,
+                        param.name.name,
+                        param.name.span,
+                        Visibility::Private,
+                        module_path.clone(),
+                    );
+                    let param_def_id = self.definitions.insert(param_info);
+                    self.resolved
+                        .get_or_create_resolutions(file_id)
+                        .record_binding(param.name.span, param_def_id);
+                }
+            }
+        }
+    }
+
+    /// Finds the `DefId` for a type referenced in a type expression.
+    ///
+    /// Used during the collection pass to resolve the bound type in bindings.
+    /// Only handles simple named types (e.g., `Foo`), not complex type expressions.
+    fn find_type_def_from_type_expr(
+        &self,
+        ty: &TypeExpr,
+        module_path: &ModulePath,
+    ) -> DefId {
+        if let TypeExprKind::Named { path, .. } = &ty.kind {
+            if path.is_simple() {
+                let name = path.segments[0].name;
+                // Search in module defs already collected
+                if let Some(defs) = self.module_defs.get(module_path) {
+                    for (def_name, def_id, kind) in defs {
+                        if *def_name == name && kind.is_type() {
+                            return *def_id;
+                        }
+                    }
+                }
+            }
+        }
+        DefId::DUMMY
     }
 
     /// Collects import bindings for a file and stores resolved `DefId`s.

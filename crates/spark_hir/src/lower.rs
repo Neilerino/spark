@@ -78,7 +78,10 @@ impl<'a> Lowerer<'a> {
                 Item::Const(const_def) => {
                     self.lower_const(const_def, resolutions, hir);
                 }
-                // Struct, Enum, Interface, TypeAlias, TypeDef, Binding —
+                Item::Binding(binding) => {
+                    self.lower_binding(binding, resolutions, hir);
+                }
+                // Struct, Enum, Interface, TypeAlias, TypeDef —
                 // no runtime code, fully represented in TypeTable/DefinitionTable.
                 _ => {}
             }
@@ -169,6 +172,66 @@ impl<'a> Lowerer<'a> {
             value,
             span: const_def.span,
         });
+    }
+
+    /// Lowers a binding definition's method bodies.
+    ///
+    /// Each binding method with a body is lowered as a regular function in HIR.
+    fn lower_binding(
+        &mut self,
+        binding: &spark_ast::BindingDef,
+        resolutions: Option<&ResolutionMap>,
+        hir: &mut Hir,
+    ) {
+        for target in &binding.bindings {
+            for method in &target.methods {
+                if let Some(body) = &method.body {
+                    // Find the method DefId — it's a BindingMethod
+                    let def_id = resolutions
+                        .and_then(|res| res.get_binding(method.name.span))
+                        .unwrap_or(DefId::DUMMY);
+
+                    if def_id.is_dummy() {
+                        continue;
+                    }
+
+                    // Lower parameters
+                    let params = self.lower_params(&method.params, resolutions);
+
+                    // Get return type from the function type
+                    let ret_type = self
+                        .table
+                        .get_def_type(def_id)
+                        .and_then(|fn_ty| {
+                            if let spark_types::Ty::Function { ret, .. } = self.table.resolve(fn_ty) {
+                                Some(*ret)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(TypeId::ERROR);
+
+                    // Lower body
+                    let hir_body = crate::lower_expr::lower_block(
+                        body,
+                        self.table,
+                        &mut *self.definitions,
+                        resolutions,
+                        &mut self.diagnostics,
+                        Some(ret_type),
+                    );
+
+                    hir.functions.insert(def_id, HirFunction {
+                        def_id,
+                        params,
+                        body: hir_body,
+                        ret_type,
+                        is_async: method.is_async,
+                        span: method.span,
+                    });
+                }
+            }
+        }
     }
 
     /// Lowers function parameters to HIR.
