@@ -1,19 +1,52 @@
-fn loop_with_break(n: Int): Int {
-    count: Int! = 0
-    loop {
-        if count >= n {
-            break count
-        }
-        print(count)
-        count += 1
-        if count == 5 {
-            return count
-        }
+fn clamp(val: Int, lo: Int, hi: Int): Int {
+    if val < lo {
+        return lo
     }
-    return count
+    if val > hi {
+        return hi
+    }
+    return val
 }
 
-fn main(): Void {
-    items: List[Int] = [1, 2, 3]
-    loop_with_break(10)
+fn factorial(n: Int): Int {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+fn main(): Int {
+    // --- String literals ---
+    print("--- Spark Demo ---")
+
+    // --- Arithmetic + multi-arg functions ---
+    print("clamped -5 to [0,10]:")
+    print(clamp(-5, 0, 10))
+    print("clamped 7 to [0,10]:")
+    print(clamp(7, 0, 10))
+    print("clamped 99 to [0,10]:")
+    print(clamp(99, 0, 10))
+
+    // --- Recursion ---
+    print("5! =")
+    print(factorial(5))
+
+    // --- Collections with COW mutation ---
+    nums: List[Int]! = [10, 20, 30]
+    nums.append(40)
+    print("list length after append:")
+    print(nums.len())
+    print("contains 20:")
+    print(nums.contains(20))
+    print("contains 99:")
+    print(nums.contains(99))
+
+    // --- Pattern matching ---
+    done: Bool = true
+    match done {
+        true -> print("all done!"),
+        false -> print("not yet")
+    }
+
+    return 0
 }
