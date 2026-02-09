@@ -95,11 +95,8 @@ fn merge_goto_chains(func: &mut MirFunction) -> bool {
                 (&mut right[0], &mut left[b_idx])
             };
 
-            let (a_block, b_block) = if a_idx < b_idx {
-                (lo, hi)
-            } else {
-                (hi, lo)
-            };
+            // lo = A (source of goto), hi = B (target) in both branches above.
+            let (a_block, b_block) = (lo, hi);
 
             // Move B's statements into A, then take B's terminator.
             a_block.statements.append(&mut b_block.statements);

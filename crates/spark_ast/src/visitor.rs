@@ -300,10 +300,14 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
 
         ExprKind::StructInit {
             path,
+            type_args,
             fields,
             spread,
         } => {
             v.visit_path(path);
+            for ta in type_args {
+                v.visit_type(ta);
+            }
             for field in fields {
                 v.visit_ident(&field.name);
                 v.visit_expr(&field.value);

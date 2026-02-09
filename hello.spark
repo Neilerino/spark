@@ -29,7 +29,7 @@ fn main(): Int {
 
     // --- Recursion ---
     print("5! =")
-    print(factorial(5))
+    print(factorial(25))
 
     // --- Collections with COW mutation ---
     nums: List[Int]! = [10, 20, 30]

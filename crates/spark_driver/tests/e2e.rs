@@ -149,3 +149,35 @@ fn match_nonexhaustive_bool() {
 fn match_nonexhaustive_int() {
     assert_compile_error("match_nonexhaustive_int.spark", "non-exhaustive");
 }
+
+// ============================================================================
+// Structs
+// ============================================================================
+
+#[test]
+fn struct_field_access() {
+    assert_output("struct_field.spark", "10\n20");
+}
+
+// ============================================================================
+// Loops
+// ============================================================================
+
+#[test]
+fn loop_break() {
+    assert_output("loop_break.spark", "4");
+}
+
+// ============================================================================
+// Generics
+// ============================================================================
+
+#[test]
+fn generic_struct_init() {
+    assert_output("generic_struct_init.spark", "3\n4");
+}
+
+#[test]
+fn generic_identity() {
+    assert_output("generic_identity.spark", "42");
+}

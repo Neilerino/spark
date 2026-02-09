@@ -190,8 +190,8 @@ fn check_expr_inner(
         }
 
         // === Struct initialization ===
-        ExprKind::StructInit { path, fields, spread } => {
-            check_struct_init(path, fields, spread.as_deref(), expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+        ExprKind::StructInit { path, type_args, fields, spread } => {
+            check_struct_init(path, type_args, fields, spread.as_deref(), expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
         }
 
         // === Enum variant ===
@@ -856,6 +856,7 @@ fn check_field_access(
 #[allow(clippy::too_many_arguments)]
 fn check_struct_init(
     path: &spark_ast::Path,
+    type_args: &[spark_ast::TypeExpr],
     fields: &[spark_ast::FieldInit],
     spread: Option<&Expr>,
     init_span: Span,
@@ -918,20 +919,44 @@ fn check_struct_init(
             }
         }
 
-        // For generic structs: infer type args and check substituted field types.
+        // For generic structs: use explicit type args or infer from field values.
         if is_generic {
             let params = generic_params.as_deref().unwrap_or_default();
-            // Build declared and actual type vectors for inference, in field order.
-            let mut declared_types = Vec::new();
-            let mut actual_types = Vec::new();
-            for (field_name, val_ty) in &field_val_types {
-                if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| n == field_name) {
-                    declared_types.push(*field_ty);
-                    actual_types.push(*val_ty);
-                }
-            }
 
-            if let Some(subst) = crate::substitute::infer_type_args(params, &declared_types, &actual_types, table) {
+            // Try explicit type args first, then fall back to inference.
+            let subst = if !type_args.is_empty() {
+                // Explicit type args provided: Pair[Int, String] { ... }
+                if type_args.len() != params.len() {
+                    diagnostics.push(
+                        Diagnostic::error(format!(
+                            "expected {} type argument(s), found {}",
+                            params.len(),
+                            type_args.len()
+                        ))
+                        .with_label(Label::primary(init_span, "wrong number of type arguments")),
+                    );
+                    None
+                } else {
+                    let lowered: Vec<TypeId> = type_args
+                        .iter()
+                        .map(|ta| lower_type_expr(ta, table, builtins, definitions, resolutions, diagnostics))
+                        .collect();
+                    Some(crate::substitute::build_subst_map(params, &lowered))
+                }
+            } else {
+                // Infer type args from field values.
+                let mut declared_types = Vec::new();
+                let mut actual_types = Vec::new();
+                for (field_name, val_ty) in &field_val_types {
+                    if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| n == field_name) {
+                        declared_types.push(*field_ty);
+                        actual_types.push(*val_ty);
+                    }
+                }
+                crate::substitute::infer_type_args(params, &declared_types, &actual_types, table)
+            };
+
+            if let Some(subst) = subst {
                 // Re-check fields with substituted types
                 for (field_name, val_ty) in &field_val_types {
                     if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| n == field_name) {
@@ -956,7 +981,7 @@ fn check_struct_init(
                 }
                 return table.intern(Ty::Applied { base: def_id, args });
             }
-            // Inference failed — fall through and return the plain struct type
+            // Inference/explicit args failed — fall through and return the plain struct type
         }
     }
 

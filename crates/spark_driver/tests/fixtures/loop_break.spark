@@ -1,0 +1,11 @@
+fn main(): Int {
+    n: Int! = 0
+    loop {
+        if n > 3 {
+            break
+        }
+        n = n + 1
+    }
+    print(n)
+    return 0
+}

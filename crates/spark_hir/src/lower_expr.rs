@@ -133,7 +133,7 @@ fn lower_expr_kind(
         },
 
         // === Constructors ===
-        ExprKind::StructInit { path, fields, spread: _ } => {
+        ExprKind::StructInit { path, type_args: _, fields, spread: _ } => {
             let def_id = resolutions
                 .and_then(|res| res.get_path(path.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);

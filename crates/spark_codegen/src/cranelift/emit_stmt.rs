@@ -2,7 +2,7 @@
 //!
 //! Handles `Assign`, `Drop`, and `Nop` statements.
 
-use cranelift_codegen::ir::{types, InstBuilder};
+use cranelift_codegen::ir::{types, InstBuilder, MemFlags};
 use cranelift_module::{FuncId, Module};
 use rustc_hash::FxHashMap;
 use spark_diagnostics::Diagnostics;
@@ -10,7 +10,7 @@ use spark_mir::Statement;
 use spark_resolve::DefinitionTable;
 use spark_types::{Ty, TypeTable};
 
-use super::context::FunctionContext;
+use super::context::{FunctionContext, LocalStorage};
 use super::emit_rvalue;
 use super::types as clif_types;
 
@@ -43,8 +43,27 @@ pub fn emit_statement<M: Module>(
                 diagnostics,
             ) {
                 if place.projections.is_empty() {
-                    // Simple local assignment.
-                    ctx.write_local(dest_local, val);
+                    // Check if the destination is a stack slot (aggregate).
+                    // For aggregates, `val` is a pointer to the source data
+                    // and we need to memcpy it into the destination slot.
+                    if let LocalStorage::StackSlot(slot, size) = ctx.local_storage(dest_local) {
+                        let dest_addr =
+                            ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0);
+                        let config = module.target_config();
+                        ctx.builder.emit_small_memory_copy(
+                            config,
+                            dest_addr,
+                            val,
+                            u64::from(size),
+                            1, // dest align
+                            1, // src align
+                            true, // non-overlapping
+                            MemFlags::new(),
+                        );
+                    } else {
+                        // Scalar local assignment.
+                        ctx.write_local(dest_local, val);
+                    }
                 } else {
                     // Projected assignment — compute address and store.
                     // The rvalue emission for aggregates handles this directly.

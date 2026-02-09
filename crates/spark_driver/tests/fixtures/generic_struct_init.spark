@@ -1,0 +1,11 @@
+struct Pair[A, B] {
+    first: A,
+    second: B
+}
+
+fn main(): Int {
+    p: Pair[Int, Int] = Pair[Int, Int] { first: 3, second: 4 }
+    print(p.first)
+    print(p.second)
+    return 0
+}

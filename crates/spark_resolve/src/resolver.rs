@@ -775,10 +775,14 @@ impl Resolver {
 
             ExprKind::StructInit {
                 path,
+                type_args,
                 fields,
                 spread,
             } => {
                 self.resolve_type_path(path);
+                for ta in type_args {
+                    self.resolve_type_expr(ta);
+                }
                 for field in fields {
                     self.resolve_expr(&field.value);
                 }

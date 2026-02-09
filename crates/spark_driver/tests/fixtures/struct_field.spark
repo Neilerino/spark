@@ -1,0 +1,11 @@
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn main(): Int {
+    p: Point = Point { x: 10, y: 20 }
+    print(p.x)
+    print(p.y)
+    return 0
+}

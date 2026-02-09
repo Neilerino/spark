@@ -148,6 +148,8 @@ pub enum ExprKind {
     StructInit {
         /// The struct type path.
         path: Path,
+        /// Explicit generic type arguments: `Pair[Int, String] { ... }`
+        type_args: Vec<TypeExpr>,
         /// Field initializers.
         fields: Vec<FieldInit>,
         /// Spread from existing struct: `{ ...other, name: "Bob" }`

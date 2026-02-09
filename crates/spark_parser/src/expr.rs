@@ -113,6 +113,59 @@ impl Parser {
         }
     }
 
+    /// Returns true if the expression is an identifier or path.
+    fn lhs_is_path(lhs: &Expr) -> bool {
+        matches!(&lhs.kind, ExprKind::Ident(_) | ExprKind::Path(_))
+    }
+
+    /// Checks if the current `[` is followed by a matching `]` then `{`.
+    ///
+    /// Used to disambiguate `Type[Args] { fields }` (generic struct init)
+    /// from `expr[index]` (index access).
+    fn brackets_followed_by_brace(&self) -> bool {
+        // Current token must be `[`
+        if self.current_kind() != TokenKind::LBracket {
+            return false;
+        }
+        let mut depth = 1;
+        let mut i = 1; // Start after the `[`
+        while depth > 0 && i < 200 {
+            match self.peek_nth(i).kind {
+                TokenKind::LBracket => depth += 1,
+                TokenKind::RBracket => depth -= 1,
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        // `i` now points to the token after the matching `]`
+        self.peek_nth(i).kind == TokenKind::LBrace
+    }
+
+    /// Parses generic type arguments in expression position: `[Type, Type, ...]`.
+    ///
+    /// Consumes the `[`, the type args, and the `]`.
+    fn parse_type_args_in_expr(&mut self) -> Vec<spark_ast::TypeExpr> {
+        let mut args = Vec::new();
+
+        if self.eat(TokenKind::LBracket).is_none() {
+            return args;
+        }
+
+        if !self.check(TokenKind::RBracket) {
+            args.push(self.parse_type());
+            while self.eat(TokenKind::Comma).is_some() {
+                if self.check(TokenKind::RBracket) {
+                    break;
+                }
+                args.push(self.parse_type());
+            }
+        }
+
+        self.expect(TokenKind::RBracket);
+        args
+    }
+
     /// Returns the binding power for prefix operators.
     fn prefix_bp(&self) -> Option<((), u8)> {
         match self.current_kind() {
@@ -367,6 +420,15 @@ impl Parser {
             }
 
             TokenKind::LBracket => {
+                // Check: is this generic type args before struct init?
+                if Self::lhs_is_path(&lhs) && self.brackets_followed_by_brace() {
+                    let type_args = self.parse_type_args_in_expr();
+                    let path = Self::lhs_as_path(&lhs).unwrap();
+                    let args = self.parse_partial_args();
+                    let span = self.span_from(start);
+                    return Self::convert_to_struct_or_partial_generic(path, type_args, args, span);
+                }
+                // Existing index parsing
                 self.advance();
                 let index = self.parse_expr();
                 self.expect(TokenKind::RBracket);
@@ -399,6 +461,16 @@ impl Parser {
 
     /// Converts a brace expression to either struct init or partial application.
     fn convert_to_struct_or_partial(path: Path, args: Vec<PartialArg>, span: Span) -> Expr {
+        Self::convert_to_struct_or_partial_generic(path, vec![], args, span)
+    }
+
+    /// Converts a brace expression to struct init (with optional type args) or partial application.
+    fn convert_to_struct_or_partial_generic(
+        path: Path,
+        type_args: Vec<spark_ast::TypeExpr>,
+        args: Vec<PartialArg>,
+        span: Span,
+    ) -> Expr {
         // Heuristic: if path starts with uppercase, assume struct init
         // This is a simplification - proper resolution happens later
         if let Some(first) = path.last() {
@@ -413,6 +485,7 @@ impl Parser {
                     return Expr::new(
                         ExprKind::StructInit {
                             path,
+                            type_args,
                             fields,
                             spread: None,
                         },
@@ -1697,5 +1770,47 @@ mod tests {
         } else {
             panic!("expected literal");
         }
+    }
+
+    // ====================================================================
+    // Generic Struct Init Tests
+    // ====================================================================
+
+    #[test]
+    fn generic_struct_init_single() {
+        let (expr, diags) = parse_expr_str("Box[Int] { value: 42 }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        if let ExprKind::StructInit { type_args, fields, .. } = &expr.kind {
+            assert_eq!(type_args.len(), 1);
+            assert_eq!(fields.len(), 1);
+        } else {
+            panic!("expected StructInit, got {:?}", expr.kind);
+        }
+    }
+
+    #[test]
+    fn generic_struct_init_multi() {
+        let (expr, diags) = parse_expr_str("Pair[Int, String] { first: 1, second: \"hi\" }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        if let ExprKind::StructInit { type_args, fields, .. } = &expr.kind {
+            assert_eq!(type_args.len(), 2);
+            assert_eq!(fields.len(), 2);
+        } else {
+            panic!("expected StructInit, got {:?}", expr.kind);
+        }
+    }
+
+    #[test]
+    fn index_still_works() {
+        let (expr, diags) = parse_expr_str("arr[0]");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(matches!(expr.kind, ExprKind::Index { .. }));
+    }
+
+    #[test]
+    fn index_before_non_brace() {
+        let (expr, diags) = parse_expr_str("arr[0].field");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(matches!(expr.kind, ExprKind::Field { .. }));
     }
 }
