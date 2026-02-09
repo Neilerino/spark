@@ -98,6 +98,12 @@ impl<'a> Cursor<'a> {
         self.chars.as_str()
     }
 
+    /// Returns a cloned character iterator over the remaining source.
+    #[must_use]
+    pub fn rest_chars(&self) -> Chars<'a> {
+        self.chars.clone()
+    }
+
     /// Returns a slice of the source from start to current position.
     #[must_use]
     pub fn slice_from(&self, start: u32) -> &'a str {

@@ -217,6 +217,10 @@ pub enum Rvalue {
         /// The target type.
         target_ty: TypeId,
     },
+    /// String interpolation: operands are the parts (text literals and
+    /// expressions). Each carries its original type; the codegen emits
+    /// to-string conversions and a concat chain.
+    StringInterp(Vec<Operand>),
 }
 
 /// The kind of aggregate being constructed.

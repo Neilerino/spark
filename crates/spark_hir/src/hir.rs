@@ -256,6 +256,16 @@ pub enum HirExprKind {
     /// Dereference a reference.
     Deref(Box<HirExpr>),
 
+    // === String interpolation ===
+    /// String interpolation desugared to a list of parts.
+    /// Each part is a `HirExpr` typed as `String` — text literals become
+    /// `HirLiteral::String(sym)`, and interpolation expressions are wrapped
+    /// in type-conversion calls.
+    StringInterp {
+        /// The parts of the interpolated string, all typed as String.
+        parts: Vec<HirExpr>,
+    },
+
     // === Error recovery ===
     /// Error placeholder (from failed lowering).
     Error,

@@ -3,7 +3,7 @@
 //! Walks expression trees and returns the type of each expression,
 //! recording the result in the type table's `expr_types` map.
 
-use spark_ast::{BinaryOp, Block, Expr, ExprKind, LiteralKind, ToHandler, UnaryOp};
+use spark_ast::{BinaryOp, Block, Expr, ExprKind, LiteralKind, StringPart, ToHandler, UnaryOp};
 use spark_diagnostics::{Diagnostic, Label};
 use spark_intern::{kw, Symbol};
 use spark_resolve::{DefId, DefinitionTable, ResolutionMap};
@@ -69,7 +69,40 @@ fn check_expr_inner(
         ExprKind::Literal(lit) => match &lit.kind {
             LiteralKind::Int(_) => builtins.int,
             LiteralKind::Float(_) => builtins.float,
-            LiteralKind::String(_) => builtins.string,
+            LiteralKind::String(s) => {
+                // Type-check each interpolated sub-expression.
+                for part in &s.parts {
+                    if let StringPart::Interpolation(sub_expr) = part {
+                        let sub_ty = check_expr(
+                            sub_expr, table, builtins, definitions,
+                            resolutions, diagnostics, current_fn_ret,
+                        );
+                        // Verify the type supports string conversion.
+                        let resolved = table.resolve(sub_ty);
+                        let ok = matches!(
+                            resolved,
+                            Ty::String
+                                | Ty::Int(_)
+                                | Ty::Float(_)
+                                | Ty::Bool
+                                | Ty::Char
+                                | Ty::Error
+                        );
+                        if !ok {
+                            let name = type_name(sub_ty, table, definitions);
+                            diagnostics.push(
+                                Diagnostic::error("type cannot be interpolated into a string")
+                                    .with_label(Label::primary(
+                                        sub_expr.span,
+                                        format!("type `{name}` does not support string interpolation"),
+                                    ))
+                                    .with_note("only String, Int, Float, Bool, and Char can be interpolated"),
+                            );
+                        }
+                    }
+                }
+                builtins.string
+            }
             LiteralKind::Char(_) => builtins.char_ty,
             LiteralKind::Bool(_) => builtins.bool_ty,
             LiteralKind::Null => builtins.null,

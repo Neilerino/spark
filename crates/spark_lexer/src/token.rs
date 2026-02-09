@@ -77,6 +77,14 @@ pub enum TokenKind {
     FloatLiteral,
     /// String literal: `"hello"`
     StringLiteral,
+    /// Start of an interpolated string: the opening `"`
+    StringStart,
+    /// End of an interpolated string: the closing `"`
+    StringEnd,
+    /// A text segment within an interpolated string
+    StringText,
+    /// Start of an interpolation: the `{` inside a string
+    InterpStart,
     /// Character literal: `'a'`
     CharLiteral,
 
@@ -382,6 +390,10 @@ impl TokenKind {
             Self::IntLiteral => "integer literal",
             Self::FloatLiteral => "float literal",
             Self::StringLiteral => "string literal",
+            Self::StringStart => "string start",
+            Self::StringEnd => "string end",
+            Self::StringText => "string text",
+            Self::InterpStart => "interpolation start",
             Self::CharLiteral => "character literal",
             Self::Fn => "fn",
             Self::Struct => "struct",

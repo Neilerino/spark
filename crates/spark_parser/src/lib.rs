@@ -364,6 +364,7 @@ impl Parser {
             TokenKind::IntLiteral
                 | TokenKind::FloatLiteral
                 | TokenKind::StringLiteral
+                | TokenKind::StringStart
                 | TokenKind::CharLiteral
                 | TokenKind::True
                 | TokenKind::False

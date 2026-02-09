@@ -93,7 +93,14 @@ const fn token_type_index(kind: TokenKind) -> Option<u32> {
         TokenKind::IntLiteral | TokenKind::FloatLiteral => Some(NUMBER),
 
         // Strings
-        TokenKind::StringLiteral | TokenKind::CharLiteral => Some(STRING),
+        TokenKind::StringLiteral
+        | TokenKind::CharLiteral
+        | TokenKind::StringStart
+        | TokenKind::StringEnd
+        | TokenKind::StringText => Some(STRING),
+
+        // Interpolation punctuation — no semantic token
+        TokenKind::InterpStart => None,
 
         // Comments (only doc comments survive lexing)
         TokenKind::DocComment => Some(COMMENT),

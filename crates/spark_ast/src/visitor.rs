@@ -27,8 +27,8 @@
 
 use crate::{
     Ast, Block, EnumDef, EnumVariantData, Expr, ExprKind, FunctionDef, Ident, InterfaceDef, Item,
-    Literal, Path, Pattern, PatternKind, Stmt, StmtKind, StructDef, ToHandler, TypeExpr,
-    TypeExprKind,
+    Literal, LiteralKind, Path, Pattern, PatternKind, Stmt, StmtKind, StringPart, StructDef,
+    ToHandler, TypeExpr, TypeExprKind,
 };
 
 /// A visitor for traversing AST nodes.
@@ -102,7 +102,9 @@ pub trait Visitor: Sized {
     }
 
     /// Visit a literal.
-    fn visit_literal(&mut self, _lit: &Literal) {}
+    fn visit_literal(&mut self, lit: &Literal) {
+        walk_literal(self, lit);
+    }
 }
 
 /// Walk the children of an AST.
@@ -519,6 +521,20 @@ pub fn walk_pattern<V: Visitor>(v: &mut V, pat: &Pattern) {
         PatternKind::Guard { pattern, guard } => {
             v.visit_pattern(pattern);
             v.visit_expr(guard);
+        }
+    }
+}
+
+/// Walk the children of a literal.
+///
+/// For string literals with interpolation, this visits each interpolated
+/// sub-expression.
+pub fn walk_literal<V: Visitor>(v: &mut V, lit: &Literal) {
+    if let LiteralKind::String(s) = &lit.kind {
+        for part in &s.parts {
+            if let StringPart::Interpolation(expr) = part {
+                v.visit_expr(expr);
+            }
         }
     }
 }
