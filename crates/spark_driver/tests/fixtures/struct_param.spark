@@ -1,0 +1,11 @@
+struct Point { x: Int, y: Int }
+
+fn distance_squared(p: Point): Int {
+    return p.x * p.x + p.y * p.y
+}
+
+fn main(): Int {
+    origin: Point = Point { x: 3, y: 4 }
+    print(distance_squared(origin))
+    return 0
+}

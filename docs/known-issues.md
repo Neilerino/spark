@@ -63,36 +63,4 @@ fn main(): Int {
 
 **Likely cause**: The runtime's `__spark_int_to_string` or `__spark_string_concat` functions may not be returning/linking correctly, or the codegen is passing arguments in the wrong order/format.
 
----
-
-## 3. Struct passed as function argument reads wrong field values
-
-**Severity**: High
-**Location**: `spark_codegen` — struct parameter ABI
-
-When a struct is passed as a function parameter, field accesses inside the called function read wrong values. Local struct field access (within the same function where the struct was created) works correctly, but passing a struct to another function is broken.
-
-**Reproducer**:
-```spark
-struct Point {
-    x: Int,
-    y: Int
-}
-
-fn distance_squared(p: Point): Int {
-    return p.x * p.x + p.y * p.y
-}
-
-fn main(): Int {
-    origin: Point = Point { x: 3, y: 4 }
-    print(distance_squared(origin))
-    // prints: 0 (expected: 25)
-    return 0
-}
-```
-
-**Workaround**: Access struct fields in the same function where the struct is created, rather than passing it to another function.
-
-**Likely cause**: Structs are aggregates passed by pointer. The callee receives the pointer but sets up its own stack slot for the parameter without copying the caller's data into it, similar to the local aggregate copy issue that was fixed in `emit_stmt.rs`.
-
 

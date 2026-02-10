@@ -10,7 +10,7 @@ pub mod emit_term;
 pub mod runtime;
 pub mod types;
 
-use cranelift_codegen::ir::{Function, InstBuilder};
+use cranelift_codegen::ir::{Function, InstBuilder, MemFlags};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context as ClifContext;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -120,7 +120,7 @@ impl CraneliftBackend {
     }
 
     /// Compiles a single MIR function.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn compile_function(
         &mut self,
         func_id: FuncId,
@@ -177,7 +177,30 @@ impl CraneliftBackend {
             if !abi::is_zero_sized(ty_id, table)
                 && param_idx < entry_params.len()
             {
-                fctx.write_local(local, entry_params[param_idx]);
+                let param_val = entry_params[param_idx];
+
+                // Aggregate params arrive as pointers — copy caller data into
+                // the callee's stack slot so field accesses read correct values.
+                if let context::LocalStorage::StackSlot(slot, size) =
+                    fctx.local_storage(local)
+                {
+                    let dest_addr =
+                        fctx.builder.ins().stack_addr(fctx.ptr_type, slot, 0);
+                    let config = self.module.target_config();
+                    fctx.builder.emit_small_memory_copy(
+                        config,
+                        dest_addr,
+                        param_val,
+                        u64::from(size),
+                        1,
+                        1,
+                        true,
+                        MemFlags::new(),
+                    );
+                } else {
+                    fctx.write_local(local, param_val);
+                }
+
                 param_idx += 1;
             }
         }

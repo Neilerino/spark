@@ -159,6 +159,11 @@ fn struct_field_access() {
     assert_output("struct_field.spark", "10\n20");
 }
 
+#[test]
+fn struct_param() {
+    assert_output("struct_param.spark", "25");
+}
+
 // ============================================================================
 // Loops
 // ============================================================================
