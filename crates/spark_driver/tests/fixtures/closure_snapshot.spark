@@ -1,0 +1,8 @@
+fn main(): Int {
+    x: Int! = 10
+    f: (): Int = fn(): Int { return x }
+    x = 42
+    print(f())
+    print(x)
+    return 0
+}

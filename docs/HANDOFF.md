@@ -94,15 +94,40 @@ String literals work end-to-end. `print("hello world")` produces output.
 
 ## What's Next
 
+### Feature Status
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Lambdas & closures | **Working** | Fat-pointer ABI, capture-by-value. Env memory leaked (see KNOWN_ISSUES.md) |
+| Generics | **Working** | Monomorphization, type inference, struct/function generics |
+| Structs | **Working** | Init, field access, passing as args, returning from functions |
+| Enums + match | **Working** | Variant data, exhaustiveness checking |
+| String interpolation | **Working** | `"hello {name}"` desugars to concat calls |
+| Union types (`??`, `?.`, `!`, `to`) | **Working** | Full desugaring in HIR |
+| Interfaces + bindings | **Working** | Method resolution, type checking |
+| Type aliases | **Working** | Fully integrated |
+| Collections (List, Map, Set) | **Working** | Literals, index, methods, RC |
+| `loop` + `break` | **Working** | E2E tested |
+| Tuples | **Partial** | Type support complete, no E2E test |
+| Modules / imports | **Partial** | Resolver infrastructure done, no multi-file E2E test |
+| References (`Ref`) | **Partial** | Backend wired (borrow checker, MIR, codegen) but no user-facing creation syntax. See KNOWN_ISSUES.md |
+| `each` / `each via` | **Partial** | Parses but lowers to error in HIR. Needs iterator protocol design |
+| `async` / `await` / `spawn` | **Partial** | Parses, lowers to HIR. No MIR or codegen |
+| Generic constraints (`T: IFoo`) | **Not implemented** | Type params work but constraints not validated |
+| Weak references | **Not implemented** | Mentioned in spec, no type system support |
+
 ### Suggested Next Steps (in rough priority order)
 
-1. **Lambda/closure conversion** — Capture analysis, environment structs, borrow checker support. Unlocks all functional features.
-2. **`each`/`each via` iteration** — Blocked on lambdas/closures.
-3. **Async/await/spawn** — Future types, state machine transform, runtime executor.
-4. **Generic constraint validation** (`T: Comparable`) — deferred, low priority.
+1. **References end-to-end** — The backend is done (borrow checker, MIR, codegen). Needs: parser support for `Ref[T]` (1 arg, inferred lifetime), implicit borrow coercion in type checker (`Ref[T] = value`), and implicit deref for field access. Small surface area, high payoff — unlocks the entire borrow-checking story.
+2. **`each`/`each via` iteration** — Now unblocked by lambda/closure support. Needs: iterator protocol design, HIR lowering (currently errors), MIR loop lowering. Core language feature for any real program.
+3. **Closure environment deallocation** — Closure environments are currently leaked. See `docs/KNOWN_ISSUES.md` for options (RC integration or simple dealloc). Important for long-running programs.
+4. **Tuples / modules E2E tests** — These features appear to work but have no E2E coverage. Quick wins for confidence.
+5. **Generic constraint validation** (`T: Comparable`) — Low priority but needed for correct generic programming.
+6. **Async/await/spawn** — Large effort: needs future types, state machine transform, runtime executor. Defer until core language is solid.
 
 ### Recently Completed
 
+- **Lambdas & capturing closures** — Full lambda/closure pipeline: lambda lifting, fat-pointer ABI (`(fn_ptr, env_ptr)`), thunk generation for function references, capture-by-value semantics with heap-allocated environments (`__spark_env_alloc`). Sret calling convention for aggregate returns. See `docs/KNOWN_ISSUES.md` for loose ends (env memory leak, nested closures untested).
 - **Generic monomorphization** — MIR-level monomorphization pass clones generic function bodies with concrete type substitutions, rewrites call sites, and removes generic originals. Codegen computes layouts for `Ty::Applied` via substituted field types. 3 new monomorphization tests.
 - **Generic type checking** — `Ty::Applied { base, args }` for instantiated generic types. Type substitution via `substitute.rs`. Generic struct field access, struct init, and function calls with type arg inference all work.
 - **String interpolation** — Lexer tokenizes `"hello {expr}"` syntax, parser produces `StringPart::Interpolation`, HIR desugars to runtime string concatenation calls. Works end-to-end.

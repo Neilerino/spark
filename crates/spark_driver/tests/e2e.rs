@@ -215,3 +215,8 @@ fn closure_capture() {
 fn closure_multi_capture() {
     assert_output("closure_multi_capture.spark", "20");
 }
+
+#[test]
+fn closure_snapshot() {
+    assert_output("closure_snapshot.spark", "10\n42");
+}
