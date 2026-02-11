@@ -68,10 +68,25 @@ pub fn emit_statement<M: Module>(
                     }
                 } else {
                     // Projected assignment — compute address and store.
-                    // The rvalue emission for aggregates handles this directly.
-                    // For scalar projected writes, we store at the computed address.
-                    // This is handled through emit_rvalue already returning
-                    // values that are stored at the right places.
+                    let dest_addr = emit_rvalue::emit_place_addr(ctx, place, table, module);
+                    let place_ty = emit_rvalue::resolve_place_type(ctx, place, table);
+                    if crate::abi::is_scalar(place_ty, table) {
+                        ctx.builder.ins().store(MemFlags::new(), val, dest_addr, 0);
+                    } else {
+                        // Aggregate projected write — memcpy.
+                        let size = ctx.layouts.layout_of(place_ty, table).size;
+                        let config = module.target_config();
+                        ctx.builder.emit_small_memory_copy(
+                            config,
+                            dest_addr,
+                            val,
+                            u64::from(size),
+                            1,
+                            1,
+                            true,
+                            MemFlags::new(),
+                        );
+                    }
                 }
             }
         }

@@ -258,6 +258,26 @@ fn closure_snapshot() {
 // Multi-file compilation
 // ============================================================================
 #[test]
+fn ref_param() {
+    assert_output("ref_param.spark", "20");
+}
+
+#[test]
+fn ref_local() {
+    assert_output("ref_local.spark", "42");
+}
+
+#[test]
+fn ref_literal() {
+    assert_output("ref_literal.spark", "11");
+}
+
+#[test]
+fn ref_closure() {
+    assert_output("ref_closure.spark", "42");
+}
+
+#[test]
 fn multifile_import() {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let result = run_spark_project("multifile");

@@ -1,0 +1,11 @@
+struct Point { x: Int, y: Int }
+
+fn get_y(p: Ref[Point]): Int {
+    return p.y
+}
+
+fn main(): Int {
+    pt: Point = Point { x: 10, y: 20 }
+    print(get_y(pt))
+    return 0
+}

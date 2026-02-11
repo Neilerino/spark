@@ -1,0 +1,6 @@
+fn main(): Int {
+    x: Int = 42
+    r: Ref[Int] = x
+    print(r)
+    return 0
+}

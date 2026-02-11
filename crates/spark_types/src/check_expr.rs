@@ -509,9 +509,9 @@ fn check_binary_op(
     }
 
     if op.is_arithmetic() {
-        // Strip Mutable wrappers — `count + 1` where count is Int! should work
-        let lhs_base = strip_mutable(lhs_ty, table);
-        let rhs_base = strip_mutable(rhs_ty, table);
+        // Strip Mutable/Ref wrappers — `count + 1` where count is Int! or Ref[Int] should work
+        let lhs_base = strip_ref(strip_mutable(lhs_ty, table), table);
+        let rhs_base = strip_ref(strip_mutable(rhs_ty, table), table);
         let lhs_resolved = table.resolve(lhs_base);
         if !lhs_resolved.is_numeric() {
             diagnostics.push(
@@ -535,8 +535,8 @@ fn check_binary_op(
     }
 
     if op.is_comparison() {
-        let lhs_base = strip_mutable(lhs_ty, table);
-        let rhs_base = strip_mutable(rhs_ty, table);
+        let lhs_base = strip_ref(strip_mutable(lhs_ty, table), table);
+        let rhs_base = strip_ref(strip_mutable(rhs_ty, table), table);
         if !is_compatible(lhs_base, rhs_base, table) {
             let l = type_name(lhs_base, table, &DefinitionTable::new());
             let r = type_name(rhs_base, table, &DefinitionTable::new());
@@ -565,8 +565,8 @@ fn check_binary_op(
     }
 
     if op.is_bitwise() {
-        let lhs_base = strip_mutable(lhs_ty, table);
-        let rhs_base = strip_mutable(rhs_ty, table);
+        let lhs_base = strip_ref(strip_mutable(lhs_ty, table), table);
+        let rhs_base = strip_ref(strip_mutable(rhs_ty, table), table);
         let lhs_resolved = table.resolve(lhs_base);
         if !lhs_resolved.is_integer() {
             diagnostics.push(
@@ -602,7 +602,7 @@ fn check_unary_op(
         return TypeId::ERROR;
     }
 
-    let operand_base = strip_mutable(operand_ty, table);
+    let operand_base = strip_ref(strip_mutable(operand_ty, table), table);
 
     match op {
         UnaryOp::Neg => {
@@ -796,7 +796,7 @@ fn check_field_access(
         return TypeId::ERROR;
     }
 
-    let resolved = table.resolve(strip_mutable(base_ty, table)).clone();
+    let resolved = table.resolve(strip_ref(strip_mutable(base_ty, table), table)).clone();
     match resolved {
         Ty::Struct(def_id) => {
             if let Some(fields) = table.get_struct_fields(def_id) {
@@ -1094,6 +1094,20 @@ pub fn is_compatible(actual: TypeId, expected: TypeId, table: &TypeTable) -> boo
         }
     }
 
+    // T is compatible with Ref[T] (auto-borrow coercion)
+    if let Ty::Ref { inner, .. } = expected_ty {
+        if is_compatible(actual, *inner, table) {
+            return true;
+        }
+    }
+
+    // Ref[T] is compatible with T (auto-deref coercion)
+    if let Ty::Ref { inner, .. } = actual_ty {
+        if is_compatible(*inner, expected, table) {
+            return true;
+        }
+    }
+
     false
 }
 
@@ -1129,6 +1143,15 @@ fn unify_branches(a: TypeId, b: TypeId, table: &mut TypeTable, _builtins: &Built
 /// Strips the `Mutable` wrapper if present.
 fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
     if let Ty::Mutable(inner) = table.resolve(ty) {
+        *inner
+    } else {
+        ty
+    }
+}
+
+/// Strips the `Ref` wrapper if present.
+fn strip_ref(ty: TypeId, table: &TypeTable) -> TypeId {
+    if let Ty::Ref { inner, .. } = table.resolve(ty) {
         *inner
     } else {
         ty
@@ -1243,6 +1266,12 @@ fn check_method_call(
     let (is_mutable, stripped) = match table.resolve(recv_ty).clone() {
         Ty::Mutable(inner) => (true, table.resolve(inner).clone()),
         other => (false, other),
+    };
+
+    // Auto-deref through Ref
+    let stripped = match &stripped {
+        Ty::Ref { inner, .. } => table.resolve(*inner).clone(),
+        _ => stripped,
     };
 
     match stripped {
@@ -1660,6 +1689,21 @@ mod tests {
         assert!(is_compatible(builtins.int, union_ty, &table));
         assert!(is_compatible(builtins.string, union_ty, &table));
         assert!(!is_compatible(builtins.bool_ty, union_ty, &table));
+    }
+
+    #[test]
+    fn compatible_t_with_ref_t() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+        let ref_int = table.intern(Ty::Ref {
+            inner: builtins.int,
+            mutable: false,
+            lifetime: crate::ty::LifetimeId::ANONYMOUS,
+        });
+        // T is compatible with Ref[T] (auto-borrow)
+        assert!(is_compatible(builtins.int, ref_int, &table));
+        // Ref[T] is compatible with T (auto-deref)
+        assert!(is_compatible(ref_int, builtins.int, &table));
     }
 
     #[test]

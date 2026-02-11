@@ -123,7 +123,7 @@ impl Parser {
         if path.is_simple() {
             if let Some(first) = path.first() {
                 let name = first.name.as_str();
-                if name == "Ref" && type_args.len() >= 2 {
+                if name == "Ref" && !type_args.is_empty() {
                     // Ref[Type, Lifetime] or Ref[Type, Lifetime]!
                     // The inner type is first arg, lifetime is second
                     let mut args_iter = type_args.into_iter();
@@ -464,6 +464,29 @@ mod tests {
             }
         } else {
             panic!("expected union type");
+        }
+    }
+
+    #[test]
+    fn ref_type_one_arg() {
+        let ty = parse_type_str("Ref[Int]");
+        if let TypeExprKind::Ref { inner, mutable, .. } = ty.kind {
+            assert!(matches!(inner.kind, TypeExprKind::Named { .. }));
+            assert!(!mutable);
+        } else {
+            panic!("expected Ref type, got {:?}", ty.kind);
+        }
+    }
+
+    #[test]
+    fn ref_type_two_args() {
+        let ty = parse_type_str("Ref[Int, A]");
+        if let TypeExprKind::Ref { inner, mutable, lifetime } = ty.kind {
+            assert!(matches!(inner.kind, TypeExprKind::Named { .. }));
+            assert!(!mutable);
+            assert_eq!(lifetime.name.as_str(), "A");
+        } else {
+            panic!("expected Ref type, got {:?}", ty.kind);
         }
     }
 

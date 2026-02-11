@@ -226,7 +226,7 @@ pub fn emit_place_read<M: Module>(
 }
 
 /// Computes the address of a MIR place (local + projections).
-fn emit_place_addr<M: Module>(
+pub(super) fn emit_place_addr<M: Module>(
     ctx: &mut FunctionContext<'_>,
     place: &Place,
     table: &TypeTable,
@@ -235,10 +235,11 @@ fn emit_place_addr<M: Module>(
     let mut addr = match ctx.local_storage(place.local) {
         LocalStorage::StackSlot(slot, _) => ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0),
         LocalStorage::Var(_, _) => {
-            // For scalar locals, we need a stack slot to take address.
-            // This is a simplified approach — in practice, we'd allocate
-            // a temporary stack slot. For now, just return the value.
-            ctx.read_local(place.local)
+            // For scalar locals stored in registers, we spill to a
+            // temporary stack slot so we can take their address.
+            let val = ctx.read_local(place.local);
+            let ty_id = ctx.local_type_id(place.local);
+            store_scalar_to_temp(ctx, val, ty_id, table)
         }
         LocalStorage::ZeroSized => ctx.builder.ins().iconst(ctx.ptr_type, 0),
     };
@@ -340,7 +341,7 @@ fn emit_place_addr<M: Module>(
 }
 
 /// Resolves the type of a place after all projections.
-fn resolve_place_type(ctx: &FunctionContext<'_>, place: &Place, table: &TypeTable) -> TypeId {
+pub(super) fn resolve_place_type(ctx: &FunctionContext<'_>, place: &Place, table: &TypeTable) -> TypeId {
     let mut current_ty = ctx.local_type_id(place.local);
 
     for proj in &place.projections {

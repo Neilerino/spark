@@ -6,6 +6,7 @@
 use spark_ast::{BinaryOp, CompoundOp, Stmt, StmtKind};
 use spark_diagnostics::Diagnostics;
 use spark_resolve::{DefinitionTable, ResolutionMap};
+use spark_types::ty::Ty;
 use spark_types::{TypeId, TypeTable};
 
 use crate::hir::{HirExpr, HirExprKind, HirStmt};
@@ -27,17 +28,82 @@ pub fn lower_stmt(
                 .and_then(|res| res.get_binding(name.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
 
+            let mut lowered_value = lower_expr(value, table, definitions, resolutions, diagnostics, current_fn_ret);
+
+            // Auto-borrow: if declared type is Ref[T] and value is T, wrap in Borrow
+            if let Some(declared_ty) = table.get_def_type(def_id) {
+                let stripped_declared = strip_mutable(declared_ty, table);
+                if let Ty::Ref { mutable: ref_mut, .. } = table.resolve(stripped_declared) {
+                    let value_stripped = strip_mutable(lowered_value.ty, table);
+                    if !matches!(table.resolve(value_stripped), Ty::Ref { .. })
+                        && !lowered_value.ty.is_error()
+                    {
+                        let ref_mut = *ref_mut;
+                        lowered_value = HirExpr::new(
+                            HirExprKind::Borrow { operand: Box::new(lowered_value), mutable: ref_mut },
+                            declared_ty, value.span,
+                        );
+                    }
+                }
+            }
+
+            // Auto-deref: if declared type is T and value is Ref[T], wrap in Deref
+            let value_stripped = strip_mutable(lowered_value.ty, table);
+            if let Ty::Ref { inner, .. } = table.resolve(value_stripped) {
+                let inner_ty = *inner;
+                if let Some(declared_ty) = table.get_def_type(def_id) {
+                    let decl_stripped = strip_mutable(declared_ty, table);
+                    if !matches!(table.resolve(decl_stripped), Ty::Ref { .. }) {
+                        lowered_value = HirExpr::new(
+                            HirExprKind::Deref(Box::new(lowered_value)),
+                            inner_ty, value.span,
+                        );
+                    }
+                }
+            }
+
             HirStmt::Let {
                 def_id,
                 mutable: *mutable,
-                value: lower_expr(value, table, definitions, resolutions, diagnostics, current_fn_ret),
+                value: lowered_value,
             }
         }
 
-        StmtKind::Assign { target, value } => HirStmt::Assign {
-            target: lower_expr(target, table, definitions, resolutions, diagnostics, current_fn_ret),
-            value: lower_expr(value, table, definitions, resolutions, diagnostics, current_fn_ret),
-        },
+        StmtKind::Assign { target, value } => {
+            let mut target_hir = lower_expr(target, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let mut value_hir = lower_expr(value, table, definitions, resolutions, diagnostics, current_fn_ret);
+
+            let target_inner = strip_mutable(target_hir.ty, table);
+            let value_ty = value_hir.ty;
+
+            // Deref-store: target is Ref[T], value is T → write through the ref
+            if let Ty::Ref { inner, .. } = table.resolve(target_inner) {
+                if !matches!(table.resolve(value_ty), Ty::Ref { .. }) && !value_ty.is_error() {
+                    let inner_ty = *inner;
+                    target_hir = HirExpr::new(
+                        HirExprKind::Deref(Box::new(target_hir)),
+                        inner_ty, target.span,
+                    );
+                }
+            }
+
+            // Auto-deref value: target is T, value is Ref[T]
+            let target_stripped = strip_mutable(target_hir.ty, table);
+            if !matches!(table.resolve(target_stripped), Ty::Ref { .. }) {
+                if let Ty::Ref { inner, .. } = table.resolve(value_hir.ty) {
+                    let inner_ty = *inner;
+                    value_hir = HirExpr::new(
+                        HirExprKind::Deref(Box::new(value_hir)),
+                        inner_ty, value.span,
+                    );
+                }
+            }
+
+            HirStmt::Assign {
+                target: target_hir,
+                value: value_hir,
+            }
+        }
 
         StmtKind::CompoundAssign { target, op, value } => {
             // Desugar: `x += y` -> `x = x + y`
@@ -67,6 +133,15 @@ pub fn lower_stmt(
         StmtKind::Expr(expr) => {
             HirStmt::Expr(lower_expr(expr, table, definitions, resolutions, diagnostics, current_fn_ret))
         }
+    }
+}
+
+/// Strips the `Mutable` wrapper from a type if present.
+fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
+    if let Ty::Mutable(inner) = table.resolve(ty) {
+        *inner
+    } else {
+        ty
     }
 }
 

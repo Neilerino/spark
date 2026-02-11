@@ -4,8 +4,9 @@
 //! source files to native executables using the full compilation pipeline.
 //!
 //! ```text
-//! spark build <input.spark> [-o output]   # compile to executable
-//! spark run <input.spark> [-- args...]    # compile + run
+//! spark build <input.spark> [-o output]          # compile project to executable
+//! spark run <input.spark> [-- args...]           # compile project + run
+//! spark run --single-file <input.spark>          # compile only the input file
 //! ```
 
 #![forbid(unsafe_code)]
@@ -39,6 +40,9 @@ enum Cmd {
         /// Disable optimization passes.
         #[arg(long)]
         no_opt: bool,
+        /// Compile only the input file, ignoring other `.spark` files in the project.
+        #[arg(long)]
+        single_file: bool,
     },
     /// Compile and run a Spark program.
     Run {
@@ -47,6 +51,9 @@ enum Cmd {
         /// Disable optimization passes.
         #[arg(long)]
         no_opt: bool,
+        /// Compile only the input file, ignoring other `.spark` files in the project.
+        #[arg(long)]
+        single_file: bool,
         /// Arguments to forward to the program.
         #[arg(last = true)]
         args: Vec<String>,
@@ -61,6 +68,7 @@ fn main() {
             input,
             output,
             no_opt,
+            single_file,
         } => {
             let output_path = output.unwrap_or_else(|| default_output_path(&input));
             let opt_level = if no_opt {
@@ -68,7 +76,7 @@ fn main() {
             } else {
                 spark_opt::OptLevel::default()
             };
-            match cmd_build(&input, &output_path, opt_level) {
+            match cmd_build(&input, &output_path, opt_level, single_file) {
                 Ok(()) => {}
                 Err(()) => process::exit(1),
             }
@@ -76,6 +84,7 @@ fn main() {
         Cmd::Run {
             input,
             no_opt,
+            single_file,
             args,
         } => {
             let opt_level = if no_opt {
@@ -83,7 +92,7 @@ fn main() {
             } else {
                 spark_opt::OptLevel::default()
             };
-            let code = cmd_run(&input, &args, opt_level);
+            let code = cmd_run(&input, &args, opt_level, single_file);
             process::exit(code);
         }
     }
@@ -100,6 +109,7 @@ fn cmd_build(
     input: &Path,
     output_path: &Path,
     opt_level: spark_opt::OptLevel,
+    single_file: bool,
 ) -> Result<(), ()> {
     let abs_input = input.canonicalize().map_err(|e| {
         eprintln!("error: could not resolve path `{}`: {e}", input.display());
@@ -109,7 +119,11 @@ fn cmd_build(
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
 
-    let files = discover_project_files(&abs_input, &abs_root)?;
+    let files = if single_file {
+        vec![abs_input.clone()]
+    } else {
+        discover_project_files(&abs_input, &abs_root)?
+    };
 
     let sources = files
         .iter()
@@ -130,7 +144,7 @@ fn cmd_build(
 }
 
 /// Compiles and runs `input`, returning the program's exit code.
-fn cmd_run(input: &Path, args: &[String], opt_level: spark_opt::OptLevel) -> i32 {
+fn cmd_run(input: &Path, args: &[String], opt_level: spark_opt::OptLevel, single_file: bool) -> i32 {
     // Compile to a temp directory
     let tmp_dir = std::env::temp_dir().join("spark_run");
     if fs::create_dir_all(&tmp_dir).is_err() {
@@ -144,7 +158,7 @@ fn cmd_run(input: &Path, args: &[String], opt_level: spark_opt::OptLevel) -> i32
         .unwrap_or("a.out");
     let exe_path = tmp_dir.join(exe_name);
 
-    if cmd_build(input, &exe_path, opt_level).is_err() {
+    if cmd_build(input, &exe_path, opt_level, single_file).is_err() {
         return 1;
     }
 

@@ -7,6 +7,7 @@ use spark_ast::{Expr, ExprKind, LiteralKind, StringPart, ToHandler};
 use spark_diagnostics::Diagnostics;
 use spark_resolve::{DefinitionTable, ResolutionMap};
 use spark_span::Span;
+use spark_types::ty::Ty;
 use spark_types::{TypeId, TypeTable};
 
 use crate::desugar;
@@ -98,22 +99,41 @@ fn lower_expr_kind(
         }
 
         // === Operators ===
-        ExprKind::Binary { op, lhs, rhs } => HirExprKind::BinaryOp {
-            op: *op,
-            lhs: Box::new(lower_expr(lhs, table, definitions, resolutions, diagnostics, current_fn_ret)),
-            rhs: Box::new(lower_expr(rhs, table, definitions, resolutions, diagnostics, current_fn_ret)),
-        },
+        ExprKind::Binary { op, lhs, rhs } => {
+            let lhs_hir = auto_deref_ref(lower_expr(lhs, table, definitions, resolutions, diagnostics, current_fn_ret), table);
+            let rhs_hir = auto_deref_ref(lower_expr(rhs, table, definitions, resolutions, diagnostics, current_fn_ret), table);
+            HirExprKind::BinaryOp {
+                op: *op,
+                lhs: Box::new(lhs_hir),
+                rhs: Box::new(rhs_hir),
+            }
+        }
 
-        ExprKind::Unary { op, operand } => HirExprKind::UnaryOp {
-            op: *op,
-            operand: Box::new(lower_expr(operand, table, definitions, resolutions, diagnostics, current_fn_ret)),
-        },
+        ExprKind::Unary { op, operand } => {
+            let operand_hir = auto_deref_ref(lower_expr(operand, table, definitions, resolutions, diagnostics, current_fn_ret), table);
+            HirExprKind::UnaryOp {
+                op: *op,
+                operand: Box::new(operand_hir),
+            }
+        }
 
         // === Access ===
-        ExprKind::Field { base, field } => HirExprKind::FieldAccess {
-            base: Box::new(lower_expr(base, table, definitions, resolutions, diagnostics, current_fn_ret)),
-            field: field.name,
-        },
+        ExprKind::Field { base, field } => {
+            let mut base_hir = lower_expr(base, table, definitions, resolutions, diagnostics, current_fn_ret);
+            // Auto-deref through Ref (and Mutable(Ref))
+            let base_ty = strip_mutable_ty(base_hir.ty, table);
+            if let Ty::Ref { inner, .. } = table.resolve(base_ty) {
+                let inner_ty = *inner;
+                base_hir = HirExpr::new(
+                    HirExprKind::Deref(Box::new(base_hir)),
+                    inner_ty, base.span,
+                );
+            }
+            HirExprKind::FieldAccess {
+                base: Box::new(base_hir),
+                field: field.name,
+            }
+        }
 
         ExprKind::Index { base, index } => HirExprKind::Index {
             base: Box::new(lower_expr(base, table, definitions, resolutions, diagnostics, current_fn_ret)),
@@ -121,16 +141,39 @@ fn lower_expr_kind(
         },
 
         // === Calls ===
-        ExprKind::Call { callee, args } => HirExprKind::Call {
-            callee: Box::new(lower_expr(callee, table, definitions, resolutions, diagnostics, current_fn_ret)),
-            args: args.iter().map(|a| lower_expr(&a.value, table, definitions, resolutions, diagnostics, current_fn_ret)).collect(),
-        },
+        ExprKind::Call { callee, args } => {
+            let callee_hir = lower_expr(callee, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let param_types = extract_param_types(callee_hir.ty, table);
+            let lowered_args: Vec<HirExpr> = args.iter().enumerate().map(|(i, a)| {
+                let mut arg = lower_expr(&a.value, table, definitions, resolutions, diagnostics, current_fn_ret);
+                if let Some(&param_ty) = param_types.get(i) {
+                    arg = coerce_ref(arg, param_ty, a.value.span, table);
+                }
+                arg
+            }).collect();
+            HirExprKind::Call {
+                callee: Box::new(callee_hir),
+                args: lowered_args,
+            }
+        }
 
-        ExprKind::MethodCall { receiver, method, args } => HirExprKind::MethodCall {
-            receiver: Box::new(lower_expr(receiver, table, definitions, resolutions, diagnostics, current_fn_ret)),
-            method: method.name,
-            args: args.iter().map(|a| lower_expr(&a.value, table, definitions, resolutions, diagnostics, current_fn_ret)).collect(),
-        },
+        ExprKind::MethodCall { receiver, method, args } => {
+            let mut recv_hir = lower_expr(receiver, table, definitions, resolutions, diagnostics, current_fn_ret);
+            // Auto-deref through Ref (and Mutable(Ref))
+            let recv_ty = strip_mutable_ty(recv_hir.ty, table);
+            if let Ty::Ref { inner, .. } = table.resolve(recv_ty) {
+                let inner_ty = *inner;
+                recv_hir = HirExpr::new(
+                    HirExprKind::Deref(Box::new(recv_hir)),
+                    inner_ty, receiver.span,
+                );
+            }
+            HirExprKind::MethodCall {
+                receiver: Box::new(recv_hir),
+                method: method.name,
+                args: args.iter().map(|a| lower_expr(&a.value, table, definitions, resolutions, diagnostics, current_fn_ret)).collect(),
+            }
+        }
 
         // === Constructors ===
         ExprKind::StructInit { path, type_args: _, fields, spread: _ } => {
@@ -222,7 +265,24 @@ fn lower_expr_kind(
         ExprKind::Continue => HirExprKind::Continue,
 
         ExprKind::Return(value) => HirExprKind::Return(
-            value.as_ref().map(|v| Box::new(lower_expr(v, table, definitions, resolutions, diagnostics, current_fn_ret))),
+            value.as_ref().map(|v| {
+                let mut lowered = lower_expr(v, table, definitions, resolutions, diagnostics, current_fn_ret);
+                // Auto-deref if returning Ref[T] but function expects T
+                if let Some(ret_ty) = current_fn_ret {
+                    let ret_stripped = strip_mutable_ty(ret_ty, table);
+                    if !matches!(table.resolve(ret_stripped), Ty::Ref { .. }) {
+                        let val_stripped = strip_mutable_ty(lowered.ty, table);
+                        if let Ty::Ref { inner, .. } = table.resolve(val_stripped) {
+                            let inner_ty = *inner;
+                            lowered = HirExpr::new(
+                                HirExprKind::Deref(Box::new(lowered)),
+                                inner_ty, v.span,
+                            );
+                        }
+                    }
+                }
+                Box::new(lowered)
+            }),
         ),
 
         // === Closures ===
@@ -513,4 +573,68 @@ fn lower_literal(kind: &LiteralKind) -> HirLiteral {
 /// Looks up the type for an expression by its span.
 fn expr_type(span: Span, table: &TypeTable) -> TypeId {
     table.get_expr_type(span).unwrap_or(TypeId::ERROR)
+}
+
+/// If the expression has type `Ref[T]`, wraps it in a `Deref` to produce `T`.
+fn auto_deref_ref(expr: HirExpr, table: &TypeTable) -> HirExpr {
+    let stripped = strip_mutable_ty(expr.ty, table);
+    if let Ty::Ref { inner, .. } = table.resolve(stripped) {
+        let inner_ty = *inner;
+        let span = expr.span;
+        HirExpr::new(HirExprKind::Deref(Box::new(expr)), inner_ty, span)
+    } else {
+        expr
+    }
+}
+
+/// Extracts parameter types from a function type.
+fn extract_param_types(fn_ty: TypeId, table: &TypeTable) -> Vec<TypeId> {
+    if let Ty::Function { params, .. } = table.resolve(fn_ty) {
+        params.clone()
+    } else {
+        vec![]
+    }
+}
+
+/// Strips `Mutable` wrapper from a type.
+fn strip_mutable_ty(ty: TypeId, table: &TypeTable) -> TypeId {
+    if let Ty::Mutable(inner) = table.resolve(ty) {
+        *inner
+    } else {
+        ty
+    }
+}
+
+/// Inserts `Borrow` or `Deref` coercion if the argument type needs to be
+/// converted to match the parameter type.
+fn coerce_ref(mut arg: HirExpr, param_ty: TypeId, span: Span, table: &TypeTable) -> HirExpr {
+    let arg_inner = strip_mutable_ty(arg.ty, table);
+    let param_inner = strip_mutable_ty(param_ty, table);
+    let arg_resolved = table.resolve(arg_inner);
+    let param_resolved = table.resolve(param_inner);
+
+    // Auto-borrow: param is Ref[T], arg is T
+    if let Ty::Ref { mutable, .. } = param_resolved {
+        if !matches!(arg_resolved, Ty::Ref { .. }) && !arg.ty.is_error() {
+            let mutable = *mutable;
+            arg = HirExpr::new(
+                HirExprKind::Borrow { operand: Box::new(arg), mutable },
+                param_ty, span,
+            );
+        }
+    }
+
+    // Auto-deref: param is T (not Ref), arg is Ref[T]
+    let arg_inner2 = strip_mutable_ty(arg.ty, table);
+    if !matches!(param_resolved, Ty::Ref { .. }) {
+        if let Ty::Ref { inner, .. } = table.resolve(arg_inner2) {
+            let inner_ty = *inner;
+            arg = HirExpr::new(
+                HirExprKind::Deref(Box::new(arg)),
+                inner_ty, span,
+            );
+        }
+    }
+
+    arg
 }

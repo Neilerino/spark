@@ -1,0 +1,9 @@
+fn main(): Int {
+    r: Ref[Int]! = 10
+    mutator: (): Void = fn() {
+        r = 42
+    }
+    mutator()
+    print(r)
+    return 0
+}

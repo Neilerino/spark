@@ -1,52 +1,101 @@
-fn clamp(val: Int, lo: Int, hi: Int): Int {
-    if val < lo {
-        return lo
-    }
-    if val > hi {
-        return hi
-    }
-    return val
+// --- Spark Language Showcase ---
+
+struct Vec2 { x: Int, y: Int }
+
+fn vec2_add(a: Vec2, b: Vec2): Vec2 {
+    return Vec2 { x: a.x + b.x, y: a.y + b.y }
 }
 
-fn factorial(n: Int): Int {
-    if n <= 1 {
-        return 1
+fn magnitude_sq(v: Vec2): Int {
+    return v.x * v.x + v.y * v.y
+}
+
+// Generic container
+struct Box[T] {
+    value: T
+}
+
+fn unbox[T](b: Box[T]): T {
+    return b.value
+}
+
+// Higher-order: apply a function twice
+fn twice(f: (Int): Int, x: Int): Int {
+    return f(f(x))
+}
+
+// Returns a closure that remembers its multiplier
+fn make_multiplier(factor: Int): (Int): Int {
+    return fn(x: Int): Int { return x * factor }
+}
+
+fn fizzbuzz(n: Int): Int {
+    i: Int! = 1
+    count: Int! = 0
+    loop {
+        if i > n { break }
+        match i % 15 == 0 {
+            true -> print("FizzBuzz"),
+            false -> match i % 3 == 0 {
+                true -> print("Fizz"),
+                false -> match i % 5 == 0 {
+                    true -> print("Buzz"),
+                    false -> print(i)
+                }
+            }
+        }
+        count = count + 1
+        i = i + 1
     }
-    return n * factorial(n - 1)
+    return count
 }
 
 fn main(): Int {
-    // --- String literals ---
-    print("--- Spark Demo ---")
+    print("=== Spark Language Showcase ===")
 
-    // --- Arithmetic + multi-arg functions ---
-    print("clamped -5 to [0,10]:")
-    print(clamp(-5, 0, 10))
-    print("clamped 7 to [0,10]:")
-    print(clamp(7, 0, 10))
-    print("clamped 99 to [0,10]:")
-    print(clamp(99, 0, 10))
+    // Structs & functions
+    print("=== Structs/Functions ===")
+    pos: Vec2 = Vec2 { x: 3, y: 4 }
+    vel: Vec2 = Vec2 { x: 1, y: 2 }
+    next: Vec2 = vec2_add(pos, vel)
+    print(next.x)
+    print(next.y)
+    print(magnitude_sq(pos))
 
-    // --- Recursion ---
-    print("5! =")
-    print(factorial(25))
+    print("=== Generics ===")
+    // Generics
+    boxed: Box[Int] = Box[Int] { value: 42 }
+    print(unbox(boxed))
 
-    // --- Collections with COW mutation ---
-    nums: List[Int]! = [10, 20, 30]
-    nums.append(40)
-    print("list length after append:")
-    print(nums.len())
-    print("contains 20:")
-    print(nums.contains(20))
-    print("contains 99:")
-    print(nums.contains(99))
+    print("=== Higher order methods ===")
+    // Higher-order functions & closures
+    doubled: Int = twice(fn(x: Int): Int { return x + 3 }, 1)
+    print(doubled)
+    triple: (Int): Int = make_multiplier(3)
+    print(triple(7))
 
-    // --- Pattern matching ---
-    done: Bool = true
-    match done {
-        true -> print("all done!"),
-        false -> print("not yet")
+    print("=== Mutability/Loops ===")
+    sum: Int! = 0
+    nums: List[Int] = [10, 20, 30, 40, 50]
+    i: Int! = 0
+    loop {
+        if i > 4 { break }
+        sum = sum + 10
+        i = i + 1
     }
+    print(sum)
 
+    
+
+    print("=== Collections ===")
+    print(nums.len())
+    print(nums.contains(30))
+
+
+    print("=== Fizzbuzz ===")
+    // FizzBuzz 1-5
+    fizzbuzz(5)
+
+    print("=== Done! ===")
     return 0
 }

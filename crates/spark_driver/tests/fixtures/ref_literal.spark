@@ -1,0 +1,9 @@
+fn add_one(x: Ref[Int]): Int {
+    return x + 1
+}
+
+fn main(): Int {
+    r: Ref[Int] = 10
+    print(add_one(r))
+    return 0
+}
