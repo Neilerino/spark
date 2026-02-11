@@ -1,0 +1,6 @@
+fn apply(f: (Int): Int, x: Int): Int { return f(x) }
+
+fn main(): Int {
+    print(apply(fn(x: Int): Int { return x * 3 }, 5))
+    return 0
+}

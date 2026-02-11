@@ -224,10 +224,15 @@ impl LayoutCache {
             | Ty::Map(_, _)
             | Ty::Set(_)
             | Ty::Ref { .. }
-            | Ty::Function { .. }
             // Generic parameter — treat as pointer-sized
             | Ty::Param(_) => TypeLayout {
                 size: self.ptr_size,
+                align: self.ptr_size,
+            },
+
+            // Function values are fat pointers: (fn_ptr, env_ptr).
+            Ty::Function { .. } => TypeLayout {
+                size: self.ptr_size * 2,
                 align: self.ptr_size,
             },
 

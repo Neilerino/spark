@@ -195,6 +195,8 @@ fn format_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Opti
             def_type_str(analysis, def_id)
                 .map_or_else(|| format!("fn .{name}(...)"), |ty| format!("fn {name}{ty}"))
         }
+        DefinitionKind::Lambda => def_type_str(analysis, def_id)
+            .map_or_else(|| format!("fn {name}(...)"), |ty| format!("fn {name}{ty}")),
     };
 
     Some(content)

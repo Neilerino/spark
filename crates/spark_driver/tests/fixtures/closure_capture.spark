@@ -1,0 +1,6 @@
+fn main(): Int {
+    x: Int = 10
+    adder: (Int): Int = fn(y: Int): Int { return x + y }
+    print(adder(5))
+    return 0
+}

@@ -45,6 +45,7 @@
 
 pub mod desugar;
 pub mod hir;
+pub mod lambda_lift;
 pub mod lower;
 pub mod lower_expr;
 pub mod lower_pattern;
@@ -102,7 +103,10 @@ pub fn lower(mut input: HirInput) -> HirOutput {
         &mut input.definitions,
         &input.resolved,
     );
-    let (hir, diagnostics) = lowerer.lower_all();
+    let (mut hir, diagnostics) = lowerer.lower_all();
+
+    // Lambda lifting: extract non-capturing lambdas into top-level functions.
+    lambda_lift::lift_lambdas(&mut hir, &mut input.definitions, &mut input.table);
 
     HirOutput {
         hir,

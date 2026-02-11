@@ -85,6 +85,8 @@ pub struct RuntimeStubs {
     pub float_to_string: FuncId,
     /// `__spark_bool_to_string(i8) -> ptr`
     pub bool_to_string: FuncId,
+    /// `__spark_env_alloc(size: i64) -> ptr`
+    pub env_alloc: FuncId,
 }
 
 impl RuntimeStubs {
@@ -350,6 +352,13 @@ impl RuntimeStubs {
                 module,
                 "__spark_bool_to_string",
                 &[types::I8],
+                Some(ptr_type),
+                call_conv,
+            ),
+            env_alloc: declare_fn(
+                module,
+                "__spark_env_alloc",
+                &[types::I64],
                 Some(ptr_type),
                 call_conv,
             ),

@@ -82,6 +82,11 @@ pub struct MirFunction {
     pub locals: Vec<LocalDecl>,
     /// All basic blocks (index 0 = entry block).
     pub blocks: Vec<BasicBlock>,
+    /// Captured variables from the enclosing scope (for closures).
+    /// Each entry is `(DefId, TypeId)` — the variable's definition and type.
+    /// The corresponding MIR locals are at indices
+    /// `(1 + param_count)..(1 + param_count + captures.len())`.
+    pub captures: Vec<(DefId, TypeId)>,
     /// Source span of the function.
     pub span: Span,
 }
@@ -248,6 +253,12 @@ pub enum AggregateKind {
     Map,
     /// Set construction.
     Set,
+    /// Closure construction: captures are stored into a heap-allocated
+    /// environment, and a fat pointer `(fn_ptr, env_ptr)` is produced.
+    Closure {
+        /// The DefId of the lifted closure function.
+        func_def_id: DefId,
+    },
 }
 
 // ── Operands ─────────────────────────────────────────────────────────────
@@ -366,6 +377,7 @@ mod tests {
             return_type: TypeId::ERROR,
             locals: vec![],
             blocks: vec![],
+            captures: vec![],
             span: Span::DUMMY,
         };
         assert_eq!(func.param_count, 0);

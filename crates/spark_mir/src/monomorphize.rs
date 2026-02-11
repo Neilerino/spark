@@ -315,6 +315,7 @@ mod tests {
                 terminator: Terminator::Return,
                 is_cleanup: false,
             }],
+            captures: vec![],
             span: Span::DUMMY,
         };
 
@@ -395,6 +396,7 @@ mod tests {
                 terminator: Terminator::Return,
                 is_cleanup: false,
             }],
+            captures: vec![],
             span: Span::DUMMY,
         };
 
@@ -451,6 +453,7 @@ mod tests {
                     is_cleanup: false,
                 },
             ],
+            captures: vec![],
             span: Span::DUMMY,
         };
 

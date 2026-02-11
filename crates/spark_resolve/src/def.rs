@@ -86,6 +86,8 @@ pub enum DefinitionKind {
     BuiltinMethod,
     /// Method from an interface binding (contains the bound type's `DefId`).
     BindingMethod(DefId),
+    /// Lambda (lifted anonymous function).
+    Lambda,
 }
 
 impl DefinitionKind {
@@ -118,6 +120,7 @@ impl DefinitionKind {
                 | Self::Local
                 | Self::Parameter
                 | Self::BuiltinFunction
+                | Self::Lambda
         )
     }
 }

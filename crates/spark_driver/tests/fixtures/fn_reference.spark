@@ -1,0 +1,8 @@
+fn double(x: Int): Int { return x * 2 }
+
+fn apply(f: (Int): Int, x: Int): Int { return f(x) }
+
+fn main(): Int {
+    print(apply(double, 7))
+    return 0
+}

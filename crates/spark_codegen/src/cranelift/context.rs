@@ -44,6 +44,12 @@ pub struct FunctionContext<'a> {
     pub mir_func: &'a MirFunction,
     /// Runtime function stubs.
     pub stubs: &'a RuntimeStubs,
+    /// For lambda functions: the env_ptr Value (first Cranelift block param).
+    /// Used by Phase B to load captured variables from the environment.
+    pub env_ptr: Option<Value>,
+    /// For functions with aggregate return types: the sret pointer passed by the caller.
+    /// The callee copies Local(0) to this pointer on return.
+    pub sret_ptr: Option<Value>,
 }
 
 impl<'a> FunctionContext<'a> {
@@ -99,6 +105,8 @@ impl<'a> FunctionContext<'a> {
             table,
             mir_func,
             stubs,
+            env_ptr: None,
+            sret_ptr: None,
         }
     }
 

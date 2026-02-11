@@ -36,6 +36,8 @@ pub struct HirFunction {
     pub is_async: bool,
     /// Source span.
     pub span: Span,
+    /// Captured variables from enclosing scope. Empty for non-closures.
+    pub captures: Vec<(DefId, TypeId)>,
 }
 
 /// A module-level constant in the HIR.
@@ -222,6 +224,17 @@ pub enum HirExprKind {
         /// Body expression.
         body: Box<HirExpr>,
     },
+    /// Closure construction: a lifted function + captured variables.
+    ///
+    /// After lambda lifting, a capturing lambda is replaced with this node.
+    /// The codegen builds a fat pointer `(fn_ptr, env_ptr)` where `env_ptr`
+    /// points to a heap-allocated environment containing the capture values.
+    MakeClosure {
+        /// The DefId of the lifted closure function.
+        func_def_id: DefId,
+        /// Variables captured from the enclosing scope, with their types.
+        captures: Vec<(DefId, TypeId)>,
+    },
 
     // === Type operations ===
     /// Type test: `expr is Type`.
@@ -400,6 +413,7 @@ mod tests {
             ret_type: TypeId::ERROR,
             is_async: false,
             span: Span::DUMMY,
+            captures: vec![],
         };
         assert!(!func.is_async);
         assert!(func.params.is_empty());

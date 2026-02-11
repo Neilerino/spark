@@ -1093,6 +1093,30 @@ pub extern "C" fn __spark_rc_release(_ptr: *mut u8) {
     // New code should use __spark_string_rc_dec, __spark_list_rc_dec, etc.
 }
 
+// =============================================================================
+// Closure environment allocation
+// =============================================================================
+
+/// Allocates a closure environment of the given byte size.
+///
+/// The returned pointer is zeroed and not reference-counted. v1 closure
+/// environments are leaked (no deallocation).
+#[no_mangle]
+pub extern "C" fn __spark_env_alloc(size: i64) -> *mut u8 {
+    let byte_size = size as usize;
+    if byte_size == 0 {
+        return std::ptr::null_mut();
+    }
+    let align = std::mem::align_of::<u64>();
+    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(byte_size, align) };
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        eprintln!("spark: out of memory allocating closure environment");
+        std::process::abort();
+    }
+    ptr
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

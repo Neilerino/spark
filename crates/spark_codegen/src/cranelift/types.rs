@@ -11,6 +11,10 @@ use crate::abi;
 
 /// Builds a Cranelift function [`Signature`] from a Spark function's parameter
 /// and return types.
+///
+/// For aggregate return types, uses the sret calling convention: the return
+/// value slot becomes a hidden first pointer parameter, and there are no
+/// Cranelift return values.
 #[must_use]
 pub fn build_signature(
     param_types: &[TypeId],
@@ -20,6 +24,12 @@ pub fn build_signature(
     call_conv: CallConv,
 ) -> Signature {
     let mut sig = Signature::new(call_conv);
+    let sret = abi::needs_sret(return_type, table);
+
+    if sret {
+        // Aggregate return: caller passes output pointer as first param.
+        sig.params.push(AbiParam::new(ptr_type));
+    }
 
     for &param_ty in param_types {
         if let Some(clif_ty) = abi::spark_type_to_clif(param_ty, table, ptr_type) {
@@ -27,8 +37,10 @@ pub fn build_signature(
         }
     }
 
-    if let Some(ret_ty) = abi::spark_type_to_clif(return_type, table, ptr_type) {
-        sig.returns.push(AbiParam::new(ret_ty));
+    if !sret {
+        if let Some(ret_ty) = abi::spark_type_to_clif(return_type, table, ptr_type) {
+            sig.returns.push(AbiParam::new(ret_ty));
+        }
     }
 
     sig

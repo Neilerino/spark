@@ -36,6 +36,18 @@ pub fn lower_function(
 
     let param_count = u32::try_from(hir_fn.params.len()).unwrap_or(u32::MAX);
 
+    // Allocate locals for captured variables.
+    // The codegen will load these from the env_ptr at function entry.
+    // The body's `HirExprKind::Local(captured_def_id)` resolves to these locals.
+    for (cap_def_id, cap_ty) in &hir_fn.captures {
+        let name = defs.get(*cap_def_id).map(|info| info.name);
+        let local = match name {
+            Some(sym) => fb.fresh_local(*cap_ty, sym, false, hir_fn.span),
+            None => fb.fresh_temp(*cap_ty, hir_fn.span),
+        };
+        fb.register_def(*cap_def_id, local);
+    }
+
     // Lower the body expression (value discarded; explicit `return` sets RETURN_PLACE)
     let _body_local = lower_expr(&hir_fn.body, &mut fb, mir, type_table, defs);
 
@@ -51,7 +63,7 @@ pub fn lower_function(
         fb.terminate(Terminator::Return);
     }
 
-    fb.finish(param_count, hir_fn.span)
+    fb.finish_with_captures(param_count, hir_fn.span, hir_fn.captures.clone())
 }
 
 /// Allocates a local for a function parameter.

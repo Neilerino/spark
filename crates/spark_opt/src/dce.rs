@@ -222,6 +222,7 @@ mod tests {
             return_type: TypeId::ERROR,
             locals,
             blocks,
+            captures: vec![],
             span: Span::DUMMY,
         }
     }

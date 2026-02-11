@@ -242,6 +242,7 @@ mod tests {
                 span: Span::DUMMY,
             }],
             blocks,
+            captures: vec![],
             span: Span::DUMMY,
         }
     }

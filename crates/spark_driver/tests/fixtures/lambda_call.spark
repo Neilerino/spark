@@ -1,0 +1,5 @@
+fn main(): Int {
+    doubler: (Int): Int = fn(x: Int): Int { return x * 2 }
+    print(doubler(5))
+    return 0
+}

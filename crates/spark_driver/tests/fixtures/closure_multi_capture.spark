@@ -1,0 +1,9 @@
+fn make_adder(a: Int, b: Int): (Int): Int {
+    return fn(x: Int): Int { return a + b + x }
+}
+
+fn main(): Int {
+    f: (Int): Int = make_adder(3, 7)
+    print(f(10))
+    return 0
+}

@@ -310,6 +310,16 @@ impl FunctionBuilder {
     /// Finishes building and returns the completed [`MirFunction`].
     #[must_use]
     pub fn finish(self, param_count: u32, span: Span) -> MirFunction {
+        self.finish_with_captures(param_count, span, vec![])
+    }
+
+    /// Finishes building and produces a [`MirFunction`] with capture metadata.
+    pub fn finish_with_captures(
+        self,
+        param_count: u32,
+        span: Span,
+        captures: Vec<(DefId, TypeId)>,
+    ) -> MirFunction {
         MirFunction {
             def_id: self.def_id,
             param_count,
@@ -317,6 +327,7 @@ impl FunctionBuilder {
             locals: self.locals,
             blocks: self.blocks,
             span,
+            captures,
         }
     }
 }

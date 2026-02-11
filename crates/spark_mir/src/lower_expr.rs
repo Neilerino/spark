@@ -296,8 +296,49 @@ pub fn lower_expr(
         }
 
         HirExprKind::Lambda { .. } => {
-            emit_deferred(mir, "lambda expressions", expr);
+            // After lambda lifting, no Lambda nodes should reach MIR.
+            // If one does, it indicates a compiler bug.
+            mir.diagnostics.push(
+                Diagnostic::error("internal: lambda not lifted before MIR lowering")
+                    .with_label(Label::primary(expr.span, "unliftable lambda")),
+            );
             void_temp(fb, expr)
+        }
+
+        HirExprKind::MakeClosure {
+            func_def_id,
+            captures,
+        } => {
+            // Lower each captured variable to an operand.
+            let operands: Vec<Operand> = captures
+                .iter()
+                .map(|(def_id, _ty)| {
+                    let local = fb.lookup_def(*def_id).unwrap_or_else(|| {
+                        // Should not happen — capture analysis found this DefId.
+                        let temp = fb.fresh_temp(expr.ty, expr.span);
+                        fb.push_assign(
+                            Place::from_local(temp),
+                            Rvalue::Use(Operand::Constant(Constant::Void)),
+                            expr.span,
+                        );
+                        temp
+                    });
+                    Operand::Copy(Place::from_local(local))
+                })
+                .collect();
+
+            let temp = fb.fresh_temp(expr.ty, expr.span);
+            fb.push_assign(
+                Place::from_local(temp),
+                Rvalue::Aggregate(
+                    AggregateKind::Closure {
+                        func_def_id: *func_def_id,
+                    },
+                    operands,
+                ),
+                expr.span,
+            );
+            temp
         }
 
         HirExprKind::Await(_) => {

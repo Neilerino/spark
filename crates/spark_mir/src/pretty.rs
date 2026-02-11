@@ -179,6 +179,14 @@ impl PrettyPrinter<'_> {
                         }
                         self.out.push('}');
                     }
+                    AggregateKind::Closure { func_def_id } => {
+                        let _ = write!(self.out, "Closure(def{}", func_def_id.as_u32());
+                        for op in ops {
+                            self.out.push_str(", ");
+                            self.print_operand(op);
+                        }
+                        self.out.push(')');
+                    }
                 }
             }
             Rvalue::Discriminant(place) => {
@@ -325,6 +333,7 @@ mod tests {
                 terminator: Terminator::Return,
                 is_cleanup: false,
             }],
+            captures: vec![],
             span: Span::DUMMY,
         };
 
@@ -367,6 +376,7 @@ mod tests {
                 terminator: Terminator::Return,
                 is_cleanup: false,
             }],
+            captures: vec![],
             span: Span::DUMMY,
         };
 

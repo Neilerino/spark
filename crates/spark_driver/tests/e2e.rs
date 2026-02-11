@@ -186,3 +186,32 @@ fn generic_struct_init() {
 fn generic_identity() {
     assert_output("generic_identity.spark", "42");
 }
+
+// ============================================================================
+// Lambdas & function references
+// ============================================================================
+
+#[test]
+fn lambda_call() {
+    assert_output("lambda_call.spark", "10");
+}
+
+#[test]
+fn fn_reference() {
+    assert_output("fn_reference.spark", "14");
+}
+
+#[test]
+fn higher_order() {
+    assert_output("higher_order.spark", "15");
+}
+
+#[test]
+fn closure_capture() {
+    assert_output("closure_capture.spark", "15");
+}
+
+#[test]
+fn closure_multi_capture() {
+    assert_output("closure_multi_capture.spark", "20");
+}

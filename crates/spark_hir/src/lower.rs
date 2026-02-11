@@ -137,6 +137,7 @@ impl<'a> Lowerer<'a> {
             ret_type,
             is_async: func.is_async,
             span: func.span,
+            captures: vec![],
         });
     }
 
@@ -228,6 +229,7 @@ impl<'a> Lowerer<'a> {
                         ret_type,
                         is_async: method.is_async,
                         span: method.span,
+                        captures: vec![],
                     });
                 }
             }

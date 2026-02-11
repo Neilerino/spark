@@ -74,8 +74,17 @@ pub fn is_scalar(ty_id: TypeId, table: &TypeTable) -> bool {
             | Ty::Map(_, _)
             | Ty::Set(_)
             | Ty::Ref { .. }
-            | Ty::Function { .. }
     ) || matches!(ty, Ty::Mutable(inner) if is_scalar(*inner, table))
+}
+
+/// Returns true if this type is an aggregate that needs sret (struct return pointer)
+/// when returned from a function.
+///
+/// Aggregate return types cannot be returned in a register — the caller must
+/// pass a pointer to a buffer where the callee writes the return value.
+#[must_use]
+pub fn needs_sret(ty_id: TypeId, table: &TypeTable) -> bool {
+    !is_zero_sized(ty_id, table) && !is_scalar(ty_id, table)
 }
 
 /// Returns true if a type is signed for integer comparisons/division.
