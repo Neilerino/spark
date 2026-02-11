@@ -1,0 +1,5 @@
+module greeter
+
+pub fn greet(): Void {
+    print("Hello from module!")
+}

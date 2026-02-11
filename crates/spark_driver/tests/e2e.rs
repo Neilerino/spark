@@ -22,6 +22,9 @@ struct SparkOutput {
 }
 
 /// Runs `spark run <fixture>` and captures output.
+///
+/// For single-file tests, pass a file name like `"hello.spark"`.
+/// For multi-file project tests, use [`run_spark_project`] instead.
 fn run_spark(fixture: &str) -> SparkOutput {
     let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -38,6 +41,37 @@ fn run_spark(fixture: &str) -> SparkOutput {
     let output = Command::new(spark_bin)
         .arg("run")
         .arg(&fixture_path)
+        .output()
+        .expect("failed to run spark binary");
+
+    SparkOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into(),
+        stderr: String::from_utf8_lossy(&output.stderr).into(),
+        exit_code: output.status.code().unwrap_or(-1),
+    }
+}
+
+/// Runs `spark run <project/main.spark>` for multi-file project tests.
+///
+/// Projects live under `tests/projects/<name>/` and are self-contained
+/// directories with their own module structure.
+fn run_spark_project(project: &str) -> SparkOutput {
+    let project_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/projects")
+        .join(project)
+        .join("main.spark");
+
+    assert!(
+        project_path.exists(),
+        "project main not found: {}",
+        project_path.display()
+    );
+
+    let spark_bin = env!("CARGO_BIN_EXE_spark");
+
+    let output = Command::new(spark_bin)
+        .arg("run")
+        .arg(&project_path)
         .output()
         .expect("failed to run spark binary");
 
@@ -148,4 +182,40 @@ fn match_nonexhaustive_bool() {
 #[test]
 fn match_nonexhaustive_int() {
     assert_compile_error("match_nonexhaustive_int.spark", "non-exhaustive");
+}
+
+// ============================================================================
+// Multi-file compilation
+// ============================================================================
+
+#[test]
+fn multifile_import() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let result = run_spark_project("multifile");
+    assert_eq!(
+        result.exit_code, 0,
+        "multifile project exited with code {}:\n{}",
+        result.exit_code, result.stderr
+    );
+    assert_eq!(
+        result.stdout.trim(),
+        "Hello from module!",
+        "stdout mismatch for multifile project"
+    );
+}
+
+#[test]
+fn multimod_using_import() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let result = run_spark_project("multimod");
+    assert_eq!(
+        result.exit_code, 0,
+        "multimod project exited with code {}:\n{}",
+        result.exit_code, result.stderr
+    );
+    assert_eq!(
+        result.stdout.trim(),
+        "hello\nhelper",
+        "stdout mismatch for multimod project"
+    );
 }

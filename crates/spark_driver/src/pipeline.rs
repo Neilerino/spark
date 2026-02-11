@@ -8,24 +8,25 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use spark_ast::Ast;
 use spark_borrow::BorrowInput;
 use spark_codegen::{CodegenInput, TargetSpec};
 use spark_diagnostics::Diagnostics;
 use spark_hir::HirInput;
 use spark_lexer::Lexer;
 use spark_mir::MirInput;
-use spark_modules::{ModuleResolverInput, ModuleResolverOutput};
+use spark_modules::ModuleResolverInput;
 use spark_parser::parse;
-use spark_resolve::{ResolverInput, ResolverOutput};
+use spark_resolve::ResolverInput;
 use spark_span::{FileId, SourceMap};
 use spark_types::TypeCheckerInput;
 
 /// Input to the compilation pipeline.
 pub struct CompileInput {
-    /// The source code text.
-    pub source: String,
-    /// The file name for diagnostics (e.g., `"hello.spark"`).
-    pub file_name: String,
+    /// All source files: `(path_relative_to_root, source_text)`.
+    pub sources: Vec<(PathBuf, String)>,
+    /// Project root directory (absolute).
+    pub root_path: PathBuf,
     /// Optimization level (`None` to skip all passes).
     pub opt_level: spark_opt::OptLevel,
 }
@@ -38,6 +39,11 @@ pub struct CompileOutput {
 
 /// Runs the full compilation pipeline from source code to object bytes.
 ///
+/// Supports multi-file projects: all `.spark` source files under the project
+/// root are lexed, parsed, and fed into the module resolver together. The
+/// downstream phases (type checking, HIR, MIR, borrow, opt, codegen) operate
+/// on the resolved/typed IR and do not need per-file changes.
+///
 /// Returns `Ok(CompileOutput)` on success or `Err(())` if compilation errors
 /// were encountered (diagnostics will have been emitted to stderr).
 ///
@@ -45,30 +51,54 @@ pub struct CompileOutput {
 ///
 /// Returns `Err(())` if any phase produces errors. Diagnostics are emitted
 /// to stderr before returning.
+#[allow(clippy::too_many_lines)]
 pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     let CompileInput {
-        source,
-        file_name,
+        sources,
+        root_path,
         opt_level,
     } = input;
 
     // -- Source registration --------------------------------------------------
     let mut source_map = SourceMap::new();
-    let file_id = source_map.add_file(&file_name, &source);
+    // Keep (FileId, relative_path, source_text) for later phases.
+    let mut file_entries: Vec<(FileId, PathBuf, String)> = Vec::with_capacity(sources.len());
 
-    // -- Phase 1: Lex ---------------------------------------------------------
-    let tokens = Lexer::new(file_id, &source).tokenize();
+    for (rel_path, source) in sources {
+        let display_name = rel_path.to_string_lossy().to_string();
+        let file_id = source_map.add_file(&display_name, &source);
+        file_entries.push((file_id, rel_path, source));
+    }
 
-    // -- Phase 2: Parse -------------------------------------------------------
-    let (ast, parse_diags) = parse(tokens, file_id);
-    if parse_diags.has_errors() {
-        parse_diags.emit_all(&source_map);
+    // -- Phase 1-2: Lex + Parse all files ------------------------------------
+    let mut asts: HashMap<FileId, Ast> = HashMap::with_capacity(file_entries.len());
+    let mut file_paths: HashMap<FileId, PathBuf> = HashMap::with_capacity(file_entries.len());
+    let mut had_parse_errors = false;
+
+    for &(file_id, ref rel_path, ref source) in &file_entries {
+        let tokens = Lexer::new(file_id, source).tokenize();
+        let (ast, parse_diags) = parse(tokens, file_id);
+
+        if parse_diags.has_errors() {
+            parse_diags.emit_all(&source_map);
+            had_parse_errors = true;
+        }
+        emit_warnings(&parse_diags, &source_map);
+
+        asts.insert(file_id, ast);
+        file_paths.insert(file_id, rel_path.clone());
+    }
+
+    if had_parse_errors {
         return Err(());
     }
-    emit_warnings(&parse_diags, &source_map);
 
     // -- Phase 3: Module resolution -------------------------------------------
-    let module_output = resolve_modules(file_id, ast.clone(), &file_name);
+    let module_output = spark_modules::resolve(ModuleResolverInput {
+        asts: asts.clone(),
+        root_path,
+        file_paths,
+    });
     if module_output.diagnostics.has_errors() {
         module_output.diagnostics.emit_all(&source_map);
         return Err(());
@@ -77,7 +107,10 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     let graph = module_output.graph;
 
     // -- Phase 4: Name resolution (pass 1) ------------------------------------
-    let resolve1 = resolve_names(graph.clone(), file_id, ast);
+    let resolve1 = spark_resolve::resolve(ResolverInput {
+        graph: graph.clone(),
+        asts,
+    });
     if resolve1.diagnostics.has_errors() {
         resolve1.diagnostics.emit_all(&source_map);
         return Err(());
@@ -98,12 +131,19 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     let table = type_output.table;
 
     // -- Phase 6-7: Re-lex, re-parse, name resolution (pass 2) ---------------
-    // The type checker consumed the first AST. We re-parse to get a fresh AST
-    // for HIR lowering.
-    let tokens2 = Lexer::new(file_id, &source).tokenize();
-    let (ast2, _) = parse(tokens2, file_id);
+    // The type checker consumed the first ASTs. Re-parse all files to get
+    // fresh ASTs for HIR lowering.
+    let mut reparsed_asts: HashMap<FileId, Ast> = HashMap::with_capacity(file_entries.len());
+    for &(file_id, _, ref source) in &file_entries {
+        let tokens = Lexer::new(file_id, source).tokenize();
+        let (reparsed, _) = parse(tokens, file_id);
+        reparsed_asts.insert(file_id, reparsed);
+    }
 
-    let resolve2 = resolve_names(graph, file_id, ast2);
+    let resolve2 = spark_resolve::resolve(ResolverInput {
+        graph,
+        asts: reparsed_asts,
+    });
     if resolve2.diagnostics.has_errors() {
         resolve2.diagnostics.emit_all(&source_map);
         return Err(());
@@ -127,7 +167,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     let mir_output = spark_mir::lower(MirInput {
         hir: hir_output.hir,
         table: hir_output.table,
-        definitions: definitions.clone(),
+        definitions,
     });
     if mir_output.diagnostics.has_errors() {
         mir_output.diagnostics.emit_all(&source_map);
@@ -175,36 +215,6 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     Ok(CompileOutput {
         object_bytes: codegen_output.object_bytes,
     })
-}
-
-/// Sets up a single-file module graph.
-///
-/// For single-file programs we create a synthetic root module containing just
-/// the one file. Multi-file compilation will be added later.
-fn resolve_modules(file_id: FileId, ast: spark_ast::Ast, file_name: &str) -> ModuleResolverOutput {
-    let mut asts = HashMap::new();
-    asts.insert(file_id, ast);
-
-    let mut file_paths = HashMap::new();
-    file_paths.insert(file_id, PathBuf::from(file_name));
-
-    spark_modules::resolve(ModuleResolverInput {
-        asts,
-        root_path: PathBuf::from("."),
-        file_paths,
-    })
-}
-
-/// Runs name resolution on a single-file module.
-fn resolve_names(
-    graph: spark_modules::ModuleGraph,
-    file_id: FileId,
-    ast: spark_ast::Ast,
-) -> ResolverOutput {
-    let mut asts = HashMap::new();
-    asts.insert(file_id, ast);
-
-    spark_resolve::resolve(ResolverInput { graph, asts })
 }
 
 /// Emits warnings (but not errors) from a diagnostics set.
