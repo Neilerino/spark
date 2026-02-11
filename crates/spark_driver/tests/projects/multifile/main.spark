@@ -1,0 +1,6 @@
+import greeter { greet }
+
+fn main(): Int {
+    greet()
+    return 0
+}

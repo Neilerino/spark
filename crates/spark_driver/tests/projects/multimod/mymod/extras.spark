@@ -1,0 +1,5 @@
+using mymod
+
+pub fn helper(): Void {
+    print("helper")
+}

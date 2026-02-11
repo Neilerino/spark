@@ -1,0 +1,7 @@
+import mymod { hello, helper }
+
+fn main(): Int {
+    hello()
+    helper()
+    return 0
+}
