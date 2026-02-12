@@ -4,13 +4,16 @@
 //! - `a ?? b` → `match a { v -> v, Null -> b }`
 //! - `a?.f` → `match a { v -> Some(v.f), Null -> Null }`
 //! - `e!` → `match e { v -> v, err -> return err }`
+//! - `list each (x): Void { ... }` → index loop
+//! - `list each via (x): U { ... }` → index loop building result list
 
+use spark_ast::BinaryOp;
 use spark_intern::Symbol;
 use spark_resolve::DefinitionTable;
 use spark_span::Span;
 use spark_types::TypeId;
 
-use crate::hir::{HirExpr, HirExprKind, HirLiteral, HirMatchArm, HirPattern};
+use crate::hir::{HirExpr, HirExprKind, HirLiteral, HirMatchArm, HirPattern, HirStmt};
 
 /// Desugars `lhs ?? rhs` into a match expression.
 ///
@@ -222,6 +225,288 @@ pub fn desugar_propagate_union(
         success_ty,
         span,
     )
+}
+
+/// Desugars `iterable each (param): Void { body }` into an index loop.
+///
+/// ```text
+/// {
+///     let __iter = iterable
+///     let __idx: Int! = 0
+///     let __len: Int = __iter.len()
+///     loop {
+///         if __idx >= __len { break }
+///         let param: T = __iter[__idx]
+///         body
+///         __idx = __idx + 1
+///     }
+/// }
+/// ```
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn desugar_each(
+    iterable: HirExpr,
+    body: HirExpr,
+    param_def_id: spark_resolve::DefId,
+    elem_ty: TypeId,
+    int_ty: TypeId,
+    bool_ty: TypeId,
+    void_ty: TypeId,
+    span: Span,
+    definitions: &mut DefinitionTable,
+) -> HirExpr {
+    let (stmts, _) = build_each_loop(
+        iterable, body, param_def_id, elem_ty, int_ty, bool_ty, void_ty,
+        span, definitions, false,
+    );
+
+    HirExpr::new(
+        HirExprKind::Block { stmts, expr: None },
+        void_ty,
+        span,
+    )
+}
+
+/// Desugars `iterable each via (param): U { body }` into an index loop that
+/// builds a result list.
+///
+/// ```text
+/// {
+///     let __iter = iterable
+///     let __idx: Int! = 0
+///     let __len: Int = __iter.len()
+///     let __result: List[U]! = []
+///     loop {
+///         if __idx >= __len { break }
+///         let param: T = __iter[__idx]
+///         let __elem: U = body
+///         __result.append(__elem)
+///         __idx = __idx + 1
+///     }
+///     __result
+/// }
+/// ```
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn desugar_each_via(
+    iterable: HirExpr,
+    body: HirExpr,
+    param_def_id: spark_resolve::DefId,
+    elem_ty: TypeId,
+    _result_elem_ty: TypeId,
+    result_list_ty: TypeId,
+    int_ty: TypeId,
+    bool_ty: TypeId,
+    void_ty: TypeId,
+    span: Span,
+    definitions: &mut DefinitionTable,
+) -> HirExpr {
+    let (stmts, result_id) = build_each_loop(
+        iterable, body, param_def_id, elem_ty, int_ty, bool_ty, void_ty,
+        span, definitions, true,
+    );
+
+    // The result_id is the __result local (always set when via=true)
+    // Safety: build_each_loop always returns Some when via=true.
+    let Some(result_def_id) = result_id else {
+        return HirExpr::new(HirExprKind::Error, result_list_ty, span);
+    };
+
+    // Update __result's type: it's actually List[U], not void
+    // We need to rebuild stmts with the correct type on __result
+    let mut final_stmts = Vec::with_capacity(stmts.len());
+    for stmt in stmts {
+        match stmt {
+            HirStmt::Let { def_id, mutable, value } if def_id == result_def_id => {
+                // Replace the empty list literal's type with result_list_ty
+                let fixed_value = HirExpr::new(value.kind, result_list_ty, value.span);
+                final_stmts.push(HirStmt::Let { def_id, mutable, value: fixed_value });
+            }
+            other => final_stmts.push(other),
+        }
+    }
+
+    // Trailing expression: __result
+    let trailing = HirExpr::new(
+        HirExprKind::Local(result_def_id),
+        result_list_ty,
+        span,
+    );
+
+    HirExpr::new(
+        HirExprKind::Block {
+            stmts: final_stmts,
+            expr: Some(Box::new(trailing)),
+        },
+        result_list_ty,
+        span,
+    )
+}
+
+/// Builds the shared loop structure for both `each` and `each via`.
+///
+/// Returns the list of statements and, if `via` is true, the `DefId` of the
+/// `__result` local.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn build_each_loop(
+    iterable: HirExpr,
+    body: HirExpr,
+    param_def_id: spark_resolve::DefId,
+    elem_ty: TypeId,
+    int_ty: TypeId,
+    bool_ty: TypeId,
+    void_ty: TypeId,
+    span: Span,
+    definitions: &mut DefinitionTable,
+    via: bool,
+) -> (Vec<HirStmt>, Option<spark_resolve::DefId>) {
+    let iter_id = definitions.next_synthetic_id(span);
+    let idx_id = definitions.next_synthetic_id(span);
+    let len_id = definitions.next_synthetic_id(span);
+
+    let iter_ty = iterable.ty;
+
+    // let __iter = iterable
+    let iter_let = HirStmt::Let {
+        def_id: iter_id,
+        mutable: false,
+        value: iterable,
+    };
+
+    // let __idx: Int! = 0
+    let idx_let = HirStmt::Let {
+        def_id: idx_id,
+        mutable: true,
+        value: HirExpr::new(HirExprKind::Literal(HirLiteral::Int(0)), int_ty, span),
+    };
+
+    // let __len: Int = __iter.len()
+    let len_let = HirStmt::Let {
+        def_id: len_id,
+        mutable: false,
+        value: HirExpr::new(
+            HirExprKind::MethodCall {
+                receiver: Box::new(HirExpr::new(HirExprKind::Local(iter_id), iter_ty, span)),
+                method: spark_intern::kw::LEN,
+                args: vec![],
+            },
+            int_ty,
+            span,
+        ),
+    };
+
+    // __result local (only for `each via`)
+    let result_id = if via {
+        Some(definitions.next_synthetic_id(span))
+    } else {
+        None
+    };
+
+    // if __idx >= __len { break }
+    let guard = HirExpr::new(
+        HirExprKind::If {
+            cond: Box::new(HirExpr::new(
+                HirExprKind::BinaryOp {
+                    op: BinaryOp::Ge,
+                    lhs: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+                    rhs: Box::new(HirExpr::new(HirExprKind::Local(len_id), int_ty, span)),
+                },
+                bool_ty,
+                span,
+            )),
+            then_: Box::new(HirExpr::new(HirExprKind::Break(None), void_ty, span)),
+            else_: None,
+        },
+        void_ty,
+        span,
+    );
+
+    // let param: T = __iter[__idx]
+    let param_let = HirStmt::Let {
+        def_id: param_def_id,
+        mutable: false,
+        value: HirExpr::new(
+            HirExprKind::Index {
+                base: Box::new(HirExpr::new(HirExprKind::Local(iter_id), iter_ty, span)),
+                index: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+            },
+            elem_ty,
+            span,
+        ),
+    };
+
+    // __idx = __idx + 1
+    let increment = HirStmt::Assign {
+        target: HirExpr::new(HirExprKind::Local(idx_id), int_ty, span),
+        value: HirExpr::new(
+            HirExprKind::BinaryOp {
+                op: BinaryOp::Add,
+                lhs: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+                rhs: Box::new(HirExpr::new(HirExprKind::Literal(HirLiteral::Int(1)), int_ty, span)),
+            },
+            int_ty,
+            span,
+        ),
+    };
+
+    // Build loop body statements
+    let mut loop_stmts: Vec<HirStmt> = vec![
+        HirStmt::Expr(guard),
+        param_let,
+    ];
+
+    if let Some(rid) = result_id {
+        // each via: let __elem = body; __result.append(__elem)
+        let elem_id = definitions.next_synthetic_id(span);
+        let body_ty = body.ty;
+        loop_stmts.push(HirStmt::Let {
+            def_id: elem_id,
+            mutable: false,
+            value: body,
+        });
+        loop_stmts.push(HirStmt::Expr(HirExpr::new(
+            HirExprKind::MethodCall {
+                receiver: Box::new(HirExpr::new(HirExprKind::Local(rid), void_ty, span)),
+                method: spark_intern::kw::APPEND,
+                args: vec![HirExpr::new(HirExprKind::Local(elem_id), body_ty, span)],
+            },
+            void_ty,
+            span,
+        )));
+    } else {
+        // each: just the body as a statement
+        loop_stmts.push(HirStmt::Expr(body));
+    }
+
+    loop_stmts.push(increment);
+
+    let loop_body = HirExpr::new(
+        HirExprKind::Block { stmts: loop_stmts, expr: None },
+        void_ty,
+        span,
+    );
+
+    let loop_expr = HirStmt::Expr(HirExpr::new(
+        HirExprKind::Loop { body: Box::new(loop_body) },
+        void_ty,
+        span,
+    ));
+
+    // Build outer block statements
+    let mut stmts = vec![iter_let, idx_let, len_let];
+
+    if let Some(rid) = result_id {
+        // let __result: List[U]! = []
+        stmts.push(HirStmt::Let {
+            def_id: rid,
+            mutable: true,
+            value: HirExpr::new(HirExprKind::ListLit(vec![]), void_ty, span),
+        });
+    }
+
+    stmts.push(loop_expr);
+
+    (stmts, result_id)
 }
 
 #[cfg(test)]

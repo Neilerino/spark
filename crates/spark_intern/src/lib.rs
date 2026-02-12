@@ -335,6 +335,10 @@ impl Interner {
             "contains",
             "remove",
             "add",
+            // Pipeline operations
+            "sort",
+            "take",
+            "reverse",
         ];
 
         for kw in keywords {
@@ -588,11 +592,17 @@ pub mod kw {
     pub const REMOVE: Symbol = Symbol(72);
     /// `add`
     pub const ADD: Symbol = Symbol(73);
+    /// `sort`
+    pub const SORT: Symbol = Symbol(74);
+    /// `take`
+    pub const TAKE: Symbol = Symbol(75);
+    /// `reverse`
+    pub const REVERSE: Symbol = Symbol(76);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
     pub const fn is_builtin_function(sym: Symbol) -> bool {
-        sym.0 == 68
+        sym.0 == 68 || (sym.0 >= 74 && sym.0 <= 76)
     }
 
     /// Returns true if the given symbol is a built-in method name.

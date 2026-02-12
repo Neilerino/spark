@@ -142,6 +142,12 @@ fn emit_call<M: Module>(
                 emit_builtin_print(ctx, args, target, table, definitions, func_ids, thunk_ids, module);
                 return;
             }
+            if matches!(info.kind, DefinitionKind::BuiltinFunction)
+                && (info.name == kw::SORT || info.name == kw::TAKE || info.name == kw::REVERSE)
+            {
+                emit_builtin_list_fn(ctx, info.name, args, destination, target, table, definitions, func_ids, thunk_ids, module);
+                return;
+            }
             if matches!(info.kind, DefinitionKind::BuiltinMethod) {
                 emit_builtin_method(ctx, info.name, args, destination, target, table, definitions, func_ids, thunk_ids, module);
                 return;
@@ -278,6 +284,66 @@ fn emit_builtin_print<M: Module>(
 
         let func_ref = module.declare_func_in_func(stub_id, ctx.builder.func);
         ctx.builder.ins().call(func_ref, &[val]);
+    }
+
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+}
+
+/// Emits a built-in list function call (sort, take, reverse).
+///
+/// These are free functions that take a list as the first argument and return a new list.
+/// `expr via sort` is desugared to `sort(expr)` by HIR, so args[0] is the list.
+#[allow(clippy::too_many_arguments)]
+fn emit_builtin_list_fn<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    fn_name: spark_intern::Symbol,
+    args: &[Operand],
+    destination: &Place,
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) {
+    // Evaluate the list argument (args[0]).
+    let list_val = args
+        .first()
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module));
+
+    let Some(list_ptr) = list_val else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    if fn_name == kw::SORT {
+        let func_ref = module.declare_func_in_func(ctx.stubs.list_sort, ctx.builder.func);
+        let call = ctx.builder.ins().call(func_ref, &[list_ptr]);
+        let result = ctx.builder.inst_results(call)[0];
+        if destination.projections.is_empty() {
+            ctx.write_local(destination.local, result);
+        }
+    } else if fn_name == kw::TAKE {
+        // args[1] is the count
+        let count_val = args
+            .get(1)
+            .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module))
+            .unwrap_or_else(|| ctx.builder.ins().iconst(types::I64, 0));
+        let func_ref = module.declare_func_in_func(ctx.stubs.list_take, ctx.builder.func);
+        let call = ctx.builder.ins().call(func_ref, &[list_ptr, count_val]);
+        let result = ctx.builder.inst_results(call)[0];
+        if destination.projections.is_empty() {
+            ctx.write_local(destination.local, result);
+        }
+    } else if fn_name == kw::REVERSE {
+        let func_ref = module.declare_func_in_func(ctx.stubs.list_reverse, ctx.builder.func);
+        let call = ctx.builder.ins().call(func_ref, &[list_ptr]);
+        let result = ctx.builder.inst_results(call)[0];
+        if destination.projections.is_empty() {
+            ctx.write_local(destination.local, result);
+        }
     }
 
     let target_block = ctx.clif_block(target);

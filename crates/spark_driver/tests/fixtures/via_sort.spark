@@ -1,0 +1,8 @@
+fn main(): Int {
+    nums: List[Int] = [3, 1, 2]
+    sorted: List[Int] = nums via sort
+    sorted each (item: Int): Void {
+        print(item)
+    }
+    return 0
+}

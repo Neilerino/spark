@@ -1,0 +1,15 @@
+fn add_ten(nums: List[Int]): List[Int] {
+    result: List[Int] = nums each via (n: Int): Int {
+        n + 10
+    }
+    return result
+}
+
+fn main(): Int {
+    nums: List[Int] = [1, 2, 3]
+    transformed: List[Int] = nums via add_ten
+    transformed each (item: Int): Void {
+        print(item)
+    }
+    return 0
+}

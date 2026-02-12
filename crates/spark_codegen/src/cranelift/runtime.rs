@@ -87,6 +87,12 @@ pub struct RuntimeStubs {
     pub bool_to_string: FuncId,
     /// `__spark_env_alloc(size: i64) -> ptr`
     pub env_alloc: FuncId,
+    /// `__spark_list_sort(ptr) -> ptr`
+    pub list_sort: FuncId,
+    /// `__spark_list_take(ptr, i64) -> ptr`
+    pub list_take: FuncId,
+    /// `__spark_list_reverse(ptr) -> ptr`
+    pub list_reverse: FuncId,
 }
 
 impl RuntimeStubs {
@@ -359,6 +365,27 @@ impl RuntimeStubs {
                 module,
                 "__spark_env_alloc",
                 &[types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            list_sort: declare_fn(
+                module,
+                "__spark_list_sort",
+                &[ptr_type],
+                Some(ptr_type),
+                call_conv,
+            ),
+            list_take: declare_fn(
+                module,
+                "__spark_list_take",
+                &[ptr_type, types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            list_reverse: declare_fn(
+                module,
+                "__spark_list_reverse",
+                &[ptr_type],
                 Some(ptr_type),
                 call_conv,
             ),

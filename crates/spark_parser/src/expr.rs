@@ -93,6 +93,11 @@ impl Parser {
                 continue;
             }
 
+            if self.check(TokenKind::Via) {
+                lhs = self.parse_via(lhs, start);
+                continue;
+            }
+
             if self.check(TokenKind::To) {
                 lhs = self.parse_to(lhs, start);
                 continue;
@@ -665,6 +670,29 @@ impl Parser {
             ExprKind::To {
                 expr: Box::new(expr),
                 handler,
+            },
+            span,
+        )
+    }
+
+    /// Parses a standalone `via` pipeline expression.
+    ///
+    /// Via = Expr "via" Ident `PartialArgs`?
+    fn parse_via(&mut self, expr: Expr, start: Span) -> Expr {
+        self.expect(TokenKind::Via);
+        let operation = self
+            .expect_ident()
+            .unwrap_or_else(|| Ident::dummy(sym("_")));
+        let args = if self.check(TokenKind::LBrace) {
+            self.parse_partial_args()
+        } else {
+            vec![]
+        };
+        let span = self.span_from(start);
+        Expr::new(
+            ExprKind::To {
+                expr: Box::new(expr),
+                handler: ToHandler::Pipeline { operation, args },
             },
             span,
         )

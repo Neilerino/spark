@@ -93,7 +93,13 @@ pub fn emit_operand<M: Module>(
         Operand::Copy(place) => {
             let val = emit_place_read(ctx, place, table, module);
             // RC inc: when copying an RC'd value, increment its reference count.
-            let ty_id = ctx.local_type_id(place.local);
+            // Use the resolved place type (after projections) to avoid
+            // incrementing non-RC values extracted from RC containers.
+            let ty_id = if place.projections.is_empty() {
+                ctx.local_type_id(place.local)
+            } else {
+                resolve_place_type(ctx, place, table)
+            };
             if spark_drop::needs_rc(ty_id, table) {
                 let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
                 ctx.builder.ins().call(func_ref, &[val]);
@@ -294,8 +300,9 @@ pub(super) fn emit_place_addr<M: Module>(
                 match unwrapped_ty {
                     Ty::List(elem_ty) => {
                         let elem_ty = *elem_ty;
-                        // Call __spark_list_get(list_ptr, index) → element pointer.
-                        let list_ptr = addr;
+                        // Load the list pointer from the address (addr points to
+                        // the local's storage, not the list itself).
+                        let list_ptr = ctx.load(ctx.ptr_type, addr, 0);
                         let func_ref = module.declare_func_in_func(
                             ctx.stubs.list_get,
                             ctx.builder.func,
@@ -309,7 +316,7 @@ pub(super) fn emit_place_addr<M: Module>(
                         let value_ty = *value_ty;
                         // Store the key to a temp slot, then call __spark_map_get.
                         let key_addr = store_scalar_to_temp(ctx, idx_val, key_ty, table);
-                        let map_ptr = addr;
+                        let map_ptr = ctx.load(ctx.ptr_type, addr, 0);
                         let func_ref = module.declare_func_in_func(
                             ctx.stubs.map_get,
                             ctx.builder.func,

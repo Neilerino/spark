@@ -648,6 +648,86 @@ pub unsafe extern "C" fn __spark_string_len(ptr: *mut u8) -> i64 {
 }
 
 // =============================================================================
+// List pipeline operations — sort, take, reverse
+// =============================================================================
+
+/// Sorts a list of i64 elements in ascending order, returning a new list.
+///
+/// The original list is not modified (functional semantics).
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_list_new` containing i64 elements.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_list_sort(ptr: *mut u8) -> *mut u8 {
+    let list = unsafe { &*(ptr.cast::<SparkList>()) };
+    let new_list = __spark_list_new(list.elem_size as i64);
+
+    if list.len == 0 {
+        return new_list;
+    }
+
+    // Copy all elements into a Vec<i64> for sorting
+    let mut values: Vec<i64> = Vec::with_capacity(list.len);
+    for i in 0..list.len {
+        let elem = unsafe { list.data.add(i * list.elem_size) };
+        let val = unsafe { *(elem.cast::<i64>()) };
+        values.push(val);
+    }
+    values.sort_unstable();
+
+    // Push sorted values into the new list
+    for val in &values {
+        let ptr_to_val = (val as *const i64).cast::<u8>();
+        unsafe { __spark_list_push(new_list, ptr_to_val) };
+    }
+
+    new_list
+}
+
+/// Takes the first `count` elements from a list, returning a new list.
+///
+/// If `count` exceeds the list length, returns all elements.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_list_new`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub unsafe extern "C" fn __spark_list_take(ptr: *mut u8, count: i64) -> *mut u8 {
+    let list = unsafe { &*(ptr.cast::<SparkList>()) };
+    let new_list = __spark_list_new(list.elem_size as i64);
+
+    let n = (count as usize).min(list.len);
+    for i in 0..n {
+        let elem = unsafe { list.data.add(i * list.elem_size) };
+        unsafe { __spark_list_push(new_list, elem) };
+    }
+
+    new_list
+}
+
+/// Reverses a list, returning a new list with elements in reverse order.
+///
+/// # Safety
+///
+/// `ptr` must be a valid pointer from `__spark_list_new`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_list_reverse(ptr: *mut u8) -> *mut u8 {
+    let list = unsafe { &*(ptr.cast::<SparkList>()) };
+    let new_list = __spark_list_new(list.elem_size as i64);
+
+    for i in (0..list.len).rev() {
+        let elem = unsafe { list.data.add(i * list.elem_size) };
+        unsafe { __spark_list_push(new_list, elem) };
+    }
+
+    new_list
+}
+
+// =============================================================================
 // String interpolation — concat and to_string conversions
 // =============================================================================
 

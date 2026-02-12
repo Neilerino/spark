@@ -1,0 +1,7 @@
+fn main(): Int {
+    items: List[Int] = [1, 2, 3]
+    items each (item: Int): Void {
+        print(item)
+    }
+    return 0
+}

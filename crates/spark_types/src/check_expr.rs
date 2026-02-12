@@ -444,11 +444,58 @@ fn check_expr_inner(
             check_to_expr(inner_ty, handler, expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
         }
 
-        ExprKind::Each { iterable, body, .. }
-        | ExprKind::EachVia { iterable, body, .. } => {
-            let _ = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+        ExprKind::Each { iterable, param, body } => {
+            let iter_ty = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let base_ty = strip_mutable(iter_ty, table);
+            let elem_ty = match table.resolve(base_ty).clone() {
+                Ty::List(elem) => elem,
+                Ty::Error => TypeId::ERROR,
+                _ => {
+                    let name = type_name(base_ty, table, definitions);
+                    diagnostics.push(
+                        Diagnostic::error(format!("`each` requires a List, found `{name}`"))
+                            .with_label(Label::primary(iterable.span, "not a List")),
+                    );
+                    TypeId::ERROR
+                }
+            };
+
+            // Register the iteration parameter type (same pattern as Lambda)
+            if let Some(res) = resolutions {
+                if let Some(def_id) = res.get_binding(param.name.span) {
+                    table.set_def_type(def_id, elem_ty);
+                }
+            }
+
             let _ = check_expr(body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
             builtins.void
+        }
+
+        ExprKind::EachVia { iterable, param, body } => {
+            let iter_ty = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let base_ty = strip_mutable(iter_ty, table);
+            let elem_ty = match table.resolve(base_ty).clone() {
+                Ty::List(elem) => elem,
+                Ty::Error => TypeId::ERROR,
+                _ => {
+                    let name = type_name(base_ty, table, definitions);
+                    diagnostics.push(
+                        Diagnostic::error(format!("`each via` requires a List, found `{name}`"))
+                            .with_label(Label::primary(iterable.span, "not a List")),
+                    );
+                    TypeId::ERROR
+                }
+            };
+
+            // Register the iteration parameter type (same pattern as Lambda)
+            if let Some(res) = resolutions {
+                if let Some(def_id) = res.get_binding(param.name.span) {
+                    table.set_def_type(def_id, elem_ty);
+                }
+            }
+
+            let body_ty = check_expr(body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            table.intern(Ty::List(body_ty))
         }
 
         ExprKind::Range { start, end, .. } | ExprKind::ListRange { start, end, .. } => {
@@ -1615,9 +1662,83 @@ fn check_to_expr(
                 result_ty
             }
         }
-        ToHandler::Pipeline { .. } => {
-            // Pipeline handlers are deferred for now
-            TypeId::ERROR
+        ToHandler::Pipeline { operation, args } => {
+            // Generic function-call validation: `expr via func{a: v}` → `func(expr, v)`
+            let func_def_id = resolutions.and_then(|r| r.get_ident(operation.span));
+            let Some(def_id) = func_def_id else {
+                // Unresolved — still check arg values for errors
+                for arg in args {
+                    let _ = check_expr(
+                        &arg.value, table, builtins, definitions,
+                        resolutions, diagnostics, current_fn_ret,
+                    );
+                }
+                return TypeId::ERROR;
+            };
+            let Some(func_ty_id) = table.get_def_type(def_id) else {
+                return TypeId::ERROR;
+            };
+            let func_ty = table.resolve(func_ty_id).clone();
+            let Ty::Function { params, ret, .. } = func_ty else {
+                diagnostics.push(
+                    Diagnostic::error("`via` target must be a function")
+                        .with_label(Label::primary(operation.span, "not a function")),
+                );
+                return TypeId::ERROR;
+            };
+
+            // Build full arg list: [inner_ty, partial_arg_types...]
+            let mut all_arg_types = vec![inner_ty];
+            for arg in args {
+                all_arg_types.push(check_expr(
+                    &arg.value, table, builtins, definitions,
+                    resolutions, diagnostics, current_fn_ret,
+                ));
+            }
+
+            // Arity check
+            if all_arg_types.len() != params.len() {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "`via {}` expected {} argument{}, found {}",
+                        operation.name,
+                        params.len(),
+                        if params.len() == 1 { "" } else { "s" },
+                        all_arg_types.len()
+                    ))
+                    .with_label(Label::primary(span, "wrong number of arguments")),
+                );
+                return TypeId::ERROR;
+            }
+
+            // Type-check each argument against function params
+            for (i, (&arg_ty, &param_ty)) in
+                all_arg_types.iter().zip(params.iter()).enumerate()
+            {
+                if !is_compatible(arg_ty, param_ty, table) {
+                    let expected_name = type_name(param_ty, table, definitions);
+                    let found_name = type_name(arg_ty, table, definitions);
+                    if i == 0 {
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "`via {}` first argument type mismatch: expected `{expected_name}`, found `{found_name}`",
+                                operation.name
+                            ))
+                            .with_label(Label::primary(span, format!("expected `{expected_name}`"))),
+                        );
+                    } else {
+                        let arg_span = args[i - 1].value.span;
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
+                            ))
+                            .with_label(Label::primary(arg_span, format!("expected `{expected_name}`"))),
+                        );
+                    }
+                }
+            }
+
+            ret
         }
     }
 }

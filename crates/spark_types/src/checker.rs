@@ -98,25 +98,54 @@ impl TypeChecker {
         self.resolved.asts = asts;
     }
 
-    /// Registers type signatures for built-in functions (e.g., `print`).
+    /// Registers type signatures for built-in functions (e.g., `print`, `sort`, `take`, `reverse`).
     ///
     /// Called after `collect_signatures()` so that built-in function types
     /// are available during body checking.
     fn register_builtin_functions(&mut self) {
+        let int_type = self.table.intern(Ty::Int(IntWidth::I64));
+        let float_type = self.table.intern(Ty::Float(FloatWidth::F64));
+        let bool_type = self.table.intern(Ty::Bool);
+        let string_type = self.builtins.string;
+        let void_type = self.table.intern(Ty::Void);
+        let list_int = self.table.intern(Ty::List(int_type));
+
         for (def_id, info) in self.definitions.iter() {
-            if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::PRINT {
-                // print(Int | Float | Bool | String): Void
-                let int_type = self.table.intern(Ty::Int(IntWidth::I64));
-                let float_type = self.table.intern(Ty::Float(FloatWidth::F64));
-                let bool_type = self.table.intern(Ty::Bool);
-                let string_type = self.builtins.string;
+            if !matches!(info.kind, DefinitionKind::BuiltinFunction) {
+                continue;
+            }
+
+            if info.name == kw::PRINT {
                 let param_type = self.table.intern(Ty::Union(vec![
                     int_type, float_type, bool_type, string_type,
                 ]));
-                let void_type = self.table.intern(Ty::Void);
                 let fn_type = self.table.intern(Ty::Function {
                     params: vec![param_type],
                     ret: void_type,
+                    is_async: false,
+                });
+                self.table.set_def_type(def_id, fn_type);
+            } else if info.name == kw::SORT {
+                // sort(List[Int]) -> List[Int]
+                let fn_type = self.table.intern(Ty::Function {
+                    params: vec![list_int],
+                    ret: list_int,
+                    is_async: false,
+                });
+                self.table.set_def_type(def_id, fn_type);
+            } else if info.name == kw::TAKE {
+                // take(List[Int], Int) -> List[Int]
+                let fn_type = self.table.intern(Ty::Function {
+                    params: vec![list_int, int_type],
+                    ret: list_int,
+                    is_async: false,
+                });
+                self.table.set_def_type(def_id, fn_type);
+            } else if info.name == kw::REVERSE {
+                // reverse(List[Int]) -> List[Int]
+                let fn_type = self.table.intern(Ty::Function {
+                    params: vec![list_int],
+                    ret: list_int,
                     is_async: false,
                 });
                 self.table.set_def_type(def_id, fn_type);

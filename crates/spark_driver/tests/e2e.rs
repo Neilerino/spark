@@ -255,6 +255,49 @@ fn closure_snapshot() {
     assert_output("closure_snapshot.spark", "10\n42");
 }
 
+// ============================================================================
+// Each / Each Via
+// ============================================================================
+
+#[test]
+fn each_print() {
+    assert_output("each_print.spark", "1\n2\n3");
+}
+
+#[test]
+fn each_via_double() {
+    assert_output("each_via_double.spark", "3");
+}
+
+// ============================================================================
+// Via (pipeline operator)
+// ============================================================================
+
+#[test]
+fn via_sort() {
+    assert_output("via_sort.spark", "1\n2\n3");
+}
+
+#[test]
+fn via_take() {
+    assert_output("via_take.spark", "3");
+}
+
+#[test]
+fn via_reverse() {
+    assert_output("via_reverse.spark", "3\n2\n1");
+}
+
+#[test]
+fn via_chain() {
+    assert_output("via_chain.spark", "1\n2\n3");
+}
+
+#[test]
+fn via_user_fn() {
+    assert_output("via_user_fn.spark", "11\n12\n13");
+}
+
 // Multi-file compilation
 // ============================================================================
 #[test]

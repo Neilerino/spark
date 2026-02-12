@@ -100,6 +100,19 @@ impl Resolver {
         // Store the builtin DefId so it can be added to ribs during resolution
         self.builtin_defs.push((kw::PRINT, def_id, DefinitionKind::BuiltinFunction));
 
+        // Register sort/take/reverse as built-in functions (callable via `via` or directly)
+        for &fn_name in &[kw::SORT, kw::TAKE, kw::REVERSE] {
+            let info = DefinitionInfo::new(
+                DefinitionKind::BuiltinFunction,
+                fn_name,
+                Span::DUMMY,
+                Visibility::Public,
+                ModulePath::root(),
+            );
+            let fn_def_id = self.definitions.insert(info);
+            self.builtin_defs.push((fn_name, fn_def_id, DefinitionKind::BuiltinFunction));
+        }
+
         // Register built-in methods (len, append, contains, remove, add).
         // These are NOT added to ribs (can't be called as free functions),
         // but need DefIds so MIR and codegen can reference them.
@@ -872,8 +885,19 @@ impl Resolver {
                             self.rib_stack.pop_rib();
                         }
                     }
-                    ToHandler::Pipeline { args, .. } => {
-                        // Operation name resolved by type checker
+                    ToHandler::Pipeline { operation, args } => {
+                        // Resolve the pipeline operation as a value-namespace identifier
+                        if let Some(def_id) = self.rib_stack.lookup_value(operation.name) {
+                            self.record_ident(operation.span, def_id);
+                        } else if !kw::is_builtin_type(operation.name) {
+                            self.diagnostics.push(
+                                Diagnostic::error(format!(
+                                    "unknown function `{}`",
+                                    operation.name.as_str()
+                                ))
+                                .with_label(Label::primary(operation.span, "not found")),
+                            );
+                        }
                         for arg in args {
                             self.resolve_expr(&arg.value);
                         }

@@ -352,12 +352,41 @@ fn lower_expr_kind(
             desugar_propagate_expr(inner_hir, inner_ty, ty, current_fn_ret, expr.span, table, definitions)
         }
 
-        // === Deferred constructs -> Error ===
-        ExprKind::Each { iterable, body, .. }
-        | ExprKind::EachVia { iterable, body, .. } => {
-            let _ = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let _ = lower_expr(body, table, definitions, resolutions, diagnostics, current_fn_ret);
-            HirExprKind::Error
+        // === Each (side-effect iteration) ===
+        ExprKind::Each { iterable, param, body } => {
+            let iterable_hir = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let body_hir = lower_expr(body, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let param_def_id = resolutions
+                .and_then(|res| res.get_binding(param.name.span))
+                .unwrap_or_else(|| definitions.next_synthetic_id(expr.span));
+            let elem_ty = table.get_def_type(param_def_id).unwrap_or(TypeId::ERROR);
+            let int_ty = find_int_type(table);
+            let bool_ty = find_bool_type(table);
+            let void_ty = find_void_type(table);
+            desugar::desugar_each(
+                iterable_hir, body_hir, param_def_id, elem_ty,
+                int_ty, bool_ty, void_ty, expr.span, definitions,
+            ).kind
+        }
+
+        // === Each Via (transform iteration) ===
+        ExprKind::EachVia { iterable, param, body } => {
+            let iterable_hir = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let body_hir = lower_expr(body, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let param_def_id = resolutions
+                .and_then(|res| res.get_binding(param.name.span))
+                .unwrap_or_else(|| definitions.next_synthetic_id(expr.span));
+            let elem_ty = table.get_def_type(param_def_id).unwrap_or(TypeId::ERROR);
+            let result_elem_ty = body_hir.ty;
+            let int_ty = find_int_type(table);
+            let bool_ty = find_bool_type(table);
+            let void_ty = find_void_type(table);
+            let result_list_ty = expr_type(expr.span, table); // overall expr type set by type checker
+            desugar::desugar_each_via(
+                iterable_hir, body_hir, param_def_id, elem_ty,
+                result_elem_ty, result_list_ty, int_ty, bool_ty, void_ty,
+                expr.span, definitions,
+            ).kind
         }
 
         ExprKind::To { expr: inner, handler } => {
@@ -471,9 +500,29 @@ fn lower_to_expr(
                 arms: hir_arms,
             }
         }
-        ToHandler::Pipeline { .. } => {
-            // Pipeline handlers are deferred
-            HirExprKind::Error
+        ToHandler::Pipeline { operation, args } => {
+            // Desugar `expr via func{a: v}` → `func(expr, v)`
+            let func_def_id = resolutions
+                .and_then(|r| r.get_ident(operation.span))
+                .unwrap_or(spark_resolve::DefId::DUMMY);
+            let func_ty = table.get_def_type(func_def_id).unwrap_or(TypeId::ERROR);
+
+            let callee = HirExpr::new(HirExprKind::Local(func_def_id), func_ty, operation.span);
+
+            let param_types = extract_param_types(func_ty, table);
+            let mut call_args = vec![inner_hir];
+            for (i, arg) in args.iter().enumerate() {
+                let mut arg_hir = lower_expr(&arg.value, table, definitions, resolutions, diagnostics, current_fn_ret);
+                if let Some(&param_ty) = param_types.get(i + 1) {
+                    arg_hir = coerce_ref(arg_hir, param_ty, arg.value.span, table);
+                }
+                call_args.push(arg_hir);
+            }
+
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: call_args,
+            }
         }
     }
 }
@@ -603,6 +652,23 @@ fn strip_mutable_ty(ty: TypeId, table: &TypeTable) -> TypeId {
     } else {
         ty
     }
+}
+
+/// Looks up the `Int` (i64) type in the table.
+fn find_int_type(table: &TypeTable) -> TypeId {
+    table
+        .lookup(&Ty::Int(spark_types::ty::IntWidth::I64))
+        .unwrap_or(TypeId::ERROR)
+}
+
+/// Looks up the `Bool` type in the table.
+fn find_bool_type(table: &TypeTable) -> TypeId {
+    table.lookup(&Ty::Bool).unwrap_or(TypeId::ERROR)
+}
+
+/// Looks up the `Void` type in the table.
+fn find_void_type(table: &TypeTable) -> TypeId {
+    table.lookup(&Ty::Void).unwrap_or(TypeId::ERROR)
 }
 
 /// Inserts `Borrow` or `Deref` coercion if the argument type needs to be
