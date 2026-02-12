@@ -1,0 +1,58 @@
+struct Summary {
+    total: Int,
+    count: Int
+}
+
+fn get_total(s: Ref[Summary]): Int {
+    return s.total
+}
+
+fn add_count(s: Ref[Summary], extra: Int): Int {
+    return s.count + extra
+}
+
+fn triple(nums: List[Int]): List[Int] {
+    return nums each via (n: Int): Int { n * 3 }
+}
+
+fn main(): Int {
+    data: List[Int] = [5, 3, 1, 4, 2]
+
+    // Via chain: sort then reverse → descending order
+    desc: List[Int] = data via sort via reverse
+
+    // Mutable accumulator — each with mutation
+    running_total: Int! = 0
+    desc each (item: Int): Void {
+        print(item)
+        running_total = running_total + item
+    }
+    // running_total = 5+4+3+2+1 = 15
+    print(running_total)
+
+    // Via chain: sort then take top 3
+    top3: List[Int] = data via sort via take{count: 3}
+
+    // Each via: triple each value with a lambda
+    tripled: List[Int] = top3 each via (n: Int): Int { n * 3 }
+
+    // Via: user-defined pipeline function (triple again)
+    final: List[Int] = tripled via triple
+
+    // Each: print final transformed values
+    final each (item: Int): Void {
+        print(item)
+    }
+
+    // Struct with computed values, passed by ref to two functions
+    summary: Summary = Summary { total: running_total, count: final.len() }
+    print(get_total(summary))
+    print(add_count(summary, 10))
+
+    // Mutable ref — reassign to a new value
+    best: Ref[Int]! = running_total
+    best = final.len()
+    print(best)
+
+    return 0
+}
