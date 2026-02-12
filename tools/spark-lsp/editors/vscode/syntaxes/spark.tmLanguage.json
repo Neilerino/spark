@@ -10,6 +10,11 @@
     { "include": "#constants" },
     { "include": "#keywords" },
     { "include": "#function-definition" },
+    { "include": "#function-call" },
+    { "include": "#parameter-list" },
+    { "include": "#mutability-marker" },
+    { "include": "#builtin-types" },
+    { "include": "#property-access" },
     { "include": "#types" },
     { "include": "#operators" }
   ],
@@ -85,7 +90,7 @@
         },
         {
           "name": "keyword.declaration.spark",
-          "match": "\\b(fn|struct|enum|interface|type|alias|const|pub|module)\\b"
+          "match": "\\b(fn|struct|enum|interface|type|alias|const|pub|module|binding)\\b"
         },
         {
           "name": "keyword.other.spark",
@@ -96,6 +101,7 @@
     "function-definition": {
       "patterns": [
         {
+          "comment": "Function definition: fn name(...)",
           "match": "\\b(fn)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
           "captures": {
             "1": { "name": "keyword.declaration.spark" },
@@ -104,9 +110,68 @@
         }
       ]
     },
+    "function-call": {
+      "patterns": [
+        {
+          "comment": "Function/method call: name(...) — but not keywords or types",
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.call.spark" }
+          }
+        }
+      ]
+    },
+    "parameter-list": {
+      "patterns": [
+        {
+          "comment": "Parameter in fn signature or lambda: name: Type",
+          "match": "\\b([a-z_][a-zA-Z0-9_]*)\\s*(?=:\\s*[A-Z])",
+          "captures": {
+            "1": { "name": "variable.parameter.spark" }
+          }
+        }
+      ]
+    },
+    "mutability-marker": {
+      "patterns": [
+        {
+          "comment": "Mutable type suffix: Int!, List[Int]!",
+          "match": "(?<=[A-Za-z0-9\\]])!",
+          "name": "storage.modifier.mutable.spark"
+        }
+      ]
+    },
+    "builtin-types": {
+      "patterns": [
+        {
+          "comment": "Built-in primitive and collection types",
+          "name": "support.type.spark",
+          "match": "\\b(Int|Int8|Int16|Int32|Int64|UInt|UInt8|UInt16|UInt32|UInt64|Float|Float32|Float64|Bool|Char|String|Byte|Void|Never|List|Map|Set|Tup|Ref|Weak|Channel|Mutex|Handle|ThreadPool)\\b"
+        }
+      ]
+    },
+    "property-access": {
+      "patterns": [
+        {
+          "comment": "Property/field access: .name",
+          "match": "\\.\\s*([a-z_][a-zA-Z0-9_]*)\\s*(?!\\()",
+          "captures": {
+            "1": { "name": "variable.other.property.spark" }
+          }
+        },
+        {
+          "comment": "Method call on receiver: .name(",
+          "match": "\\.\\s*([a-z_][a-zA-Z0-9_]*)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.call.spark" }
+          }
+        }
+      ]
+    },
     "types": {
       "patterns": [
         {
+          "comment": "User-defined types (PascalCase not matched by builtin-types)",
           "name": "entity.name.type.spark",
           "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
         }
