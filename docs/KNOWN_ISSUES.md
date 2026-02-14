@@ -2,13 +2,13 @@
 
 ## Closures / Lambda
 
-### Closure environments are leaked (no deallocation)
+### Captured RC values not decremented when env is freed (Phase 2)
 
-Closure environments are heap-allocated via `__spark_env_alloc(size)` but never freed. There is no corresponding `__spark_env_dealloc`. This means every closure construction leaks memory proportional to its capture set.
+Closure environments are now reference-counted (16-byte header with `rc` and `alloc_size`). When the last reference to an env is dropped, `__spark_env_rc_dec` frees the env memory. However, captured values inside the env that are themselves RC'd (e.g., captured Strings, Lists) are **not** recursively decremented. This means if a closure captures a String, the String will leak when the env is freed.
 
-**Impact**: Programs that create closures in loops or recursion will steadily leak memory.
+**Impact**: Programs that capture RC'd values in closures will leak those captured values (but no longer leak the env itself).
 
-**Future fix**: Either integrate closure environments into the RC system (add `rc` field to env struct, bump on closure copy, free on last drop) or add a simple `__spark_env_dealloc` and emit a `Drop` for closure locals at scope exit. The RC approach is more correct for closures that are copied/shared, but the simple dealloc works if closures have single-owner semantics.
+**Future fix**: `__spark_env_rc_dec` needs a type-dispatch mechanism to know which captures are RC'd and call the appropriate `_rc_dec` on them before freeing the env. This likely requires passing capture metadata (offsets + type flags) to the runtime, or generating per-closure-type destructor functions at codegen time.
 
 ### Capture-by-value only
 
