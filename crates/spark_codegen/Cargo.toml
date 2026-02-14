@@ -22,6 +22,7 @@ cranelift-module = { workspace = true }
 cranelift-object = { workspace = true }
 cranelift-native = { workspace = true }
 target-lexicon = { workspace = true }
+object = { workspace = true }
 
 [dev-dependencies]
 spark_lexer = { workspace = true }

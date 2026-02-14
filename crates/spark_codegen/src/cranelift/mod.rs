@@ -527,7 +527,21 @@ impl CodegenBackend for CraneliftBackend {
         }
 
         // Phase 3: Emit the object file.
-        let product = self.module.finish();
+        let is_macos = matches!(
+            self.module.isa().triple().operating_system,
+            target_lexicon::OperatingSystem::Darwin
+                | target_lexicon::OperatingSystem::MacOSX { .. }
+        );
+
+        let mut product = self.module.finish();
+
+        if is_macos {
+            let mut build_version = object::write::MachOBuildVersion::default();
+            build_version.platform = object::macho::PLATFORM_MACOS;
+            build_version.minos = 0x000B_0000; // macOS 11.0.0 (Big Sur — minimum for arm64)
+            product.object.set_macho_build_version(build_version);
+        }
+
         match product.emit() {
             Ok(bytes) => bytes,
             Err(e) => {

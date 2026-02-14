@@ -61,12 +61,6 @@ Writing `Ref[Int]` (omitting the lifetime) falls through to the named-type path 
 
 ## General
 
-### Linker warning on macOS
-
-`ld: warning: no platform load command found in '...spark_output.o', assuming: macOS`
-
-This is a cosmetic warning from the macOS linker. The generated object file lacks a platform load command. Cranelift's `ObjectModule` doesn't emit one by default. Harmless but noisy.
-
 ### E2E tests are serialized
 
 All E2E tests share a single temp path (`/tmp/spark_output.o`) for the intermediate object file, so they run sequentially behind a mutex. This makes the E2E test suite slower than it needs to be. A per-test temp file would allow parallel execution.
