@@ -1177,24 +1177,67 @@ pub extern "C" fn __spark_rc_release(_ptr: *mut u8) {
 // Closure environment allocation
 // =============================================================================
 
-/// Allocates a closure environment of the given byte size.
+/// Allocates a closure environment with a 16-byte RC header.
 ///
-/// The returned pointer is zeroed and not reference-counted. v1 closure
-/// environments are leaked (no deallocation).
+/// Layout: `[rc: usize (8 bytes), alloc_size: usize (8 bytes), ...payload...]`
+///
+/// The `size` parameter is the payload size (captures only). The runtime
+/// prepends the 16-byte header internally. The returned pointer points to
+/// the start of the allocation (i.e., to the `rc` field at offset 0).
+/// Captures are stored at offset 16 by codegen.
+///
+/// Returns null if `size` is 0 (zero captures → no env needed).
+/// The initial reference count is 1.
 #[no_mangle]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub extern "C" fn __spark_env_alloc(size: i64) -> *mut u8 {
-    let byte_size = size as usize;
-    if byte_size == 0 {
+    let payload_size = size as usize;
+    if payload_size == 0 {
         return std::ptr::null_mut();
     }
+    let total_size = 16 + payload_size;
     let align = std::mem::align_of::<u64>();
-    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(byte_size, align) };
+    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(total_size, align) };
     let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
     if ptr.is_null() {
         eprintln!("spark: out of memory allocating closure environment");
         std::process::abort();
     }
+    // Store rc = 1 at offset 0.
+    unsafe { *(ptr.cast::<usize>()) = 1 };
+    // Store total_alloc_size at offset 8.
+    unsafe { *(ptr.add(8).cast::<usize>()) = total_size };
     ptr
+}
+
+/// Decrements the reference count of a closure environment.
+/// Frees the allocation when the count reaches zero.
+///
+/// The environment layout is: `[rc: usize, alloc_size: usize, ...payload...]`.
+/// The `alloc_size` at offset 8 stores the total allocation size so we can
+/// dealloc without needing size info from codegen.
+///
+/// **Note**: This does NOT recursively decrement RC of captured values inside
+/// the environment. Nested RC cleanup is a Phase 2 follow-up.
+///
+/// # Safety
+///
+/// `ptr` must be null or a valid pointer from `__spark_env_alloc`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_env_rc_dec(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    let rc_ptr = ptr.cast::<usize>();
+    let rc = unsafe { &mut *rc_ptr };
+    *rc -= 1;
+    if *rc == 0 {
+        let alloc_size = unsafe { *(ptr.add(8).cast::<usize>()) };
+        let align = std::mem::align_of::<u64>();
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(alloc_size, align) };
+        unsafe { std::alloc::dealloc(ptr, layout) };
+    }
 }
 
 #[cfg(test)]
@@ -1287,6 +1330,54 @@ mod tests {
             let f = __spark_bool_to_string(0);
             assert_eq!(read_spark_string(f), "false");
             __spark_string_rc_dec(f);
+        }
+    }
+
+    #[test]
+    fn env_alloc_zero_returns_null() {
+        let ptr = __spark_env_alloc(0);
+        assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn env_alloc_has_rc_header() {
+        unsafe {
+            let ptr = __spark_env_alloc(24);
+            assert!(!ptr.is_null());
+            // rc should be 1
+            let rc = *(ptr.cast::<usize>());
+            assert_eq!(rc, 1);
+            // alloc_size should be 16 + 24 = 40
+            let alloc_size = *(ptr.add(8).cast::<usize>());
+            assert_eq!(alloc_size, 40);
+            // Free it
+            __spark_env_rc_dec(ptr);
+        }
+    }
+
+    #[test]
+    fn env_rc_inc_dec_lifecycle() {
+        unsafe {
+            let ptr = __spark_env_alloc(8);
+            assert_eq!(*(ptr.cast::<usize>()), 1);
+
+            // Increment RC
+            __spark_rc_inc(ptr);
+            assert_eq!(*(ptr.cast::<usize>()), 2);
+
+            // First dec — should not free
+            __spark_env_rc_dec(ptr);
+            assert_eq!(*(ptr.cast::<usize>()), 1);
+
+            // Second dec — frees (no crash = success)
+            __spark_env_rc_dec(ptr);
+        }
+    }
+
+    #[test]
+    fn env_rc_dec_null_is_noop() {
+        unsafe {
+            __spark_env_rc_dec(std::ptr::null_mut());
         }
     }
 }

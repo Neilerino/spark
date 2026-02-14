@@ -39,7 +39,7 @@ pub fn lower_stmt(
             });
 
             // Register for drop if the type is reference-counted.
-            if spark_drop::needs_rc(value.ty, type_table) {
+            if spark_drop::needs_drop(value.ty, type_table) {
                 fb.register_drop(local);
             }
         }
@@ -50,7 +50,7 @@ pub fn lower_stmt(
 
             // If reassigning a mutable RC variable, drop the old value first.
             if place.projections.is_empty()
-                && spark_drop::needs_rc(value.ty, type_table)
+                && spark_drop::needs_drop(value.ty, type_table)
             {
                 fb.push_stmt(Statement::Drop {
                     place: place.clone(),
@@ -69,7 +69,7 @@ pub fn lower_stmt(
             // Evaluate for side effects; discard result.
             let result = lower_expr(expr, fb, mir, type_table, defs);
             // If the discarded result is RC'd, drop it immediately.
-            if spark_drop::needs_rc(expr.ty, type_table) {
+            if spark_drop::needs_drop(expr.ty, type_table) {
                 fb.push_stmt(Statement::Drop {
                     place: Place::from_local(result),
                     span: expr.span,

@@ -8,6 +8,29 @@
 
 use spark_types::{Ty, TypeId, TypeTable};
 
+/// Returns `true` if values of this type need drop elaboration.
+///
+/// This is a superset of [`needs_rc`]: it includes all RC types (String, List,
+/// Map, Set) **plus** `Function` types (whose closure environments are
+/// reference-counted separately via `__spark_env_rc_dec`).
+///
+/// Use this for deciding whether to register a local for drop. Use [`needs_rc`]
+/// when you need to know if the value itself is an RC pointer (for `rc_inc`).
+#[must_use]
+pub fn needs_drop(ty_id: TypeId, table: &TypeTable) -> bool {
+    if needs_rc(ty_id, table) {
+        return true;
+    }
+    if ty_id.is_error() {
+        return false;
+    }
+    match table.resolve(ty_id) {
+        Ty::Function { .. } => true,
+        Ty::Mutable(inner) => needs_drop(*inner, table),
+        _ => false,
+    }
+}
+
 /// Returns `true` if values of this type are reference-counted (heap-allocated).
 ///
 /// RC types: `String`, `List(_)`, `Map(_, _)`, `Set(_)`, and `Mutable(inner)`
@@ -181,5 +204,48 @@ mod tests {
         let mut_list = table.intern(Ty::Mutable(list));
 
         assert!(element_needs_rc(mut_list, &table));
+    }
+
+    #[test]
+    fn function_needs_drop_but_not_rc() {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let fn_ty = table.intern(Ty::Function {
+            params: vec![int],
+            ret: int,
+            is_async: false,
+        });
+
+        assert!(!needs_rc(fn_ty, &table));
+        assert!(needs_drop(fn_ty, &table));
+    }
+
+    #[test]
+    fn mutable_function_needs_drop() {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let fn_ty = table.intern(Ty::Function {
+            params: vec![int],
+            ret: int,
+            is_async: false,
+        });
+        let mut_fn = table.intern(Ty::Mutable(fn_ty));
+
+        assert!(needs_drop(mut_fn, &table));
+    }
+
+    #[test]
+    fn needs_drop_superset_of_needs_rc() {
+        let mut table = TypeTable::new();
+        let string = table.intern(Ty::String);
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let list = table.intern(Ty::List(int));
+
+        // RC types are also drop types.
+        assert!(needs_drop(string, &table));
+        assert!(needs_drop(list, &table));
+
+        // Primitives need neither.
+        assert!(!needs_drop(int, &table));
     }
 }

@@ -87,6 +87,8 @@ pub struct RuntimeStubs {
     pub bool_to_string: FuncId,
     /// `__spark_env_alloc(size: i64) -> ptr`
     pub env_alloc: FuncId,
+    /// `__spark_env_rc_dec(ptr) -> void`
+    pub env_rc_dec: FuncId,
     /// `__spark_list_sort(ptr) -> ptr`
     pub list_sort: FuncId,
     /// `__spark_list_take(ptr, i64) -> ptr`
@@ -366,6 +368,13 @@ impl RuntimeStubs {
                 "__spark_env_alloc",
                 &[types::I64],
                 Some(ptr_type),
+                call_conv,
+            ),
+            env_rc_dec: declare_fn(
+                module,
+                "__spark_env_rc_dec",
+                &[ptr_type],
+                None,
                 call_conv,
             ),
             list_sort: declare_fn(
