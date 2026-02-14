@@ -1,0 +1,5 @@
+fn main(): Int {
+    result: Int = await 10
+    print(result)
+    return 0
+}

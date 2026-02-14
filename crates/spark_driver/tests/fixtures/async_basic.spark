@@ -1,0 +1,9 @@
+async fn compute(): Int {
+    return 42
+}
+
+fn main(): Int {
+    result: Int = await compute()
+    print(result)
+    return 0
+}

@@ -1,0 +1,9 @@
+async fn add(a: Int, b: Int): Int {
+    return a + b
+}
+
+fn main(): Int {
+    result: Int = await add(3, 7)
+    print(result)
+    return 0
+}

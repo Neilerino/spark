@@ -341,14 +341,14 @@ pub fn lower_expr(
             temp
         }
 
-        HirExprKind::Await(_) => {
-            emit_deferred(mir, "`await` expressions", expr);
-            void_temp(fb, expr)
+        HirExprKind::Await(inner) => {
+            // Phase 1: synchronous shim — Future[T] is transparent
+            lower_expr(inner, fb, mir, type_table, defs)
         }
 
-        HirExprKind::Spawn(_) => {
-            emit_deferred(mir, "`spawn` expressions", expr);
-            void_temp(fb, expr)
+        HirExprKind::Spawn(inner) => {
+            // Phase 1: synchronous shim — evaluate immediately
+            lower_expr(inner, fb, mir, type_table, defs)
         }
 
         // ── String interpolation ──────────────────────────────────
@@ -978,14 +978,6 @@ fn lower_return(
         expr.span,
     );
     temp
-}
-
-/// Emits a diagnostic for a deferred feature.
-fn emit_deferred(mir: &mut MirBuilder<'_>, feature: &str, expr: &HirExpr) {
-    mir.diagnostics.push(
-        Diagnostic::warning(format!("{feature} not yet supported in MIR lowering"))
-            .with_label(Label::primary(expr.span, "unsupported")),
-    );
 }
 
 /// Returns a void-valued temp (for error/deferred nodes).

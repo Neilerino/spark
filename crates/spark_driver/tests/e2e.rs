@@ -384,6 +384,40 @@ fn kitchen_sink() {
     );
 }
 
+// ============================================================================
+// Async / Await / Spawn
+// ============================================================================
+
+#[test]
+fn async_basic() {
+    assert_output("async_basic.spark", "42");
+}
+
+#[test]
+fn async_args() {
+    assert_output("async_args.spark", "10");
+}
+
+#[test]
+fn async_spawn() {
+    assert_output("async_spawn.spark", "42");
+}
+
+#[test]
+fn async_void() {
+    assert_output("async_void.spark", "hello");
+}
+
+#[test]
+fn await_non_future_error() {
+    assert_compile_error("await_non_future_error.spark", "cannot `await`");
+}
+
+#[test]
+fn spawn_non_async_error() {
+    assert_compile_error("spawn_non_async_error.spark", "cannot `spawn`");
+}
+
 // Multi-file compilation
 // ============================================================================
 #[test]

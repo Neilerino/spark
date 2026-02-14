@@ -166,6 +166,15 @@ fn substitute_inner(ty_id: TypeId, subst: &SubstMap, table: &TypeTable) -> TypeI
             }
         }
 
+        Ty::Future { inner } => {
+            let new_inner = substitute_inner(*inner, subst, table);
+            if new_inner == *inner {
+                ty_id
+            } else {
+                table.lookup(&Ty::Future { inner: new_inner }).unwrap_or(ty_id)
+            }
+        }
+
         // Primitives and other leaves pass through unchanged.
         Ty::Int(_)
         | Ty::Float(_)
@@ -248,6 +257,11 @@ fn substitute_mut_inner(ty_id: TypeId, subst: &SubstMap, table: &mut TypeTable) 
         Ty::Applied { base, args } => {
             let new_args: Vec<TypeId> = args.iter().map(|a| substitute_mut_inner(*a, subst, table)).collect();
             if new_args == args { ty_id } else { table.intern(Ty::Applied { base, args: new_args }) }
+        }
+
+        Ty::Future { inner } => {
+            let new_inner = substitute_mut_inner(inner, subst, table);
+            if new_inner == inner { ty_id } else { table.intern(Ty::Future { inner: new_inner }) }
         }
 
         Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::String | Ty::Byte
@@ -339,6 +353,11 @@ fn unify(declared: TypeId, actual: TypeId, subst: &mut SubstMap, table: &TypeTab
                         unify(*a, *actual_a, subst, table);
                     }
                 }
+            }
+        }
+        Ty::Future { inner } => {
+            if let Ty::Future { inner: actual_inner } = table.resolve(actual) {
+                unify(*inner, *actual_inner, subst, table);
             }
         }
         Ty::Mutable(inner) => {

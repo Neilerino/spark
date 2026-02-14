@@ -279,7 +279,7 @@ impl LayoutCache {
                 let members = members.clone();
                 self.compute_union_layout(&members, table)
             }
-            Ty::Mutable(inner) => {
+            Ty::Mutable(inner) | Ty::Future { inner } => {
                 let inner = *inner;
                 self.layout_of(inner, table)
             }

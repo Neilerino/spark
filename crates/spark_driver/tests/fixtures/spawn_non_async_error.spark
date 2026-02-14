@@ -1,0 +1,9 @@
+fn compute(): Int {
+    return 42
+}
+
+fn main(): Int {
+    future: Int = spawn { compute() }
+    print(future)
+    return 0
+}

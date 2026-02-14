@@ -1,0 +1,10 @@
+async fn compute(): Int {
+    return 42
+}
+
+fn main(): Int {
+    future: Future[Int] = spawn { compute() }
+    result: Int = await future
+    print(result)
+    return 0
+}

@@ -196,6 +196,14 @@ pub enum Ty {
         is_async: bool,
     },
 
+    // === Async ===
+    /// A future type: the result of calling an async function.
+    /// In Phase 1 (synchronous shim), `Future[T]` has the same layout as `T`.
+    Future {
+        /// The inner result type.
+        inner: TypeId,
+    },
+
     // === Generics ===
     /// An unresolved generic type parameter.
     Param(DefId),

@@ -323,6 +323,7 @@ impl Interner {
             "Mutex",
             "Handle",
             "ThreadPool",
+            "Future",
             // Common identifiers
             "self",
             "Self",
@@ -573,60 +574,62 @@ pub mod kw {
     pub const HANDLE: Symbol = Symbol(63);
     /// `ThreadPool`
     pub const THREAD_POOL: Symbol = Symbol(64);
+    /// `Future`
+    pub const FUTURE: Symbol = Symbol(65);
 
     // Common identifiers
     /// `self`
-    pub const SELF_LOWER: Symbol = Symbol(65);
+    pub const SELF_LOWER: Symbol = Symbol(66);
     /// `Self`
-    pub const SELF_UPPER: Symbol = Symbol(66);
+    pub const SELF_UPPER: Symbol = Symbol(67);
     /// `_` (underscore/wildcard)
-    pub const UNDERSCORE: Symbol = Symbol(67);
+    pub const UNDERSCORE: Symbol = Symbol(68);
 
     // Built-in functions
     /// `print`
-    pub const PRINT: Symbol = Symbol(68);
+    pub const PRINT: Symbol = Symbol(69);
 
     // Built-in method names
     /// `len`
-    pub const LEN: Symbol = Symbol(69);
+    pub const LEN: Symbol = Symbol(70);
     /// `append`
-    pub const APPEND: Symbol = Symbol(70);
+    pub const APPEND: Symbol = Symbol(71);
     /// `contains`
-    pub const CONTAINS: Symbol = Symbol(71);
+    pub const CONTAINS: Symbol = Symbol(72);
     /// `remove`
-    pub const REMOVE: Symbol = Symbol(72);
+    pub const REMOVE: Symbol = Symbol(73);
     /// `add`
-    pub const ADD: Symbol = Symbol(73);
+    pub const ADD: Symbol = Symbol(74);
     /// `sort`
-    pub const SORT: Symbol = Symbol(74);
+    pub const SORT: Symbol = Symbol(75);
     /// `take`
-    pub const TAKE: Symbol = Symbol(75);
+    pub const TAKE: Symbol = Symbol(76);
     /// `reverse`
-    pub const REVERSE: Symbol = Symbol(76);
+    pub const REVERSE: Symbol = Symbol(77);
     /// `parallel`
-    pub const PARALLEL: Symbol = Symbol(77);
+    pub const PARALLEL: Symbol = Symbol(78);
     /// `__parallel_foreach` (internal runtime stub)
-    pub const PARALLEL_FOREACH: Symbol = Symbol(78);
+    pub const PARALLEL_FOREACH: Symbol = Symbol(79);
     /// `__parallel_map` (internal runtime stub)
-    pub const PARALLEL_MAP: Symbol = Symbol(79);
+    pub const PARALLEL_MAP: Symbol = Symbol(80);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
     pub const fn is_builtin_function(sym: Symbol) -> bool {
-        sym.0 == 68 || (sym.0 >= 74 && sym.0 <= 76)
+        sym.0 == 69 || (sym.0 >= 75 && sym.0 <= 77)
     }
 
     /// Returns true if the given symbol is a built-in method name.
     #[must_use]
     pub const fn is_builtin_method(sym: Symbol) -> bool {
-        sym.0 >= 69 && sym.0 <= 73
+        sym.0 >= 70 && sym.0 <= 74
     }
 
     /// Returns true if the given symbol is a keyword.
     #[must_use]
     pub const fn is_keyword(sym: Symbol) -> bool {
-        // Keywords are symbols 1-37 (fn through Never) plus parallel (77)
-        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 77
+        // Keywords are symbols 1-37 (fn through Never) plus parallel (78)
+        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78
     }
 
     /// Returns true if the given symbol is a primitive type name.
@@ -639,8 +642,8 @@ pub mod kw {
     /// Returns true if the given symbol is a built-in type name.
     #[must_use]
     pub const fn is_builtin_type(sym: Symbol) -> bool {
-        // Built-in types are symbols 35-64 (Null through ThreadPool)
-        sym.0 >= 35 && sym.0 <= 64
+        // Built-in types are symbols 35-65 (Null through Future)
+        sym.0 >= 35 && sym.0 <= 65
     }
 }
 

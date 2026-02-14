@@ -44,6 +44,9 @@ pub fn spark_type_to_clif(ty_id: TypeId, table: &TypeTable, ptr_type: ClifType) 
         | Ty::Param(_)
         | Ty::Applied { .. } => Some(ptr_type),
 
+        // Future[T] is transparent at runtime (Phase 1: synchronous shim)
+        Ty::Future { inner } => spark_type_to_clif(*inner, table, ptr_type),
+
         // Mutable wrapping is transparent at runtime
         Ty::Mutable(inner) => spark_type_to_clif(*inner, table, ptr_type),
     }
@@ -75,6 +78,7 @@ pub fn is_scalar(ty_id: TypeId, table: &TypeTable) -> bool {
             | Ty::Set(_)
             | Ty::Ref { .. }
     ) || matches!(ty, Ty::Mutable(inner) if is_scalar(*inner, table))
+      || matches!(ty, Ty::Future { inner } if is_scalar(*inner, table))
 }
 
 /// Returns true if this type is an aggregate that needs sret (struct return pointer)

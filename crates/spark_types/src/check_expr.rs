@@ -420,12 +420,41 @@ fn check_expr_inner(
             table.intern(Ty::Tuple(elem_types))
         }
 
-        // === Paren / Await / Spawn ===
-        ExprKind::Paren(inner)
-        | ExprKind::Await(inner)
-        | ExprKind::BlockAwait(inner)
-        | ExprKind::Spawn(inner) => {
+        // === Paren ===
+        ExprKind::Paren(inner) => {
             check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+        }
+
+        // === Await ===
+        ExprKind::Await(inner) | ExprKind::BlockAwait(inner) => {
+            let inner_ty = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            match table.resolve(inner_ty) {
+                Ty::Future { inner } => *inner,
+                _ if inner_ty.is_error() => TypeId::ERROR,
+                _ => {
+                    diagnostics.push(
+                        Diagnostic::error("cannot `await` a non-future type")
+                            .with_label(Label::primary(expr.span, "not a future")),
+                    );
+                    TypeId::ERROR
+                }
+            }
+        }
+
+        // === Spawn ===
+        ExprKind::Spawn(inner) => {
+            let inner_ty = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            match table.resolve(inner_ty) {
+                Ty::Future { .. } => inner_ty,
+                _ if inner_ty.is_error() => TypeId::ERROR,
+                _ => {
+                    diagnostics.push(
+                        Diagnostic::error("cannot `spawn` a non-async expression")
+                            .with_label(Label::primary(inner.span, "not a future")),
+                    );
+                    TypeId::ERROR
+                }
+            }
         }
 
         // === Method calls on collections and strings ===
@@ -739,7 +768,7 @@ fn check_call(
 
     let callee_resolved = table.resolve(callee_ty).clone();
     match callee_resolved {
-        Ty::Function { params, ret, .. } => {
+        Ty::Function { params, ret, is_async } => {
             // Check if this is a generic function by finding its DefId.
             let callee_def_id = find_callee_def_id(callee_span, resolutions);
             let generic_params = callee_def_id
@@ -788,7 +817,12 @@ fn check_call(
                     }
 
                     // Return the substituted return type
-                    return crate::substitute::substitute_mut(ret, &subst, table);
+                    let substituted_ret = crate::substitute::substitute_mut(ret, &subst, table);
+                    return if is_async {
+                        table.intern(Ty::Future { inner: substituted_ret })
+                    } else {
+                        substituted_ret
+                    };
                 }
 
                 // Inference failed — report error
@@ -828,7 +862,11 @@ fn check_call(
                 }
             }
 
-            ret
+            if is_async {
+                table.intern(Ty::Future { inner: ret })
+            } else {
+                ret
+            }
         }
         // Struct construction via call syntax is handled by StructInit
         Ty::Struct(_) | Ty::Enum(_) => {
@@ -1381,6 +1419,7 @@ pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -
             let arg_names: Vec<_> = args.iter().map(|a| type_name(*a, table, definitions)).collect();
             format!("{}[{}]", base_name, arg_names.join(", "))
         }
+        Ty::Future { inner } => format!("Future[{}]", type_name(*inner, table, definitions)),
         Ty::Error => "<error>".to_string(),
     }
 }

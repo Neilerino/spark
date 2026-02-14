@@ -327,6 +327,18 @@ fn lower_builtin_generic(
         return table.intern(Ty::Set(elem));
     }
 
+    if name == kw::FUTURE {
+        if type_args.len() != 1 {
+            diagnostics.push(
+                Diagnostic::error("Future requires exactly one type argument")
+                    .with_label(Label::primary(type_expr.span, "expected Future[T]")),
+            );
+            return TypeId::ERROR;
+        }
+        let inner = lower_type_expr(&type_args[0], table, builtins, definitions, resolutions, diagnostics);
+        return table.intern(Ty::Future { inner });
+    }
+
     // Not a known builtin generic — report error
     diagnostics.push(
         Diagnostic::error(format!("unresolved type `{name}`"))
