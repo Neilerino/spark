@@ -152,6 +152,12 @@ fn emit_call<M: Module>(
                 emit_builtin_method(ctx, info.name, args, destination, target, table, definitions, func_ids, thunk_ids, module);
                 return;
             }
+            if matches!(info.kind, DefinitionKind::BuiltinFunction)
+                && (info.name == kw::PARALLEL_FOREACH || info.name == kw::PARALLEL_MAP)
+            {
+                emit_parallel_call(ctx, info.name, args, destination, target, table, definitions, func_ids, thunk_ids, module);
+                return;
+            }
         }
     }
 
@@ -344,6 +350,122 @@ fn emit_builtin_list_fn<M: Module>(
         if destination.projections.is_empty() {
             ctx.write_local(destination.local, result);
         }
+    }
+
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+}
+
+/// Emits a parallel iteration call (`__spark_parallel_foreach` or `__spark_parallel_map`).
+///
+/// MIR args: `[list, callback]` where `callback` is a fat pointer `(fn_ptr, env_ptr)`.
+/// The function unpacks the fat pointer and computes `elem_size` and `cb_kind` from types,
+/// then calls the appropriate runtime stub with the raw arguments.
+#[allow(clippy::too_many_arguments)]
+fn emit_parallel_call<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    fn_name: spark_intern::Symbol,
+    args: &[Operand],
+    destination: &Place,
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) {
+    let is_map = fn_name == kw::PARALLEL_MAP;
+
+    // Evaluate the list argument (args[0]).
+    let list_val = args
+        .first()
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module));
+
+    let Some(list_ptr) = list_val else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    // Evaluate the callback argument (args[1]) — a fat pointer aggregate.
+    let cb_val = args
+        .get(1)
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module));
+
+    let Some(fat_ptr_addr) = cb_val else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    // Load fn_ptr and env_ptr from the fat pointer.
+    let fn_ptr = ctx.builder.ins().load(
+        ctx.ptr_type,
+        MemFlags::new(),
+        fat_ptr_addr,
+        0,
+    );
+    let env_ptr = ctx.builder.ins().load(
+        ctx.ptr_type,
+        MemFlags::new(),
+        fat_ptr_addr,
+        ctx.ptr_type.bytes() as i32,
+    );
+
+    // Determine elem_size from the list's element type.
+    let list_ty_id = if let Some(Operand::Copy(place)) = args.first() {
+        ctx.local_type_id(place.local)
+    } else {
+        spark_types::TypeId::ERROR
+    };
+    let elem_ty = match table.resolve(list_ty_id).clone() {
+        Ty::List(elem) => elem,
+        _ => spark_types::TypeId::ERROR,
+    };
+    let elem_layout = ctx.layouts.layout_of(elem_ty, table);
+    let elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(elem_layout.size));
+
+    // Compute cb_kind flag from callback type info.
+    // Bits 0-1: input kind (0 = int-like, 1 = float)
+    // Bits 2-3: output kind (0 = int-like, 1 = float, 2 = void)
+    let cb_ty_id = if let Some(Operand::Copy(place)) = args.get(1) {
+        ctx.local_type_id(place.local)
+    } else {
+        spark_types::TypeId::ERROR
+    };
+    let (param_ty, ret_ty) = match table.resolve(cb_ty_id).clone() {
+        Ty::Function { params, ret, .. } => {
+            let p = params.first().copied().unwrap_or(spark_types::TypeId::ERROR);
+            (p, ret)
+        }
+        _ => (spark_types::TypeId::ERROR, spark_types::TypeId::ERROR),
+    };
+
+    let input_kind: u8 = if matches!(table.resolve(param_ty), Ty::Float(_)) { 1 } else { 0 };
+    let output_kind: u8 = if matches!(table.resolve(ret_ty), Ty::Void) {
+        2
+    } else if matches!(table.resolve(ret_ty), Ty::Float(_)) {
+        1
+    } else {
+        0
+    };
+    let cb_kind: u8 = input_kind | (output_kind << 2);
+    let cb_kind_val = ctx.builder.ins().iconst(types::I8, i64::from(cb_kind));
+
+    if is_map {
+        // __spark_parallel_map(list, fn_ptr, env_ptr, elem_size, result_elem_size, cb_kind) -> ptr
+        let result_elem_layout = ctx.layouts.layout_of(ret_ty, table);
+        let result_elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(result_elem_layout.size));
+        let func_ref = module.declare_func_in_func(ctx.stubs.parallel_map, ctx.builder.func);
+        let call = ctx.builder.ins().call(func_ref, &[list_ptr, fn_ptr, env_ptr, elem_size_val, result_elem_size_val, cb_kind_val]);
+        let result = ctx.builder.inst_results(call)[0];
+        if destination.projections.is_empty() {
+            ctx.write_local(destination.local, result);
+        }
+    } else {
+        // __spark_parallel_foreach(list, fn_ptr, env_ptr, elem_size, cb_kind) -> void
+        let func_ref = module.declare_func_in_func(ctx.stubs.parallel_foreach, ctx.builder.func);
+        ctx.builder.ins().call(func_ref, &[list_ptr, fn_ptr, env_ptr, elem_size_val, cb_kind_val]);
     }
 
     let target_block = ctx.clif_block(target);

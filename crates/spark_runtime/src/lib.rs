@@ -1381,3 +1381,164 @@ mod tests {
         }
     }
 }
+
+// =============================================================================
+// Parallel iteration (Rayon)
+// =============================================================================
+
+/// Callback kind flags (matches codegen cb_kind computation).
+///
+/// Bits 0-1: input kind (0 = int-like, 1 = float)
+/// Bits 2-3: output kind (0 = int-like, 1 = float, 2 = void)
+const CB_INPUT_FLOAT: u8 = 1;
+const CB_OUTPUT_FLOAT: u8 = 1 << 2;
+#[allow(dead_code)]
+const CB_OUTPUT_VOID: u8 = 2 << 2;
+
+/// Parallel for-each: iterates over list elements in parallel, calling `callback`
+/// for each element (side effects only, no return value collected).
+///
+/// # Safety
+///
+/// - `list_ptr` must be a valid `SparkList` pointer.
+/// - `fn_ptr` must be a valid function pointer matching the `cb_kind` signature.
+/// - `env_ptr` may be null (non-capturing) or a valid env pointer.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::missing_safety_doc, clippy::items_after_statements)]
+pub unsafe extern "C" fn __spark_parallel_foreach(
+    list_ptr: *mut u8,
+    fn_ptr: *mut u8,
+    env_ptr: *mut u8,
+    _elem_size: i64,
+    cb_kind: u8,
+) {
+    use rayon::prelude::*;
+
+    let list = unsafe { &*(list_ptr.cast::<SparkList>()) };
+    if list.len == 0 {
+        return;
+    }
+
+    let elem_size = list.elem_size;
+    let len = list.len;
+
+    // Cast raw pointers to usize for Send
+    let fn_addr = fn_ptr as usize;
+    let env_addr = env_ptr as usize;
+    let data_addr = list.data as usize;
+
+    (0..len).into_par_iter().for_each(|i| unsafe {
+        let elem_ptr = (data_addr as *const u8).add(i * elem_size);
+        call_foreach_cb(fn_addr, env_addr, elem_ptr, cb_kind);
+    });
+}
+
+/// Parallel map: iterates over list elements in parallel, collecting callback
+/// results into a new list that preserves input order.
+///
+/// # Safety
+///
+/// - `list_ptr` must be a valid `SparkList` pointer.
+/// - `fn_ptr` must be a valid function pointer matching the `cb_kind` signature.
+/// - `env_ptr` may be null (non-capturing) or a valid env pointer.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::missing_safety_doc, clippy::items_after_statements)]
+pub unsafe extern "C" fn __spark_parallel_map(
+    list_ptr: *mut u8,
+    fn_ptr: *mut u8,
+    env_ptr: *mut u8,
+    _elem_size: i64,
+    result_elem_size: i64,
+    cb_kind: u8,
+) -> *mut u8 {
+    use rayon::prelude::*;
+
+    let list = unsafe { &*(list_ptr.cast::<SparkList>()) };
+    let result_list = __spark_list_new(result_elem_size);
+
+    if list.len == 0 {
+        return result_list;
+    }
+
+    let elem_size = list.elem_size;
+    let len = list.len;
+
+    // Cast raw pointers to usize for Send
+    let fn_addr = fn_ptr as usize;
+    let env_addr = env_ptr as usize;
+    let data_addr = list.data as usize;
+
+    // Collect results in order using Rayon's indexed parallel iterator
+    let results: Vec<u64> = (0..len)
+        .into_par_iter()
+        .map(|i| unsafe {
+            let elem_ptr = (data_addr as *const u8).add(i * elem_size);
+            call_map_cb(fn_addr, env_addr, elem_ptr, cb_kind)
+        })
+        .collect();
+
+    // Build result list from collected values
+    for val in &results {
+        let val_bytes = val.to_ne_bytes();
+        unsafe {
+            __spark_list_push(result_list, val_bytes.as_ptr().cast_mut());
+        }
+    }
+
+    // For result elements larger than 8 bytes we'd need special handling,
+    // but scalar types (Int, Float, Bool, pointers) are all ≤ 8 bytes.
+    result_list
+}
+
+/// Calls a void-returning callback for parallel foreach.
+///
+/// # Safety
+///
+/// The caller must ensure `fn_addr` and `env_addr` are valid pointers.
+unsafe fn call_foreach_cb(fn_addr: usize, env_addr: usize, elem_ptr: *const u8, cb_kind: u8) {
+    let env = env_addr as *mut u8;
+    let input_float = (cb_kind & CB_INPUT_FLOAT) != 0;
+
+    if input_float {
+        let val = unsafe { *(elem_ptr.cast::<f64>()) };
+        let f: unsafe extern "C" fn(*mut u8, f64) = unsafe { std::mem::transmute(fn_addr) };
+        unsafe { f(env, val) };
+    } else {
+        let val = unsafe { *(elem_ptr.cast::<i64>()) };
+        let f: unsafe extern "C" fn(*mut u8, i64) = unsafe { std::mem::transmute(fn_addr) };
+        unsafe { f(env, val) };
+    }
+}
+
+/// Calls a value-returning callback for parallel map, returning result as u64.
+///
+/// # Safety
+///
+/// The caller must ensure `fn_addr` and `env_addr` are valid pointers.
+unsafe fn call_map_cb(fn_addr: usize, env_addr: usize, elem_ptr: *const u8, cb_kind: u8) -> u64 {
+    let env = env_addr as *mut u8;
+    let input_float = (cb_kind & CB_INPUT_FLOAT) != 0;
+    let output_float = (cb_kind & CB_OUTPUT_FLOAT) != 0;
+
+    if input_float && output_float {
+        let val = unsafe { *(elem_ptr.cast::<f64>()) };
+        let f: unsafe extern "C" fn(*mut u8, f64) -> f64 = unsafe { std::mem::transmute(fn_addr) };
+        let result = unsafe { f(env, val) };
+        result.to_bits()
+    } else if input_float {
+        let val = unsafe { *(elem_ptr.cast::<f64>()) };
+        let f: unsafe extern "C" fn(*mut u8, f64) -> i64 = unsafe { std::mem::transmute(fn_addr) };
+        let result = unsafe { f(env, val) };
+        result as u64
+    } else if output_float {
+        let val = unsafe { *(elem_ptr.cast::<i64>()) };
+        let f: unsafe extern "C" fn(*mut u8, i64) -> f64 = unsafe { std::mem::transmute(fn_addr) };
+        let result = unsafe { f(env, val) };
+        result.to_bits()
+    } else {
+        let val = unsafe { *(elem_ptr.cast::<i64>()) };
+        let f: unsafe extern "C" fn(*mut u8, i64) -> i64 = unsafe { std::mem::transmute(fn_addr) };
+        let result = unsafe { f(env, val) };
+        result as u64
+    }
+}

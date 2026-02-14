@@ -149,6 +149,24 @@ impl TypeChecker {
                     is_async: false,
                 });
                 self.table.set_def_type(def_id, fn_type);
+            } else if info.name == kw::PARALLEL_FOREACH {
+                // Internal: __parallel_foreach(list, callback) -> Void
+                // Actual calling convention handled at codegen level
+                let fn_type = self.table.intern(Ty::Function {
+                    params: vec![list_int, int_type],
+                    ret: void_type,
+                    is_async: false,
+                });
+                self.table.set_def_type(def_id, fn_type);
+            } else if info.name == kw::PARALLEL_MAP {
+                // Internal: __parallel_map(list, callback) -> List[Int]
+                // Actual calling convention handled at codegen level
+                let fn_type = self.table.intern(Ty::Function {
+                    params: vec![list_int, int_type],
+                    ret: list_int,
+                    is_async: false,
+                });
+                self.table.set_def_type(def_id, fn_type);
             }
         }
     }

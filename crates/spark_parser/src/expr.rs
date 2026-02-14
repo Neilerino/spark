@@ -88,6 +88,11 @@ impl Parser {
             }
 
             // Check for special expression continuations
+            if self.check(TokenKind::Parallel) {
+                lhs = self.parse_parallel_each(lhs, start);
+                continue;
+            }
+
             if self.check(TokenKind::Each) {
                 lhs = self.parse_each(lhs, start);
                 continue;
@@ -643,6 +648,61 @@ impl Parser {
         } else {
             Expr::new(
                 ExprKind::Each {
+                    iterable: Box::new(iterable),
+                    callback: Box::new(callback),
+                },
+                span,
+            )
+        }
+    }
+
+    /// Parses a `parallel each [via]` expression.
+    ///
+    /// `ParallelEach` = Expr "parallel" "each" ("via")? (Lambda | Ident)
+    fn parse_parallel_each(&mut self, iterable: Expr, start: Span) -> Expr {
+        self.expect(TokenKind::Parallel);
+
+        if !self.check(TokenKind::Each) {
+            self.error_expected("'each' after 'parallel'");
+            return Expr::error(self.current_span());
+        }
+        self.expect(TokenKind::Each);
+
+        let is_via = self.eat(TokenKind::Via).is_some();
+
+        let callback = if self.check(TokenKind::LParen) {
+            let paren_start = self.current_span();
+            self.advance(); // consume (
+            if self.is_lambda_params() {
+                self.parse_lambda_from_params(paren_start)
+            } else {
+                self.error_expected("lambda parameters");
+                Expr::error(self.current_span())
+            }
+        } else if self.check(TokenKind::Fn) {
+            self.parse_lambda()
+        } else {
+            // Function reference: `list parallel each show`
+            let ident = self
+                .expect_ident()
+                .unwrap_or_else(|| Ident::dummy(sym("_")));
+            let ident_span = ident.span;
+            Expr::new(ExprKind::Ident(ident), ident_span)
+        };
+
+        let span = self.span_from(start);
+
+        if is_via {
+            Expr::new(
+                ExprKind::ParallelEachVia {
+                    iterable: Box::new(iterable),
+                    callback: Box::new(callback),
+                },
+                span,
+            )
+        } else {
+            Expr::new(
+                ExprKind::ParallelEach {
                     iterable: Box::new(iterable),
                     callback: Box::new(callback),
                 },
@@ -1849,5 +1909,45 @@ mod tests {
         let (expr, diags) = parse_expr_str("arr[0].field");
         assert!(!diags.has_errors(), "errors: {:?}", diags);
         assert!(matches!(expr.kind, ExprKind::Field { .. }));
+    }
+
+    // ====================================================================
+    // Parallel Each Tests
+    // ====================================================================
+
+    #[test]
+    fn parallel_each_with_lambda() {
+        let (expr, diags) = parse_expr_str("items parallel each (x: Int): Void { print(x) }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(matches!(expr.kind, ExprKind::ParallelEach { .. }));
+    }
+
+    #[test]
+    fn parallel_each_via_with_lambda() {
+        let (expr, diags) = parse_expr_str("items parallel each via (x: Int): Int { x * 2 }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(matches!(expr.kind, ExprKind::ParallelEachVia { .. }));
+    }
+
+    #[test]
+    fn parallel_each_with_fn_ref() {
+        let (expr, diags) = parse_expr_str("items parallel each show");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(matches!(expr.kind, ExprKind::ParallelEach { .. }));
+    }
+
+    #[test]
+    fn parallel_each_via_with_fn_ref() {
+        let (expr, diags) = parse_expr_str("items parallel each via double");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(matches!(expr.kind, ExprKind::ParallelEachVia { .. }));
+    }
+
+    #[test]
+    fn parallel_each_with_fn_lambda() {
+        let (expr, diags) =
+            parse_expr_str("items parallel each fn(x: Int): Void { print(x) }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(matches!(expr.kind, ExprKind::ParallelEach { .. }));
     }
 }

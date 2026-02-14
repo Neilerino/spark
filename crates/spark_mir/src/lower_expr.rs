@@ -5,7 +5,7 @@
 
 use spark_diagnostics::{Diagnostic, Label};
 use spark_hir::{HirExpr, HirExprKind, HirLiteral};
-use spark_intern::Symbol;
+use spark_intern::{kw, Symbol};
 use spark_resolve::{DefinitionKind, DefinitionTable};
 use spark_types::{Ty, TypeId, TypeTable};
 
@@ -354,6 +354,12 @@ pub fn lower_expr(
         // ── String interpolation ──────────────────────────────────
         HirExprKind::StringInterp { parts } => {
             lower_string_interp(parts, expr, fb, mir, type_table, defs)
+        }
+
+        // ── Parallel iteration ────────────────────────────────────
+        HirExprKind::ParallelForEach { list, callback, .. }
+        | HirExprKind::ParallelMap { list, callback, .. } => {
+            lower_parallel_each(list, callback, expr, fb, mir, type_table, defs)
         }
 
         // ── Error recovery ───────────────────────────────────────
@@ -998,4 +1004,63 @@ fn find_builtin_method(defs: &DefinitionTable, name: Symbol) -> Option<spark_res
     defs.iter()
         .find(|(_, info)| matches!(info.kind, DefinitionKind::BuiltinMethod) && info.name == name)
         .map(|(id, _)| id)
+}
+
+/// Finds the `DefId` of a built-in function by name.
+fn find_builtin_function(defs: &DefinitionTable, name: Symbol) -> Option<spark_resolve::DefId> {
+    defs.iter()
+        .find(|(_, info)| matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == name)
+        .map(|(id, _)| id)
+}
+
+/// Lowers a parallel each / parallel each via node into a MIR call.
+///
+/// The callback (a fat pointer) and list are lowered to locals, then a
+/// `Terminator::Call` is emitted targeting the appropriate parallel runtime stub.
+#[allow(clippy::too_many_arguments)]
+fn lower_parallel_each(
+    list: &HirExpr,
+    callback: &HirExpr,
+    expr: &HirExpr,
+    fb: &mut FunctionBuilder,
+    mir: &mut MirBuilder<'_>,
+    type_table: &TypeTable,
+    defs: &DefinitionTable,
+) -> Local {
+    let is_map = matches!(&expr.kind, HirExprKind::ParallelMap { .. });
+
+    let builtin_name = if is_map { kw::PARALLEL_MAP } else { kw::PARALLEL_FOREACH };
+    let builtin_def_id = find_builtin_function(defs, builtin_name)
+        .unwrap_or(spark_resolve::DefId::DUMMY);
+
+    let list_local = lower_expr(list, fb, mir, type_table, defs);
+    let cb_local = lower_expr(callback, fb, mir, type_table, defs);
+
+    // The builtin function is referenced via Constant::FunctionRef
+    let func_ty = type_table.get_def_type(builtin_def_id).unwrap_or(TypeId::ERROR);
+    let func_temp = fb.fresh_temp(func_ty, expr.span);
+    fb.push_assign(
+        Place::from_local(func_temp),
+        Rvalue::Use(Operand::Constant(Constant::FunctionRef(builtin_def_id))),
+        expr.span,
+    );
+
+    let args = vec![
+        Operand::Copy(Place::from_local(list_local)),
+        Operand::Copy(Place::from_local(cb_local)),
+    ];
+
+    let dest = fb.fresh_temp(expr.ty, expr.span);
+    let cont = fb.new_block();
+
+    fb.terminate(Terminator::Call {
+        func: Operand::Copy(Place::from_local(func_temp)),
+        args,
+        destination: Place::from_local(dest),
+        target: cont,
+        span: expr.span,
+    });
+
+    fb.switch_to(cont);
+    dest
 }

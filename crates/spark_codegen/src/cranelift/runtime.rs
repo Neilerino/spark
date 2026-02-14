@@ -95,6 +95,10 @@ pub struct RuntimeStubs {
     pub list_take: FuncId,
     /// `__spark_list_reverse(ptr) -> ptr`
     pub list_reverse: FuncId,
+    /// `__spark_parallel_foreach(list_ptr, fn_ptr, env_ptr, elem_size, cb_kind) -> void`
+    pub parallel_foreach: FuncId,
+    /// `__spark_parallel_map(list_ptr, fn_ptr, env_ptr, elem_size, result_elem_size, cb_kind) -> ptr`
+    pub parallel_map: FuncId,
 }
 
 impl RuntimeStubs {
@@ -395,6 +399,20 @@ impl RuntimeStubs {
                 module,
                 "__spark_list_reverse",
                 &[ptr_type],
+                Some(ptr_type),
+                call_conv,
+            ),
+            parallel_foreach: declare_fn(
+                module,
+                "__spark_parallel_foreach",
+                &[ptr_type, ptr_type, ptr_type, types::I64, types::I8],
+                None,
+                call_conv,
+            ),
+            parallel_map: declare_fn(
+                module,
+                "__spark_parallel_map",
+                &[ptr_type, ptr_type, ptr_type, types::I64, types::I64, types::I8],
                 Some(ptr_type),
                 call_conv,
             ),

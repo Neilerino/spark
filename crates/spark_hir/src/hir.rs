@@ -279,6 +279,28 @@ pub enum HirExprKind {
         parts: Vec<HirExpr>,
     },
 
+    // === Parallel iteration ===
+    /// Parallel for-each: dispatches to `__spark_parallel_foreach` runtime stub.
+    ParallelForEach {
+        /// The list expression.
+        list: Box<HirExpr>,
+        /// The callback (fat pointer).
+        callback: Box<HirExpr>,
+        /// Element type of the list.
+        elem_ty: TypeId,
+    },
+    /// Parallel map: dispatches to `__spark_parallel_map` runtime stub.
+    ParallelMap {
+        /// The list expression.
+        list: Box<HirExpr>,
+        /// The callback (fat pointer).
+        callback: Box<HirExpr>,
+        /// Element type of the input list.
+        elem_ty: TypeId,
+        /// Element type of the result list.
+        result_elem_ty: TypeId,
+    },
+
     // === Error recovery ===
     /// Error placeholder (from failed lowering).
     Error,

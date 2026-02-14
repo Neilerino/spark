@@ -361,6 +361,14 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
         | ExprKind::EachVia {
             iterable,
             callback,
+        }
+        | ExprKind::ParallelEach {
+            iterable,
+            callback,
+        }
+        | ExprKind::ParallelEachVia {
+            iterable,
+            callback,
         } => {
             v.visit_expr(iterable);
             v.visit_expr(callback);

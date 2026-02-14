@@ -213,6 +213,16 @@ fn walk_expr(
                 walk_expr(part, lifted, definitions, table, counter);
             }
         }
+
+        // Parallel iteration.
+        HirExprKind::ParallelForEach { list, callback, .. } => {
+            walk_expr(list, lifted, definitions, table, counter);
+            walk_expr(callback, lifted, definitions, table, counter);
+        }
+        HirExprKind::ParallelMap { list, callback, .. } => {
+            walk_expr(list, lifted, definitions, table, counter);
+            walk_expr(callback, lifted, definitions, table, counter);
+        }
     }
 }
 
@@ -396,6 +406,15 @@ fn collect_captures_walk(
             for part in parts {
                 collect_captures_walk(part, param_defs, definitions, captures, seen);
             }
+        }
+        // Parallel iteration.
+        HirExprKind::ParallelForEach { list, callback, .. } => {
+            collect_captures_walk(list, param_defs, definitions, captures, seen);
+            collect_captures_walk(callback, param_defs, definitions, captures, seen);
+        }
+        HirExprKind::ParallelMap { list, callback, .. } => {
+            collect_captures_walk(list, param_defs, definitions, captures, seen);
+            collect_captures_walk(callback, param_defs, definitions, captures, seen);
         }
         // Lambda nodes inside a lambda body are already lifted by depth-first walk.
         HirExprKind::Lambda { .. } => {}

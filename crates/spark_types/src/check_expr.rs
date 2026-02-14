@@ -486,6 +486,48 @@ fn check_expr_inner(
             table.intern(Ty::List(ret_ty))
         }
 
+        ExprKind::ParallelEach { iterable, callback } => {
+            let iter_ty = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let base_ty = strip_mutable(iter_ty, table);
+            let elem_ty = match table.resolve(base_ty).clone() {
+                Ty::List(elem) => elem,
+                Ty::Error => TypeId::ERROR,
+                _ => {
+                    let name = type_name(base_ty, table, definitions);
+                    diagnostics.push(
+                        Diagnostic::error(format!("`parallel each` requires a List, found `{name}`"))
+                            .with_label(Label::primary(iterable.span, "not a List")),
+                    );
+                    TypeId::ERROR
+                }
+            };
+
+            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            validate_each_callback(cb_ty, elem_ty, false, callback.span, table, definitions, diagnostics);
+            builtins.void
+        }
+
+        ExprKind::ParallelEachVia { iterable, callback } => {
+            let iter_ty = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let base_ty = strip_mutable(iter_ty, table);
+            let elem_ty = match table.resolve(base_ty).clone() {
+                Ty::List(elem) => elem,
+                Ty::Error => TypeId::ERROR,
+                _ => {
+                    let name = type_name(base_ty, table, definitions);
+                    diagnostics.push(
+                        Diagnostic::error(format!("`parallel each via` requires a List, found `{name}`"))
+                            .with_label(Label::primary(iterable.span, "not a List")),
+                    );
+                    TypeId::ERROR
+                }
+            };
+
+            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let ret_ty = validate_each_callback(cb_ty, elem_ty, true, callback.span, table, definitions, diagnostics);
+            table.intern(Ty::List(ret_ty))
+        }
+
         ExprKind::Range { start, end, .. } | ExprKind::ListRange { start, end, .. } => {
             let _ = check_expr(start, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
             let _ = check_expr(end, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);

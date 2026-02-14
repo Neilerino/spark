@@ -339,6 +339,11 @@ impl Interner {
             "sort",
             "take",
             "reverse",
+            // Concurrency operations
+            "parallel",
+            // Internal runtime stubs
+            "__parallel_foreach",
+            "__parallel_map",
         ];
 
         for kw in keywords {
@@ -598,6 +603,12 @@ pub mod kw {
     pub const TAKE: Symbol = Symbol(75);
     /// `reverse`
     pub const REVERSE: Symbol = Symbol(76);
+    /// `parallel`
+    pub const PARALLEL: Symbol = Symbol(77);
+    /// `__parallel_foreach` (internal runtime stub)
+    pub const PARALLEL_FOREACH: Symbol = Symbol(78);
+    /// `__parallel_map` (internal runtime stub)
+    pub const PARALLEL_MAP: Symbol = Symbol(79);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
@@ -614,8 +625,8 @@ pub mod kw {
     /// Returns true if the given symbol is a keyword.
     #[must_use]
     pub const fn is_keyword(sym: Symbol) -> bool {
-        // Keywords are symbols 1-37 (fn through Never)
-        sym.0 >= 1 && sym.0 <= 37
+        // Keywords are symbols 1-37 (fn through Never) plus parallel (77)
+        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 77
     }
 
     /// Returns true if the given symbol is a primitive type name.

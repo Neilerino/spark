@@ -126,6 +126,19 @@ impl Resolver {
             );
             self.definitions.insert(info);
         }
+
+        // Register internal parallel runtime stubs.
+        // NOT added to ribs — only called from desugared HIR/MIR.
+        for &stub_name in &[kw::PARALLEL_FOREACH, kw::PARALLEL_MAP] {
+            let info = DefinitionInfo::new(
+                DefinitionKind::BuiltinFunction,
+                stub_name,
+                Span::DUMMY,
+                Visibility::Public,
+                ModulePath::root(),
+            );
+            self.definitions.insert(info);
+        }
     }
 
     // ========================================================================
@@ -849,6 +862,14 @@ impl Resolver {
                 callback,
             }
             | ExprKind::EachVia {
+                iterable,
+                callback,
+            }
+            | ExprKind::ParallelEach {
+                iterable,
+                callback,
+            }
+            | ExprKind::ParallelEachVia {
                 iterable,
                 callback,
             } => {

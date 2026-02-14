@@ -224,6 +224,22 @@ pub enum ExprKind {
         callback: Box<Expr>,
     },
 
+    /// Parallel each expression (side effects): `items parallel each (x: T): Void { ... }`
+    ParallelEach {
+        /// The iterable expression.
+        iterable: Box<Expr>,
+        /// The callback (lambda or function reference).
+        callback: Box<Expr>,
+    },
+
+    /// Parallel each via expression (transform): `items parallel each via (x: T): U { ... }`
+    ParallelEachVia {
+        /// The iterable expression.
+        iterable: Box<Expr>,
+        /// The callback (lambda or function reference).
+        callback: Box<Expr>,
+    },
+
     /// To expression (type narrowing or pipeline):
     /// - `result to { NotFound -> ... }`
     /// - `data to sort`

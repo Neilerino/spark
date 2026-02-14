@@ -13,6 +13,9 @@ crate-type = ["staticlib"]
 [lints.rust]
 unsafe_code = "allow"
 
+[dependencies]
+rayon = "1"
+
 [lints.clippy]
 all = "warn"
 pedantic = "warn"

@@ -384,6 +384,33 @@ fn lower_expr_kind(
             ).kind
         }
 
+        // === Parallel Each (side-effect parallel iteration) ===
+        ExprKind::ParallelEach { iterable, callback } => {
+            let iterable_hir = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let elem_ty = extract_list_elem_ty(iterable_hir.ty, table);
+            HirExprKind::ParallelForEach {
+                list: Box::new(iterable_hir),
+                callback: Box::new(callback_hir),
+                elem_ty,
+            }
+        }
+
+        // === Parallel Each Via (transform parallel iteration) ===
+        ExprKind::ParallelEachVia { iterable, callback } => {
+            let iterable_hir = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let elem_ty = extract_list_elem_ty(iterable_hir.ty, table);
+            let void_ty = find_void_type(table);
+            let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
+            HirExprKind::ParallelMap {
+                list: Box::new(iterable_hir),
+                callback: Box::new(callback_hir),
+                elem_ty,
+                result_elem_ty: cb_ret_ty,
+            }
+        }
+
         ExprKind::To { expr: inner, handler } => {
             let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
             let ty = expr_type(expr.span, table);
