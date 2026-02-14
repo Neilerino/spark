@@ -24,7 +24,7 @@ fn main(): Int {
 }
 ```
 
-**What's missing**: `each`/`each via` iteration (blocked on lambdas/closures — see `docs/design-notes/lambdas-closures-each.md`). Generic constraint validation (`T: Comparable`). Several language features deferred with stubs/warnings (closures, async).
+**What's missing**: Generic constraint validation (`T: Comparable`). Concurrency (`async`/`await`/`spawn`, `parallel each`). Standard library modules (`spark.math`, `spark.io`, etc.). See design notes for plans: `docs/design-notes/concurrency-model.md`, `docs/design-notes/standard-library.md`.
 
 ---
 
@@ -169,53 +169,36 @@ Generic structs and functions work end-to-end via monomorphization:
 
 ## Priority 5: Advanced Features (Need Substantial Infrastructure)
 
-### 5.1 Lambda/Closure Conversion
+### ~~5.1 Lambda/Closure Conversion~~ — Complete
 
-**Status**: Warning in MIR lowering
-**Location**: `spark_mir/src/lower_expr.rs:294`
-**Design note**: `docs/design-notes/lambdas-closures-each.md`
+Fat pointer ABI `(fn_ptr, env_ptr)` with capture-by-value semantics. Lambda lifting for non-capturing lambdas, heap-allocated environments for capturing closures. Thunks wrap named function references used as values. Sret convention for aggregate returns. See `docs/design-notes/lambdas-closures-each.md`.
 
-Needs:
-- Closure capture analysis (identify free variables in lambda body)
-- Closure environment struct (captured variables as fields)
-- Closure representation (function pointer + environment pointer)
-- Borrow checker support for captures
-- Codegen for closure allocation and invocation
-- LSP `ScopeMap` integration (see design note for LSP team requirements)
+### ~~5.5 `each`/`each via` Iteration~~ — Complete
 
-**Blocks**: `each`/`each via` (5.5), partial application
-
-### 5.5 `each`/`each via` Iteration
-
-**Status**: Parsed, deferred in HIR (emits `HirExprKind::Error`)
-**Location**: Parser done (`spark_parser/src/expr.rs:524`), resolver creates param DefIds
-**Blocked by**: Lambda/closure support (5.1)
-**Design note**: `docs/design-notes/lambdas-closures-each.md`
-
-`each`/`each via` must accept both inline bodies AND function references (e.g., `items each via double`) to enable clean chaining with partial application. An inline-only loop desugaring was rejected because it can't support function-as-value arguments. Implementation deferred until lambdas land.
+Desugared in HIR to index loops that call the callback via fat pointer. Supports inline lambdas, `fn` lambdas, and function references. COW semantics — mutation inside `each` body does not propagate.
 
 ### 5.6 `via` Pipeline Operator
 
 **Status**: Currently parsed as `ExprKind::To` with `ToHandler::Pipeline`, deferred in HIR
 **Location**: Parser done, HIR lowering emits `HirExprKind::Error`
-**Blocked by**: Lambda/closure support (5.1), method resolution (3.4)
 **Design note**: `docs/design-notes/lambdas-closures-each.md`
 
-`data via sort`, `data via take{count: 5}` — applies a named function (or partial) to the whole value. Requires function-as-value semantics. Previously part of the `to` keyword; split out for clearer semantics (`to` is now exclusively type narrowing).
+`data via sort`, `data via take{count: 5}` — applies a named function (or partial) to the whole value. When implemented, the AST will need a new `ExprKind::Via` node (split from `ToHandler::Pipeline`).
 
-When implemented, the AST will need a new `ExprKind::Via` node (split from `ToHandler::Pipeline`).
+### 5.2 Async/Await, Spawn, and Parallel Iteration
 
-### 5.2 Async/Await and Spawn
+**Status**: Warning stubs in MIR lowering
+**Location**: `spark_mir/src/lower_expr.rs` (await, spawn stubs)
+**Design note**: `docs/design-notes/concurrency-model.md`
 
-**Status**: Warning in MIR lowering
-**Location**: `spark_mir/src/lower_expr.rs:299` (await), `spark_mir/src/lower_expr.rs:304` (spawn)
+Dual-runtime architecture: Rayon for CPU parallelism (`parallel each`, `parallel each via`), Tokio for async I/O (`async fn`, `await`, `spawn`). Phased implementation — see design note for details.
 
-Needs:
-- Future type system (`Ty::Future { inner }`)
-- State machine transformation (each await = state transition)
-- Async runtime/executor
-- Task scheduler for spawn
-- Substantial codegen work
+### 5.7 Standard Library (`spark.*`)
+
+**Status**: Not started
+**Design note**: `docs/design-notes/standard-library.md`
+
+Namespaced, opt-in modules backed by native runtime functions. `spark.math`, `spark.io`, `spark.json`, `spark.net`, `spark.http`, `spark.sync`. Manifest-based architecture — no `.spark` source files needed. See design note for implementation plan.
 
 ### ~~5.3 String Interpolation~~ — Complete
 
@@ -250,16 +233,20 @@ These are deliberate design decisions per the language spec — Spark requires e
 | ~~P3~~ | ~~Generics~~ | ~~High~~ | ~~Enables parameterized types~~ | Done |
 | ~~P4~~ | ~~`spark_opt` passes~~ | ~~High~~ | ~~Performance optimization~~ | Done |
 | **P4** | Reborrowing | Low | Borrow checker ergonomics | Not started |
-| **P5** | Lambdas/closures | High | First-class functions | MIR stub |
-| **P5** | `each`/`each via` | Medium | Collection iteration | Blocked on lambdas |
-| **P5** | `via` pipeline | Medium | Whole-value function application | Blocked on lambdas |
-| **P5** | Async/await/spawn | Very High | Concurrency model | MIR stub |
+| ~~P5~~ | ~~Lambdas/closures~~ | ~~High~~ | ~~First-class functions~~ | Done |
+| ~~P5~~ | ~~`each`/`each via`~~ | ~~Medium~~ | ~~Collection iteration~~ | Done |
+| **P5** | `via` pipeline | Medium | Whole-value function application | Not started |
+| **P5** | Concurrency (async + parallel) | Very High | Async I/O + CPU parallelism | Design ready |
+| **P5** | Standard library (`spark.*`) | High | Stdlib modules | Design ready |
 | ~~P5~~ | ~~String interpolation~~ | ~~Medium~~ | ~~Syntax convenience~~ | Done |
 
 ### Infrastructure
-- **E2E test framework**: `spark_driver/tests/e2e.rs` — 11 tests running `.spark` fixtures end-to-end
+- **E2E test framework**: `spark_driver/tests/e2e.rs` — end-to-end tests running `.spark` fixtures
 - **LSP**: `tools/spark-lsp` — semantic tokens, diagnostics
-- **Design notes**: `docs/design-notes/lambdas-closures-each.md` — captures lambda/each/via/LSP ScopeMap requirements
+- **Design notes**:
+  - `docs/design-notes/lambdas-closures-each.md` — lambda/each/via/LSP ScopeMap design (complete)
+  - `docs/design-notes/concurrency-model.md` — dual-runtime concurrency (Tokio + Rayon)
+  - `docs/design-notes/standard-library.md` — `spark.*` stdlib architecture
 
 ---
 
@@ -289,45 +276,56 @@ Method resolution, interface bindings, and generic instantiation via monomorphiz
 | ~~Interface validation + method resolution (3.4)~~ | ~~Medium-High~~ | ~~None~~ | Done |
 | ~~Generic instantiation / monomorphization (3.5)~~ | ~~High~~ | ~~None~~ | Done |
 
-### Stream C: Lambdas & Functional Features
-> Lambdas → Partial application → `each`/`each via` → `via` pipeline
+### ~~Stream C: Lambdas & Functional Features~~ — Complete
 
-The largest dependency chain. Everything here requires function-as-value semantics.
-
-| Item | Effort | Dependencies |
-|------|--------|-------------|
-| Function types as values (`Ty::Function`) | Medium | None |
-| Lambda/closure conversion (5.1) | High | Function types, LSP ScopeMap coordination |
-| Partial application | Medium | Lambdas |
-| `each`/`each via` (5.5) | Medium | Lambdas, partials |
-| `via` pipeline (5.6) | Medium | Lambdas, partials, method resolution (Stream B) |
-
-**Note**: `via` needs method resolution to look up named operations (already complete in Stream B). LSP `ScopeMap` (from LSP team requirements) should be built alongside lambda scope handling in `spark_resolve`.
+Lambdas, closures, and `each`/`each via` all complete. Fat pointer ABI `(fn_ptr, env_ptr)` with capture-by-value semantics. Thunks for named function references. HIR desugars `each`/`each via` to index loops with fat pointer callbacks. `via` pipeline (5.6) still TODO.
 
 ### ~~Stream F: Syntax & Convenience~~ — Complete
 
 String interpolation implemented end-to-end (lexer, parser, HIR, codegen).
 
 ### Stream G: Concurrency
-> Blocked on Stream C (lambdas)
+> Design: `docs/design-notes/concurrency-model.md`
+
+Dual-runtime architecture — Rayon for CPU parallelism, Tokio for async I/O. No longer blocked on Stream C.
 
 | Item | Effort | Dependencies |
 |------|--------|-------------|
-| Async/await/spawn (5.2) | Very High | Lambdas (Stream C), runtime executor |
+| `parallel each` / `parallel each via` (Rayon) | Medium | None (reuses existing callback ABI) |
+| Phase 1: Synchronous async shim (`Ty::Future`) | Medium | None |
+| Phase 2: `spawn` + `join` blocking (Tokio) | Medium-High | Phase 1 |
+| Phase 3: Cooperative async (state machine) | Very High | Phase 2 |
+| Phase 4: I/O primitives | Medium | Phase 3, Stream H (stdlib) |
 
-**Conflicts with Stream C**: Directly depends on closures for spawn. Should start after lambda support is stable.
+### Stream H: Standard Library (`spark.*`)
+> Design: `docs/design-notes/standard-library.md`
+
+Namespaced, opt-in modules backed by native runtime functions. Manifest-based architecture.
+
+| Item | Effort | Dependencies |
+|------|--------|-------------|
+| `spark.math` | Low | None (validates stdlib pipeline) |
+| `spark.io` | Low-Medium | None |
+| `spark.json` | Medium | None |
+| `spark.net` | Medium | Stream G Phase 2+ (async) |
+| `spark.http` | Medium-High | `spark.net`, Stream G Phase 2+ |
+| `spark.sync` | Medium | Stream G Phase 2+ |
 
 ---
 
 ### Parallelism Summary
 
 ```
-Sequential dependencies:
-  Stream C (Lambdas)       ─── blocks ─────────  Stream G (Async)
+Parallel tracks (can run simultaneously):
+  Stream G (Concurrency)   ─── parallel each (Rayon) │ async phases 1-3 (Tokio)
+  Stream H (Stdlib)        ─── spark.math, spark.io   │ spark.net, spark.http (needs async)
+                                     ↑                          ↑
+                                 independent              depends on Stream G Phase 2+
 
 Completed:
   Stream A (Union types)   ─── DONE
   Stream B (Type system)   ─── DONE
+  Stream C (Lambdas)       ─── DONE
   Stream D (Safety)        ─── DONE
   Stream E (Optimization)  ─── DONE (reborrowing deferred)
   Stream F (Interpolation) ─── DONE
@@ -337,10 +335,18 @@ Completed:
 
 ## Recommended Implementation Order
 
-The **critical path** (features that unlock the most downstream work):
+The **critical path** — features that unlock the most downstream work:
 
-1. **Lambdas/closures (Stream C, 5.1)** — Unlocks all functional features. Requires function types as first-class values, capture analysis, closure environments, and LSP `ScopeMap` integration.
+1. **`parallel each via` (Stream G, Rayon)** — Lowest risk, reuses existing callback ABI. Validates `parallel` keyword plumbing.
 
-2. **`each`/`each via`/`via`/partial application (Stream C, 5.5/5.6)** — Once lambdas land, these follow naturally. Partial application desugars into lambda + captured args.
+2. **`spark.math` + `spark.io` (Stream H)** — Validates the entire stdlib pipeline (resolver → type check → codegen → FFI). No external deps.
 
-3. **Async/await/spawn (Stream G, 5.2)** — Requires stable closures for `spawn`. State machine transformation is the largest remaining infrastructure piece.
+3. **Async Phase 1-2 (Stream G, Tokio)** — Adds `Ty::Future`, enables real concurrency with blocking `await`. Unblocks `spark.net`/`spark.http`.
+
+4. **`spark.net` + `spark.http` (Stream H)** — The "hello world" web server. Depends on async Phase 2.
+
+5. **Async Phase 3 (Stream G, cooperative)** — State machine codegen. Hardest remaining infrastructure piece. Enables 1M+ concurrent tasks.
+
+See design notes for detailed plans:
+- `docs/design-notes/concurrency-model.md`
+- `docs/design-notes/standard-library.md`
