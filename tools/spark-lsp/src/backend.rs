@@ -431,14 +431,22 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-        let source = self
+
+        let tokens = self
             .documents
             .get(uri)
-            .map(|doc| doc.rope.to_string());
-
-        let tokens = source
-            .as_deref()
-            .map(semantic_tokens::compute_semantic_tokens)
+            .map(|doc| {
+                let source = doc.rope.to_string();
+                let context = doc.analysis.as_ref().and_then(|analysis| {
+                    let resolutions =
+                        analysis.resolved.get_resolutions(analysis.file_id)?;
+                    Some(semantic_tokens::SemanticContext {
+                        resolutions,
+                        definitions: &analysis.definitions,
+                    })
+                });
+                semantic_tokens::compute_semantic_tokens(&source, context.as_ref())
+            })
             .unwrap_or_default();
 
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
