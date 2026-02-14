@@ -88,7 +88,8 @@ const fn token_type_index(kind: TokenKind) -> Option<u32> {
         | TokenKind::Block
         | TokenKind::True
         | TokenKind::False
-        | TokenKind::Null => Some(KEYWORD),
+        | TokenKind::Null
+        | TokenKind::Extern => Some(KEYWORD),
 
         // Numbers
         TokenKind::IntLiteral | TokenKind::FloatLiteral => Some(NUMBER),

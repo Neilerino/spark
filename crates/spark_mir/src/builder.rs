@@ -143,6 +143,12 @@ impl FunctionBuilder {
         self.alloc_local(ty, None, false, false, span)
     }
 
+    /// Returns the type of a local.
+    #[must_use]
+    pub fn local_type(&self, local: Local) -> TypeId {
+        self.locals[local.index()].ty
+    }
+
     /// Creates a new basic block and returns its `BlockId`.
     pub fn new_block(&mut self) -> BlockId {
         let id = BlockId(self.next_block);

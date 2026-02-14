@@ -256,6 +256,7 @@ fn projections_equal(a: &Projection, b: &Projection) -> bool {
         (Projection::Field(f1), Projection::Field(f2)) => f1 == f2,
         (Projection::Deref, Projection::Deref)
         | (Projection::Index(_), Projection::Index(_)) => true,
+        (Projection::UnionPayload(t1), Projection::UnionPayload(t2)) => t1 == t2,
         _ => false,
     }
 }

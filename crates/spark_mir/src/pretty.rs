@@ -187,6 +187,16 @@ impl PrettyPrinter<'_> {
                         }
                         self.out.push(')');
                     }
+                    AggregateKind::Union { union_ty, member_ty } => {
+                        let _ = write!(
+                            self.out,
+                            "Union(ty{}, member ty{}, ",
+                            union_ty.as_u32(),
+                            member_ty.as_u32()
+                        );
+                        self.print_operand_list(ops);
+                        self.out.push(')');
+                    }
                 }
             }
             Rvalue::Discriminant(place) => {

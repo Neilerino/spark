@@ -88,8 +88,8 @@ pub enum DefinitionKind {
     BindingMethod(DefId),
     /// Lambda (lifted anonymous function).
     Lambda,
-    /// Standard library function (e.g., `spark.math.sqrt`).
-    StdlibFunction,
+    /// External (FFI) function declared with `extern fn`.
+    ExternFunction,
 }
 
 impl DefinitionKind {
@@ -123,7 +123,7 @@ impl DefinitionKind {
                 | Self::Parameter
                 | Self::BuiltinFunction
                 | Self::Lambda
-                | Self::StdlibFunction
+                | Self::ExternFunction
         )
     }
 }

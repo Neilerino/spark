@@ -141,6 +141,8 @@ pub struct FunctionDef {
     pub visibility: Visibility,
     /// Whether this is an async function.
     pub is_async: bool,
+    /// Whether this is an extern (FFI) function with no body.
+    pub is_extern: bool,
     /// Function name.
     pub name: Ident,
     /// Generic parameters.

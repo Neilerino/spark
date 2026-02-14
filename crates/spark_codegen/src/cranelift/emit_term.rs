@@ -221,8 +221,8 @@ fn emit_call<M: Module>(
                 );
                 return;
             }
-            if matches!(info.kind, DefinitionKind::StdlibFunction) {
-                emit_stdlib_call(
+            if matches!(info.kind, DefinitionKind::ExternFunction) {
+                emit_extern_call(
                     ctx,
                     callee_def_id,
                     info,
@@ -872,13 +872,13 @@ fn emit_builtin_method<M: Module>(
     ctx.builder.ins().jump(target_block, &[]);
 }
 
-/// Emits a call to a standard library function via its FFI symbol.
+/// Emits a call to an extern (FFI) function.
 ///
-/// Looks up the function's type signature from the `TypeTable`, builds a
-/// matching Cranelift signature, declares the FFI function as an import,
-/// and emits the call instruction.
+/// Uses the function's name as the linker symbol. Builds a Cranelift
+/// signature from the function's type, declares it as an import, and
+/// emits the call instruction.
 #[allow(clippy::too_many_arguments)]
-fn emit_stdlib_call<M: Module>(
+fn emit_extern_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
     callee_def_id: spark_resolve::DefId,
     info: &spark_resolve::DefinitionInfo,
@@ -891,9 +891,7 @@ fn emit_stdlib_call<M: Module>(
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
 ) {
-    let ffi_symbol = info
-        .ffi_symbol
-        .expect("StdlibFunction must have ffi_symbol");
+    let symbol_name = info.name.as_str();
 
     // Evaluate arguments
     let arg_vals: Vec<Value> = args
@@ -922,8 +920,8 @@ fn emit_stdlib_call<M: Module>(
 
     // Declare the function as an import (idempotent in Cranelift)
     let func_id = module
-        .declare_function(ffi_symbol, Linkage::Import, &sig)
-        .expect("stdlib function declaration should not fail");
+        .declare_function(symbol_name, Linkage::Import, &sig)
+        .expect("extern function declaration should not fail");
 
     let func_ref = module.declare_func_in_func(func_id, ctx.builder.func);
     let call = ctx.builder.ins().call(func_ref, &arg_vals);

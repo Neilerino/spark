@@ -103,6 +103,7 @@ mod tests {
                 Visibility::Private
             },
             is_async: false,
+            is_extern: false,
             name: dummy_ident(name),
             generics: vec![],
             params: vec![],

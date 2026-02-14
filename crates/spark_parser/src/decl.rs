@@ -153,11 +153,12 @@ impl Parser {
 
     /// Parses a function declaration.
     ///
-    /// `FunctionDef` = ("pub")? ("async")? "fn" Ident `GenericParams`? "(" Params ")" ":" Type Block?
+    /// `FunctionDef` = ("pub")? ("async")? ("extern")? "fn" Ident `GenericParams`? "(" Params ")" ":" Type Block?
     pub(crate) fn parse_function(
         &mut self,
         is_pub: bool,
         is_async: bool,
+        is_extern: bool,
         decorators: Vec<Decorator>,
     ) -> Item {
         let start = self.current_span();
@@ -181,8 +182,10 @@ impl Parser {
         self.expect(TokenKind::Colon);
         let ret_type = self.parse_type();
 
-        // Parse body (optional for interface methods)
-        let body = if self.check(TokenKind::LBrace) {
+        // Parse body (extern fns have no body; interface methods also have no body)
+        let body = if is_extern {
+            None
+        } else if self.check(TokenKind::LBrace) {
             Some(self.parse_block())
         } else {
             None
@@ -197,6 +200,7 @@ impl Parser {
                 Visibility::Private
             },
             is_async,
+            is_extern,
             name,
             generics,
             params,
@@ -597,7 +601,7 @@ impl Parser {
                 continue;
             }
 
-            if let Item::Function(f) = self.parse_function(false, false, decorators) {
+            if let Item::Function(f) = self.parse_function(false, false, false, decorators) {
                 methods.push(f);
             }
 
@@ -803,7 +807,7 @@ impl Parser {
                 continue;
             }
 
-            if let Item::Function(f) = self.parse_function(false, false, decorators) {
+            if let Item::Function(f) = self.parse_function(false, false, false, decorators) {
                 methods.push(f);
             }
 
@@ -1060,6 +1064,67 @@ mod tests {
         if let Item::Binding(b) = &ast.items[0] {
             assert_eq!(b.bindings.len(), 1);
             assert_eq!(b.bindings[0].methods.len(), 1);
+        }
+    }
+
+    #[test]
+    fn extern_function() {
+        let (ast, diags) = parse_source("extern fn sqrt(x: Float): Float");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert_eq!(ast.items.len(), 1);
+        if let Item::Function(f) = &ast.items[0] {
+            assert!(f.is_extern);
+            assert!(f.body.is_none());
+            assert_eq!(f.params.len(), 1);
+        } else {
+            panic!("expected function item");
+        }
+    }
+
+    #[test]
+    fn extern_fn_no_params() {
+        let (ast, diags) = parse_source("extern fn getTime(): Float");
+        assert!(!diags.has_errors());
+        if let Item::Function(f) = &ast.items[0] {
+            assert!(f.is_extern);
+            assert_eq!(f.params.len(), 0);
+        }
+    }
+
+    #[test]
+    fn extern_fn_multiple_params() {
+        let (ast, diags) = parse_source("extern fn write(path: String, data: String): Int");
+        assert!(!diags.has_errors());
+        if let Item::Function(f) = &ast.items[0] {
+            assert!(f.is_extern);
+            assert_eq!(f.params.len(), 2);
+            assert!(f.body.is_none());
+        }
+    }
+
+    #[test]
+    fn pub_extern_function() {
+        let (ast, diags) = parse_source("pub extern fn alloc(size: Int): Int");
+        assert!(!diags.has_errors());
+        if let Item::Function(f) = &ast.items[0] {
+            assert!(f.is_extern);
+            assert!(f.visibility.is_public());
+        }
+    }
+
+    #[test]
+    fn extern_on_non_function_error() {
+        let (_, diags) = parse_source("extern struct Foo { x: Int }");
+        assert!(diags.has_errors(), "expected error for extern on struct");
+    }
+
+    #[test]
+    fn regular_function_not_extern() {
+        let (ast, diags) = parse_source("fn add(a: Int, b: Int): Int { return a + b }");
+        assert!(!diags.has_errors());
+        if let Item::Function(f) = &ast.items[0] {
+            assert!(!f.is_extern);
+            assert!(f.body.is_some());
         }
     }
 }

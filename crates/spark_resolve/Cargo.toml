@@ -16,7 +16,6 @@ spark_intern = { workspace = true }
 spark_diagnostics = { workspace = true }
 spark_ast = { workspace = true }
 spark_modules = { workspace = true }
-spark_stdlib = { workspace = true }
 rustc-hash = { workspace = true }
 serde = { workspace = true, optional = true }
 

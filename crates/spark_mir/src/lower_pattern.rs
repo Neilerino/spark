@@ -9,7 +9,7 @@ use spark_resolve::DefinitionTable;
 use spark_types::TypeTable;
 
 use crate::builder::{FunctionBuilder, MirBuilder};
-use crate::lower_expr::lower_expr;
+use crate::lower_expr::{emit_assign_with_union_wrap, lower_expr};
 use crate::mir::{
     BlockId, Constant, Local, Operand, Place, Projection, Rvalue, Statement, Terminator,
 };
@@ -82,11 +82,7 @@ pub fn lower_match(
 
         let arm_val = lower_expr(&arm.body, fb, mir, type_table, defs);
         if !fb.is_terminated() {
-            fb.push_stmt(Statement::Assign {
-                place: Place::from_local(result),
-                rvalue: Rvalue::Use(Operand::Copy(Place::from_local(arm_val))),
-                span: arm.span,
-            });
+            emit_assign_with_union_wrap(fb, result, arm_val, type_table, arm.span);
             fb.terminate(Terminator::Goto { target: join_bb });
         }
     }
@@ -291,20 +287,67 @@ fn compile_pattern(
         }
 
         HirPattern::TypeNarrow { def_id, ty } => {
-            // Type narrowing: bind the scrutinee with the narrowed type.
-            // Full runtime type testing is deferred — for now, we bind and proceed.
-            let name = defs.get(*def_id).map(|info| info.name);
-            let local = match name {
-                Some(sym) => fb.fresh_local(*ty, sym, false, spark_span::Span::DUMMY),
-                None => fb.fresh_temp(*ty, spark_span::Span::DUMMY),
-            };
-            fb.register_def(*def_id, local);
-            fb.push_stmt(Statement::Assign {
-                place: Place::from_local(local),
-                rvalue: Rvalue::Use(Operand::Copy(Place::from_local(scrut))),
-                span: spark_span::Span::DUMMY,
-            });
-            fb.terminate(Terminator::Goto { target: match_bb });
+            // Type narrowing: check if scrutinee's union tag matches the target type.
+            let scrut_ty = fb.local_type(scrut);
+            let scrut_resolved = type_table.resolve(scrut_ty);
+
+            if let spark_types::Ty::Union(members) = scrut_resolved {
+                // Find the index of `ty` in the union members.
+                if let Some(idx) = members.iter().position(|&m| m == *ty) {
+                    // Read discriminant from the scrutinee.
+                    let disc_temp = fb.fresh_temp(
+                        spark_types::TypeId::ERROR,
+                        spark_span::Span::DUMMY,
+                    );
+                    fb.push_assign(
+                        Place::from_local(disc_temp),
+                        Rvalue::Discriminant(Place::from_local(scrut)),
+                        spark_span::Span::DUMMY,
+                    );
+
+                    // Branch: if tag == idx, go to bind block, otherwise fail.
+                    let bind_bb = fb.new_block();
+                    fb.terminate(Terminator::SwitchInt {
+                        discriminant: Operand::Copy(Place::from_local(disc_temp)),
+                        targets: vec![(idx as i128, bind_bb)],
+                        otherwise: fail_bb,
+                    });
+
+                    // In the bind block: extract payload via UnionPayload projection.
+                    fb.switch_to(bind_bb);
+                    let name = defs.get(*def_id).map(|info| info.name);
+                    let local = match name {
+                        Some(sym) => fb.fresh_local(*ty, sym, false, spark_span::Span::DUMMY),
+                        None => fb.fresh_temp(*ty, spark_span::Span::DUMMY),
+                    };
+                    fb.register_def(*def_id, local);
+                    let mut payload_place = Place::from_local(scrut);
+                    payload_place.projections.push(Projection::UnionPayload(*ty));
+                    fb.push_stmt(Statement::Assign {
+                        place: Place::from_local(local),
+                        rvalue: Rvalue::Use(Operand::Copy(payload_place)),
+                        span: spark_span::Span::DUMMY,
+                    });
+                    fb.terminate(Terminator::Goto { target: match_bb });
+                } else {
+                    // Type not in union — always fails.
+                    fb.terminate(Terminator::Goto { target: fail_bb });
+                }
+            } else {
+                // Not a union type — unconditional bind (original behavior).
+                let name = defs.get(*def_id).map(|info| info.name);
+                let local = match name {
+                    Some(sym) => fb.fresh_local(*ty, sym, false, spark_span::Span::DUMMY),
+                    None => fb.fresh_temp(*ty, spark_span::Span::DUMMY),
+                };
+                fb.register_def(*def_id, local);
+                fb.push_stmt(Statement::Assign {
+                    place: Place::from_local(local),
+                    rvalue: Rvalue::Use(Operand::Copy(Place::from_local(scrut))),
+                    span: spark_span::Span::DUMMY,
+                });
+                fb.terminate(Terminator::Goto { target: match_bb });
+            }
         }
 
         HirPattern::Error => {

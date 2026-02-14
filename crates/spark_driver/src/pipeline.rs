@@ -64,6 +64,12 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     // Keep (FileId, relative_path, source_text) for later phases.
     let mut file_entries: Vec<(FileId, PathBuf, String)> = Vec::with_capacity(sources.len());
 
+    // Inject standard library sources first so they're available as modules.
+    for stdlib_src in spark_stdlib::stdlib_sources() {
+        let file_id = source_map.add_file(stdlib_src.path, stdlib_src.source);
+        file_entries.push((file_id, PathBuf::from(stdlib_src.path), stdlib_src.source.to_string()));
+    }
+
     for (rel_path, source) in sources {
         let display_name = rel_path.to_string_lossy().to_string();
         let file_id = source_map.add_file(&display_name, &source);

@@ -617,11 +617,7 @@ fn lower_if(
     fb.switch_to(then_bb);
     let then_val = lower_expr(then_, fb, mir, type_table, defs);
     if !fb.is_terminated() {
-        fb.push_assign(
-            Place::from_local(result),
-            Rvalue::Use(Operand::Copy(Place::from_local(then_val))),
-            then_.span,
-        );
+        emit_assign_with_union_wrap(fb, result, then_val, type_table, then_.span);
         fb.terminate(Terminator::Goto { target: join_bb });
     }
 
@@ -630,11 +626,7 @@ fn lower_if(
     if let Some(else_expr) = else_ {
         let else_val = lower_expr(else_expr, fb, mir, type_table, defs);
         if !fb.is_terminated() {
-            fb.push_assign(
-                Place::from_local(result),
-                Rvalue::Use(Operand::Copy(Place::from_local(else_val))),
-                else_expr.span,
-            );
+            emit_assign_with_union_wrap(fb, result, else_val, type_table, else_expr.span);
             fb.terminate(Terminator::Goto { target: join_bb });
         }
     } else {
@@ -947,11 +939,7 @@ fn lower_return(
 ) -> Local {
     let val_local = if let Some(val_expr) = value {
         let val = lower_expr(val_expr, fb, mir, type_table, defs);
-        fb.push_assign(
-            Place::from_local(Local::RETURN_PLACE),
-            Rvalue::Use(Operand::Copy(Place::from_local(val))),
-            val_expr.span,
-        );
+        emit_assign_with_union_wrap(fb, Local::RETURN_PLACE, val, type_table, val_expr.span);
         Some(val)
     } else {
         fb.push_assign(
@@ -978,6 +966,58 @@ fn lower_return(
         expr.span,
     );
     temp
+}
+
+/// Emits an assignment from `src` to `dest`, inserting union wrapping if needed.
+///
+/// When the destination local has a `Ty::Union` type and the source local has
+/// a member type, this emits `Aggregate(AggregateKind::Union { .. })` to properly
+/// construct the union (tag + payload). Otherwise, it emits a plain `Rvalue::Use`.
+pub fn emit_assign_with_union_wrap(
+    fb: &mut FunctionBuilder,
+    dest: Local,
+    src: Local,
+    type_table: &TypeTable,
+    span: spark_span::Span,
+) {
+    let dest_ty = fb.local_type(dest);
+    let src_ty = fb.local_type(src);
+    let dest_resolved = type_table.resolve(dest_ty);
+
+    if let Ty::Union(members) = dest_resolved {
+        // If source is already the same union type, plain copy.
+        let src_resolved = type_table.resolve(src_ty);
+        if matches!(src_resolved, Ty::Union(_)) && src_ty == dest_ty {
+            fb.push_assign(
+                Place::from_local(dest),
+                Rvalue::Use(Operand::Copy(Place::from_local(src))),
+                span,
+            );
+            return;
+        }
+        // Source is a member type — wrap into the union.
+        if members.contains(&src_ty) {
+            fb.push_assign(
+                Place::from_local(dest),
+                Rvalue::Aggregate(
+                    AggregateKind::Union {
+                        union_ty: dest_ty,
+                        member_ty: src_ty,
+                    },
+                    vec![Operand::Copy(Place::from_local(src))],
+                ),
+                span,
+            );
+            return;
+        }
+    }
+
+    // Default: plain copy.
+    fb.push_assign(
+        Place::from_local(dest),
+        Rvalue::Use(Operand::Copy(Place::from_local(src))),
+        span,
+    );
 }
 
 /// Returns a void-valued temp (for error/deferred nodes).

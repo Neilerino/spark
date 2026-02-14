@@ -176,6 +176,7 @@ impl fmt::Display for Place {
                 Projection::Field(sym) => write!(f, ".{}", sym.as_str())?,
                 Projection::Index(local) => write!(f, "[{local}]")?,
                 Projection::Deref => write!(f, ".*")?,
+                Projection::UnionPayload(_) => write!(f, ".union_payload")?,
             }
         }
         Ok(())
@@ -191,6 +192,8 @@ pub enum Projection {
     Index(Local),
     /// Dereference a pointer/reference.
     Deref,
+    /// Extract the payload from a union value, narrowed to the given type.
+    UnionPayload(TypeId),
 }
 
 // ── Rvalues ──────────────────────────────────────────────────────────────
@@ -258,6 +261,15 @@ pub enum AggregateKind {
     Closure {
         /// The DefId of the lifted closure function.
         func_def_id: DefId,
+    },
+    /// Union construction: wraps a value of `member_ty` into a union of
+    /// `union_ty` by writing a tag byte (the member's index in the union)
+    /// followed by the payload.
+    Union {
+        /// The union type (`Ty::Union(members)`).
+        union_ty: TypeId,
+        /// The member type being stored.
+        member_ty: TypeId,
     },
 }
 

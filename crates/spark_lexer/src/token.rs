@@ -157,6 +157,8 @@ pub enum TokenKind {
     Block,
     /// `parallel`
     Parallel,
+    /// `extern`
+    Extern,
     /// `true`
     True,
     /// `false`
@@ -310,6 +312,7 @@ impl TokenKind {
                 | Self::Spawn
                 | Self::Block
                 | Self::Parallel
+                | Self::Extern
                 | Self::True
                 | Self::False
                 | Self::Null
@@ -380,6 +383,7 @@ impl TokenKind {
             "spawn" => Some(Self::Spawn),
             "block" => Some(Self::Block),
             "parallel" => Some(Self::Parallel),
+            "extern" => Some(Self::Extern),
             "true" => Some(Self::True),
             "false" => Some(Self::False),
             "Null" => Some(Self::Null),
@@ -432,6 +436,7 @@ impl TokenKind {
             Self::Spawn => "spawn",
             Self::Block => "block",
             Self::Parallel => "parallel",
+            Self::Extern => "extern",
             Self::True => "true",
             Self::False => "false",
             Self::Null => "Null",

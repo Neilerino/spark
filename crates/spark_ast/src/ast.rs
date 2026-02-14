@@ -257,6 +257,7 @@ mod tests {
         let func = Item::Function(FunctionDef {
             visibility: Visibility::Private,
             is_async: false,
+            is_extern: false,
             name: dummy_ident("main"),
             generics: vec![],
             params: vec![],

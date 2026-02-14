@@ -499,8 +499,11 @@ impl Parser {
         // Handle async
         let is_async = self.eat(TokenKind::Async).is_some();
 
+        // Handle extern
+        let is_extern = self.eat(TokenKind::Extern).is_some();
+
         let item = match self.current_kind() {
-            TokenKind::Fn => Some(self.parse_function(is_pub, is_async, decorators)),
+            TokenKind::Fn => Some(self.parse_function(is_pub, is_async, is_extern, decorators)),
             TokenKind::Struct => Some(self.parse_struct(is_pub)),
             TokenKind::Enum => Some(self.parse_enum(is_pub)),
             TokenKind::Interface => Some(self.parse_interface(is_pub)),
@@ -509,7 +512,7 @@ impl Parser {
             TokenKind::Const => Some(self.parse_const(is_pub)),
             TokenKind::Identifier if self.is_binding_start() => Some(self.parse_binding()),
             _ => {
-                self.error_expected("item (fn, struct, enum, interface, type, alias, const)");
+                self.error_expected("item (fn, extern fn, struct, enum, interface, type, alias, const)");
                 None
             }
         };
@@ -517,6 +520,11 @@ impl Parser {
         // Validate: async only valid on functions
         if is_async && !matches!(&item, Some(Item::Function(_))) {
             self.error("'async' modifier is only valid on functions");
+        }
+
+        // Validate: extern only valid on functions
+        if is_extern && !matches!(&item, Some(Item::Function(_))) {
+            self.error("'extern' modifier is only valid on functions");
         }
 
         item

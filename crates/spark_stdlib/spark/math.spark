@@ -1,0 +1,19 @@
+module math
+
+extern fn __spark_math_sqrt(x: Float): Float
+extern fn __spark_math_pow(base: Float, exp: Float): Float
+extern fn __spark_math_abs(x: Float): Float
+extern fn __spark_math_floor(x: Float): Int
+extern fn __spark_math_ceil(x: Float): Int
+extern fn __spark_math_min(a: Float, b: Float): Float
+extern fn __spark_math_max(a: Float, b: Float): Float
+extern fn __spark_math_round(x: Float): Int
+
+pub fn sqrt(x: Float): Float { return __spark_math_sqrt(x) }
+pub fn pow(base: Float, exp: Float): Float { return __spark_math_pow(base, exp) }
+pub fn abs(x: Float): Float { return __spark_math_abs(x) }
+pub fn floor(x: Float): Int { return __spark_math_floor(x) }
+pub fn ceil(x: Float): Int { return __spark_math_ceil(x) }
+pub fn min(a: Float, b: Float): Float { return __spark_math_min(a, b) }
+pub fn max(a: Float, b: Float): Float { return __spark_math_max(a, b) }
+pub fn round(x: Float): Int { return __spark_math_round(x) }

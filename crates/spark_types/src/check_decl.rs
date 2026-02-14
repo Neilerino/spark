@@ -71,8 +71,14 @@ fn collect_function(
         is_async: func.is_async,
     });
 
-    // Find the DefId for this function by looking in the definition table
-    if let Some(def_id) = find_def_by_name_and_kind(func.name.name, &DefinitionKind::Function, definitions) {
+    // Find the DefId for this function by looking in the definition table.
+    // Extern functions use DefinitionKind::ExternFunction, so check both.
+    let expected_kind = if func.is_extern {
+        DefinitionKind::ExternFunction
+    } else {
+        DefinitionKind::Function
+    };
+    if let Some(def_id) = find_def_by_name_and_kind(func.name.name, &expected_kind, definitions) {
         table.set_def_type(def_id, fn_type);
 
         // Store generic param list for this function
@@ -526,6 +532,7 @@ mod tests {
         let func = FunctionDef {
             visibility: spark_ast::Visibility::Public,
             is_async: false,
+            is_extern: false,
             name: Ident::dummy(sym("add")),
             generics: vec![],
             params: vec![

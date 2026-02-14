@@ -357,6 +357,8 @@ impl Interner {
             "min",
             "max",
             "round",
+            // FFI
+            "extern",
         ];
 
         for kw in keywords {
@@ -648,6 +650,8 @@ pub mod kw {
     pub const MAX: Symbol = Symbol(85);
     /// `round`
     pub const ROUND: Symbol = Symbol(86);
+    /// `extern`
+    pub const EXTERN: Symbol = Symbol(87);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
@@ -664,8 +668,8 @@ pub mod kw {
     /// Returns true if the given symbol is a keyword.
     #[must_use]
     pub const fn is_keyword(sym: Symbol) -> bool {
-        // Keywords are symbols 1-37 (fn through Never) plus parallel (78)
-        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78
+        // Keywords are symbols 1-37 (fn through Never) plus parallel (78) plus extern (87)
+        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78 || sym.0 == 87
     }
 
     /// Returns true if the given symbol is a primitive type name.

@@ -352,6 +352,12 @@ pub(super) fn emit_place_addr<M: Module>(
                     current_ty = *inner;
                 }
             }
+            Projection::UnionPayload(member_ty) => {
+                // Compute payload offset within the union and advance.
+                let ul = ctx.layouts.union_layout_of(current_ty, table);
+                addr = ctx.builder.ins().iadd_imm(addr, i64::from(ul.payload_offset));
+                current_ty = *member_ty;
+            }
         }
     }
 
@@ -400,6 +406,9 @@ pub(super) fn resolve_place_type(ctx: &FunctionContext<'_>, place: &Place, table
                 if let Ty::Ref { inner, .. } = unwrapped {
                     current_ty = *inner;
                 }
+            }
+            Projection::UnionPayload(member_ty) => {
+                current_ty = *member_ty;
             }
         }
     }
@@ -685,6 +694,10 @@ fn emit_aggregate<M: Module>(
                 func_ids, module,
             )
         }
+
+        AggregateKind::Union { union_ty, member_ty } => {
+            emit_union_construction(ctx, *union_ty, *member_ty, operands, dest_local, table, definitions, func_ids, thunk_ids, module)
+        }
     }
 }
 
@@ -921,7 +934,67 @@ fn emit_closure_construction<M: Module>(
     Some(dest_addr)
 }
 
-/// Emits a discriminant read from an enum place.
+/// Emits union construction: writes tag + payload into a stack slot.
+///
+/// The tag byte is the index of `member_ty` in the union's member list.
+/// The payload is written at the union's payload offset.
+#[allow(clippy::too_many_arguments)]
+fn emit_union_construction<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    union_ty: TypeId,
+    member_ty: TypeId,
+    operands: &[Operand],
+    dest_local: Local,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) -> Option<Value> {
+    let dest_addr = ctx.local_stack_addr(dest_local)?;
+
+    let ul = ctx.layouts.union_layout_of(union_ty, table);
+
+    // Find the member index (tag value).
+    let members = match table.resolve(union_ty) {
+        Ty::Union(members) => members.clone(),
+        _ => Vec::new(),
+    };
+    let member_idx = members.iter().position(|&m| m == member_ty).unwrap_or(0);
+
+    // Write the tag.
+    if ul.tag_size > 0 {
+        let tag_ty = clif_types::int_type_for_bytes(ul.tag_size);
+        let tag_val = ctx.builder.ins().iconst(tag_ty, member_idx as i64);
+        ctx.store(tag_val, dest_addr, 0);
+    }
+
+    // Write the payload at payload_offset.
+    if let Some(operand) = operands.first() {
+        if let Some(val) = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module) {
+            let payload_addr = ctx.builder.ins().iadd_imm(dest_addr, i64::from(ul.payload_offset));
+            if abi::is_scalar(member_ty, table) {
+                ctx.store(val, payload_addr, 0);
+            } else {
+                // Aggregate payload — memcpy from val (address) to payload_addr.
+                let member_layout = ctx.layouts.layout_of(member_ty, table);
+                let config = module.target_config();
+                ctx.builder.emit_small_memory_copy(
+                    config,
+                    payload_addr,
+                    val,
+                    u64::from(member_layout.size),
+                    1, 1, true,
+                    MemFlags::new(),
+                );
+            }
+        }
+    }
+
+    Some(dest_addr)
+}
+
+/// Emits a discriminant read from an enum or union place.
 fn emit_discriminant<M: Module>(
     ctx: &mut FunctionContext<'_>,
     place: &Place,
@@ -929,7 +1002,11 @@ fn emit_discriminant<M: Module>(
     module: &mut M,
 ) -> Value {
     let addr = emit_place_addr(ctx, place, table, module);
-    let place_ty = ctx.local_type_id(place.local);
+    let place_ty = if place.projections.is_empty() {
+        ctx.local_type_id(place.local)
+    } else {
+        resolve_place_type(ctx, place, table)
+    };
     let (_, unwrapped) = clif_types::unwrap_mutable(place_ty, table);
 
     if let Ty::Enum(def_id) = unwrapped {
@@ -940,7 +1017,17 @@ fn emit_discriminant<M: Module>(
         }
     }
 
-    // Single-variant or non-enum — discriminant is 0.
+    if let Ty::Union(members) = unwrapped {
+        let members = members.clone();
+        let ul = ctx.layouts.union_layout_of(place_ty, table);
+        if ul.tag_size > 0 {
+            let tag_ty = clif_types::int_type_for_bytes(ul.tag_size);
+            return ctx.load(tag_ty, addr, 0);
+        }
+        let _ = members;
+    }
+
+    // Single-variant or non-enum/non-union — discriminant is 0.
     ctx.builder.ins().iconst(types::I8, 0)
 }
 

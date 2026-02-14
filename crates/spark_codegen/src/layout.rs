@@ -40,6 +40,17 @@ pub struct EnumLayout {
     pub max_payload_size: u32,
 }
 
+/// Layout information for a union type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnionLayout {
+    /// Overall layout of the union (tag + max member, padded to alignment).
+    pub layout: TypeLayout,
+    /// Size of the discriminant tag in bytes.
+    pub tag_size: u32,
+    /// Byte offset where member payloads begin.
+    pub payload_offset: u32,
+}
+
 /// Caches computed type layouts to avoid redundant calculations.
 #[derive(Debug)]
 pub struct LayoutCache {
@@ -53,6 +64,8 @@ pub struct LayoutCache {
     enum_layouts: FxHashMap<DefId, EnumLayout>,
     /// Cached struct layouts for instantiated generic types (`Ty::Applied`).
     applied_struct_layouts: FxHashMap<TypeId, StructLayout>,
+    /// Cached union layouts (keyed by the union TypeId).
+    union_layouts: FxHashMap<TypeId, UnionLayout>,
 }
 
 impl LayoutCache {
@@ -65,6 +78,7 @@ impl LayoutCache {
             struct_layouts: FxHashMap::default(),
             enum_layouts: FxHashMap::default(),
             applied_struct_layouts: FxHashMap::default(),
+            union_layouts: FxHashMap::default(),
         }
     }
 
@@ -101,6 +115,38 @@ impl LayoutCache {
         }
         let layout = self.compute_enum_layout(def_id, table);
         self.enum_layouts.insert(def_id, layout.clone());
+        layout
+    }
+
+    /// Computes (or returns cached) the union layout for a union type.
+    pub fn union_layout_of(&mut self, union_ty_id: TypeId, table: &TypeTable) -> UnionLayout {
+        if let Some(cached) = self.union_layouts.get(&union_ty_id) {
+            return cached.clone();
+        }
+        let members = match table.resolve(union_ty_id) {
+            Ty::Union(members) => members.clone(),
+            _ => Vec::new(),
+        };
+        let tag_size = tag_size_for_count(members.len());
+        let mut max_member_size = 0u32;
+        let mut max_member_align = 1u32;
+        for member_ty in &members {
+            let member_layout = self.layout_of(*member_ty, table);
+            max_member_size = max_member_size.max(member_layout.size);
+            max_member_align = max_member_align.max(member_layout.align);
+        }
+        let payload_offset = align_to(tag_size, max_member_align);
+        let overall_align = max_member_align.max(tag_size);
+        let total_size = align_to(payload_offset + max_member_size, overall_align);
+        let layout = UnionLayout {
+            layout: TypeLayout {
+                size: total_size,
+                align: overall_align,
+            },
+            tag_size,
+            payload_offset,
+        };
+        self.union_layouts.insert(union_ty_id, layout.clone());
         layout
     }
 

@@ -208,10 +208,10 @@ pub fn desugar_propagate_union(
         });
     }
 
-    // Success arm last (catch-all binding)
+    // Success arm last — uses TypeNarrow so the union payload is properly extracted.
     let success_id = definitions.next_synthetic_id(span);
     arms.push(HirMatchArm {
-        pattern: HirPattern::Binding { def_id: success_id },
+        pattern: HirPattern::TypeNarrow { def_id: success_id, ty: success_ty },
         guard: None,
         body: HirExpr::new(HirExprKind::Local(success_id), success_ty, span),
         span,
@@ -611,8 +611,8 @@ mod tests {
             assert!(matches!(arms[0].pattern, HirPattern::TypeNarrow { .. }));
             // First arm returns the error
             assert!(matches!(arms[0].body.kind, HirExprKind::Return(_)));
-            // Last arm is Binding for success
-            assert!(matches!(arms[1].pattern, HirPattern::Binding { .. }));
+            // Last arm is TypeNarrow for success (extracts payload from union)
+            assert!(matches!(arms[1].pattern, HirPattern::TypeNarrow { .. }));
         }
     }
 
