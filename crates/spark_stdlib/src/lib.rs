@@ -30,10 +30,16 @@ pub struct StdlibSource {
 /// These should be injected into the compilation pipeline before lexing.
 #[must_use]
 pub fn stdlib_sources() -> Vec<StdlibSource> {
-    vec![StdlibSource {
-        path: "spark/math.spark",
-        source: include_str!("../spark/math.spark"),
-    }]
+    vec![
+        StdlibSource {
+            path: "spark/math.spark",
+            source: include_str!("../spark/math.spark"),
+        },
+        StdlibSource {
+            path: "spark/json.spark",
+            source: include_str!("../spark/json.spark"),
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -43,8 +49,32 @@ mod tests {
     #[test]
     fn has_math_source() {
         let sources = stdlib_sources();
-        assert_eq!(sources.len(), 1);
+        assert_eq!(sources.len(), 2);
         assert_eq!(sources[0].path, "spark/math.spark");
+    }
+
+    #[test]
+    fn has_json_source() {
+        let sources = stdlib_sources();
+        assert_eq!(sources[1].path, "spark/json.spark");
+    }
+
+    #[test]
+    fn json_source_contains_module_decl() {
+        let sources = stdlib_sources();
+        assert!(sources[1].source.contains("module json"));
+    }
+
+    #[test]
+    fn json_source_contains_parse() {
+        let sources = stdlib_sources();
+        assert!(sources[1].source.contains("pub fn parse"));
+    }
+
+    #[test]
+    fn json_source_contains_extern_fns() {
+        let sources = stdlib_sources();
+        assert!(sources[1].source.contains("extern fn __spark_json_parse"));
     }
 
     #[test]

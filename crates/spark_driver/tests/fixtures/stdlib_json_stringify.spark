@@ -1,0 +1,9 @@
+import spark.json { object, string, number, set, stringify, JsonValue }
+
+fn main(): Int {
+    obj: JsonValue = object()
+    set(obj, "greeting", string("hello"))
+    set(obj, "count", number(42.0))
+    print(stringify(obj))
+    return 0
+}

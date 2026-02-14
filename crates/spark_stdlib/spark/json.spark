@@ -1,0 +1,193 @@
+module json
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/// An opaque handle to a JSON value in the runtime arena.
+/// A handle of -1 indicates an error.
+pub struct JsonValue {
+    handle: Int
+}
+
+/// A JSON error containing a descriptive message.
+pub struct JsonError {
+    message: String
+}
+
+// JSON type discriminant constants
+// 0=null, 1=bool, 2=number, 3=string, 4=array, 5=object
+
+// =============================================================================
+// Extern FFI declarations (private — not exported)
+// =============================================================================
+
+extern fn __spark_json_parse(text: String): Int
+extern fn __spark_json_error(): String
+extern fn __spark_json_type(handle: Int): Int
+extern fn __spark_json_bool(handle: Int): Int
+extern fn __spark_json_number(handle: Int): Float
+extern fn __spark_json_string(handle: Int): String
+extern fn __spark_json_array_len(handle: Int): Int
+extern fn __spark_json_array_get(handle: Int, index: Int): Int
+extern fn __spark_json_object_get(handle: Int, key: String): Int
+extern fn __spark_json_object_has(handle: Int, key: String): Int
+extern fn __spark_json_new_null(): Int
+extern fn __spark_json_new_bool(v: Int): Int
+extern fn __spark_json_new_number(v: Float): Int
+extern fn __spark_json_new_string(v: String): Int
+extern fn __spark_json_new_array(): Int
+extern fn __spark_json_new_object(): Int
+extern fn __spark_json_array_push(handle: Int, child: Int): Void
+extern fn __spark_json_object_set(handle: Int, key: String, value: Int): Void
+extern fn __spark_json_stringify(handle: Int): String
+extern fn __spark_json_stringify_pretty(handle: Int, indent: Int): String
+
+// =============================================================================
+// Parsing & Serialization
+// =============================================================================
+
+/// Parses a JSON string, returning a JsonValue.
+/// If parsing fails, the handle will be -1; use isError() and error() to check.
+pub fn parse(text: String): JsonValue {
+    return JsonValue { handle: __spark_json_parse(text) }
+}
+
+/// Returns true if a JsonValue represents a parse error.
+pub fn isError(value: JsonValue): Bool {
+    return value.handle == -1
+}
+
+/// Returns the last parse error message.
+pub fn error(): String {
+    return __spark_json_error()
+}
+
+/// Stringifies a JsonValue to compact JSON.
+pub fn stringify(value: JsonValue): String {
+    return __spark_json_stringify(value.handle)
+}
+
+/// Stringifies a JsonValue to pretty-printed JSON with the given indent.
+pub fn stringifyPretty(value: JsonValue, indent: Int): String {
+    return __spark_json_stringify_pretty(value.handle, indent)
+}
+
+// =============================================================================
+// Type checking
+// =============================================================================
+
+/// Returns the type of a JSON value as an integer discriminant.
+/// 0=null, 1=bool, 2=number, 3=string, 4=array, 5=object, -1=error
+pub fn typeOf(value: JsonValue): Int {
+    return __spark_json_type(value.handle)
+}
+
+/// Returns true if the value is a JSON null.
+pub fn isNull(value: JsonValue): Bool { return __spark_json_type(value.handle) == 0 }
+
+/// Returns true if the value is a JSON boolean.
+pub fn isBool(value: JsonValue): Bool { return __spark_json_type(value.handle) == 1 }
+
+/// Returns true if the value is a JSON number.
+pub fn isNumber(value: JsonValue): Bool { return __spark_json_type(value.handle) == 2 }
+
+/// Returns true if the value is a JSON string.
+pub fn isString(value: JsonValue): Bool { return __spark_json_type(value.handle) == 3 }
+
+/// Returns true if the value is a JSON array.
+pub fn isArray(value: JsonValue): Bool { return __spark_json_type(value.handle) == 4 }
+
+/// Returns true if the value is a JSON object.
+pub fn isObject(value: JsonValue): Bool { return __spark_json_type(value.handle) == 5 }
+
+// =============================================================================
+// Value access
+// =============================================================================
+
+/// Returns the boolean value. Returns false if not a boolean.
+pub fn getBool(value: JsonValue): Bool {
+    return __spark_json_bool(value.handle) != 0
+}
+
+/// Returns the number value. Returns 0.0 if not a number.
+pub fn getNumber(value: JsonValue): Float {
+    return __spark_json_number(value.handle)
+}
+
+/// Returns the string value. Returns "" if not a string.
+pub fn getString(value: JsonValue): String {
+    return __spark_json_string(value.handle)
+}
+
+// =============================================================================
+// Object access
+// =============================================================================
+
+/// Gets a value from a JSON object by key.
+/// Returns a JsonValue with handle -1 if not found.
+pub fn get(obj: JsonValue, key: String): JsonValue {
+    return JsonValue { handle: __spark_json_object_get(obj.handle, key) }
+}
+
+/// Returns true if a JSON object contains the given key.
+pub fn has(obj: JsonValue, key: String): Bool {
+    return __spark_json_object_has(obj.handle, key) != 0
+}
+
+// =============================================================================
+// Array access
+// =============================================================================
+
+/// Gets an element from a JSON array by index.
+/// Returns a JsonValue with handle -1 if out of bounds.
+pub fn at(arr: JsonValue, index: Int): JsonValue {
+    return JsonValue { handle: __spark_json_array_get(arr.handle, index) }
+}
+
+/// Returns the number of elements in a JSON array. Returns -1 if not an array.
+pub fn len(value: JsonValue): Int {
+    return __spark_json_array_len(value.handle)
+}
+
+// =============================================================================
+// Construction
+// =============================================================================
+
+/// Creates a JSON null value.
+pub fn null(): JsonValue { return JsonValue { handle: __spark_json_new_null() } }
+
+/// Creates a JSON boolean value.
+pub fn bool(v: Bool): JsonValue {
+    if v {
+        return JsonValue { handle: __spark_json_new_bool(1) }
+    } else {
+        return JsonValue { handle: __spark_json_new_bool(0) }
+    }
+}
+
+/// Creates a JSON number value.
+pub fn number(v: Float): JsonValue { return JsonValue { handle: __spark_json_new_number(v) } }
+
+/// Creates a JSON string value.
+pub fn string(v: String): JsonValue { return JsonValue { handle: __spark_json_new_string(v) } }
+
+/// Creates an empty JSON array.
+pub fn array(): JsonValue { return JsonValue { handle: __spark_json_new_array() } }
+
+/// Creates an empty JSON object.
+pub fn object(): JsonValue { return JsonValue { handle: __spark_json_new_object() } }
+
+// =============================================================================
+// Building (mutation)
+// =============================================================================
+
+/// Appends an item to a JSON array. Mutates the underlying arena node.
+pub fn push(arr: JsonValue, item: JsonValue): Void {
+    __spark_json_array_push(arr.handle, item.handle)
+}
+
+/// Sets a key-value pair on a JSON object. Mutates the underlying arena node.
+pub fn set(obj: JsonValue, key: String, value: JsonValue): Void {
+    __spark_json_object_set(obj.handle, key, value.handle)
+}

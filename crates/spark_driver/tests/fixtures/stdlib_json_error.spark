@@ -1,0 +1,11 @@
+import spark.json { parse, isError, JsonValue }
+
+fn main(): Int {
+    data: JsonValue = parse("not valid json")
+    if isError(data) {
+        print("got error")
+        return 0
+    }
+    print("no error")
+    return 0
+}

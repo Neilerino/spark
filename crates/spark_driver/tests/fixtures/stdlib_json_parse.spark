@@ -1,0 +1,13 @@
+import spark.json { parse, isError, get, getString, getNumber, JsonValue }
+
+fn main(): Int {
+    data: JsonValue = parse("\{\"name\": \"Alice\", \"age\": 30}")
+    if isError(data) {
+        return 1
+    }
+    name: JsonValue = get(data, "name")
+    print(getString(name))
+    age: JsonValue = get(data, "age")
+    print(getNumber(age))
+    return 0
+}
