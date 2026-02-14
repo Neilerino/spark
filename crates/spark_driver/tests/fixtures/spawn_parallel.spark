@@ -1,0 +1,17 @@
+async fn double(x: Int): Int {
+    return x * 2
+}
+
+async fn triple(x: Int): Int {
+    return x * 3
+}
+
+fn main(): Int {
+    f1: Future[Int] = spawn { double(5) }
+    f2: Future[Int] = spawn { triple(5) }
+    a: Int = await f1
+    b: Int = await f2
+    print(a)
+    print(b)
+    return 0
+}

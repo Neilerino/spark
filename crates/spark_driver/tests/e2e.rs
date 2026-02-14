@@ -415,6 +415,31 @@ fn spawn_non_async_error() {
     assert_compile_error("spawn_non_async_error.spark", "cannot `spawn`");
 }
 
+#[test]
+fn spawn_basic() {
+    assert_output("spawn_basic.spark", "42");
+}
+
+#[test]
+fn spawn_parallel() {
+    assert_output("spawn_parallel.spark", "10\n15");
+}
+
+#[test]
+fn spawn_closure() {
+    assert_output("spawn_closure.spark", "123");
+}
+
+#[test]
+fn spawn_mutable_error() {
+    assert_compile_error("spawn_mutable_error.spark", "mutable binding");
+}
+
+#[test]
+fn spawn_ref_error() {
+    assert_compile_error("spawn_ref_error.spark", "not thread-safe");
+}
+
 // Standard library
 // ============================================================================
 

@@ -254,6 +254,38 @@ fn emit_call<M: Module>(
                 );
                 return;
             }
+            if matches!(info.kind, DefinitionKind::BuiltinFunction)
+                && info.name == kw::SPARK_SPAWN
+            {
+                emit_spawn_call(
+                    ctx,
+                    args,
+                    destination,
+                    target,
+                    table,
+                    definitions,
+                    func_ids,
+                    thunk_ids,
+                    module,
+                );
+                return;
+            }
+            if matches!(info.kind, DefinitionKind::BuiltinFunction)
+                && info.name == kw::SPARK_AWAIT
+            {
+                emit_await_call(
+                    ctx,
+                    args,
+                    destination,
+                    target,
+                    table,
+                    definitions,
+                    func_ids,
+                    thunk_ids,
+                    module,
+                );
+                return;
+            }
         }
     }
 
@@ -608,6 +640,131 @@ fn emit_parallel_call<M: Module>(
             func_ref,
             &[list_ptr, fn_ptr, env_ptr, elem_size_val, cb_kind_val],
         );
+    }
+
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+}
+
+/// Emits a `spawn` call: extracts fn_ptr and env_ptr from the closure fat pointer,
+/// computes result_size from the inner type's layout, and calls `__spark_spawn`.
+#[allow(clippy::too_many_arguments)]
+fn emit_spawn_call<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    args: &[Operand],
+    destination: &Place,
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) {
+    // args[0] is the closure (fat pointer) wrapping the spawn body.
+    let cb_val = args.first().and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
+
+    let Some(fat_ptr_addr) = cb_val else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    // Load fn_ptr and env_ptr from the fat pointer.
+    let fn_ptr = ctx
+        .builder
+        .ins()
+        .load(ctx.ptr_type, MemFlags::new(), fat_ptr_addr, 0);
+    let env_ptr = ctx.builder.ins().load(
+        ctx.ptr_type,
+        MemFlags::new(),
+        fat_ptr_addr,
+        ctx.ptr_type.bytes() as i32,
+    );
+
+    // Determine result_size from the destination type (Future[T] → T).
+    let dest_ty_id = ctx.local_type_id(destination.local);
+    let inner_ty = match table.resolve(dest_ty_id) {
+        Ty::Future { inner } => *inner,
+        _ => dest_ty_id,
+    };
+    let result_layout = ctx.layouts.layout_of(inner_ty, table);
+    let result_size_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I64, i64::from(result_layout.size));
+
+    // Determine is_float flag from the closure's return type.
+    let cb_ty_id = if let Some(Operand::Copy(place)) = args.first() {
+        ctx.local_type_id(place.local)
+    } else {
+        spark_types::TypeId::ERROR
+    };
+    let is_float = match table.resolve(cb_ty_id) {
+        Ty::Function { ret, .. } => matches!(table.resolve(*ret), Ty::Float(_)),
+        _ => false,
+    };
+    let is_float_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I8, i64::from(u8::from(is_float)));
+
+    // Call __spark_spawn(fn_ptr, env_ptr, result_size, is_float) -> ptr
+    let func_ref = module.declare_func_in_func(ctx.stubs.spawn, ctx.builder.func);
+    let call = ctx.builder.ins().call(
+        func_ref,
+        &[fn_ptr, env_ptr, result_size_val, is_float_val],
+    );
+    let result = ctx.builder.inst_results(call)[0];
+    if destination.projections.is_empty() {
+        ctx.write_local(destination.local, result);
+    }
+
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+}
+
+/// Emits an `await` call: passes the future pointer to `__spark_await` and
+/// loads the result value from the returned buffer pointer.
+#[allow(clippy::too_many_arguments)]
+fn emit_await_call<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    args: &[Operand],
+    destination: &Place,
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) {
+    // args[0] is the Future[T] pointer.
+    let future_val = args.first().and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
+
+    let Some(future_ptr) = future_val else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    // Call __spark_await(future_ptr) -> ptr (pointer to result buffer)
+    let func_ref = module.declare_func_in_func(ctx.stubs.await_future, ctx.builder.func);
+    let call = ctx.builder.ins().call(func_ref, &[future_ptr]);
+    let result_ptr = ctx.builder.inst_results(call)[0];
+
+    // Load the result value from the buffer based on the destination type.
+    let dest_ty_id = ctx.local_type_id(destination.local);
+    if let Some(clif_ty) = crate::abi::spark_type_to_clif(dest_ty_id, table, ctx.ptr_type) {
+        let result_val = ctx
+            .builder
+            .ins()
+            .load(clif_ty, MemFlags::new(), result_ptr, 0);
+        if destination.projections.is_empty() {
+            ctx.write_local(destination.local, result_val);
+        }
     }
 
     let target_block = ctx.clif_block(target);

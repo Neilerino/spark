@@ -342,13 +342,11 @@ pub fn lower_expr(
         }
 
         HirExprKind::Await(inner) => {
-            // Phase 1: synchronous shim — Future[T] is transparent
-            lower_expr(inner, fb, mir, type_table, defs)
+            lower_await(inner, expr, fb, mir, type_table, defs)
         }
 
         HirExprKind::Spawn(inner) => {
-            // Phase 1: synchronous shim — evaluate immediately
-            lower_expr(inner, fb, mir, type_table, defs)
+            lower_spawn(inner, expr, fb, mir, type_table, defs)
         }
 
         // ── String interpolation ──────────────────────────────────
@@ -484,7 +482,15 @@ fn lower_call(
         })
         .collect();
 
-    let dest = fb.fresh_temp(expr.ty, expr.span);
+    // If the callee is an async function, it returns T at runtime even though
+    // the type system says Future[T]. Unwrap so the dest local has the correct type.
+    let result_ty = if callee_is_async(callee, type_table) {
+        unwrap_future_type(expr.ty, type_table)
+    } else {
+        expr.ty
+    };
+
+    let dest = fb.fresh_temp(result_ty, expr.span);
     let cont = fb.new_block();
 
     fb.terminate(Terminator::Call {
@@ -1045,11 +1051,131 @@ fn find_builtin_function(defs: &DefinitionTable, name: Symbol) -> Option<spark_r
         .map(|(id, _)| id)
 }
 
+/// Returns `true` if the callee expression is an async function.
+fn callee_is_async(callee: &HirExpr, table: &TypeTable) -> bool {
+    match table.resolve(callee.ty) {
+        Ty::Function { is_async, .. } => *is_async,
+        _ => false,
+    }
+}
+
+/// Unwraps `Future[T]` → `T`. Returns the type unchanged if not a future.
+fn unwrap_future_type(ty: TypeId, table: &TypeTable) -> TypeId {
+    match table.resolve(ty) {
+        Ty::Future { inner } => *inner,
+        _ => ty,
+    }
+}
+
 /// Lowers a parallel each / parallel each via node into a MIR call.
 ///
 /// The callback (a fat pointer) and list are lowered to locals, then a
 /// `Terminator::Call` is emitted targeting the appropriate parallel runtime stub.
 #[allow(clippy::too_many_arguments)]
+/// Lowers a `spawn` expression into a MIR call to `__spark_spawn`.
+///
+/// The inner expression is a closure (fat pointer) wrapping the spawn body,
+/// created by the lambda_lift pass. We lower it and pass it to `__spark_spawn`.
+#[allow(clippy::too_many_arguments)]
+fn lower_spawn(
+    inner: &HirExpr,
+    expr: &HirExpr,
+    fb: &mut FunctionBuilder,
+    mir: &mut MirBuilder<'_>,
+    type_table: &TypeTable,
+    defs: &DefinitionTable,
+) -> Local {
+    // Lower the closure (fat pointer).
+    let closure_local = lower_expr(inner, fb, mir, type_table, defs);
+
+    // Find the __spark_spawn builtin.
+    let builtin_def_id = find_builtin_function(defs, kw::SPARK_SPAWN)
+        .unwrap_or(spark_resolve::DefId::DUMMY);
+
+    let func_ty = type_table.get_def_type(builtin_def_id).unwrap_or(TypeId::ERROR);
+    let func_temp = fb.fresh_temp(func_ty, expr.span);
+    fb.push_assign(
+        Place::from_local(func_temp),
+        Rvalue::Use(Operand::Constant(Constant::FunctionRef(builtin_def_id))),
+        expr.span,
+    );
+
+    let args = vec![Operand::Copy(Place::from_local(closure_local))];
+
+    let dest = fb.fresh_temp(expr.ty, expr.span);
+    let cont = fb.new_block();
+
+    fb.terminate(Terminator::Call {
+        func: Operand::Copy(Place::from_local(func_temp)),
+        args,
+        destination: Place::from_local(dest),
+        target: cont,
+        span: expr.span,
+    });
+
+    fb.switch_to(cont);
+    dest
+}
+
+/// Lowers an `await` expression.
+///
+/// For direct async function calls (inner is a Call/Block), uses Phase 1
+/// synchronous behavior — the async function is executed inline.
+/// For variables holding `Future[T]` (from spawn), emits a call to `__spark_await`.
+#[allow(clippy::too_many_arguments)]
+fn lower_await(
+    inner: &HirExpr,
+    expr: &HirExpr,
+    fb: &mut FunctionBuilder,
+    mir: &mut MirBuilder<'_>,
+    type_table: &TypeTable,
+    defs: &DefinitionTable,
+) -> Local {
+    // Check if the inner is a spawned future (variable) vs direct async call.
+    let is_spawned_future = matches!(
+        &inner.kind,
+        HirExprKind::Local(_)
+            | HirExprKind::Spawn(_)
+            | HirExprKind::FieldAccess { .. }
+            | HirExprKind::Index { .. }
+    );
+
+    if !is_spawned_future {
+        // Synchronous: direct async call — Phase 1 behavior.
+        return lower_expr(inner, fb, mir, type_table, defs);
+    }
+
+    // Phase 2: the inner holds a SparkFuture* — call __spark_await.
+    let future_local = lower_expr(inner, fb, mir, type_table, defs);
+
+    let builtin_def_id = find_builtin_function(defs, kw::SPARK_AWAIT)
+        .unwrap_or(spark_resolve::DefId::DUMMY);
+
+    let func_ty = type_table.get_def_type(builtin_def_id).unwrap_or(TypeId::ERROR);
+    let func_temp = fb.fresh_temp(func_ty, expr.span);
+    fb.push_assign(
+        Place::from_local(func_temp),
+        Rvalue::Use(Operand::Constant(Constant::FunctionRef(builtin_def_id))),
+        expr.span,
+    );
+
+    let args = vec![Operand::Copy(Place::from_local(future_local))];
+
+    let dest = fb.fresh_temp(expr.ty, expr.span);
+    let cont = fb.new_block();
+
+    fb.terminate(Terminator::Call {
+        func: Operand::Copy(Place::from_local(func_temp)),
+        args,
+        destination: Place::from_local(dest),
+        target: cont,
+        span: expr.span,
+    });
+
+    fb.switch_to(cont);
+    dest
+}
+
 fn lower_parallel_each(
     list: &HirExpr,
     callback: &HirExpr,

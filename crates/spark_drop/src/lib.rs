@@ -25,8 +25,8 @@ pub fn needs_drop(ty_id: TypeId, table: &TypeTable) -> bool {
         return false;
     }
     match table.resolve(ty_id) {
-        Ty::Function { .. } => true,
-        Ty::Mutable(inner) | Ty::Future { inner } => needs_drop(*inner, table),
+        Ty::Function { .. } | Ty::Future { .. } => true,
+        Ty::Mutable(inner) => needs_drop(*inner, table),
         _ => false,
     }
 }
@@ -44,8 +44,8 @@ pub fn needs_rc(ty_id: TypeId, table: &TypeTable) -> bool {
         return false;
     }
     match table.resolve(ty_id) {
-        Ty::String | Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) => true,
-        Ty::Mutable(inner) | Ty::Future { inner } => needs_rc(*inner, table),
+        Ty::String | Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) | Ty::Future { .. } => true,
+        Ty::Mutable(inner) => needs_rc(*inner, table),
         _ => false,
     }
 }
@@ -64,7 +64,8 @@ pub fn element_needs_rc(ty_id: TypeId, table: &TypeTable) -> bool {
     match ty {
         Ty::List(elem) | Ty::Set(elem) => needs_rc(*elem, table),
         Ty::Map(k, v) => needs_rc(*k, table) || needs_rc(*v, table),
-        Ty::Mutable(inner) | Ty::Future { inner } => element_needs_rc(*inner, table),
+        Ty::Mutable(inner) => element_needs_rc(*inner, table),
+        Ty::Future { .. } => false,
         _ => false,
     }
 }
@@ -232,6 +233,17 @@ mod tests {
         let mut_fn = table.intern(Ty::Mutable(fn_ty));
 
         assert!(needs_drop(mut_fn, &table));
+    }
+
+    #[test]
+    fn future_is_rc() {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let future = table.intern(Ty::Future { inner: int });
+
+        assert!(needs_rc(future, &table));
+        assert!(needs_drop(future, &table));
+        assert!(!element_needs_rc(future, &table));
     }
 
     #[test]

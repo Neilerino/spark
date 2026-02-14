@@ -1,0 +1,11 @@
+async fn add(a: Int, b: Int): Int {
+    return a + b
+}
+
+fn main(): Int {
+    offset: Int = 100
+    future: Future[Int] = spawn { add(offset, 23) }
+    result: Int = await future
+    print(result)
+    return 0
+}

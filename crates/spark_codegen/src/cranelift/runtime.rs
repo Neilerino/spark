@@ -99,6 +99,12 @@ pub struct RuntimeStubs {
     pub parallel_foreach: FuncId,
     /// `__spark_parallel_map(list_ptr, fn_ptr, env_ptr, elem_size, result_elem_size, cb_kind) -> ptr`
     pub parallel_map: FuncId,
+    /// `__spark_spawn(fn_ptr, env_ptr, result_size, is_float) -> ptr`
+    pub spawn: FuncId,
+    /// `__spark_await(future_ptr) -> ptr`
+    pub await_future: FuncId,
+    /// `__spark_future_rc_dec(future_ptr)`
+    pub future_rc_dec: FuncId,
 }
 
 impl RuntimeStubs {
@@ -414,6 +420,27 @@ impl RuntimeStubs {
                 "__spark_parallel_map",
                 &[ptr_type, ptr_type, ptr_type, types::I64, types::I64, types::I8],
                 Some(ptr_type),
+                call_conv,
+            ),
+            spawn: declare_fn(
+                module,
+                "__spark_spawn",
+                &[ptr_type, ptr_type, types::I64, types::I8],
+                Some(ptr_type),
+                call_conv,
+            ),
+            await_future: declare_fn(
+                module,
+                "__spark_await",
+                &[ptr_type],
+                Some(ptr_type),
+                call_conv,
+            ),
+            future_rc_dec: declare_fn(
+                module,
+                "__spark_future_rc_dec",
+                &[ptr_type],
+                None,
                 call_conv,
             ),
         }

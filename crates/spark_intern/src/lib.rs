@@ -359,6 +359,10 @@ impl Interner {
             "round",
             // FFI
             "extern",
+            // Spawn/await runtime stubs
+            "__spark_spawn",
+            "__spark_await",
+            "__spark_future_rc_dec",
         ];
 
         for kw in keywords {
@@ -629,29 +633,37 @@ pub mod kw {
 
     // Standard library module names
     /// `spark`
-    pub const SPARK: Symbol = Symbol(77);
+    pub const SPARK: Symbol = Symbol(81);
     /// `math`
-    pub const MATH: Symbol = Symbol(78);
+    pub const MATH: Symbol = Symbol(82);
 
     // Standard library function names
     /// `sqrt`
-    pub const SQRT: Symbol = Symbol(79);
+    pub const SQRT: Symbol = Symbol(83);
     /// `pow`
-    pub const POW: Symbol = Symbol(80);
+    pub const POW: Symbol = Symbol(84);
     /// `abs`
-    pub const ABS: Symbol = Symbol(81);
+    pub const ABS: Symbol = Symbol(85);
     /// `floor`
-    pub const FLOOR: Symbol = Symbol(82);
+    pub const FLOOR: Symbol = Symbol(86);
     /// `ceil`
-    pub const CEIL: Symbol = Symbol(83);
+    pub const CEIL: Symbol = Symbol(87);
     /// `min`
-    pub const MIN: Symbol = Symbol(84);
+    pub const MIN: Symbol = Symbol(88);
     /// `max`
-    pub const MAX: Symbol = Symbol(85);
+    pub const MAX: Symbol = Symbol(89);
     /// `round`
-    pub const ROUND: Symbol = Symbol(86);
+    pub const ROUND: Symbol = Symbol(90);
     /// `extern`
-    pub const EXTERN: Symbol = Symbol(87);
+    pub const EXTERN: Symbol = Symbol(91);
+
+    // Spawn/await runtime stubs
+    /// `__spark_spawn` (internal runtime stub)
+    pub const SPARK_SPAWN: Symbol = Symbol(92);
+    /// `__spark_await` (internal runtime stub)
+    pub const SPARK_AWAIT: Symbol = Symbol(93);
+    /// `__spark_future_rc_dec` (internal runtime stub)
+    pub const FUTURE_RC_DEC: Symbol = Symbol(94);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
@@ -668,8 +680,8 @@ pub mod kw {
     /// Returns true if the given symbol is a keyword.
     #[must_use]
     pub const fn is_keyword(sym: Symbol) -> bool {
-        // Keywords are symbols 1-37 (fn through Never) plus parallel (78) plus extern (87)
-        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78 || sym.0 == 87
+        // Keywords are symbols 1-37 (fn through Never) plus parallel (78) plus extern (91)
+        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78 || sym.0 == 91
     }
 
     /// Returns true if the given symbol is a primitive type name.

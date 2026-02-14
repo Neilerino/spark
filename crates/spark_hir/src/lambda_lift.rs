@@ -123,11 +123,19 @@ fn walk_expr(
         }
         HirExprKind::Deref(inner)
         | HirExprKind::Await(inner)
-        | HirExprKind::Spawn(inner)
         | HirExprKind::Loop { body: inner }
         | HirExprKind::Is { expr: inner, .. }
         | HirExprKind::As { expr: inner, .. } => {
             walk_expr(inner, lifted, definitions, table, counter, diagnostics);
+        }
+
+        // Spawn: wrap the body in a synthetic zero-arg closure for deferred execution.
+        HirExprKind::Spawn(inner) => {
+            // Walk the inner first to process any nested lambdas.
+            walk_expr(inner, lifted, definitions, table, counter, diagnostics);
+
+            // Lift the spawn body into a synthetic closure.
+            lift_spawn_body(expr, lifted, definitions, table, counter, diagnostics);
         }
         HirExprKind::Return(opt) | HirExprKind::Break(opt) => {
             if let Some(inner) = opt {
@@ -281,6 +289,130 @@ fn check_parallel_ref_captures(callback: &HirExpr, table: &TypeTable, diagnostic
             }
         }
     }
+}
+
+/// Lifts the body of a `spawn` expression into a synthetic zero-arg closure.
+///
+/// The spawn body becomes the body of a lifted function. Any free variables
+/// in the body are captured (just like a regular lambda). The `Spawn` node's
+/// inner expression is replaced with either `Local(def_id)` (non-capturing)
+/// or `MakeClosure { func_def_id, captures }` (capturing).
+fn lift_spawn_body(
+    expr: &mut HirExpr,
+    lifted: &mut Vec<HirFunction>,
+    definitions: &mut DefinitionTable,
+    table: &mut TypeTable,
+    counter: &mut u32,
+    diagnostics: &mut Diagnostics,
+) {
+    // Take ownership of the Spawn's inner expression.
+    let old_kind = std::mem::replace(&mut expr.kind, HirExprKind::Error);
+    let HirExprKind::Spawn(body) = old_kind else {
+        expr.kind = old_kind;
+        return;
+    };
+
+    // Determine the result type: unwrap Future[T] → T.
+    let result_ty = match table.resolve(expr.ty) {
+        Ty::Future { inner } => *inner,
+        _ => expr.ty,
+    };
+
+    // Create the closure type: fn() -> T
+    let closure_ty = table.intern(Ty::Function {
+        params: vec![],
+        ret: result_ty,
+        is_async: false,
+    });
+
+    // Allocate a DefId for the lifted spawn function.
+    let name = spark_intern::sym(&format!("__spawn_{counter}"));
+    *counter += 1;
+
+    let def_id = definitions.insert(DefinitionInfo::new(
+        DefinitionKind::Lambda,
+        name,
+        expr.span,
+        Visibility::Private,
+        ModulePath::root(),
+    ));
+
+    table.set_def_type(def_id, closure_ty);
+
+    // Collect captures from the body (no params to exclude).
+    let captures = collect_captures(&body, &[], definitions);
+
+    // Check thread safety of captures.
+    check_spawn_captures(&captures, expr.span, table, diagnostics);
+
+    // Create the lifted function.
+    lifted.push(HirFunction {
+        def_id,
+        params: vec![],
+        body: *body,
+        ret_type: result_ty,
+        is_async: false,
+        span: expr.span,
+        captures: captures.clone(),
+    });
+
+    // Build the closure reference.
+    let closure_expr = if captures.is_empty() {
+        HirExpr {
+            kind: HirExprKind::Local(def_id),
+            ty: closure_ty,
+            span: expr.span,
+        }
+    } else {
+        HirExpr {
+            kind: HirExprKind::MakeClosure {
+                func_def_id: def_id,
+                captures,
+            },
+            ty: closure_ty,
+            span: expr.span,
+        }
+    };
+
+    // Replace the Spawn's inner with the closure.
+    expr.kind = HirExprKind::Spawn(Box::new(closure_expr));
+}
+
+/// Checks whether a spawn block captures any types that are unsafe for threading.
+///
+/// Capturing a `Ref[T]` or mutable binding in a `spawn` block is unsafe because
+/// the spawned task runs on a separate thread — shared mutable state causes data races.
+fn check_spawn_captures(
+    captures: &[(DefId, TypeId)],
+    span: spark_span::Span,
+    table: &TypeTable,
+    diagnostics: &mut Diagnostics,
+) {
+    for &(_, ty_id) in captures {
+        if type_contains_ref(ty_id, table) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "`spawn` block cannot capture a reference — shared mutable state is not thread-safe",
+                )
+                .with_label(Label::primary(span, "captures a reference")),
+            );
+            return;
+        }
+        if type_is_mutable(ty_id, table) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "`spawn` block cannot capture a mutable binding — use a channel or mutex for shared state",
+                )
+                .with_label(Label::primary(span, "captures a mutable binding")),
+            );
+            return;
+        }
+    }
+}
+
+/// Returns `true` if the given type is a `Ty::Mutable`.
+fn type_is_mutable(ty_id: TypeId, table: &TypeTable) -> bool {
+    matches!(table.resolve(ty_id), Ty::Mutable(_))
 }
 
 /// Returns `true` if the given type is or wraps a `Ty::Ref`.

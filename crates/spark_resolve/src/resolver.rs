@@ -139,6 +139,19 @@ impl Resolver {
             );
             self.definitions.insert(info);
         }
+
+        // Register internal spawn/await runtime stubs.
+        // NOT added to ribs — only called from desugared HIR/MIR.
+        for &stub_name in &[kw::SPARK_SPAWN, kw::SPARK_AWAIT] {
+            let info = DefinitionInfo::new(
+                DefinitionKind::BuiltinFunction,
+                stub_name,
+                Span::DUMMY,
+                Visibility::Public,
+                ModulePath::root(),
+            );
+            self.definitions.insert(info);
+        }
     }
 
     // ========================================================================

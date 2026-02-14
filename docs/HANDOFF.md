@@ -33,7 +33,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_opt`         | MIR optimization passes (5 passes, 2 iterations)               | 75    | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
-**Total: 802 tests passing across workspace.**
+**Total: 894 tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
@@ -111,22 +111,22 @@ String literals work end-to-end. `print("hello world")` produces output.
 | Tuples | **Partial** | Type support complete, no E2E test |
 | Modules / imports | **Partial** | Resolver infrastructure done, no multi-file E2E test |
 | References (`Ref`) | **Partial** | Backend wired (borrow checker, MIR, codegen) but no user-facing creation syntax. See KNOWN_ISSUES.md |
-| `each` / `each via` | **Partial** | Parses but lowers to error in HIR. Needs iterator protocol design |
-| `async` / `await` / `spawn` | **Partial** | Parses, lowers to HIR. No MIR or codegen |
+| `each` / `each via` | **Working** | Index-loop desugaring, callback via fat pointer |
+| `async` / `await` / `spawn` | **Working** | Phase 2 — real concurrency via Tokio `spawn_blocking` |
 | Generic constraints (`T: IFoo`) | **Not implemented** | Type params work but constraints not validated |
 | Weak references | **Not implemented** | Mentioned in spec, no type system support |
 
 ### Suggested Next Steps (in rough priority order)
 
 1. **References end-to-end** — The backend is done (borrow checker, MIR, codegen). Needs: parser support for `Ref[T]` (1 arg, inferred lifetime), implicit borrow coercion in type checker (`Ref[T] = value`), and implicit deref for field access. Small surface area, high payoff — unlocks the entire borrow-checking story.
-2. **`each`/`each via` iteration** — Now unblocked by lambda/closure support. Needs: iterator protocol design, HIR lowering (currently errors), MIR loop lowering. Core language feature for any real program.
-3. **Nested closure RC cleanup** — Closure environments are now RC'd, but captured RC values (e.g., Strings inside an env) are not decremented when the env is freed. Phase 2 follow-up.
-4. **Tuples / modules E2E tests** — These features appear to work but have no E2E coverage. Quick wins for confidence.
-5. **Generic constraint validation** (`T: Comparable`) — Low priority but needed for correct generic programming.
-6. **Async/await/spawn** — Large effort: needs future types, state machine transform, runtime executor. Defer until core language is solid.
+2. **Nested closure RC cleanup** — Closure environments are now RC'd, but captured RC values (e.g., Strings inside an env) are not decremented when the env is freed. Phase 2 follow-up.
+3. **Tuples / modules E2E tests** — These features appear to work but have no E2E coverage. Quick wins for confidence.
+4. **Generic constraint validation** (`T: Comparable`) — Low priority but needed for correct generic programming.
+5. **Async Phase 3** — Cooperative async (`spawn` uses tokio `spawn` instead of `spawn_blocking`), channels for inter-task communication, `select` for multiplexing futures.
 
 ### Recently Completed
 
+- **Async/Await/Spawn Phase 2** — Real concurrency via Tokio `spawn_blocking`. `Future[T]` is now an opaque heap-allocated RC'd pointer (`SparkFuture*`) instead of a transparent type. `spawn { body }` lifts the body into a zero-arg closure, spawns it on Tokio's blocking thread pool, and returns a `SparkFuture*`. `await future` joins the handle and returns the inner `T`. Direct `await async_fn()` (no spawn) stays synchronous for backward compatibility. Thread safety: spawn blocks cannot capture `Ref[T]` or mutable bindings. Runtime stubs: `__spark_spawn`, `__spark_await`, `__spark_future_rc_dec`. 7 E2E tests covering basic spawn, parallel execution, closure capture, and error cases.
 - **Closure environment RC** — Closure environments now have a 16-byte RC header (`rc`, `alloc_size`). `__spark_env_alloc` prepends the header; `__spark_env_rc_dec` frees at rc=0. `needs_drop()` (superset of `needs_rc`) registers function-typed locals for drop. `Operand::Copy` RC-incs the env_ptr. Nested RC cleanup (captured RC values inside envs) deferred to Phase 2.
 - **Lambdas & capturing closures** — Full lambda/closure pipeline: lambda lifting, fat-pointer ABI (`(fn_ptr, env_ptr)`), thunk generation for function references, capture-by-value semantics with heap-allocated environments (`__spark_env_alloc`). Sret calling convention for aggregate returns.
 - **Generic monomorphization** — MIR-level monomorphization pass clones generic function bodies with concrete type substitutions, rewrites call sites, and removes generic originals. Codegen computes layouts for `Ty::Applied` via substituted field types. 3 new monomorphization tests.
@@ -186,7 +186,7 @@ spark_mir           (depends on span, intern, diagnostics, ast, resolve, types, 
 spark_borrow        (depends on span, intern, diagnostics, resolve, types, mir)
 spark_opt           (depends on span, intern, diagnostics, ast, resolve, types, mir)
 spark_codegen       (depends on span, intern, diagnostics, ast, resolve, types, mir, drop + cranelift)
-spark_runtime       (no internal dependencies — standalone staticlib)
+spark_runtime       (depends on tokio — standalone staticlib)
 spark_driver        (depends on all pipeline crates + opt + codegen + clap)
 ```
 
@@ -272,7 +272,7 @@ fn main(): Int {
 
 ```bash
 cargo build                      # Build all
-cargo test                       # Test all (802 tests)
+cargo test                       # Test all (894 tests)
 cargo clippy                     # Lint all
 cargo test -p spark_codegen      # Test code generator
 cargo doc --open                 # View documentation

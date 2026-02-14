@@ -1544,3 +1544,210 @@ unsafe fn call_map_cb(fn_addr: usize, env_addr: usize, elem_ptr: *const u8, cb_k
         result as u64
     }
 }
+
+// =============================================================================
+// Async spawn / await (Tokio)
+// =============================================================================
+
+/// A heap-allocated future for async spawn/await.
+///
+/// Layout: `[rc, result, result_size, handle]`.
+/// - `rc` is the reference count (offset 0, like all Spark heap types).
+/// - `result` is a pointer to the result buffer (null until complete).
+/// - `result_size` is the byte size of the result for allocation.
+/// - `handle` is a `Box<JoinHandle<()>>` (null after join).
+#[repr(C)]
+struct SparkFuture {
+    /// Reference count.
+    rc: usize,
+    /// Pointer to the result buffer (heap-allocated, written by the spawned task).
+    result: *mut u8,
+    /// Byte size of the result value.
+    result_size: usize,
+    /// Opaque pointer to `Box<tokio::task::JoinHandle<()>>`. Null after join.
+    handle: *mut std::ffi::c_void,
+}
+
+/// Returns a reference to the global Tokio runtime, creating it lazily.
+fn tokio_runtime() -> &'static tokio::runtime::Runtime {
+    use std::sync::OnceLock;
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("spark: failed to create Tokio runtime")
+    })
+}
+
+/// Spawns a function on Tokio's blocking thread pool.
+///
+/// The spawned function has signature `fn(env: *mut u8) -> i64` (or f64 bits
+/// cast to i64). The result is stored in a heap buffer inside the returned
+/// `SparkFuture`.
+///
+/// # Parameters
+///
+/// - `fn_ptr`: function pointer (with env parameter) to run on the thread pool
+/// - `env_ptr`: closure environment pointer (may be null for non-capturing)
+/// - `result_size`: byte size of the result (typically 8 for scalars)
+/// - `is_float`: 1 if the function returns f64, 0 for i64/pointer
+///
+/// # Safety
+///
+/// `fn_ptr` must be a valid function pointer. `env_ptr` must be null or a
+/// valid closure environment pointer.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub unsafe extern "C" fn __spark_spawn(
+    fn_ptr: *mut u8,
+    env_ptr: *mut u8,
+    result_size: i64,
+    is_float: i8,
+) -> *mut u8 {
+    let size = result_size as usize;
+
+    // Allocate the result buffer.
+    let result_buf = if size > 0 {
+        let align = std::mem::align_of::<u64>();
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(size, align) };
+        let buf = unsafe { std::alloc::alloc_zeroed(layout) };
+        if buf.is_null() {
+            eprintln!("spark: out of memory allocating future result buffer");
+            std::process::abort();
+        }
+        buf
+    } else {
+        std::ptr::null_mut()
+    };
+
+    // Allocate the SparkFuture on the heap (rc = 1).
+    let future = Box::new(SparkFuture {
+        rc: 1,
+        result: result_buf,
+        result_size: size,
+        handle: std::ptr::null_mut(),
+    });
+    let future_ptr = Box::into_raw(future);
+
+    // Cast pointers to usize for Send.
+    let fn_addr = fn_ptr as usize;
+    let env_addr = env_ptr as usize;
+    let result_addr = result_buf as usize;
+    let is_float_flag = is_float != 0;
+
+    // Increment env RC if non-null (the spawned task holds a reference).
+    if !env_ptr.is_null() {
+        unsafe { __spark_rc_inc(env_ptr) };
+    }
+
+    let rt = tokio_runtime();
+    let handle = rt.spawn_blocking(move || {
+        let env = env_addr as *mut u8;
+        let result_dst = result_addr as *mut u8;
+
+        if is_float_flag {
+            let f: unsafe extern "C" fn(*mut u8) -> f64 =
+                unsafe { std::mem::transmute(fn_addr) };
+            let val = unsafe { f(env) };
+            if !result_dst.is_null() {
+                unsafe { *(result_dst.cast::<f64>()) = val };
+            }
+        } else {
+            let f: unsafe extern "C" fn(*mut u8) -> i64 =
+                unsafe { std::mem::transmute(fn_addr) };
+            let val = unsafe { f(env) };
+            if !result_dst.is_null() {
+                unsafe { *(result_dst.cast::<i64>()) = val };
+            }
+        }
+
+        // Decrement env RC after the task completes.
+        if env_addr != 0 {
+            let env = env_addr as *mut u8;
+            let rc_ptr = env.cast::<usize>();
+            unsafe { *rc_ptr -= 1 };
+            // Note: not calling full env_rc_dec here to avoid double-free
+            // concerns; the main thread's drop will handle final cleanup.
+        }
+    });
+
+    // Store the JoinHandle in the future.
+    let handle_box = Box::new(handle);
+    unsafe { (*future_ptr).handle = Box::into_raw(handle_box).cast() };
+
+    future_ptr.cast::<u8>()
+}
+
+/// Blocks until the spawned task completes and returns a pointer to the result.
+///
+/// The returned pointer points to the `SparkFuture`'s internal result buffer.
+/// The caller should load the result value from this pointer and then drop
+/// the future via `__spark_future_rc_dec`.
+///
+/// # Safety
+///
+/// `future_ptr` must be a valid pointer from `__spark_spawn`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_await(future_ptr: *mut u8) -> *mut u8 {
+    if future_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let future = unsafe { &mut *(future_ptr.cast::<SparkFuture>()) };
+
+    // If the handle is non-null, the task hasn't been joined yet.
+    if !future.handle.is_null() {
+        let handle: Box<tokio::task::JoinHandle<()>> =
+            unsafe { Box::from_raw(future.handle.cast()) };
+        future.handle = std::ptr::null_mut();
+
+        // Block on the task to completion.
+        let rt = tokio_runtime();
+        rt.block_on(async { handle.await.expect("spark: spawned task panicked") });
+    }
+
+    future.result
+}
+
+/// Decrements the reference count of a `SparkFuture`.
+///
+/// When the count reaches zero:
+/// - Joins the task if still pending (blocks until complete)
+/// - Frees the result buffer
+/// - Frees the `SparkFuture` struct
+///
+/// # Safety
+///
+/// `ptr` must be null or a valid pointer from `__spark_spawn`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_future_rc_dec(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    let future = unsafe { &mut *(ptr.cast::<SparkFuture>()) };
+    future.rc -= 1;
+    if future.rc == 0 {
+        // Join the task if still pending.
+        if !future.handle.is_null() {
+            let handle: Box<tokio::task::JoinHandle<()>> =
+                unsafe { Box::from_raw(future.handle.cast()) };
+            let rt = tokio_runtime();
+            rt.block_on(async { let _ = handle.await; });
+        }
+
+        // Free the result buffer.
+        if !future.result.is_null() && future.result_size > 0 {
+            let align = std::mem::align_of::<u64>();
+            let layout = unsafe {
+                std::alloc::Layout::from_size_align_unchecked(future.result_size, align)
+            };
+            unsafe { std::alloc::dealloc(future.result, layout) };
+        }
+
+        // Free the SparkFuture struct.
+        drop(unsafe { Box::from_raw(ptr.cast::<SparkFuture>()) });
+    }
+}

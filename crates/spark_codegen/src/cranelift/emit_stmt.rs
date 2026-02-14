@@ -157,28 +157,10 @@ fn emit_drop<M: Module>(
             let func_ref = module.declare_func_in_func(ctx.stubs.env_rc_dec, ctx.builder.func);
             ctx.builder.ins().call(func_ref, &[env_ptr]);
         }
-        Ty::Future { inner } => {
-            // Future[T] is transparent (Phase 1 shim): delegate to inner type's drop.
-            let inner_ty = *inner;
-            if spark_drop::needs_drop(inner_ty, table) {
-                // Recursively emit drop for the inner type by temporarily
-                // re-interpreting the local. Since Future[T] has the same
-                // layout as T, we can reuse ptr_val.
-                let (_, inner_resolved) = clif_types::unwrap_mutable(inner_ty, table);
-                match inner_resolved {
-                    Ty::String => {
-                        let func_ref = module.declare_func_in_func(ctx.stubs.string_rc_dec, ctx.builder.func);
-                        ctx.builder.ins().call(func_ref, &[ptr_val]);
-                    }
-                    Ty::List(elem) => {
-                        let elem_rc_flag = i64::from(spark_drop::needs_rc(*elem, table));
-                        let elem_rc_val = ctx.builder.ins().iconst(types::I8, elem_rc_flag);
-                        let func_ref = module.declare_func_in_func(ctx.stubs.list_rc_dec, ctx.builder.func);
-                        ctx.builder.ins().call(func_ref, &[ptr_val, elem_rc_val]);
-                    }
-                    _ => {}
-                }
-            }
+        Ty::Future { .. } => {
+            // Future[T] is an opaque heap pointer — call __spark_future_rc_dec.
+            let func_ref = module.declare_func_in_func(ctx.stubs.future_rc_dec, ctx.builder.func);
+            ctx.builder.ins().call(func_ref, &[ptr_val]);
         }
         _ => {
             // Non-droppable type — no-op (shouldn't reach here due to early return).

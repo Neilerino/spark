@@ -1,0 +1,16 @@
+async fn compute(x: Int): Int {
+    return x + 1
+}
+
+fn use_ref(r: Ref[Int]): Int {
+    return r
+}
+
+fn main(): Int {
+    val: Int = 10
+    r: Ref[Int] = val
+    future: Future[Int] = spawn { compute(use_ref(r)) }
+    result: Int = await future
+    print(result)
+    return 0
+}

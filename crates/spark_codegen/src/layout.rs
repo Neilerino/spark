@@ -325,7 +325,12 @@ impl LayoutCache {
                 let members = members.clone();
                 self.compute_union_layout(&members, table)
             }
-            Ty::Mutable(inner) | Ty::Future { inner } => {
+            // Future[T] is a heap-allocated SparkFuture pointer.
+            Ty::Future { .. } => TypeLayout {
+                size: self.ptr_size,
+                align: self.ptr_size,
+            },
+            Ty::Mutable(inner) => {
                 let inner = *inner;
                 self.layout_of(inner, table)
             }
