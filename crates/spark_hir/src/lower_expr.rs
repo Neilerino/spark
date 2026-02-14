@@ -353,38 +353,33 @@ fn lower_expr_kind(
         }
 
         // === Each (side-effect iteration) ===
-        ExprKind::Each { iterable, param, body } => {
+        ExprKind::Each { iterable, callback } => {
             let iterable_hir = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let body_hir = lower_expr(body, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let param_def_id = resolutions
-                .and_then(|res| res.get_binding(param.name.span))
-                .unwrap_or_else(|| definitions.next_synthetic_id(expr.span));
-            let elem_ty = table.get_def_type(param_def_id).unwrap_or(TypeId::ERROR);
+            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let elem_ty = extract_list_elem_ty(iterable_hir.ty, table);
             let int_ty = find_int_type(table);
             let bool_ty = find_bool_type(table);
             let void_ty = find_void_type(table);
+            let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
             desugar::desugar_each(
-                iterable_hir, body_hir, param_def_id, elem_ty,
+                iterable_hir, callback_hir, elem_ty, cb_ret_ty,
                 int_ty, bool_ty, void_ty, expr.span, definitions,
             ).kind
         }
 
         // === Each Via (transform iteration) ===
-        ExprKind::EachVia { iterable, param, body } => {
+        ExprKind::EachVia { iterable, callback } => {
             let iterable_hir = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let body_hir = lower_expr(body, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let param_def_id = resolutions
-                .and_then(|res| res.get_binding(param.name.span))
-                .unwrap_or_else(|| definitions.next_synthetic_id(expr.span));
-            let elem_ty = table.get_def_type(param_def_id).unwrap_or(TypeId::ERROR);
-            let result_elem_ty = body_hir.ty;
+            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let elem_ty = extract_list_elem_ty(iterable_hir.ty, table);
+            let result_list_ty = expr_type(expr.span, table);
             let int_ty = find_int_type(table);
             let bool_ty = find_bool_type(table);
             let void_ty = find_void_type(table);
-            let result_list_ty = expr_type(expr.span, table); // overall expr type set by type checker
+            let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
             desugar::desugar_each_via(
-                iterable_hir, body_hir, param_def_id, elem_ty,
-                result_elem_ty, result_list_ty, int_ty, bool_ty, void_ty,
+                iterable_hir, callback_hir, elem_ty, cb_ret_ty,
+                result_list_ty, int_ty, bool_ty, void_ty,
                 expr.span, definitions,
             ).kind
         }
@@ -669,6 +664,23 @@ fn find_bool_type(table: &TypeTable) -> TypeId {
 /// Looks up the `Void` type in the table.
 fn find_void_type(table: &TypeTable) -> TypeId {
     table.lookup(&Ty::Void).unwrap_or(TypeId::ERROR)
+}
+
+/// Extracts the element type from a `List[T]`, stripping `Mutable` if needed.
+fn extract_list_elem_ty(ty: TypeId, table: &TypeTable) -> TypeId {
+    let inner = strip_mutable_ty(ty, table);
+    match table.resolve(inner) {
+        Ty::List(elem) => *elem,
+        _ => TypeId::ERROR,
+    }
+}
+
+/// Extracts the return type from a `Ty::Function`, or returns `default`.
+fn extract_fn_ret_ty(ty: TypeId, table: &TypeTable, default: TypeId) -> TypeId {
+    match table.resolve(ty) {
+        Ty::Function { ret, .. } => *ret,
+        _ => default,
+    }
 }
 
 /// Inserts `Borrow` or `Deref` coercion if the argument type needs to be

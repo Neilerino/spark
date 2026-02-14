@@ -227,17 +227,18 @@ pub fn desugar_propagate_union(
     )
 }
 
-/// Desugars `iterable each (param): Void { body }` into an index loop.
+/// Desugars `iterable each callback` into an index loop that calls the callback.
 ///
 /// ```text
 /// {
+///     let __cb = callback
 ///     let __iter = iterable
 ///     let __idx: Int! = 0
 ///     let __len: Int = __iter.len()
 ///     loop {
 ///         if __idx >= __len { break }
-///         let param: T = __iter[__idx]
-///         body
+///         let __item: T = __iter[__idx]
+///         __cb(__item)
 ///         __idx = __idx + 1
 ///     }
 /// }
@@ -246,9 +247,9 @@ pub fn desugar_propagate_union(
 #[allow(clippy::too_many_arguments)]
 pub fn desugar_each(
     iterable: HirExpr,
-    body: HirExpr,
-    param_def_id: spark_resolve::DefId,
+    callback: HirExpr,
     elem_ty: TypeId,
+    cb_ret_ty: TypeId,
     int_ty: TypeId,
     bool_ty: TypeId,
     void_ty: TypeId,
@@ -256,7 +257,7 @@ pub fn desugar_each(
     definitions: &mut DefinitionTable,
 ) -> HirExpr {
     let (stmts, _) = build_each_loop(
-        iterable, body, param_def_id, elem_ty, int_ty, bool_ty, void_ty,
+        iterable, callback, elem_ty, cb_ret_ty, int_ty, bool_ty, void_ty,
         span, definitions, false,
     );
 
@@ -267,19 +268,20 @@ pub fn desugar_each(
     )
 }
 
-/// Desugars `iterable each via (param): U { body }` into an index loop that
-/// builds a result list.
+/// Desugars `iterable each via callback` into an index loop that calls the
+/// callback and builds a result list.
 ///
 /// ```text
 /// {
+///     let __cb = callback
 ///     let __iter = iterable
 ///     let __idx: Int! = 0
 ///     let __len: Int = __iter.len()
 ///     let __result: List[U]! = []
 ///     loop {
 ///         if __idx >= __len { break }
-///         let param: T = __iter[__idx]
-///         let __elem: U = body
+///         let __item: T = __iter[__idx]
+///         let __elem: U = __cb(__item)
 ///         __result.append(__elem)
 ///         __idx = __idx + 1
 ///     }
@@ -290,10 +292,9 @@ pub fn desugar_each(
 #[allow(clippy::too_many_arguments)]
 pub fn desugar_each_via(
     iterable: HirExpr,
-    body: HirExpr,
-    param_def_id: spark_resolve::DefId,
+    callback: HirExpr,
     elem_ty: TypeId,
-    _result_elem_ty: TypeId,
+    cb_ret_ty: TypeId,
     result_list_ty: TypeId,
     int_ty: TypeId,
     bool_ty: TypeId,
@@ -302,7 +303,7 @@ pub fn desugar_each_via(
     definitions: &mut DefinitionTable,
 ) -> HirExpr {
     let (stmts, result_id) = build_each_loop(
-        iterable, body, param_def_id, elem_ty, int_ty, bool_ty, void_ty,
+        iterable, callback, elem_ty, cb_ret_ty, int_ty, bool_ty, void_ty,
         span, definitions, true,
     );
 
@@ -345,14 +346,15 @@ pub fn desugar_each_via(
 
 /// Builds the shared loop structure for both `each` and `each via`.
 ///
-/// Returns the list of statements and, if `via` is true, the `DefId` of the
-/// `__result` local.
+/// The callback is stored as a local and called each iteration with the
+/// current element. Returns the list of statements and, if `via` is true,
+/// the `DefId` of the `__result` local.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn build_each_loop(
     iterable: HirExpr,
-    body: HirExpr,
-    param_def_id: spark_resolve::DefId,
+    callback: HirExpr,
     elem_ty: TypeId,
+    cb_ret_ty: TypeId,
     int_ty: TypeId,
     bool_ty: TypeId,
     void_ty: TypeId,
@@ -360,11 +362,21 @@ fn build_each_loop(
     definitions: &mut DefinitionTable,
     via: bool,
 ) -> (Vec<HirStmt>, Option<spark_resolve::DefId>) {
+    let cb_id = definitions.next_synthetic_id(span);
     let iter_id = definitions.next_synthetic_id(span);
     let idx_id = definitions.next_synthetic_id(span);
     let len_id = definitions.next_synthetic_id(span);
+    let item_id = definitions.next_synthetic_id(span);
 
+    let cb_ty = callback.ty;
     let iter_ty = iterable.ty;
+
+    // let __cb = callback
+    let cb_let = HirStmt::Let {
+        def_id: cb_id,
+        mutable: false,
+        value: callback,
+    };
 
     // let __iter = iterable
     let iter_let = HirStmt::Let {
@@ -421,9 +433,9 @@ fn build_each_loop(
         span,
     );
 
-    // let param: T = __iter[__idx]
-    let param_let = HirStmt::Let {
-        def_id: param_def_id,
+    // let __item: T = __iter[__idx]
+    let item_let = HirStmt::Let {
+        def_id: item_id,
         mutable: false,
         value: HirExpr::new(
             HirExprKind::Index {
@@ -434,6 +446,16 @@ fn build_each_loop(
             span,
         ),
     };
+
+    // __cb(__item) — call the callback with the current element
+    let call_expr = HirExpr::new(
+        HirExprKind::Call {
+            callee: Box::new(HirExpr::new(HirExprKind::Local(cb_id), cb_ty, span)),
+            args: vec![HirExpr::new(HirExprKind::Local(item_id), elem_ty, span)],
+        },
+        cb_ret_ty,
+        span,
+    );
 
     // __idx = __idx + 1
     let increment = HirStmt::Assign {
@@ -452,30 +474,29 @@ fn build_each_loop(
     // Build loop body statements
     let mut loop_stmts: Vec<HirStmt> = vec![
         HirStmt::Expr(guard),
-        param_let,
+        item_let,
     ];
 
     if let Some(rid) = result_id {
-        // each via: let __elem = body; __result.append(__elem)
+        // each via: let __elem = __cb(__item); __result.append(__elem)
         let elem_id = definitions.next_synthetic_id(span);
-        let body_ty = body.ty;
         loop_stmts.push(HirStmt::Let {
             def_id: elem_id,
             mutable: false,
-            value: body,
+            value: call_expr,
         });
         loop_stmts.push(HirStmt::Expr(HirExpr::new(
             HirExprKind::MethodCall {
                 receiver: Box::new(HirExpr::new(HirExprKind::Local(rid), void_ty, span)),
                 method: spark_intern::kw::APPEND,
-                args: vec![HirExpr::new(HirExprKind::Local(elem_id), body_ty, span)],
+                args: vec![HirExpr::new(HirExprKind::Local(elem_id), cb_ret_ty, span)],
             },
             void_ty,
             span,
         )));
     } else {
-        // each: just the body as a statement
-        loop_stmts.push(HirStmt::Expr(body));
+        // each: just call the callback as a statement
+        loop_stmts.push(HirStmt::Expr(call_expr));
     }
 
     loop_stmts.push(increment);
@@ -493,7 +514,7 @@ fn build_each_loop(
     ));
 
     // Build outer block statements
-    let mut stmts = vec![iter_let, idx_let, len_let];
+    let mut stmts = vec![cb_let, iter_let, idx_let, len_let];
 
     if let Some(rid) = result_id {
         // let __result: List[U]! = []
@@ -508,6 +529,7 @@ fn build_each_loop(
 
     (stmts, result_id)
 }
+
 
 #[cfg(test)]
 mod tests {

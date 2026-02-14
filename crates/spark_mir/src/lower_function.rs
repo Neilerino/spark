@@ -48,14 +48,17 @@ pub fn lower_function(
         fb.register_def(*cap_def_id, local);
     }
 
-    // Lower the body expression (value discarded; explicit `return` sets RETURN_PLACE)
-    let _body_local = lower_expr(&hir_fn.body, &mut fb, mir, type_table, defs);
+    // Lower the body expression. The result local holds the value of the
+    // trailing expression (if any), enabling implicit returns.
+    let body_local = lower_expr(&hir_fn.body, &mut fb, mir, type_table, defs);
 
-    // Assign Void to return place on fallthrough (explicit `return` handles non-void)
+    // On fallthrough (no explicit `return`), assign the body result to the
+    // return place. This handles implicit returns from trailing expressions
+    // (e.g., `fn(x: Int): Int { x * 2 }` where `x * 2` is the return value).
     if !fb.is_terminated() {
         fb.push_stmt(Statement::Assign {
             place: Place::from_local(Local::RETURN_PLACE),
-            rvalue: Rvalue::Use(Operand::Constant(crate::mir::Constant::Void)),
+            rvalue: Rvalue::Use(Operand::Copy(Place::from_local(body_local))),
             span: hir_fn.body.span,
         });
         // Drop all remaining locals before the fallthrough return.

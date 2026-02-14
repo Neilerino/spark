@@ -15,20 +15,18 @@ fn triple(nums: List[Int]): List[Int] {
     return nums each via (n: Int): Int { n * 3 }
 }
 
+fn show(item: Int): Void {
+    print(item)
+}
+
 fn main(): Int {
     data: List[Int] = [5, 3, 1, 4, 2]
 
     // Via chain: sort then reverse → descending order
     desc: List[Int] = data via sort via reverse
 
-    // Mutable accumulator — each with mutation
-    running_total: Int! = 0
-    desc each (item: Int): Void {
-        print(item)
-        running_total = running_total + item
-    }
-    // running_total = 5+4+3+2+1 = 15
-    print(running_total)
+    // Each: print descending items using function reference
+    desc each show
 
     // Via chain: sort then take top 3
     top3: List[Int] = data via sort via take{count: 3}
@@ -45,12 +43,12 @@ fn main(): Int {
     }
 
     // Struct with computed values, passed by ref to two functions
-    summary: Summary = Summary { total: running_total, count: final.len() }
+    summary: Summary = Summary { total: final.len(), count: final.len() }
     print(get_total(summary))
     print(add_count(summary, 10))
 
     // Mutable ref — reassign to a new value
-    best: Ref[Int]! = running_total
+    best: Ref[Int]! = final.len()
     best = final.len()
     print(best)
 

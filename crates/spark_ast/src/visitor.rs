@@ -356,18 +356,14 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
         }
         ExprKind::Each {
             iterable,
-            param,
-            body,
+            callback,
         }
         | ExprKind::EachVia {
             iterable,
-            param,
-            body,
+            callback,
         } => {
             v.visit_expr(iterable);
-            v.visit_ident(&param.name);
-            v.visit_type(&param.ty);
-            v.visit_expr(body);
+            v.visit_expr(callback);
         }
         ExprKind::To { expr, handler } => {
             v.visit_expr(expr);

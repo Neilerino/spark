@@ -269,6 +269,36 @@ fn each_via_double() {
     assert_output("each_via_double.spark", "3");
 }
 
+#[test]
+fn each_fn_ref() {
+    assert_output("each_fn_ref.spark", "1\n2\n3");
+}
+
+#[test]
+fn each_via_fn_ref() {
+    assert_output("each_via_fn_ref.spark", "2\n4\n6");
+}
+
+#[test]
+fn each_cow() {
+    assert_output("each_cow.spark", "0");
+}
+
+#[test]
+fn each_lambda_print() {
+    assert_output("each_lambda_print.spark", "10\n20\n30");
+}
+
+#[test]
+fn each_via_lambda_values() {
+    assert_output("each_via_lambda_values.spark", "20\n40\n60");
+}
+
+#[test]
+fn lambda_implicit_return() {
+    assert_output("lambda_return.spark", "10");
+}
+
 // ============================================================================
 // Via (pipeline operator)
 // ============================================================================
@@ -306,7 +336,7 @@ fn via_user_fn() {
 fn kitchen_sink() {
     assert_output(
         "kitchen_sink.spark",
-        "5\n4\n3\n2\n1\n15\n9\n18\n27\n15\n13\n3",
+        "5\n4\n3\n2\n1\n9\n18\n27\n3\n13\n3",
     );
 }
 

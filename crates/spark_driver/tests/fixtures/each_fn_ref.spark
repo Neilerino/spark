@@ -1,0 +1,9 @@
+fn show(n: Int): Void {
+    print(n)
+}
+
+fn main(): Int {
+    nums: List[Int] = [1, 2, 3]
+    nums each show
+    return 0
+}

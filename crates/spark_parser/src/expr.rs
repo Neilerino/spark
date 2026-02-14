@@ -601,23 +601,34 @@ impl Parser {
 
     /// Parses an `each` expression.
     ///
-    /// Each = Expr "each" ("via")? "(" Param ")" ":" Type Block
+    /// Each = Expr "each" ("via")? (Lambda | Ident)
+    ///
+    /// The callback is either an inline lambda `(x: T): U { body }` or a
+    /// function reference identifier like `show`.
     fn parse_each(&mut self, iterable: Expr, start: Span) -> Expr {
         self.expect(TokenKind::Each);
 
         let is_via = self.eat(TokenKind::Via).is_some();
 
-        // Parse parameter
-        self.expect(TokenKind::LParen);
-        let param = self.parse_fn_param();
-        self.expect(TokenKind::RParen);
-
-        // Parse return type (not currently stored in AST, but required by syntax)
-        self.expect(TokenKind::Colon);
-        let _ret_type = self.parse_type();
-
-        // Parse body
-        let body = self.parse_block_expr();
+        let callback = if self.check(TokenKind::LParen) {
+            let paren_start = self.current_span();
+            self.advance(); // consume (
+            if self.is_lambda_params() {
+                self.parse_lambda_from_params(paren_start)
+            } else {
+                self.error_expected("lambda parameters");
+                Expr::error(self.current_span())
+            }
+        } else if self.check(TokenKind::Fn) {
+            self.parse_lambda()
+        } else {
+            // Function reference: `list each show`
+            let ident = self
+                .expect_ident()
+                .unwrap_or_else(|| Ident::dummy(sym("_")));
+            let ident_span = ident.span;
+            Expr::new(ExprKind::Ident(ident), ident_span)
+        };
 
         let span = self.span_from(start);
 
@@ -625,8 +636,7 @@ impl Parser {
             Expr::new(
                 ExprKind::EachVia {
                     iterable: Box::new(iterable),
-                    param,
-                    body: Box::new(body),
+                    callback: Box::new(callback),
                 },
                 span,
             )
@@ -634,8 +644,7 @@ impl Parser {
             Expr::new(
                 ExprKind::Each {
                     iterable: Box::new(iterable),
-                    param,
-                    body: Box::new(body),
+                    callback: Box::new(callback),
                 },
                 span,
             )

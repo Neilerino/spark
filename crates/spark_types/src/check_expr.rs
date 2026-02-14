@@ -444,7 +444,7 @@ fn check_expr_inner(
             check_to_expr(inner_ty, handler, expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
         }
 
-        ExprKind::Each { iterable, param, body } => {
+        ExprKind::Each { iterable, callback } => {
             let iter_ty = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
             let base_ty = strip_mutable(iter_ty, table);
             let elem_ty = match table.resolve(base_ty).clone() {
@@ -460,18 +460,12 @@ fn check_expr_inner(
                 }
             };
 
-            // Register the iteration parameter type (same pattern as Lambda)
-            if let Some(res) = resolutions {
-                if let Some(def_id) = res.get_binding(param.name.span) {
-                    table.set_def_type(def_id, elem_ty);
-                }
-            }
-
-            let _ = check_expr(body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            validate_each_callback(cb_ty, elem_ty, false, callback.span, table, definitions, diagnostics);
             builtins.void
         }
 
-        ExprKind::EachVia { iterable, param, body } => {
+        ExprKind::EachVia { iterable, callback } => {
             let iter_ty = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
             let base_ty = strip_mutable(iter_ty, table);
             let elem_ty = match table.resolve(base_ty).clone() {
@@ -487,15 +481,9 @@ fn check_expr_inner(
                 }
             };
 
-            // Register the iteration parameter type (same pattern as Lambda)
-            if let Some(res) = resolutions {
-                if let Some(def_id) = res.get_binding(param.name.span) {
-                    table.set_def_type(def_id, elem_ty);
-                }
-            }
-
-            let body_ty = check_expr(body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            table.intern(Ty::List(body_ty))
+            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let ret_ty = validate_each_callback(cb_ty, elem_ty, true, callback.span, table, definitions, diagnostics);
+            table.intern(Ty::List(ret_ty))
         }
 
         ExprKind::Range { start, end, .. } | ExprKind::ListRange { start, end, .. } => {
@@ -1193,6 +1181,68 @@ fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
         *inner
     } else {
         ty
+    }
+}
+
+/// Validates the callback type for `each` / `each via`.
+///
+/// For `each`: callback must be `(T) -> Void` (though we don't enforce Void return).
+/// For `each via`: callback must be `(T) -> U`; returns `U`.
+///
+/// Returns the callback's return type (used by `each via` to determine `List[U]`).
+fn validate_each_callback(
+    cb_ty: TypeId,
+    elem_ty: TypeId,
+    is_via: bool,
+    span: Span,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if cb_ty == TypeId::ERROR || elem_ty == TypeId::ERROR {
+        return TypeId::ERROR;
+    }
+    match table.resolve(cb_ty).clone() {
+        Ty::Function { params, ret, .. } => {
+            if params.len() != 1 {
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "`each{}` callback must take exactly 1 parameter, found {}",
+                        if is_via { " via" } else { "" },
+                        params.len()
+                    ))
+                    .with_label(Label::primary(span, "wrong number of parameters")),
+                );
+                return TypeId::ERROR;
+            }
+            let param_ty = params[0];
+            if param_ty != elem_ty
+                && param_ty != TypeId::ERROR
+                && elem_ty != TypeId::ERROR
+            {
+                let expected = type_name(elem_ty, table, definitions);
+                let found = type_name(param_ty, table, definitions);
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "`each{}` callback parameter type mismatch: expected `{expected}`, found `{found}`",
+                        if is_via { " via" } else { "" },
+                    ))
+                    .with_label(Label::primary(span, "type mismatch")),
+                );
+            }
+            ret
+        }
+        _ => {
+            let name = type_name(cb_ty, table, definitions);
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "`each{}` callback must be a function, found `{name}`",
+                    if is_via { " via" } else { "" },
+                ))
+                .with_label(Label::primary(span, "not a function")),
+            );
+            TypeId::ERROR
+        }
     }
 }
 

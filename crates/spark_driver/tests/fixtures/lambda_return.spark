@@ -1,0 +1,6 @@
+fn main(): Int {
+    double: (Int): Int = fn(n: Int): Int { n * 2 }
+    result: Int = double(5)
+    print(result)
+    return 0
+}

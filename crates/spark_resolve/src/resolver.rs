@@ -846,32 +846,14 @@ impl Resolver {
 
             ExprKind::Each {
                 iterable,
-                param,
-                body,
+                callback,
             }
             | ExprKind::EachVia {
                 iterable,
-                param,
-                body,
+                callback,
             } => {
                 self.resolve_expr(iterable);
-                self.resolve_type_expr(&param.ty);
-
-                // Push rib for iteration param
-                self.rib_stack.push_rib(RibKind::Parameter);
-                let info = DefinitionInfo::new(
-                    DefinitionKind::Parameter,
-                    param.name.name,
-                    param.name.span,
-                    Visibility::Private,
-                    ModulePath::root(),
-                );
-                let def_id = self.definitions.insert(info);
-                self.rib_stack.define_value(param.name.name, def_id);
-                self.record_binding(param.name.span, def_id);
-
-                self.resolve_expr(body);
-                self.rib_stack.pop_rib();
+                self.resolve_expr(callback);
             }
 
             ExprKind::To { expr, handler } => {

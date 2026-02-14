@@ -208,24 +208,20 @@ pub enum ExprKind {
     // ========================================================================
     // Iteration and Pipelines
     // ========================================================================
-    /// Each expression (side effects): `items each (x: T): Void { ... }`
+    /// Each expression (side effects): `items each (x: T): Void { ... }` or `items each func`
     Each {
         /// The iterable expression.
         iterable: Box<Expr>,
-        /// The iteration parameter.
-        param: FnParam,
-        /// The body expression.
-        body: Box<Expr>,
+        /// The callback (lambda or function reference).
+        callback: Box<Expr>,
     },
 
-    /// Each via expression (transform): `items each via (x: T): U { ... }`
+    /// Each via expression (transform): `items each via (x: T): U { ... }` or `items each via func`
     EachVia {
         /// The iterable expression.
         iterable: Box<Expr>,
-        /// The iteration parameter.
-        param: FnParam,
-        /// The body expression.
-        body: Box<Expr>,
+        /// The callback (lambda or function reference).
+        callback: Box<Expr>,
     },
 
     /// To expression (type narrowing or pipeline):
