@@ -7,8 +7,8 @@
 //! and will be added in future phases.
 
 use ropey::Rope;
-use spark_lexer::TokenKind;
 use spark_lexer::Lexer;
+use spark_lexer::TokenKind;
 use spark_resolve::{DefinitionKind, DefinitionTable, ResolutionMap};
 use spark_span::FileId;
 use tower_lsp::lsp_types::{
@@ -82,7 +82,7 @@ const fn definition_kind_to_token_type(kind: &DefinitionKind) -> (u32, u32) {
     match kind {
         DefinitionKind::Function
         | DefinitionKind::BuiltinFunction
-        | DefinitionKind::StdlibFunction
+        | DefinitionKind::ExternFunction
         | DefinitionKind::Lambda => (FUNCTION, 0),
 
         DefinitionKind::Struct => (STRUCT, 0),
@@ -227,10 +227,7 @@ pub struct SemanticContext<'a> {
 ///
 /// Tries `get_ident`, then `get_path`, then `get_binding` (adding the
 /// DECLARATION modifier for bindings). Returns `None` if unresolved.
-fn resolve_identifier(
-    span: spark_span::Span,
-    context: &SemanticContext<'_>,
-) -> Option<(u32, u32)> {
+fn resolve_identifier(span: spark_span::Span, context: &SemanticContext<'_>) -> Option<(u32, u32)> {
     // Try ident resolution first (most common for usages)
     if let Some(def_id) = context.resolutions.get_ident(span) {
         if let Some(info) = context.definitions.get(def_id) {
@@ -280,10 +277,9 @@ pub fn compute_semantic_tokens(
     for token in &tokens {
         // For identifiers with resolver context, try context-aware classification
         let (type_index, modifiers) = if token.kind == TokenKind::Identifier {
-            context.map_or(
-                (VARIABLE, 0),
-                |ctx| resolve_identifier(token.span, ctx).unwrap_or((VARIABLE, 0)),
-            )
+            context.map_or((VARIABLE, 0), |ctx| {
+                resolve_identifier(token.span, ctx).unwrap_or((VARIABLE, 0))
+            })
         } else {
             match token_type_index(token.kind) {
                 Some(idx) => (idx, 0),
@@ -412,9 +408,9 @@ mod tests {
 
     // ── Context-aware tests (with resolver data) ─────────────────────────
 
+    use spark_resolve::ResolvedAst;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use spark_resolve::ResolvedAst;
 
     /// Runs the full frontend pipeline and returns the resolver output.
     fn run_analysis(source: &str) -> Option<(FileId, ResolvedAst, DefinitionTable)> {
@@ -556,8 +552,11 @@ mod tests {
         );
         // At least one should be PARAMETER
         let has_param = name_tokens.iter().any(|t| t.token_type == PARAMETER);
-        assert!(has_param, "at least one 'name' token should be PARAMETER, got types: {:?}",
-            name_tokens.iter().map(|t| t.token_type).collect::<Vec<_>>());
+        assert!(
+            has_param,
+            "at least one 'name' token should be PARAMETER, got types: {:?}",
+            name_tokens.iter().map(|t| t.token_type).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -589,10 +588,7 @@ mod tests {
                 x_tokens.push(tok.clone());
             }
         }
-        assert!(
-            !x_tokens.is_empty(),
-            "should find at least one 'x' token"
-        );
+        assert!(!x_tokens.is_empty(), "should find at least one 'x' token");
         // All `x` tokens should be VARIABLE
         for tok in &x_tokens {
             assert_eq!(tok.token_type, VARIABLE, "local 'x' should be VARIABLE");
@@ -644,7 +640,10 @@ mod tests {
         let tokens = compute_semantic_tokens(source, Some(&context));
         let tok = find_token_by_text(source, &tokens, "Printable")
             .expect("should find 'Printable' token");
-        assert_eq!(tok.token_type, INTERFACE, "interface name should be INTERFACE");
+        assert_eq!(
+            tok.token_type, INTERFACE,
+            "interface name should be INTERFACE"
+        );
     }
 
     #[test]
