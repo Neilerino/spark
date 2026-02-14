@@ -29,7 +29,7 @@ pub fn lower_function(
 
         // Register RC'd parameters for drop at scope exit.
         // The caller rc_inc'd the argument, so the callee must rc_dec.
-        if spark_drop::needs_rc(param.ty, type_table) {
+        if spark_drop::needs_drop(param.ty, type_table) {
             fb.register_drop(local);
         }
     }

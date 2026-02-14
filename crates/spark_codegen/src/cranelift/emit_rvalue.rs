@@ -103,6 +103,17 @@ pub fn emit_operand<M: Module>(
             if spark_drop::needs_rc(ty_id, table) {
                 let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
                 ctx.builder.ins().call(func_ref, &[val]);
+            } else if matches!(table.resolve(ty_id), Ty::Function { .. }) {
+                // Function copy: RC inc the env_ptr (second slot of the fat pointer).
+                // val is the address of the fat pointer (fn_ptr, env_ptr).
+                let env_ptr = ctx.builder.ins().load(
+                    ctx.ptr_type,
+                    MemFlags::new(),
+                    val,
+                    ctx.ptr_type.bytes() as i32,
+                );
+                let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
+                ctx.builder.ins().call(func_ref, &[env_ptr]);
             }
             Some(val)
         }
@@ -865,7 +876,8 @@ fn emit_closure_construction<M: Module>(
             }
             Operand::Constant(_) => continue,
         };
-        let offset = capture_offsets[i];
+        // Add 16 bytes for the RC header (rc + alloc_size) prepended by __spark_env_alloc.
+        let offset = capture_offsets[i] + 16;
         if abi::is_scalar(cap_ty, table) {
             ctx.builder.ins().store(
                 MemFlags::new(),

@@ -386,7 +386,7 @@ impl CraneliftBackend {
         if is_lambda && !mir_func.captures.is_empty() {
             if let Some(env_ptr_val) = fctx.env_ptr {
                 let mut capture_layouts = crate::layout::LayoutCache::new(ptr_type.bytes());
-                let mut offset: u32 = 0;
+                let mut offset: u32 = 16; // skip RC header (rc: usize, alloc_size: usize)
                 let capture_start = 1 + mir_func.param_count;
 
                 for (i, (_cap_def_id, cap_ty)) in mir_func.captures.iter().enumerate() {

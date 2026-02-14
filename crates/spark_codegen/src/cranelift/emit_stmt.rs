@@ -110,8 +110,8 @@ fn emit_drop<M: Module>(
     let ty_id = ctx.local_type_id(local);
     let (_, ty) = clif_types::unwrap_mutable(ty_id, table);
 
-    // Only RC types need a dec call.
-    if !spark_drop::needs_rc(ty_id, table) {
+    // Only droppable types need a dec call.
+    if !spark_drop::needs_drop(ty_id, table) {
         return;
     }
 
@@ -144,8 +144,21 @@ fn emit_drop<M: Module>(
             let func_ref = module.declare_func_in_func(ctx.stubs.set_rc_dec, ctx.builder.func);
             ctx.builder.ins().call(func_ref, &[ptr_val, elem_rc_val]);
         }
+        Ty::Function { .. } => {
+            // Function fat pointer: (fn_ptr, env_ptr).
+            // Load env_ptr from the second slot and call __spark_env_rc_dec.
+            // ptr_val is the address of the fat pointer.
+            let env_ptr = ctx.builder.ins().load(
+                ctx.ptr_type,
+                MemFlags::new(),
+                ptr_val,
+                ctx.ptr_type.bytes() as i32,
+            );
+            let func_ref = module.declare_func_in_func(ctx.stubs.env_rc_dec, ctx.builder.func);
+            ctx.builder.ins().call(func_ref, &[env_ptr]);
+        }
         _ => {
-            // Non-RC type — no-op (shouldn't reach here due to early return).
+            // Non-droppable type — no-op (shouldn't reach here due to early return).
         }
     }
 }
