@@ -1,0 +1,7 @@
+fn main(): Int {
+    r: Ref[Int]! = 10
+    nums: List[Int] = [1, 2, 3]
+    nums parallel each (n: Int): Void { r = n }
+    print(r)
+    return 0
+}

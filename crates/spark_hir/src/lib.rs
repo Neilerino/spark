@@ -103,10 +103,10 @@ pub fn lower(mut input: HirInput) -> HirOutput {
         &mut input.definitions,
         &input.resolved,
     );
-    let (mut hir, diagnostics) = lowerer.lower_all();
+    let (mut hir, mut diagnostics) = lowerer.lower_all();
 
     // Lambda lifting: extract non-capturing lambdas into top-level functions.
-    lambda_lift::lift_lambdas(&mut hir, &mut input.definitions, &mut input.table);
+    lambda_lift::lift_lambdas(&mut hir, &mut input.definitions, &mut input.table, &mut diagnostics);
 
     HirOutput {
         hir,

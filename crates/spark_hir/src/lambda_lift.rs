@@ -8,6 +8,7 @@
 //! Capturing closures are **not** supported in this pass — they require
 //! environment allocation and a modified calling convention (Phase 2).
 
+use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_modules::ModulePath;
 use spark_resolve::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visibility};
 use spark_types::{Ty, TypeId, TypeTable};
@@ -23,6 +24,7 @@ pub fn lift_lambdas(
     hir: &mut Hir,
     definitions: &mut DefinitionTable,
     table: &mut TypeTable,
+    diagnostics: &mut Diagnostics,
 ) {
     // Collect existing function DefIds to avoid mutating the map while iterating.
     let func_ids: Vec<DefId> = hir.functions.keys().copied().collect();
@@ -31,7 +33,7 @@ pub fn lift_lambdas(
 
     for def_id in func_ids {
         if let Some(func) = hir.functions.get_mut(&def_id) {
-            walk_expr(&mut func.body, &mut lifted, definitions, table, &mut counter);
+            walk_expr(&mut func.body, &mut lifted, definitions, table, &mut counter, diagnostics);
         }
     }
 
@@ -48,6 +50,7 @@ fn walk_expr(
     definitions: &mut DefinitionTable,
     table: &mut TypeTable,
     counter: &mut u32,
+    diagnostics: &mut Diagnostics,
 ) {
     match &mut expr.kind {
         // === The case we care about: Lambda ===
@@ -56,7 +59,7 @@ fn walk_expr(
             let old_kind = std::mem::replace(&mut expr.kind, HirExprKind::Error);
             if let HirExprKind::Lambda { params, mut body } = old_kind {
                 // Depth-first: lift any nested lambdas inside this body first.
-                walk_expr(&mut body, lifted, definitions, table, counter);
+                walk_expr(&mut body, lifted, definitions, table, counter, diagnostics);
 
                 // Allocate a synthetic DefId for the lifted function.
                 let name = spark_intern::sym(&format!("__lambda_{counter}"));
@@ -116,7 +119,7 @@ fn walk_expr(
         // Single sub-expression.
         HirExprKind::UnaryOp { operand, .. }
         | HirExprKind::Borrow { operand, .. } => {
-            walk_expr(operand, lifted, definitions, table, counter);
+            walk_expr(operand, lifted, definitions, table, counter, diagnostics);
         }
         HirExprKind::Deref(inner)
         | HirExprKind::Await(inner)
@@ -124,104 +127,106 @@ fn walk_expr(
         | HirExprKind::Loop { body: inner }
         | HirExprKind::Is { expr: inner, .. }
         | HirExprKind::As { expr: inner, .. } => {
-            walk_expr(inner, lifted, definitions, table, counter);
+            walk_expr(inner, lifted, definitions, table, counter, diagnostics);
         }
         HirExprKind::Return(opt) | HirExprKind::Break(opt) => {
             if let Some(inner) = opt {
-                walk_expr(inner, lifted, definitions, table, counter);
+                walk_expr(inner, lifted, definitions, table, counter, diagnostics);
             }
         }
 
         // Two sub-expressions.
         HirExprKind::BinaryOp { lhs, rhs, .. } => {
-            walk_expr(lhs, lifted, definitions, table, counter);
-            walk_expr(rhs, lifted, definitions, table, counter);
+            walk_expr(lhs, lifted, definitions, table, counter, diagnostics);
+            walk_expr(rhs, lifted, definitions, table, counter, diagnostics);
         }
         HirExprKind::FieldAccess { base, .. } => {
-            walk_expr(base, lifted, definitions, table, counter);
+            walk_expr(base, lifted, definitions, table, counter, diagnostics);
         }
         HirExprKind::Index { base, index } => {
-            walk_expr(base, lifted, definitions, table, counter);
-            walk_expr(index, lifted, definitions, table, counter);
+            walk_expr(base, lifted, definitions, table, counter, diagnostics);
+            walk_expr(index, lifted, definitions, table, counter, diagnostics);
         }
 
         // Calls.
         HirExprKind::Call { callee, args } => {
-            walk_expr(callee, lifted, definitions, table, counter);
+            walk_expr(callee, lifted, definitions, table, counter, diagnostics);
             for arg in args {
-                walk_expr(arg, lifted, definitions, table, counter);
+                walk_expr(arg, lifted, definitions, table, counter, diagnostics);
             }
         }
         HirExprKind::MethodCall { receiver, args, .. } => {
-            walk_expr(receiver, lifted, definitions, table, counter);
+            walk_expr(receiver, lifted, definitions, table, counter, diagnostics);
             for arg in args {
-                walk_expr(arg, lifted, definitions, table, counter);
+                walk_expr(arg, lifted, definitions, table, counter, diagnostics);
             }
         }
 
         // Constructors / collections.
         HirExprKind::StructInit { fields, .. } => {
             for (_, val) in fields {
-                walk_expr(val, lifted, definitions, table, counter);
+                walk_expr(val, lifted, definitions, table, counter, diagnostics);
             }
         }
         HirExprKind::EnumVariant { fields, .. } => {
             for f in fields {
-                walk_expr(f, lifted, definitions, table, counter);
+                walk_expr(f, lifted, definitions, table, counter, diagnostics);
             }
         }
         HirExprKind::ListLit(elems)
         | HirExprKind::SetLit(elems)
         | HirExprKind::TupleLit(elems) => {
             for e in elems {
-                walk_expr(e, lifted, definitions, table, counter);
+                walk_expr(e, lifted, definitions, table, counter, diagnostics);
             }
         }
         HirExprKind::MapLit(pairs) => {
             for (k, v) in pairs {
-                walk_expr(k, lifted, definitions, table, counter);
-                walk_expr(v, lifted, definitions, table, counter);
+                walk_expr(k, lifted, definitions, table, counter, diagnostics);
+                walk_expr(v, lifted, definitions, table, counter, diagnostics);
             }
         }
 
         // Control flow.
         HirExprKind::Block { stmts, expr: trailing } => {
             for stmt in stmts {
-                walk_stmt(stmt, lifted, definitions, table, counter);
+                walk_stmt(stmt, lifted, definitions, table, counter, diagnostics);
             }
             if let Some(e) = trailing {
-                walk_expr(e, lifted, definitions, table, counter);
+                walk_expr(e, lifted, definitions, table, counter, diagnostics);
             }
         }
         HirExprKind::If { cond, then_, else_ } => {
-            walk_expr(cond, lifted, definitions, table, counter);
-            walk_expr(then_, lifted, definitions, table, counter);
+            walk_expr(cond, lifted, definitions, table, counter, diagnostics);
+            walk_expr(then_, lifted, definitions, table, counter, diagnostics);
             if let Some(e) = else_ {
-                walk_expr(e, lifted, definitions, table, counter);
+                walk_expr(e, lifted, definitions, table, counter, diagnostics);
             }
         }
         HirExprKind::Match { scrutinee, arms } => {
-            walk_expr(scrutinee, lifted, definitions, table, counter);
+            walk_expr(scrutinee, lifted, definitions, table, counter, diagnostics);
             for arm in arms {
-                walk_arm(arm, lifted, definitions, table, counter);
+                walk_arm(arm, lifted, definitions, table, counter, diagnostics);
             }
         }
 
         // String interpolation.
         HirExprKind::StringInterp { parts } => {
             for part in parts {
-                walk_expr(part, lifted, definitions, table, counter);
+                walk_expr(part, lifted, definitions, table, counter, diagnostics);
             }
         }
 
         // Parallel iteration.
         HirExprKind::ParallelForEach { list, callback, .. } => {
-            walk_expr(list, lifted, definitions, table, counter);
-            walk_expr(callback, lifted, definitions, table, counter);
+            walk_expr(list, lifted, definitions, table, counter, diagnostics);
+            walk_expr(callback, lifted, definitions, table, counter, diagnostics);
+            check_parallel_ref_captures(callback, table, diagnostics);
         }
         HirExprKind::ParallelMap { list, callback, .. } => {
-            walk_expr(list, lifted, definitions, table, counter);
-            walk_expr(callback, lifted, definitions, table, counter);
+            walk_expr(list, lifted, definitions, table, counter, diagnostics);
+            walk_expr(callback, lifted, definitions, table, counter, diagnostics);
+            check_parallel_ref_captures(callback, table, diagnostics);
         }
     }
 }
@@ -233,14 +238,15 @@ fn walk_stmt(
     definitions: &mut DefinitionTable,
     table: &mut TypeTable,
     counter: &mut u32,
+    diagnostics: &mut Diagnostics,
 ) {
     match stmt {
-        HirStmt::Let { value, .. } => walk_expr(value, lifted, definitions, table, counter),
+        HirStmt::Let { value, .. } => walk_expr(value, lifted, definitions, table, counter, diagnostics),
         HirStmt::Assign { target, value } => {
-            walk_expr(target, lifted, definitions, table, counter);
-            walk_expr(value, lifted, definitions, table, counter);
+            walk_expr(target, lifted, definitions, table, counter, diagnostics);
+            walk_expr(value, lifted, definitions, table, counter, diagnostics);
         }
-        HirStmt::Expr(e) => walk_expr(e, lifted, definitions, table, counter),
+        HirStmt::Expr(e) => walk_expr(e, lifted, definitions, table, counter, diagnostics),
     }
 }
 
@@ -251,8 +257,39 @@ fn walk_arm(
     definitions: &mut DefinitionTable,
     table: &mut TypeTable,
     counter: &mut u32,
+    diagnostics: &mut Diagnostics,
 ) {
-    walk_expr(&mut arm.body, lifted, definitions, table, counter);
+    walk_expr(&mut arm.body, lifted, definitions, table, counter, diagnostics);
+}
+
+/// Checks whether a parallel callback captures any reference types.
+///
+/// Capturing a `Ref[T]` in a `parallel each` or `parallel each via` callback
+/// is unsafe because the reference points to shared memory — multiple threads
+/// would read/write through the same pointer, causing a data race.
+fn check_parallel_ref_captures(callback: &HirExpr, table: &TypeTable, diagnostics: &mut Diagnostics) {
+    if let HirExprKind::MakeClosure { captures, .. } = &callback.kind {
+        for &(_, ty_id) in captures {
+            if type_contains_ref(ty_id, table) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "`parallel each` callback cannot capture a reference — shared mutable state is not thread-safe",
+                    )
+                    .with_label(Label::primary(callback.span, "captures a reference")),
+                );
+                return;
+            }
+        }
+    }
+}
+
+/// Returns `true` if the given type is or wraps a `Ty::Ref`.
+fn type_contains_ref(ty_id: TypeId, table: &TypeTable) -> bool {
+    match table.resolve(ty_id) {
+        Ty::Ref { .. } => true,
+        Ty::Mutable(inner) => type_contains_ref(*inner, table),
+        _ => false,
+    }
 }
 
 /// Collects free variables (captures) from a lambda body.
@@ -542,7 +579,7 @@ mod tests {
             statics: HashMap::new(),
         };
 
-        lift_lambdas(&mut hir, &mut definitions, &mut table);
+        lift_lambdas(&mut hir, &mut definitions, &mut table, &mut Diagnostics::new());
 
         // The lambda should be replaced with a Local reference.
         let main = hir.functions.get(&main_def).unwrap();
@@ -594,7 +631,7 @@ mod tests {
             statics: HashMap::new(),
         };
 
-        lift_lambdas(&mut hir, &mut definitions, &mut table);
+        lift_lambdas(&mut hir, &mut definitions, &mut table, &mut Diagnostics::new());
 
         assert_eq!(hir.functions.len(), 1, "No new functions should be created");
         assert!(
@@ -661,7 +698,7 @@ mod tests {
             statics: HashMap::new(),
         };
 
-        lift_lambdas(&mut hir, &mut definitions, &mut table);
+        lift_lambdas(&mut hir, &mut definitions, &mut table, &mut Diagnostics::new());
 
         // Should have main + 2 lifted lambdas.
         assert_eq!(hir.functions.len(), 3);
@@ -734,7 +771,7 @@ mod tests {
             statics: HashMap::new(),
         };
 
-        lift_lambdas(&mut hir, &mut definitions, &mut table);
+        lift_lambdas(&mut hir, &mut definitions, &mut table, &mut Diagnostics::new());
 
         // main + inner lambda + outer lambda = 3 functions total.
         assert_eq!(hir.functions.len(), 3);

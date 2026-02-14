@@ -338,6 +338,11 @@ fn parallel_each_nonlist_error() {
     assert_compile_error("parallel_each_nonlist_error.spark", "requires a List");
 }
 
+#[test]
+fn parallel_each_ref_mutation_error() {
+    assert_compile_error("parallel_each_ref_mutation.spark", "not thread-safe");
+}
+
 // ============================================================================
 // Via (pipeline operator)
 // ============================================================================
