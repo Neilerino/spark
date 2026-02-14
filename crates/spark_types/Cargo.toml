@@ -13,6 +13,7 @@ spark_diagnostics = { workspace = true }
 spark_ast = { workspace = true }
 spark_modules = { workspace = true }
 spark_resolve = { workspace = true }
+spark_stdlib = { workspace = true }
 rustc-hash = { workspace = true }
 
 [dev-dependencies]

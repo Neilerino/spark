@@ -4,7 +4,7 @@
 
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Signature, TrapCode, Value};
-use cranelift_module::{FuncId, Module};
+use cranelift_module::{FuncId, Linkage, Module};
 use rustc_hash::FxHashMap;
 use spark_diagnostics::Diagnostics;
 use spark_intern::kw;
@@ -150,6 +150,10 @@ fn emit_call<M: Module>(
             }
             if matches!(info.kind, DefinitionKind::BuiltinMethod) {
                 emit_builtin_method(ctx, info.name, args, destination, target, table, definitions, func_ids, thunk_ids, module);
+                return;
+            }
+            if matches!(info.kind, DefinitionKind::StdlibFunction) {
+                emit_stdlib_call(ctx, callee_def_id, info, args, destination, target, table, definitions, func_ids, thunk_ids, module);
                 return;
             }
         }
@@ -558,6 +562,72 @@ fn emit_builtin_method<M: Module>(
     }
 
     // Fallback: unknown method — jump to continuation
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+}
+
+/// Emits a call to a standard library function via its FFI symbol.
+///
+/// Looks up the function's type signature from the `TypeTable`, builds a
+/// matching Cranelift signature, declares the FFI function as an import,
+/// and emits the call instruction.
+#[allow(clippy::too_many_arguments)]
+fn emit_stdlib_call<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    callee_def_id: spark_resolve::DefId,
+    info: &spark_resolve::DefinitionInfo,
+    args: &[Operand],
+    destination: &Place,
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) {
+    let ffi_symbol = info
+        .ffi_symbol
+        .expect("StdlibFunction must have ffi_symbol");
+
+    // Evaluate arguments
+    let arg_vals: Vec<Value> = args
+        .iter()
+        .filter_map(|arg| {
+            emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+        })
+        .collect();
+
+    // Build Cranelift signature from the function's type in the TypeTable
+    let call_conv = module.isa().default_call_conv();
+    let mut sig = Signature::new(call_conv);
+
+    if let Some(fn_type_id) = table.get_def_type(callee_def_id) {
+        if let Ty::Function { params, ret, .. } = table.resolve(fn_type_id) {
+            for param_ty in params {
+                if let Some(clif_ty) = abi::spark_type_to_clif(*param_ty, table, ctx.ptr_type) {
+                    sig.params.push(AbiParam::new(clif_ty));
+                }
+            }
+            if let Some(clif_ret) = abi::spark_type_to_clif(*ret, table, ctx.ptr_type) {
+                sig.returns.push(AbiParam::new(clif_ret));
+            }
+        }
+    }
+
+    // Declare the function as an import (idempotent in Cranelift)
+    let func_id = module
+        .declare_function(ffi_symbol, Linkage::Import, &sig)
+        .expect("stdlib function declaration should not fail");
+
+    let func_ref = module.declare_func_in_func(func_id, ctx.builder.func);
+    let call = ctx.builder.ins().call(func_ref, &arg_vals);
+
+    if let Some(result_val) = ctx.builder.inst_results(call).first().copied() {
+        if destination.projections.is_empty() {
+            ctx.write_local(destination.local, result_val);
+        }
+    }
+
     let target_block = ctx.clif_block(target);
     ctx.builder.ins().jump(target_block, &[]);
 }

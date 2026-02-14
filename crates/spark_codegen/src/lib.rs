@@ -175,13 +175,13 @@ mod tests {
         definitions: &mut DefinitionTable,
         name: &str,
     ) -> DefId {
-        definitions.insert(DefinitionInfo {
-            kind: DefinitionKind::Function,
-            name: spark_intern::sym(name),
-            span: Span::DUMMY,
-            visibility: Visibility::Public,
-            module: ModulePath::root(),
-        })
+        definitions.insert(DefinitionInfo::new(
+            DefinitionKind::Function,
+            spark_intern::sym(name),
+            Span::DUMMY,
+            Visibility::Public,
+            ModulePath::root(),
+        ))
     }
 
     #[test]

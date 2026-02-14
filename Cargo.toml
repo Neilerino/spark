@@ -17,6 +17,7 @@ members = [
     "crates/spark_opt",
     "crates/spark_drop",
     "crates/spark_driver",
+    "crates/spark_stdlib",
     "crates/spark_runtime",
     # "crates/spark_cli",
 
@@ -47,6 +48,7 @@ spark_borrow = { path = "crates/spark_borrow" }
 spark_codegen = { path = "crates/spark_codegen" }
 spark_opt = { path = "crates/spark_opt" }
 spark_drop = { path = "crates/spark_drop" }
+spark_stdlib = { path = "crates/spark_stdlib" }
 
 # Error reporting
 thiserror = "1.0"
