@@ -28,8 +28,8 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_mir`         | MIR construction + monomorphization: CFG-based IR              | 44    | Complete |
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
-| `spark_drop`        | Type queries for RC/drop decisions (`needs_rc`, etc.)          | 11    | Complete |
-| `spark_runtime`     | `extern "C"` runtime library (print, strings, collections, RC) | —     | Complete |
+| `spark_drop`        | Type queries for RC/drop decisions (`needs_rc`, `needs_drop`)  | 14    | Complete |
+| `spark_runtime`     | `extern "C"` runtime library (print, strings, collections, RC) | 10    | Complete |
 | `spark_opt`         | MIR optimization passes (5 passes, 2 iterations)               | 75    | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
@@ -49,7 +49,7 @@ COW value semantics with reference counting (Swift model). All heap-allocated va
 
 **New crate:**
 
-- `spark_drop`: Type query functions — `needs_rc(ty, table)`, `element_needs_rc()`, `map_key_val_needs_rc()`. Determines which types need RC operations. Used by MIR lowering and codegen.
+- `spark_drop`: Type query functions — `needs_rc(ty, table)`, `needs_drop(ty, table)`, `element_needs_rc()`, `map_key_val_needs_rc()`. `needs_drop` is a superset of `needs_rc` that also covers `Ty::Function` (closure env RC). Used by MIR lowering and codegen.
 
 **Changes made:**
 
@@ -98,7 +98,7 @@ String literals work end-to-end. `print("hello world")` produces output.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Lambdas & closures | **Working** | Fat-pointer ABI, capture-by-value. Env memory leaked (see KNOWN_ISSUES.md) |
+| Lambdas & closures | **Working** | Fat-pointer ABI, capture-by-value, RC'd environments |
 | Generics | **Working** | Monomorphization, type inference, struct/function generics |
 | Structs | **Working** | Init, field access, passing as args, returning from functions |
 | Enums + match | **Working** | Variant data, exhaustiveness checking |
@@ -120,14 +120,15 @@ String literals work end-to-end. `print("hello world")` produces output.
 
 1. **References end-to-end** — The backend is done (borrow checker, MIR, codegen). Needs: parser support for `Ref[T]` (1 arg, inferred lifetime), implicit borrow coercion in type checker (`Ref[T] = value`), and implicit deref for field access. Small surface area, high payoff — unlocks the entire borrow-checking story.
 2. **`each`/`each via` iteration** — Now unblocked by lambda/closure support. Needs: iterator protocol design, HIR lowering (currently errors), MIR loop lowering. Core language feature for any real program.
-3. **Closure environment deallocation** — Closure environments are currently leaked. See `docs/KNOWN_ISSUES.md` for options (RC integration or simple dealloc). Important for long-running programs.
+3. **Nested closure RC cleanup** — Closure environments are now RC'd, but captured RC values (e.g., Strings inside an env) are not decremented when the env is freed. Phase 2 follow-up.
 4. **Tuples / modules E2E tests** — These features appear to work but have no E2E coverage. Quick wins for confidence.
 5. **Generic constraint validation** (`T: Comparable`) — Low priority but needed for correct generic programming.
 6. **Async/await/spawn** — Large effort: needs future types, state machine transform, runtime executor. Defer until core language is solid.
 
 ### Recently Completed
 
-- **Lambdas & capturing closures** — Full lambda/closure pipeline: lambda lifting, fat-pointer ABI (`(fn_ptr, env_ptr)`), thunk generation for function references, capture-by-value semantics with heap-allocated environments (`__spark_env_alloc`). Sret calling convention for aggregate returns. See `docs/KNOWN_ISSUES.md` for loose ends (env memory leak, nested closures untested).
+- **Closure environment RC** — Closure environments now have a 16-byte RC header (`rc`, `alloc_size`). `__spark_env_alloc` prepends the header; `__spark_env_rc_dec` frees at rc=0. `needs_drop()` (superset of `needs_rc`) registers function-typed locals for drop. `Operand::Copy` RC-incs the env_ptr. Nested RC cleanup (captured RC values inside envs) deferred to Phase 2.
+- **Lambdas & capturing closures** — Full lambda/closure pipeline: lambda lifting, fat-pointer ABI (`(fn_ptr, env_ptr)`), thunk generation for function references, capture-by-value semantics with heap-allocated environments (`__spark_env_alloc`). Sret calling convention for aggregate returns.
 - **Generic monomorphization** — MIR-level monomorphization pass clones generic function bodies with concrete type substitutions, rewrites call sites, and removes generic originals. Codegen computes layouts for `Ty::Applied` via substituted field types. 3 new monomorphization tests.
 - **Generic type checking** — `Ty::Applied { base, args }` for instantiated generic types. Type substitution via `substitute.rs`. Generic struct field access, struct init, and function calls with type arg inference all work.
 - **String interpolation** — Lexer tokenizes `"hello {expr}"` syntax, parser produces `StringPart::Interpolation`, HIR desugars to runtime string concatenation calls. Works end-to-end.
@@ -201,7 +202,7 @@ spark_driver        (depends on all pipeline crates + opt + codegen + clap)
 8. **Double-parse workaround** - Type checker consumes ASTs, so test helpers re-parse + re-resolve for HIR/MIR input.
 9. **Lifetime system** - `LifetimeId` in `Ty::Ref`, interned in `TypeTable`. `LifetimeId::ANONYMOUS` (0) is the default inferred lifetime. Parser already extracts lifetimes from `Ref[T, A]` syntax.
 10. **Borrow checker architecture** - NLL-style: fact extraction → liveness → region inference → conflict detection. Functions without `Ref` types skip the analysis entirely.
-11. **Reference counting** - COW value semantics (Swift model). `spark_drop::needs_rc()` determines which types need RC. `Operand::Copy` emits `rc_inc`; `Operand::Move` does not. `Statement::Drop` emits type-specific `_rc_dec`. Scope tracking in MIR builder handles drop elaboration at scope exits, returns, break/continue. Parameters are RC'd (caller inc's, callee dec's at scope exit).
+11. **Reference counting** - COW value semantics (Swift model). `spark_drop::needs_rc()` determines which types need RC pointer ops; `needs_drop()` is the superset used for drop registration (includes `Ty::Function` for closure env RC). `Operand::Copy` emits `rc_inc`; `Operand::Move` does not. `Statement::Drop` emits type-specific `_rc_dec` (or `__spark_env_rc_dec` for functions). Scope tracking in MIR builder handles drop elaboration at scope exits, returns, break/continue. Parameters are RC'd (caller inc's, callee dec's at scope exit). Closure environments have a 16-byte header (`rc`, `alloc_size`) prepended by `__spark_env_alloc`.
 
 ## Notes for Next Agent
 
