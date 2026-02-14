@@ -159,9 +159,14 @@ fn emit_constant<M: Module>(
 
             let mut data_desc = cranelift_module::DataDescription::new();
             data_desc.define(bytes.to_vec().into_boxed_slice());
-            module
-                .define_data(data_id, &data_desc)
-                .expect("data definition should succeed");
+            // The same string literal may appear in multiple functions, so
+            // `define_data` can encounter a `DuplicateDefinition` if the
+            // data was already emitted by a prior function. That is harmless.
+            match module.define_data(data_id, &data_desc) {
+                Ok(()) => {}
+                Err(cranelift_module::ModuleError::DuplicateDefinition(_)) => {}
+                Err(e) => panic!("data definition should succeed: {e}"),
+            }
 
             // Get pointer to static data and the length.
             let gv = module.declare_data_in_func(data_id, ctx.builder.func);

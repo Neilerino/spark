@@ -448,6 +448,34 @@ fn stdlib_math() {
     assert_output("stdlib_math.spark", "4\n1024\n5\n3\n4\n1\n2\n4");
 }
 
+#[test]
+fn stdlib_json_parse() {
+    assert_output("stdlib_json_parse.spark", "Alice\n30");
+}
+
+#[test]
+fn stdlib_json_stringify() {
+    assert_output(
+        "stdlib_json_stringify.spark",
+        "{\"greeting\":\"hello\",\"count\":42}",
+    );
+}
+
+#[test]
+fn stdlib_json_error() {
+    assert_output("stdlib_json_error.spark", "got error");
+}
+
+#[test]
+fn stdlib_json_array() {
+    assert_output("stdlib_json_array.spark", "3\n10\n30");
+}
+
+#[test]
+fn stdlib_json_nested() {
+    assert_output("stdlib_json_nested.spark", "2\nfirst\nsecond");
+}
+
 // Multi-file compilation
 // ============================================================================
 #[test]
