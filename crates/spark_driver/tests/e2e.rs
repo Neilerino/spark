@@ -300,6 +300,45 @@ fn lambda_implicit_return() {
 }
 
 // ============================================================================
+// Parallel Each / Parallel Each Via
+// ============================================================================
+
+#[test]
+fn parallel_each_via_double() {
+    assert_output("parallel_each_via_double.spark", "2\n4\n6");
+}
+
+#[test]
+fn parallel_each_via_fn_ref() {
+    assert_output("parallel_each_via_fn_ref.spark", "2\n4\n6");
+}
+
+#[test]
+fn parallel_each_via_closure() {
+    assert_output("parallel_each_via_closure.spark", "10\n20\n30");
+}
+
+#[test]
+fn parallel_each_via_len() {
+    assert_output("parallel_each_via_len.spark", "5");
+}
+
+#[test]
+fn parallel_each_cow() {
+    assert_output("parallel_each_cow.spark", "0");
+}
+
+#[test]
+fn parallel_each_single() {
+    assert_output("parallel_each_single.spark", "42");
+}
+
+#[test]
+fn parallel_each_nonlist_error() {
+    assert_compile_error("parallel_each_nonlist_error.spark", "requires a List");
+}
+
+// ============================================================================
 // Via (pipeline operator)
 // ============================================================================
 

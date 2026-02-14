@@ -1,0 +1,5 @@
+fn main(): Int {
+    name: String = "hello"
+    name parallel each (c: Int): Void { print(c) }
+    return 0
+}

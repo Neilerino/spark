@@ -1,0 +1,6 @@
+fn main(): Int {
+    nums: List[Int] = [1, 2, 3]
+    doubled: List[Int] = nums parallel each via (n: Int): Int { n * 2 }
+    doubled each (item: Int): Void { print(item) }
+    return 0
+}
