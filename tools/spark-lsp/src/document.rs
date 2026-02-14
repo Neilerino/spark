@@ -4,26 +4,35 @@
 //! (as a [`Rope`]) and provides helpers for converting between the
 //! compiler's byte-offset [`Span`]s and LSP line/character positions.
 
+use std::sync::Arc;
+
+use dashmap::DashMap;
 use ropey::Rope;
 use spark_diagnostics::Diagnostic;
 use spark_resolve::{DefinitionTable, ResolvedAst};
 use spark_span::{FileId, Span};
 use spark_types::TypeTable;
-use tower_lsp::lsp_types;
+use tower_lsp::lsp_types::{self, Url};
+
+use crate::workspace::WorkspaceState;
 
 /// Cached analysis output from the compiler pipeline.
 ///
 /// Stored per-document so that on-demand queries (go-to-definition, hover)
 /// can look up resolver data without re-running the pipeline.
+///
+/// The `resolved`, `definitions`, and `type_table` fields are wrapped in
+/// `Arc` so they can be shared across all open documents after a workspace
+/// analysis run without expensive clones.
 pub struct AnalysisResult {
     /// The file ID assigned during analysis.
     pub file_id: FileId,
-    /// Resolved AST with span → `DefId` mappings.
-    pub resolved: ResolvedAst,
-    /// Table of all definitions.
-    pub definitions: DefinitionTable,
-    /// Type table from the type checker (only available when type checking succeeds).
-    pub type_table: Option<TypeTable>,
+    /// Resolved AST with span → `DefId` mappings (shared across all files).
+    pub resolved: Arc<ResolvedAst>,
+    /// Table of all definitions (shared across all files).
+    pub definitions: Arc<DefinitionTable>,
+    /// Type table from the type checker (shared across all files).
+    pub type_table: Option<Arc<TypeTable>>,
 }
 
 /// State for a single open document.
@@ -95,6 +104,21 @@ pub fn span_to_range(rope: &Rope, span: Span) -> Option<lsp_types::Range> {
     let start = offset_to_position(rope, span.start)?;
     let end = offset_to_position(rope, span.end)?;
     Some(lsp_types::Range { start, end })
+}
+
+/// Gets the rope for a file, checking open documents first, then workspace disk files.
+///
+/// Returns `None` if the file is not found in either source.
+#[must_use]
+pub fn get_rope_for_file(
+    documents: &DashMap<Url, DocumentState>,
+    workspace: &WorkspaceState,
+    uri: &Url,
+) -> Option<Rope> {
+    if let Some(doc) = documents.get(uri) {
+        return Some(doc.rope.clone());
+    }
+    workspace.disk_ropes.get(uri).cloned()
 }
 
 /// Converts a [`spark_diagnostics::Diagnostic`] to an LSP `Diagnostic`.

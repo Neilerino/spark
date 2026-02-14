@@ -11,6 +11,7 @@
 mod backend;
 mod document;
 mod semantic_tokens;
+mod workspace;
 
 use tower_lsp::{LspService, Server};
 

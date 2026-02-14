@@ -3,28 +3,38 @@
 //! Provides real-time diagnostics by running the compiler's frontend
 //! pipeline (lex → parse → resolve → type-check) on every document
 //! change, and lexer-driven semantic token highlighting.
+//!
+//! When a workspace root is available, all `.spark` files are analyzed
+//! together for cross-file features (go-to-definition, find-references).
+//! Falls back to single-file analysis when no workspace root is configured.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
+use ropey::Rope;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
-    self, DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    MessageType, ReferenceParams, SemanticTokens, SemanticTokensFullOptions,
+    self, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    FileChangeType, FileSystemWatcher, GotoDefinitionParams,
+    GotoDefinitionResponse, GlobPattern, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, InitializedParams,
+    Location, MarkupContent, MarkupKind, MessageType, ReferenceParams,
+    Registration, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SymbolKind,
     TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+    DidChangeWatchedFilesRegistrationOptions, WatchKind,
 };
 use tower_lsp::{Client, LanguageServer};
 
 use spark_ast::Item;
 use spark_diagnostics::Diagnostics;
 use spark_lexer::Lexer;
-use spark_modules::{ModuleResolverInput, ModuleGraph};
+use spark_modules::{ModuleGraph, ModuleResolverInput};
 use spark_parser::parse;
 use spark_resolve::{DefinitionKind, ResolverInput};
 use spark_span::{FileId, SourceMap};
@@ -32,16 +42,21 @@ use spark_types::TypeCheckerInput;
 
 use crate::document::{self, AnalysisResult, DocumentState};
 use crate::semantic_tokens;
+use crate::workspace::{self, WorkspaceState};
 
 /// The LSP server backend.
 ///
-/// Holds a reference to the LSP client (for sending notifications) and
-/// a concurrent map of open documents.
+/// Holds a reference to the LSP client (for sending notifications),
+/// a concurrent map of open documents, and optional workspace state
+/// for multi-file analysis.
 pub struct Backend {
     /// The LSP client connection.
     client: Client,
     /// Open documents, keyed by URI.
     documents: DashMap<Url, DocumentState>,
+    /// Workspace state for multi-file analysis. `None` when no workspace
+    /// root was provided during initialization.
+    workspace: RwLock<Option<WorkspaceState>>,
 }
 
 impl Backend {
@@ -51,12 +66,23 @@ impl Backend {
         Self {
             client,
             documents: DashMap::new(),
+            workspace: RwLock::new(None),
         }
     }
 
-    /// Runs the compiler frontend on a document, caches analysis results,
-    /// and publishes diagnostics.
-    async fn analyze_and_publish(&self, uri: &Url, source: &str, version: Option<i32>) {
+    /// Returns `true` if a workspace root is configured.
+    fn has_workspace(&self) -> bool {
+        self.workspace
+            .read()
+            .ok()
+            .is_some_and(|ws| ws.is_some())
+    }
+
+    /// Runs the single-file compiler frontend on a document, caches
+    /// analysis results, and publishes diagnostics.
+    ///
+    /// Used as a fallback when no workspace root is configured.
+    async fn analyze_and_publish_single(&self, uri: &Url, source: &str, version: Option<i32>) {
         let (lsp_diagnostics, analysis) = analyze(source, uri);
 
         // Cache analysis result for on-demand queries (go-to-definition, etc.)
@@ -68,10 +94,140 @@ impl Backend {
             .publish_diagnostics(uri.clone(), lsp_diagnostics, version)
             .await;
     }
+
+    /// Runs the full workspace analysis pipeline, distributes results to
+    /// all documents, and publishes diagnostics for every file.
+    ///
+    /// This collects source text from both open documents and disk files,
+    /// runs the compiler frontend on all of them together, then distributes
+    /// the shared analysis results back to each open document.
+    #[allow(clippy::significant_drop_tightening)]
+    async fn analyze_and_publish_workspace(&self) {
+        // 1. Collect all file sources (open documents + disk files).
+        let (files, root_path) = {
+            let ws_guard = self.workspace.read().unwrap();
+            let Some(ws) = ws_guard.as_ref() else {
+                return;
+            };
+            let root_path = ws.root_path.clone();
+
+            let mut files: Vec<(Url, String)> = Vec::new();
+
+            // Open documents take priority over disk files.
+            let open_uris: Vec<Url> = self
+                .documents
+                .iter()
+                .map(|entry| entry.key().clone())
+                .collect();
+
+            for entry in &self.documents {
+                files.push((entry.key().clone(), entry.rope.to_string()));
+            }
+
+            // Add disk files that are not open in the editor.
+            for (uri, source) in &ws.disk_sources {
+                if !open_uris.contains(uri) {
+                    files.push((uri.clone(), source.clone()));
+                }
+            }
+
+            (files, root_path)
+        }; // Release workspace read lock.
+
+        if files.is_empty() {
+            return;
+        }
+
+        // 2. Run the analysis pipeline (CPU-bound, no locks held).
+        let output = workspace::analyze_workspace(&files, &root_path);
+
+        // 3. Wrap shared data in Arc for cheap sharing across documents.
+        let resolved = Arc::new(output.resolved);
+        let definitions = Arc::new(output.definitions);
+        let type_table = output.type_table.map(Arc::new);
+
+        // 4. Distribute results to open documents.
+        // Collect URIs + file IDs first to avoid holding DashMap refs during mutation.
+        let open_file_ids: Vec<(Url, FileId)> = self
+            .documents
+            .iter()
+            .filter_map(|entry| {
+                let uri = entry.key().clone();
+                let file_id = *output.uri_to_file_id.get(&uri)?;
+                Some((uri, file_id))
+            })
+            .collect();
+
+        for (uri, file_id) in &open_file_ids {
+            if let Some(mut doc) = self.documents.get_mut(uri) {
+                doc.analysis = Some(AnalysisResult {
+                    file_id: *file_id,
+                    resolved: Arc::clone(&resolved),
+                    definitions: Arc::clone(&definitions),
+                    type_table: type_table.as_ref().map(Arc::clone),
+                });
+            }
+        }
+
+        // 5. Update workspace state with new mappings and ropes.
+        {
+            let mut ws_guard = self.workspace.write().unwrap();
+            if let Some(ws) = ws_guard.as_mut() {
+                ws.file_id_to_uri = output.file_id_to_uri;
+                ws.uri_to_file_id = output.uri_to_file_id;
+                // Update disk ropes from analysis output (for cross-file span conversion).
+                for (file_id, rope) in &output.ropes {
+                    if let Some(uri) = ws.file_id_to_uri.get(file_id) {
+                        if !self.documents.contains_key(uri) {
+                            ws.disk_ropes.insert(uri.clone(), rope.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Publish diagnostics for all files.
+        for (uri, diags) in &output.diagnostics_by_uri {
+            self.client
+                .publish_diagnostics(uri.clone(), diags.clone(), None)
+                .await;
+        }
+    }
+
+    /// Resolves a definition span to an LSP `Location`, handling cross-file spans.
+    #[allow(clippy::significant_drop_tightening)]
+    fn resolve_def_location(
+        &self,
+        def_span: spark_span::Span,
+        current_file_id: FileId,
+        current_uri: &Url,
+        current_rope: &Rope,
+    ) -> Option<Location> {
+        if def_span.file == current_file_id {
+            // Same file — use the current document's rope.
+            let range = document::span_to_range(current_rope, def_span)?;
+            Some(Location {
+                uri: current_uri.clone(),
+                range,
+            })
+        } else {
+            // Different file — look up the target URI and rope.
+            let ws_guard = self.workspace.read().ok()?;
+            let ws = ws_guard.as_ref()?;
+            let target_uri = ws.file_id_to_uri.get(&def_span.file)?;
+            let target_rope =
+                document::get_rope_for_file(&self.documents, ws, target_uri)?;
+            let range = document::span_to_range(&target_rope, def_span)?;
+            Some(Location {
+                uri: target_uri.clone(),
+                range,
+            })
+        }
+    }
 }
 
-/// Runs the compiler frontend pipeline and returns LSP diagnostics
-/// plus an optional analysis result for on-demand queries.
+/// Runs the single-file compiler frontend pipeline and returns LSP
+/// diagnostics plus an optional analysis result for on-demand queries.
 ///
 /// Runs as many phases as possible, collecting all diagnostics.
 /// Parse errors prevent resolve/type-check but are still reported.
@@ -113,8 +269,8 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
             // Clone before type checking consumes ownership.
             analysis = Some(AnalysisResult {
                 file_id,
-                resolved: resolve_output.resolved.clone(),
-                definitions: resolve_output.definitions.clone(),
+                resolved: Arc::new(resolve_output.resolved.clone()),
+                definitions: Arc::new(resolve_output.definitions.clone()),
                 type_table: None,
             });
 
@@ -129,7 +285,7 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
 
                 // Cache the type table for hover information
                 if let Some(ref mut a) = analysis {
-                    a.type_table = Some(type_output.table);
+                    a.type_table = Some(Arc::new(type_output.table));
                 }
             }
         }
@@ -205,7 +361,11 @@ fn format_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Opti
 }
 
 /// Formats hover for a struct, showing fields when type info is available.
-fn format_struct_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId, name: &str) -> String {
+fn format_struct_hover(
+    analysis: &AnalysisResult,
+    def_id: spark_resolve::DefId,
+    name: &str,
+) -> String {
     let fields = analysis
         .type_table
         .as_ref()
@@ -228,7 +388,11 @@ fn format_struct_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId, 
 }
 
 /// Formats hover for an enum, showing variants when type info is available.
-fn format_enum_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId, name: &str) -> String {
+fn format_enum_hover(
+    analysis: &AnalysisResult,
+    def_id: spark_resolve::DefId,
+    name: &str,
+) -> String {
     let variants = analysis
         .type_table
         .as_ref()
@@ -266,8 +430,12 @@ fn item_to_document_symbol(item: &Item, rope: &ropey::Rope) -> Option<DocumentSy
             let kids = interface_method_symbols(&i.methods, rope);
             (i.name.name, SymbolKind::INTERFACE, i.span, i.name.span, Some(kids))
         }
-        Item::TypeAlias(t) => (t.name.name, SymbolKind::TYPE_PARAMETER, t.span, t.name.span, None),
-        Item::TypeDef(t) => (t.name.name, SymbolKind::TYPE_PARAMETER, t.span, t.name.span, None),
+        Item::TypeAlias(t) => {
+            (t.name.name, SymbolKind::TYPE_PARAMETER, t.span, t.name.span, None)
+        }
+        Item::TypeDef(t) => {
+            (t.name.name, SymbolKind::TYPE_PARAMETER, t.span, t.name.span, None)
+        }
         Item::Const(c) => (c.name.name, SymbolKind::CONSTANT, c.span, c.name.span, None),
         Item::Binding(_) => return None,
     };
@@ -289,7 +457,10 @@ fn item_to_document_symbol(item: &Item, rope: &ropey::Rope) -> Option<DocumentSy
 
 /// Converts struct fields to child `DocumentSymbol`s.
 #[allow(deprecated)]
-fn struct_field_symbols(fields: &[spark_ast::StructField], rope: &ropey::Rope) -> Vec<DocumentSymbol> {
+fn struct_field_symbols(
+    fields: &[spark_ast::StructField],
+    rope: &ropey::Rope,
+) -> Vec<DocumentSymbol> {
     fields
         .iter()
         .filter_map(|f| {
@@ -311,7 +482,10 @@ fn struct_field_symbols(fields: &[spark_ast::StructField], rope: &ropey::Rope) -
 
 /// Converts enum variants to child `DocumentSymbol`s.
 #[allow(deprecated)]
-fn enum_variant_symbols(variants: &[spark_ast::EnumVariant], rope: &ropey::Rope) -> Vec<DocumentSymbol> {
+fn enum_variant_symbols(
+    variants: &[spark_ast::EnumVariant],
+    rope: &ropey::Rope,
+) -> Vec<DocumentSymbol> {
     variants
         .iter()
         .filter_map(|v| {
@@ -333,7 +507,10 @@ fn enum_variant_symbols(variants: &[spark_ast::EnumVariant], rope: &ropey::Rope)
 
 /// Converts interface methods to child `DocumentSymbol`s.
 #[allow(deprecated)]
-fn interface_method_symbols(methods: &[spark_ast::FunctionDef], rope: &ropey::Rope) -> Vec<DocumentSymbol> {
+fn interface_method_symbols(
+    methods: &[spark_ast::FunctionDef],
+    rope: &ropey::Rope,
+) -> Vec<DocumentSymbol> {
     methods
         .iter()
         .filter_map(|m| {
@@ -386,7 +563,23 @@ fn resolve_names(
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // Extract workspace root from initialization params.
+        let root_path = params
+            .workspace_folders
+            .as_ref()
+            .and_then(|folders| folders.first())
+            .and_then(|folder| folder.uri.to_file_path().ok())
+            .or_else(|| {
+                #[allow(deprecated)] // root_uri is deprecated but still used by some clients
+                params.root_uri.as_ref()?.to_file_path().ok()
+            });
+
+        if let Some(root) = root_path {
+            let mut ws_guard = self.workspace.write().unwrap();
+            *ws_guard = Some(WorkspaceState::new(root));
+        }
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -420,6 +613,68 @@ impl LanguageServer for Backend {
         self.client
             .log_message(MessageType::INFO, "Spark LSP server initialized")
             .await;
+
+        // If we have a workspace root, discover all .spark files and
+        // run the initial workspace analysis.
+        let has_workspace = self.has_workspace();
+        if has_workspace {
+            // Discover files and read them from disk.
+            let root_path = {
+                let ws_guard = self.workspace.read().unwrap();
+                ws_guard.as_ref().map(|ws| ws.root_path.clone())
+            };
+
+            if let Some(root) = root_path {
+                let spark_files = workspace::discover_spark_files(&root);
+
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!("Found {} .spark files in workspace", spark_files.len()),
+                    )
+                    .await;
+
+                // Read each file from disk and store in workspace state.
+                {
+                    let mut ws_guard = self.workspace.write().unwrap();
+                    if let Some(ws) = ws_guard.as_mut() {
+                        for path in &spark_files {
+                            if let Some(uri) = workspace::file_path_to_uri(path) {
+                                if let Ok(source) = std::fs::read_to_string(path) {
+                                    ws.disk_ropes
+                                        .insert(uri.clone(), Rope::from_str(&source));
+                                    ws.disk_sources.insert(uri, source);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Run initial workspace analysis.
+                self.analyze_and_publish_workspace().await;
+            }
+
+            // Register dynamic file watcher for *.spark files.
+            let watch_kind = WatchKind::Create | WatchKind::Change | WatchKind::Delete;
+            let registration = Registration {
+                id: "spark-file-watcher".to_string(),
+                method: "workspace/didChangeWatchedFiles".to_string(),
+                register_options: Some(
+                    serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
+                        watchers: vec![FileSystemWatcher {
+                            glob_pattern: GlobPattern::String("**/*.spark".to_string()),
+                            kind: Some(watch_kind),
+                        }],
+                    })
+                    .unwrap(),
+                ),
+            };
+
+            let _ = self
+                .client
+                .register_capability(vec![registration])
+                .await;
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -468,11 +723,13 @@ impl LanguageServer for Backend {
             let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
             let (_span, def_id) = resolutions.find_at_offset(offset)?;
             let def_info = analysis.definitions.get(def_id)?;
-            let range = document::span_to_range(&doc.rope, def_info.span)?;
-            Some(lsp_types::Location {
-                uri: uri.clone(),
-                range,
-            })
+
+            self.resolve_def_location(
+                def_info.span,
+                analysis.file_id,
+                uri,
+                &doc.rope,
+            )
         });
 
         Ok(location.map(GotoDefinitionResponse::Scalar))
@@ -512,25 +769,36 @@ impl LanguageServer for Backend {
             let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
             let (_span, def_id) = resolutions.find_at_offset(offset)?;
 
-            let mut ref_spans = resolutions.find_references(def_id);
+            let mut locs: Vec<Location> = Vec::new();
 
-            // Include the definition site if requested
-            if params.context.include_declaration {
-                if let Some(def_info) = analysis.definitions.get(def_id) {
-                    ref_spans.push(def_info.span);
+            // Search ALL files' resolution maps for references to this DefId.
+            for res_map in analysis.resolved.resolutions.values() {
+                let ref_spans = res_map.find_references(def_id);
+                for span in ref_spans {
+                    if let Some(loc) = self.resolve_def_location(
+                        span,
+                        analysis.file_id,
+                        uri,
+                        &doc.rope,
+                    ) {
+                        locs.push(loc);
+                    }
                 }
             }
 
-            let locs: Vec<Location> = ref_spans
-                .iter()
-                .filter_map(|&span| {
-                    let range = document::span_to_range(&doc.rope, span)?;
-                    Some(Location {
-                        uri: uri.clone(),
-                        range,
-                    })
-                })
-                .collect();
+            // Include the definition site if requested.
+            if params.context.include_declaration {
+                if let Some(def_info) = analysis.definitions.get(def_id) {
+                    if let Some(loc) = self.resolve_def_location(
+                        def_info.span,
+                        analysis.file_id,
+                        uri,
+                        &doc.rope,
+                    ) {
+                        locs.push(loc);
+                    }
+                }
+            }
 
             if locs.is_empty() { None } else { Some(locs) }
         });
@@ -566,7 +834,21 @@ impl LanguageServer for Backend {
 
         self.documents
             .insert(uri.clone(), DocumentState::new(text));
-        self.analyze_and_publish(&uri, text, Some(version)).await;
+
+        if self.has_workspace() {
+            // Remove from disk sources (now tracked by editor).
+            {
+                let mut ws_guard = self.workspace.write().unwrap();
+                if let Some(ws) = ws_guard.as_mut() {
+                    ws.disk_sources.remove(&uri);
+                    ws.disk_ropes.remove(&uri);
+                }
+            }
+            self.analyze_and_publish_workspace().await;
+        } else {
+            self.analyze_and_publish_single(&uri, text, Some(version))
+                .await;
+        }
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -578,18 +860,93 @@ impl LanguageServer for Backend {
             if let Some(mut doc) = self.documents.get_mut(&uri) {
                 doc.update(&change.text);
             }
-            self.analyze_and_publish(&uri, &change.text, Some(version))
-                .await;
+
+            if self.has_workspace() {
+                self.analyze_and_publish_workspace().await;
+            } else {
+                self.analyze_and_publish_single(&uri, &change.text, Some(version))
+                    .await;
+            }
         }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         self.documents.remove(&uri);
-        // Clear diagnostics for closed document
-        self.client
-            .publish_diagnostics(uri, Vec::new(), None)
-            .await;
+
+        if self.has_workspace() {
+            // Re-read the file from disk so it stays in the workspace.
+            if let Ok(path) = uri.to_file_path() {
+                if let Ok(source) = std::fs::read_to_string(&path) {
+                    let mut ws_guard = self.workspace.write().unwrap();
+                    if let Some(ws) = ws_guard.as_mut() {
+                        ws.disk_ropes
+                            .insert(uri.clone(), Rope::from_str(&source));
+                        ws.disk_sources.insert(uri.clone(), source);
+                    }
+                }
+            }
+            self.analyze_and_publish_workspace().await;
+        } else {
+            // Clear diagnostics for closed document.
+            self.client
+                .publish_diagnostics(uri, Vec::new(), None)
+                .await;
+        }
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        if !self.has_workspace() {
+            return;
+        }
+
+        let mut needs_reanalysis = false;
+
+        // Collect changes to apply, then apply under a single write lock.
+        let mut to_update: Vec<(Url, String)> = Vec::new();
+        let mut to_delete: Vec<Url> = Vec::new();
+
+        for change in &params.changes {
+            let uri = &change.uri;
+
+            // Skip files that are open in the editor (editor is the source of truth).
+            if self.documents.contains_key(uri) {
+                continue;
+            }
+
+            match change.typ {
+                FileChangeType::CREATED | FileChangeType::CHANGED => {
+                    if let Ok(path) = uri.to_file_path() {
+                        if let Ok(source) = std::fs::read_to_string(&path) {
+                            to_update.push((uri.clone(), source));
+                        }
+                    }
+                }
+                FileChangeType::DELETED => {
+                    to_delete.push(uri.clone());
+                }
+                _ => {}
+            }
+        }
+
+        if !to_update.is_empty() || !to_delete.is_empty() {
+            let mut ws_guard = self.workspace.write().unwrap();
+            if let Some(ws) = ws_guard.as_mut() {
+                for (uri, source) in to_update {
+                    ws.disk_ropes.insert(uri.clone(), Rope::from_str(&source));
+                    ws.disk_sources.insert(uri, source);
+                }
+                for uri in to_delete {
+                    ws.disk_sources.remove(&uri);
+                    ws.disk_ropes.remove(&uri);
+                }
+                needs_reanalysis = true;
+            }
+        }
+
+        if needs_reanalysis {
+            self.analyze_and_publish_workspace().await;
+        }
     }
 }
 

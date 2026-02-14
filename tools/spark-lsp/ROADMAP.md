@@ -179,7 +179,7 @@ Phases are labeled with their core crate readiness:
 
 ---
 
-## Phase 8: Context-Aware Semantic Tokens
+## Phase 8: Context-Aware Semantic Tokens ✅
 
 **Core support: Ready** — `DefinitionKind` (18 variants) + `ResolutionMap` exist today
 
@@ -214,11 +214,13 @@ Phases are labeled with their core crate readiness:
 
 **Implementation notes:**
 - Zero core crate changes required — all needed data is already in `AnalysisResult`
-- The `TOKEN_TYPES` legend in `semantic_tokens.rs` needs expansion (add `function`, `struct`, `enum`, `enumMember`, `interface`, `type`, `parameter`, `property`, `method`, `typeParameter`)
-- Token modifiers needed: `readonly` (for `Const`), `declaration` (for definition sites)
-- Requires analysis result, so unanalyzable files fall back to lexer-only tokens
+- `TOKEN_TYPES` legend expanded to 16 types (added `function`, `struct`, `enum`, `enumMember`, `interface`, `type`, `parameter`, `property`, `method`, `typeParameter`)
+- Token modifiers: `readonly` (for `Const`), `declaration` (for definition sites via pattern bindings)
+- `SemanticContext` struct threads `ResolutionMap` + `DefinitionTable` into `compute_semantic_tokens`
+- O(1) hashmap lookups per identifier token (`get_ident` → `get_path` → `get_binding`)
+- Unanalyzable files gracefully fall back to lexer-only tokens (`context: None`)
 
-**Status:** Not started
+**Status:** Complete
 
 ---
 
