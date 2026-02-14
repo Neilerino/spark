@@ -4,7 +4,7 @@
 
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Signature, TrapCode, Value};
-use cranelift_module::{FuncId, Module};
+use cranelift_module::{FuncId, Linkage, Module};
 use rustc_hash::FxHashMap;
 use spark_diagnostics::Diagnostics;
 use spark_intern::kw;
@@ -47,8 +47,14 @@ pub fn emit_terminator<M: Module>(
                     let src = ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0);
                     let config = module.target_config();
                     ctx.builder.emit_small_memory_copy(
-                        config, sret_ptr, src, u64::from(size),
-                        1, 1, true, MemFlags::new(),
+                        config,
+                        sret_ptr,
+                        src,
+                        u64::from(size),
+                        1,
+                        1,
+                        true,
+                        MemFlags::new(),
                     );
                 }
                 ctx.builder.ins().return_(&[]);
@@ -63,7 +69,17 @@ pub fn emit_terminator<M: Module>(
             targets,
             otherwise,
         } => {
-            emit_switch_int(ctx, discriminant, targets, *otherwise, table, definitions, func_ids, thunk_ids, module);
+            emit_switch_int(
+                ctx,
+                discriminant,
+                targets,
+                *otherwise,
+                table,
+                definitions,
+                func_ids,
+                thunk_ids,
+                module,
+            );
         }
 
         Terminator::Call {
@@ -73,7 +89,19 @@ pub fn emit_terminator<M: Module>(
             target,
             span: _,
         } => {
-            emit_call(ctx, func, args, destination, *target, table, definitions, func_ids, thunk_ids, module, diagnostics);
+            emit_call(
+                ctx,
+                func,
+                args,
+                destination,
+                *target,
+                table,
+                definitions,
+                func_ids,
+                thunk_ids,
+                module,
+                diagnostics,
+            );
         }
 
         Terminator::Unreachable => {
@@ -95,22 +123,32 @@ fn emit_switch_int<M: Module>(
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
 ) {
-    let disc_val =
-        emit_rvalue::emit_operand(ctx, discriminant, table, definitions, func_ids, thunk_ids, module)
-            .unwrap_or_else(|| ctx.builder.ins().iconst(types::I8, 0));
+    let disc_val = emit_rvalue::emit_operand(
+        ctx,
+        discriminant,
+        table,
+        definitions,
+        func_ids,
+        thunk_ids,
+        module,
+    )
+    .unwrap_or_else(|| ctx.builder.ins().iconst(types::I8, 0));
 
     for (value, target) in targets {
         let val_ty = ctx.builder.func.dfg.value_type(disc_val);
         let cmp_val = ctx.builder.ins().iconst(val_ty, *value as i64);
-        let cmp = ctx
-            .builder
-            .ins()
-            .icmp(cranelift_codegen::ir::condcodes::IntCC::Equal, disc_val, cmp_val);
+        let cmp = ctx.builder.ins().icmp(
+            cranelift_codegen::ir::condcodes::IntCC::Equal,
+            disc_val,
+            cmp_val,
+        );
 
         let target_block = ctx.clif_block(*target);
         let next_block = ctx.builder.create_block();
 
-        ctx.builder.ins().brif(cmp, target_block, &[], next_block, &[]);
+        ctx.builder
+            .ins()
+            .brif(cmp, target_block, &[], next_block, &[]);
         ctx.builder.switch_to_block(next_block);
     }
 
@@ -139,33 +177,94 @@ fn emit_call<M: Module>(
     if let Some(callee_def_id) = resolve_callee_def_id(func, ctx) {
         if let Some(info) = definitions.get(callee_def_id) {
             if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::PRINT {
-                emit_builtin_print(ctx, args, target, table, definitions, func_ids, thunk_ids, module);
+                emit_builtin_print(
+                    ctx,
+                    args,
+                    target,
+                    table,
+                    definitions,
+                    func_ids,
+                    thunk_ids,
+                    module,
+                );
                 return;
             }
             if matches!(info.kind, DefinitionKind::BuiltinFunction)
                 && (info.name == kw::SORT || info.name == kw::TAKE || info.name == kw::REVERSE)
             {
-                emit_builtin_list_fn(ctx, info.name, args, destination, target, table, definitions, func_ids, thunk_ids, module);
+                emit_builtin_list_fn(
+                    ctx,
+                    info.name,
+                    args,
+                    destination,
+                    target,
+                    table,
+                    definitions,
+                    func_ids,
+                    thunk_ids,
+                    module,
+                );
                 return;
             }
             if matches!(info.kind, DefinitionKind::BuiltinMethod) {
-                emit_builtin_method(ctx, info.name, args, destination, target, table, definitions, func_ids, thunk_ids, module);
+                emit_builtin_method(
+                    ctx,
+                    info.name,
+                    args,
+                    destination,
+                    target,
+                    table,
+                    definitions,
+                    func_ids,
+                    thunk_ids,
+                    module,
+                );
+                return;
+            }
+            if matches!(info.kind, DefinitionKind::StdlibFunction) {
+                emit_stdlib_call(
+                    ctx,
+                    callee_def_id,
+                    info,
+                    args,
+                    destination,
+                    target,
+                    table,
+                    definitions,
+                    func_ids,
+                    thunk_ids,
+                    module,
+                );
                 return;
             }
             if matches!(info.kind, DefinitionKind::BuiltinFunction)
                 && (info.name == kw::PARALLEL_FOREACH || info.name == kw::PARALLEL_MAP)
             {
-                emit_parallel_call(ctx, info.name, args, destination, target, table, definitions, func_ids, thunk_ids, module);
+                emit_parallel_call(
+                    ctx,
+                    info.name,
+                    args,
+                    destination,
+                    target,
+                    table,
+                    definitions,
+                    func_ids,
+                    thunk_ids,
+                    module,
+                );
                 return;
             }
         }
     }
 
-    let func_val = emit_rvalue::emit_operand(ctx, func, table, definitions, func_ids, thunk_ids, module);
+    let func_val =
+        emit_rvalue::emit_operand(ctx, func, table, definitions, func_ids, thunk_ids, module);
 
     let arg_vals: Vec<Value> = args
         .iter()
-        .filter_map(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module))
+        .filter_map(|arg| {
+            emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+        })
         .collect();
 
     // Check if the callee returns an aggregate (sret convention).
@@ -175,14 +274,31 @@ fn emit_call<M: Module>(
     let call_result = if sret {
         // Aggregate return: pass destination address as sret pointer.
         // The callee writes directly to this address; no return value.
-        let sret_addr = ctx.local_stack_addr(destination.local)
+        let sret_addr = ctx
+            .local_stack_addr(destination.local)
             .unwrap_or_else(|| ctx.builder.ins().iconst(ctx.ptr_type, 0));
         match func {
             spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(def_id)) => {
-                emit_direct_call_sret(ctx, *def_id, sret_addr, &arg_vals, func_ids, module, diagnostics);
+                emit_direct_call_sret(
+                    ctx,
+                    *def_id,
+                    sret_addr,
+                    &arg_vals,
+                    func_ids,
+                    module,
+                    diagnostics,
+                );
             }
             _ => {
-                emit_indirect_call_sret(ctx, func_val, sret_addr, &arg_vals, destination, table, module);
+                emit_indirect_call_sret(
+                    ctx,
+                    func_val,
+                    sret_addr,
+                    &arg_vals,
+                    destination,
+                    table,
+                    module,
+                );
             }
         }
         None // data already written to sret_addr
@@ -263,9 +379,9 @@ fn emit_builtin_print<M: Module>(
     module: &mut M,
 ) {
     // Evaluate the single argument.
-    let arg_val = args
-        .first()
-        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module));
+    let arg_val = args.first().and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
 
     if let Some(val) = arg_val {
         // Determine the argument's type from the MIR operand.
@@ -314,9 +430,9 @@ fn emit_builtin_list_fn<M: Module>(
     module: &mut M,
 ) {
     // Evaluate the list argument (args[0]).
-    let list_val = args
-        .first()
-        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module));
+    let list_val = args.first().and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
 
     let Some(list_ptr) = list_val else {
         let target_block = ctx.clif_block(target);
@@ -335,7 +451,9 @@ fn emit_builtin_list_fn<M: Module>(
         // args[1] is the count
         let count_val = args
             .get(1)
-            .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module))
+            .and_then(|arg| {
+                emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+            })
             .unwrap_or_else(|| ctx.builder.ins().iconst(types::I64, 0));
         let func_ref = module.declare_func_in_func(ctx.stubs.list_take, ctx.builder.func);
         let call = ctx.builder.ins().call(func_ref, &[list_ptr, count_val]);
@@ -377,9 +495,9 @@ fn emit_parallel_call<M: Module>(
     let is_map = fn_name == kw::PARALLEL_MAP;
 
     // Evaluate the list argument (args[0]).
-    let list_val = args
-        .first()
-        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module));
+    let list_val = args.first().and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
 
     let Some(list_ptr) = list_val else {
         let target_block = ctx.clif_block(target);
@@ -388,9 +506,9 @@ fn emit_parallel_call<M: Module>(
     };
 
     // Evaluate the callback argument (args[1]) — a fat pointer aggregate.
-    let cb_val = args
-        .get(1)
-        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module));
+    let cb_val = args.get(1).and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
 
     let Some(fat_ptr_addr) = cb_val else {
         let target_block = ctx.clif_block(target);
@@ -399,12 +517,10 @@ fn emit_parallel_call<M: Module>(
     };
 
     // Load fn_ptr and env_ptr from the fat pointer.
-    let fn_ptr = ctx.builder.ins().load(
-        ctx.ptr_type,
-        MemFlags::new(),
-        fat_ptr_addr,
-        0,
-    );
+    let fn_ptr = ctx
+        .builder
+        .ins()
+        .load(ctx.ptr_type, MemFlags::new(), fat_ptr_addr, 0);
     let env_ptr = ctx.builder.ins().load(
         ctx.ptr_type,
         MemFlags::new(),
@@ -423,7 +539,10 @@ fn emit_parallel_call<M: Module>(
         _ => spark_types::TypeId::ERROR,
     };
     let elem_layout = ctx.layouts.layout_of(elem_ty, table);
-    let elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(elem_layout.size));
+    let elem_size_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I64, i64::from(elem_layout.size));
 
     // Compute cb_kind flag from callback type info.
     // Bits 0-1: input kind (0 = int-like, 1 = float)
@@ -435,13 +554,20 @@ fn emit_parallel_call<M: Module>(
     };
     let (param_ty, ret_ty) = match table.resolve(cb_ty_id).clone() {
         Ty::Function { params, ret, .. } => {
-            let p = params.first().copied().unwrap_or(spark_types::TypeId::ERROR);
+            let p = params
+                .first()
+                .copied()
+                .unwrap_or(spark_types::TypeId::ERROR);
             (p, ret)
         }
         _ => (spark_types::TypeId::ERROR, spark_types::TypeId::ERROR),
     };
 
-    let input_kind: u8 = if matches!(table.resolve(param_ty), Ty::Float(_)) { 1 } else { 0 };
+    let input_kind: u8 = if matches!(table.resolve(param_ty), Ty::Float(_)) {
+        1
+    } else {
+        0
+    };
     let output_kind: u8 = if matches!(table.resolve(ret_ty), Ty::Void) {
         2
     } else if matches!(table.resolve(ret_ty), Ty::Float(_)) {
@@ -455,9 +581,22 @@ fn emit_parallel_call<M: Module>(
     if is_map {
         // __spark_parallel_map(list, fn_ptr, env_ptr, elem_size, result_elem_size, cb_kind) -> ptr
         let result_elem_layout = ctx.layouts.layout_of(ret_ty, table);
-        let result_elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(result_elem_layout.size));
+        let result_elem_size_val = ctx
+            .builder
+            .ins()
+            .iconst(types::I64, i64::from(result_elem_layout.size));
         let func_ref = module.declare_func_in_func(ctx.stubs.parallel_map, ctx.builder.func);
-        let call = ctx.builder.ins().call(func_ref, &[list_ptr, fn_ptr, env_ptr, elem_size_val, result_elem_size_val, cb_kind_val]);
+        let call = ctx.builder.ins().call(
+            func_ref,
+            &[
+                list_ptr,
+                fn_ptr,
+                env_ptr,
+                elem_size_val,
+                result_elem_size_val,
+                cb_kind_val,
+            ],
+        );
         let result = ctx.builder.inst_results(call)[0];
         if destination.projections.is_empty() {
             ctx.write_local(destination.local, result);
@@ -465,7 +604,10 @@ fn emit_parallel_call<M: Module>(
     } else {
         // __spark_parallel_foreach(list, fn_ptr, env_ptr, elem_size, cb_kind) -> void
         let func_ref = module.declare_func_in_func(ctx.stubs.parallel_foreach, ctx.builder.func);
-        ctx.builder.ins().call(func_ref, &[list_ptr, fn_ptr, env_ptr, elem_size_val, cb_kind_val]);
+        ctx.builder.ins().call(
+            func_ref,
+            &[list_ptr, fn_ptr, env_ptr, elem_size_val, cb_kind_val],
+        );
     }
 
     let target_block = ctx.clif_block(target);
@@ -523,9 +665,8 @@ fn emit_builtin_method<M: Module>(
     };
 
     // Is this a mutating method?
-    let is_mutating = method_name == kw::APPEND
-        || method_name == kw::REMOVE
-        || method_name == kw::ADD;
+    let is_mutating =
+        method_name == kw::APPEND || method_name == kw::REMOVE || method_name == kw::ADD;
 
     // --- LEN ---
     if method_name == kw::LEN {
@@ -597,9 +738,17 @@ fn emit_builtin_method<M: Module>(
                 let elem_ty = *elem;
                 if let Some(arg) = args.get(1) {
                     if let Some(elem_addr) = emit_rvalue::emit_operand_addr(
-                        ctx, arg, elem_ty, table, definitions, func_ids, thunk_ids, module,
+                        ctx,
+                        arg,
+                        elem_ty,
+                        table,
+                        definitions,
+                        func_ids,
+                        thunk_ids,
+                        module,
                     ) {
-                        let func_ref = module.declare_func_in_func(ctx.stubs.list_push, ctx.builder.func);
+                        let func_ref =
+                            module.declare_func_in_func(ctx.stubs.list_push, ctx.builder.func);
                         ctx.builder.ins().call(func_ref, &[cow_ptr, elem_addr]);
                     }
                 }
@@ -608,14 +757,25 @@ fn emit_builtin_method<M: Module>(
             (Ty::List(elem), _) if method_name == kw::REMOVE => {
                 let elem_ty = *elem;
                 if let Some(arg) = args.get(1) {
-                    if let Some(idx_val) = emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module) {
+                    if let Some(idx_val) = emit_rvalue::emit_operand(
+                        ctx,
+                        arg,
+                        table,
+                        definitions,
+                        func_ids,
+                        thunk_ids,
+                        module,
+                    ) {
                         let elem_rc = if spark_drop::needs_rc(elem_ty, table) {
                             ctx.builder.ins().iconst(types::I8, 1)
                         } else {
                             ctx.builder.ins().iconst(types::I8, 0)
                         };
-                        let func_ref = module.declare_func_in_func(ctx.stubs.list_remove, ctx.builder.func);
-                        ctx.builder.ins().call(func_ref, &[cow_ptr, idx_val, elem_rc]);
+                        let func_ref =
+                            module.declare_func_in_func(ctx.stubs.list_remove, ctx.builder.func);
+                        ctx.builder
+                            .ins()
+                            .call(func_ref, &[cow_ptr, idx_val, elem_rc]);
                     }
                 }
             }
@@ -624,9 +784,17 @@ fn emit_builtin_method<M: Module>(
                 let elem_ty = *elem;
                 if let Some(arg) = args.get(1) {
                     if let Some(elem_addr) = emit_rvalue::emit_operand_addr(
-                        ctx, arg, elem_ty, table, definitions, func_ids, thunk_ids, module,
+                        ctx,
+                        arg,
+                        elem_ty,
+                        table,
+                        definitions,
+                        func_ids,
+                        thunk_ids,
+                        module,
                     ) {
-                        let func_ref = module.declare_func_in_func(ctx.stubs.set_insert, ctx.builder.func);
+                        let func_ref =
+                            module.declare_func_in_func(ctx.stubs.set_insert, ctx.builder.func);
                         ctx.builder.ins().call(func_ref, &[cow_ptr, elem_addr]);
                     }
                 }
@@ -636,15 +804,25 @@ fn emit_builtin_method<M: Module>(
                 let elem_ty = *elem;
                 if let Some(arg) = args.get(1) {
                     if let Some(elem_addr) = emit_rvalue::emit_operand_addr(
-                        ctx, arg, elem_ty, table, definitions, func_ids, thunk_ids, module,
+                        ctx,
+                        arg,
+                        elem_ty,
+                        table,
+                        definitions,
+                        func_ids,
+                        thunk_ids,
+                        module,
                     ) {
                         let elem_rc = if spark_drop::needs_rc(elem_ty, table) {
                             ctx.builder.ins().iconst(types::I8, 1)
                         } else {
                             ctx.builder.ins().iconst(types::I8, 0)
                         };
-                        let func_ref = module.declare_func_in_func(ctx.stubs.set_remove, ctx.builder.func);
-                        ctx.builder.ins().call(func_ref, &[cow_ptr, elem_addr, elem_rc]);
+                        let func_ref =
+                            module.declare_func_in_func(ctx.stubs.set_remove, ctx.builder.func);
+                        ctx.builder
+                            .ins()
+                            .call(func_ref, &[cow_ptr, elem_addr, elem_rc]);
                     }
                 }
             }
@@ -654,7 +832,14 @@ fn emit_builtin_method<M: Module>(
                 let val_ty = *v;
                 if let Some(arg) = args.get(1) {
                     if let Some(key_addr) = emit_rvalue::emit_operand_addr(
-                        ctx, arg, key_ty, table, definitions, func_ids, thunk_ids, module,
+                        ctx,
+                        arg,
+                        key_ty,
+                        table,
+                        definitions,
+                        func_ids,
+                        thunk_ids,
+                        module,
                     ) {
                         let key_rc = if spark_drop::needs_rc(key_ty, table) {
                             ctx.builder.ins().iconst(types::I8, 1)
@@ -666,8 +851,11 @@ fn emit_builtin_method<M: Module>(
                         } else {
                             ctx.builder.ins().iconst(types::I8, 0)
                         };
-                        let func_ref = module.declare_func_in_func(ctx.stubs.map_remove, ctx.builder.func);
-                        ctx.builder.ins().call(func_ref, &[cow_ptr, key_addr, key_rc, val_rc]);
+                        let func_ref =
+                            module.declare_func_in_func(ctx.stubs.map_remove, ctx.builder.func);
+                        ctx.builder
+                            .ins()
+                            .call(func_ref, &[cow_ptr, key_addr, key_rc, val_rc]);
                     }
                 }
             }
@@ -680,6 +868,72 @@ fn emit_builtin_method<M: Module>(
     }
 
     // Fallback: unknown method — jump to continuation
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+}
+
+/// Emits a call to a standard library function via its FFI symbol.
+///
+/// Looks up the function's type signature from the `TypeTable`, builds a
+/// matching Cranelift signature, declares the FFI function as an import,
+/// and emits the call instruction.
+#[allow(clippy::too_many_arguments)]
+fn emit_stdlib_call<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    callee_def_id: spark_resolve::DefId,
+    info: &spark_resolve::DefinitionInfo,
+    args: &[Operand],
+    destination: &Place,
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) {
+    let ffi_symbol = info
+        .ffi_symbol
+        .expect("StdlibFunction must have ffi_symbol");
+
+    // Evaluate arguments
+    let arg_vals: Vec<Value> = args
+        .iter()
+        .filter_map(|arg| {
+            emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+        })
+        .collect();
+
+    // Build Cranelift signature from the function's type in the TypeTable
+    let call_conv = module.isa().default_call_conv();
+    let mut sig = Signature::new(call_conv);
+
+    if let Some(fn_type_id) = table.get_def_type(callee_def_id) {
+        if let Ty::Function { params, ret, .. } = table.resolve(fn_type_id) {
+            for param_ty in params {
+                if let Some(clif_ty) = abi::spark_type_to_clif(*param_ty, table, ctx.ptr_type) {
+                    sig.params.push(AbiParam::new(clif_ty));
+                }
+            }
+            if let Some(clif_ret) = abi::spark_type_to_clif(*ret, table, ctx.ptr_type) {
+                sig.returns.push(AbiParam::new(clif_ret));
+            }
+        }
+    }
+
+    // Declare the function as an import (idempotent in Cranelift)
+    let func_id = module
+        .declare_function(ffi_symbol, Linkage::Import, &sig)
+        .expect("stdlib function declaration should not fail");
+
+    let func_ref = module.declare_func_in_func(func_id, ctx.builder.func);
+    let call = ctx.builder.ins().call(func_ref, &arg_vals);
+
+    if let Some(result_val) = ctx.builder.inst_results(call).first().copied() {
+        if destination.projections.is_empty() {
+            ctx.write_local(destination.local, result_val);
+        }
+    }
+
     let target_block = ctx.clif_block(target);
     ctx.builder.ins().jump(target_block, &[]);
 }
@@ -717,7 +971,10 @@ fn emit_cow<M: Module>(
                 ctx.builder.ins().iconst(types::I8, 0)
             };
             let func_ref = module.declare_func_in_func(ctx.stubs.map_cow, ctx.builder.func);
-            let call = ctx.builder.ins().call(func_ref, &[recv_ptr, key_rc, val_rc]);
+            let call = ctx
+                .builder
+                .ins()
+                .call(func_ref, &[recv_ptr, key_rc, val_rc]);
             ctx.builder.inst_results(call)[0]
         }
         Ty::Set(elem) => {
@@ -817,9 +1074,8 @@ fn emit_indirect_call<M: Module>(
     let mut sig = Signature::new(module.isa().default_call_conv());
     sig.params.push(AbiParam::new(ctx.ptr_type)); // env_ptr
     for av in arg_vals {
-        sig.params.push(AbiParam::new(
-            ctx.builder.func.dfg.value_type(*av),
-        ));
+        sig.params
+            .push(AbiParam::new(ctx.builder.func.dfg.value_type(*av)));
     }
     if let Some(ret_clif) = abi::spark_type_to_clif(dest_ty, table, ctx.ptr_type) {
         sig.returns.push(AbiParam::new(ret_clif));
@@ -867,9 +1123,8 @@ fn emit_indirect_call_sret<M: Module>(
     sig.params.push(AbiParam::new(ctx.ptr_type)); // sret_ptr
     sig.params.push(AbiParam::new(ctx.ptr_type)); // env_ptr
     for av in arg_vals {
-        sig.params.push(AbiParam::new(
-            ctx.builder.func.dfg.value_type(*av),
-        ));
+        sig.params
+            .push(AbiParam::new(ctx.builder.func.dfg.value_type(*av)));
     }
     // No return value — callee writes directly to sret_ptr.
 

@@ -18,6 +18,8 @@ use spark_intern::{kw, Symbol};
 use spark_modules::{ModuleGraph, ModulePath};
 use spark_span::{FileId, Span};
 
+use spark_stdlib::StdlibRegistry;
+
 use crate::def::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visibility};
 use crate::resolved_ast::ResolvedAst;
 use crate::rib::{RibKind, RibStack};
@@ -50,6 +52,8 @@ pub struct Resolver {
     file_imports: FxHashMap<FileId, Vec<(Symbol, DefId, DefinitionKind)>>,
     /// Built-in function definitions to inject into every module rib.
     builtin_defs: Vec<(Symbol, DefId, DefinitionKind)>,
+    /// Standard library manifest registry.
+    stdlib: StdlibRegistry,
 }
 
 impl Resolver {
@@ -67,6 +71,7 @@ impl Resolver {
             module_defs: FxHashMap::default(),
             file_imports: FxHashMap::default(),
             builtin_defs: Vec::new(),
+            stdlib: StdlibRegistry::new(),
         }
     }
 
@@ -380,8 +385,16 @@ impl Resolver {
     /// Collects import bindings for a file and stores resolved `DefId`s.
     fn collect_import_bindings(&mut self, file_id: FileId, ast: &Ast, _module_path: &ModulePath) {
         for import_decl in &ast.imports {
-            let target_module =
-                ModulePath::new(import_decl.path.segments.iter().map(|s| s.name).collect());
+            let path_segments: Vec<Symbol> =
+                import_decl.path.segments.iter().map(|s| s.name).collect();
+
+            // Intercept stdlib imports (e.g., `import spark.math { sqrt }`)
+            if StdlibRegistry::is_stdlib_path(&path_segments) {
+                self.collect_stdlib_import(file_id, import_decl, &path_segments);
+                continue;
+            }
+
+            let target_module = ModulePath::new(path_segments);
 
             if import_decl.items.is_empty() {
                 // Whole module import — not adding individual items here.
@@ -418,6 +431,82 @@ impl Resolver {
                         .push((local_name, def_id, kind));
                 }
             }
+        }
+    }
+
+    /// Collects import bindings from a standard library module.
+    ///
+    /// Creates `DefId`s with `DefinitionKind::StdlibFunction` for each imported
+    /// item and records the FFI symbol for codegen.
+    fn collect_stdlib_import(
+        &mut self,
+        file_id: FileId,
+        import_decl: &spark_ast::ImportDecl,
+        path_segments: &[Symbol],
+    ) {
+        let module = self.stdlib.find_module(path_segments);
+        let Some(module) = module else {
+            let path_str: Vec<&str> = path_segments.iter().map(|s| s.as_str()).collect();
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "unknown standard library module `{}`",
+                    path_str.join(".")
+                ))
+                .with_label(Label::primary(import_decl.path.span, "not found")),
+            );
+            return;
+        };
+
+        if import_decl.items.is_empty() {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "stdlib module import requires specifying items: `import spark.math { sqrt }`",
+                )
+                .with_label(Label::primary(
+                    import_decl.path.span,
+                    "specify items to import",
+                )),
+            );
+            return;
+        }
+
+        // Clone module data to avoid borrow conflict with self
+        let entries: Vec<_> = module.entries.clone();
+
+        for import_item in &import_decl.items {
+            let original_name = import_item.name.name;
+            let local_name = import_item.alias.as_ref().map_or(original_name, |a| a.name);
+
+            let entry = entries.iter().find(|e| e.name == original_name);
+            let Some(entry) = entry else {
+                let path_str: Vec<&str> = path_segments.iter().map(|s| s.as_str()).collect();
+                self.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "`{}` is not found in `{}`",
+                        original_name.as_str(),
+                        path_str.join(".")
+                    ))
+                    .with_code("E0432")
+                    .with_label(Label::primary(import_item.span, "not found in module")),
+                );
+                continue;
+            };
+
+            let info = DefinitionInfo::new(
+                DefinitionKind::StdlibFunction,
+                original_name,
+                import_item.span,
+                Visibility::Public,
+                ModulePath::new(path_segments.to_vec()),
+            )
+            .with_ffi_symbol(entry.ffi_symbol);
+
+            let def_id = self.definitions.insert(info);
+
+            self.file_imports
+                .entry(file_id)
+                .or_default()
+                .push((local_name, def_id, DefinitionKind::StdlibFunction));
         }
     }
 

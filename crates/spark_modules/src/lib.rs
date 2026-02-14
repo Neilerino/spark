@@ -251,6 +251,12 @@ impl ModuleResolver {
             for import in &ast.imports {
                 let target_path = path_to_module_path(&import.path);
 
+                // Skip stdlib imports — they're resolved by the name resolver,
+                // not the filesystem-based module graph.
+                if spark_stdlib::StdlibRegistry::is_stdlib_path(target_path.segments()) {
+                    continue;
+                }
+
                 // Check if target module exists
                 if !self.graph.modules.contains_key(&target_path) {
                     import_errors.push((

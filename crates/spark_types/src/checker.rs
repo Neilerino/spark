@@ -14,6 +14,7 @@ use spark_span::FileId;
 
 use spark_intern::kw;
 use spark_resolve::DefinitionKind;
+use spark_stdlib::{StdlibRegistry, StdlibType};
 
 use crate::builtins::{register_builtins, BuiltinTypes};
 use crate::check_decl::collect_item;
@@ -67,6 +68,7 @@ impl TypeChecker {
     pub fn check(mut self) -> TypeCheckerOutput {
         self.collect_signatures();
         self.register_builtin_functions();
+        self.register_stdlib_functions();
         self.check_bodies();
 
         TypeCheckerOutput {
@@ -168,6 +170,58 @@ impl TypeChecker {
                 });
                 self.table.set_def_type(def_id, fn_type);
             }
+        }
+    }
+
+    /// Registers type signatures for standard library functions.
+    ///
+    /// Iterates over all `StdlibFunction` definitions and assigns function
+    /// types by matching against the stdlib manifest.
+    fn register_stdlib_functions(&mut self) {
+        let registry = StdlibRegistry::new();
+
+        // Collect stdlib defs first to avoid borrow conflict with self.definitions
+        let stdlib_defs: Vec<_> = self
+            .definitions
+            .iter()
+            .filter(|(_, info)| matches!(info.kind, DefinitionKind::StdlibFunction))
+            .map(|(def_id, info)| (def_id, info.name, info.module.clone()))
+            .collect();
+
+        for (def_id, name, module_path) in stdlib_defs {
+            let Some(module) = registry.find_module(module_path.segments()) else {
+                continue;
+            };
+
+            let Some(entry) = module.find_entry(name) else {
+                continue;
+            };
+
+            // Convert StdlibType descriptors to TypeIds
+            let params: Vec<_> = entry
+                .params
+                .iter()
+                .map(|t| self.stdlib_type_to_id(*t))
+                .collect();
+            let ret = self.stdlib_type_to_id(entry.ret);
+
+            let fn_type = self.table.intern(Ty::Function {
+                params,
+                ret,
+                is_async: false,
+            });
+            self.table.set_def_type(def_id, fn_type);
+        }
+    }
+
+    /// Converts a [`StdlibType`] descriptor to a real `TypeId`.
+    fn stdlib_type_to_id(&mut self, ty: StdlibType) -> crate::TypeId {
+        match ty {
+            StdlibType::Float => self.table.intern(Ty::Float(FloatWidth::F64)),
+            StdlibType::Int => self.table.intern(Ty::Int(IntWidth::I64)),
+            StdlibType::Bool => self.table.intern(Ty::Bool),
+            StdlibType::String => self.builtins.string,
+            StdlibType::Void => self.table.intern(Ty::Void),
         }
     }
 

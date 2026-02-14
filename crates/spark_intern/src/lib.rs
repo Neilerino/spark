@@ -345,6 +345,18 @@ impl Interner {
             // Internal runtime stubs
             "__parallel_foreach",
             "__parallel_map",
+            // Standard library module names
+            "spark",
+            "math",
+            // Standard library function names
+            "sqrt",
+            "pow",
+            "abs",
+            "floor",
+            "ceil",
+            "min",
+            "max",
+            "round",
         ];
 
         for kw in keywords {
@@ -612,6 +624,30 @@ pub mod kw {
     pub const PARALLEL_FOREACH: Symbol = Symbol(79);
     /// `__parallel_map` (internal runtime stub)
     pub const PARALLEL_MAP: Symbol = Symbol(80);
+
+    // Standard library module names
+    /// `spark`
+    pub const SPARK: Symbol = Symbol(77);
+    /// `math`
+    pub const MATH: Symbol = Symbol(78);
+
+    // Standard library function names
+    /// `sqrt`
+    pub const SQRT: Symbol = Symbol(79);
+    /// `pow`
+    pub const POW: Symbol = Symbol(80);
+    /// `abs`
+    pub const ABS: Symbol = Symbol(81);
+    /// `floor`
+    pub const FLOOR: Symbol = Symbol(82);
+    /// `ceil`
+    pub const CEIL: Symbol = Symbol(83);
+    /// `min`
+    pub const MIN: Symbol = Symbol(84);
+    /// `max`
+    pub const MAX: Symbol = Symbol(85);
+    /// `round`
+    pub const ROUND: Symbol = Symbol(86);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]

@@ -1,0 +1,13 @@
+import spark.math { sqrt, pow, abs, floor, ceil, min, max, round }
+
+fn main(): Int {
+    print(floor(sqrt(16.0)))
+    print(floor(pow(2.0, 10.0)))
+    print(floor(abs(-5.0)))
+    print(floor(3.7))
+    print(ceil(3.2))
+    print(floor(min(1.0, 2.0)))
+    print(floor(max(1.0, 2.0)))
+    print(round(3.5))
+    return 0
+}

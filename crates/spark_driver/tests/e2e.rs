@@ -378,10 +378,7 @@ fn via_user_fn() {
 
 #[test]
 fn kitchen_sink() {
-    assert_output(
-        "kitchen_sink.spark",
-        "5\n4\n3\n2\n1\n9\n18\n27\n3\n13\n3",
-    );
+    assert_output("kitchen_sink.spark", "5\n4\n3\n2\n1\n9\n18\n27\n3\n13\n3");
 }
 
 // ============================================================================
@@ -416,6 +413,14 @@ fn await_non_future_error() {
 #[test]
 fn spawn_non_async_error() {
     assert_compile_error("spawn_non_async_error.spark", "cannot `spawn`");
+}
+
+// Standard library
+// ============================================================================
+
+#[test]
+fn stdlib_math() {
+    assert_output("stdlib_math.spark", "4\n1024\n5\n3\n4\n1\n2\n4");
 }
 
 // Multi-file compilation

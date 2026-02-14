@@ -88,6 +88,8 @@ pub enum DefinitionKind {
     BindingMethod(DefId),
     /// Lambda (lifted anonymous function).
     Lambda,
+    /// Standard library function (e.g., `spark.math.sqrt`).
+    StdlibFunction,
 }
 
 impl DefinitionKind {
@@ -121,6 +123,7 @@ impl DefinitionKind {
                 | Self::Parameter
                 | Self::BuiltinFunction
                 | Self::Lambda
+                | Self::StdlibFunction
         )
     }
 }
@@ -168,6 +171,10 @@ pub struct DefinitionInfo {
     pub visibility: Visibility,
     /// Module this definition belongs to.
     pub module: ModulePath,
+    /// FFI symbol name for stdlib functions (e.g., `"__spark_math_sqrt"`).
+    /// `None` for non-stdlib definitions.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pub ffi_symbol: Option<&'static str>,
 }
 
 impl DefinitionInfo {
@@ -186,7 +193,15 @@ impl DefinitionInfo {
             span,
             visibility,
             module,
+            ffi_symbol: None,
         }
+    }
+
+    /// Sets the FFI symbol for this definition (builder pattern).
+    #[must_use]
+    pub const fn with_ffi_symbol(mut self, symbol: &'static str) -> Self {
+        self.ffi_symbol = Some(symbol);
+        self
     }
 }
 

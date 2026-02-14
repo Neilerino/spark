@@ -1,0 +1,13 @@
+[package]
+name = "spark_stdlib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Standard library manifest registry for the Spark compiler"
+
+[dependencies]
+spark_intern = { workspace = true }
+
+[lints]
+workspace = true
