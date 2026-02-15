@@ -131,6 +131,12 @@ impl Backend {
                 }
             }
 
+            // Sort by URI for deterministic FileId assignment across runs.
+            // DashMap iteration order is non-deterministic, so without
+            // sorting, FileIds can shift between analysis runs, breaking
+            // cross-file references.
+            files.sort_by(|a, b| a.0.cmp(&b.0));
+
             (files, root_path)
         }; // Release workspace read lock.
 
@@ -183,6 +189,14 @@ impl Backend {
                         }
                     }
                 }
+
+                // Clean up stale disk entries for files no longer in the workspace.
+                let current_uris: std::collections::HashSet<&Url> =
+                    ws.file_id_to_uri.values().collect();
+                ws.disk_sources
+                    .retain(|uri, _| current_uris.contains(uri) || self.documents.contains_key(uri));
+                ws.disk_ropes
+                    .retain(|uri, _| current_uris.contains(uri) || self.documents.contains_key(uri));
             }
         }
 
@@ -298,6 +312,22 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
         .collect();
 
     (lsp_diags, analysis)
+}
+
+/// Searches field resolutions from the type table for a field at the given offset.
+///
+/// Used as a fallback when the resolver's `find_at_offset` returns `None`,
+/// which happens for field access expressions (e.g., `point.x`) because the
+/// resolver defers field resolution to the type checker.
+fn find_field_at_offset(
+    table: &spark_types::TypeTable,
+    offset: u32,
+) -> Option<(spark_span::Span, spark_resolve::DefId)> {
+    table
+        .field_resolutions()
+        .filter(|(span, _)| span.contains(offset))
+        .min_by_key(|(span, _)| span.end - span.start)
+        .map(|(span, def_id)| (*span, *def_id))
 }
 
 /// Returns the type name for a definition, if type info is available.
@@ -721,7 +751,16 @@ impl LanguageServer for Backend {
             let analysis = doc.analysis.as_ref()?;
             let offset = document::position_to_offset(&doc.rope, position)?;
             let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
-            let (_span, def_id) = resolutions.find_at_offset(offset)?;
+
+            // Try normal resolution first, then fall back to field resolutions.
+            let def_id = if let Some((_span, def_id)) = resolutions.find_at_offset(offset) {
+                def_id
+            } else {
+                let table = analysis.type_table.as_ref()?;
+                let (_field_span, field_def_id) = find_field_at_offset(table, offset)?;
+                field_def_id
+            };
+
             let def_info = analysis.definitions.get(def_id)?;
 
             self.resolve_def_location(
@@ -743,7 +782,17 @@ impl LanguageServer for Backend {
             let analysis = doc.analysis.as_ref()?;
             let offset = document::position_to_offset(&doc.rope, position)?;
             let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
-            let (span, def_id) = resolutions.find_at_offset(offset)?;
+
+            // Try normal resolution first, then fall back to field resolutions
+            // from the type checker (field access names like `point.x` are not
+            // recorded in the resolver's maps).
+            let (span, def_id) = if let Some(result) = resolutions.find_at_offset(offset) {
+                result
+            } else {
+                let table = analysis.type_table.as_ref()?;
+                find_field_at_offset(table, offset)?
+            };
+
             let content = format_hover(analysis, def_id)?;
             let range = document::span_to_range(&doc.rope, span);
 
@@ -1047,7 +1096,7 @@ mod tests {
         // `x` usage at offset 30
         let hover = hover_at(&analysis, 30).expect("hover should produce content");
         // Without type info, should still show the name
-        assert!(hover.contains("x"), "Expected name, got: {hover}");
+        assert!(hover.contains('x'), "Expected name, got: {hover}");
     }
 
     #[test]
@@ -1235,13 +1284,30 @@ mod tests {
         if let Some(analysis) = analysis {
             if let Some(ast) = analysis.resolved.asts.get(&analysis.file_id) {
                 let rope = ropey::Rope::from_str(source);
-                let syms: Vec<DocumentSymbol> = ast
+                let has_symbols = ast
                     .items
                     .iter()
-                    .filter_map(|item| item_to_document_symbol(item, &rope))
-                    .collect();
-                assert!(syms.is_empty(), "Empty file should have no symbols");
+                    .any(|item| item_to_document_symbol(item, &rope).is_some());
+                assert!(!has_symbols, "Empty file should have no symbols");
             }
         }
+    }
+
+    #[test]
+    fn hover_struct_field_access() {
+        let source = "struct Point { x: Int, y: Int }\nfn main(): Void { p: Point = Point { x: 1, y: 2 }\np.x }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `x` in `p.x` — the field name is near the end of the source.
+        // "p.x }" → x is at len - 3 (before the space and closing brace).
+        let x_offset = (source.len() - 3) as u32;
+        // Normal resolution won't find it, but field resolution fallback should.
+        let table = analysis.type_table.as_ref().expect("type table should exist");
+        let field_result = find_field_at_offset(table, x_offset);
+        assert!(field_result.is_some(), "field resolution should find x");
+        let (_span, def_id) = field_result.unwrap();
+        let hover = format_hover(&analysis, def_id);
+        assert!(hover.is_some(), "hover should produce content for field");
+        let content = hover.unwrap();
+        assert!(content.contains("Int"), "Expected field type Int, got: {content}");
     }
 }

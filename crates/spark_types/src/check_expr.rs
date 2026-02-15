@@ -917,6 +917,9 @@ fn check_field_access(
             if let Some(fields) = table.get_struct_fields(def_id) {
                 for &(name, ty) in fields {
                     if name == field_name {
+                        if let Some(field_def) = crate::check_decl::find_field_def(field_name, def_id, definitions) {
+                            table.set_field_resolution(field_span, field_def);
+                        }
                         return ty;
                     }
                 }
@@ -937,6 +940,9 @@ fn check_field_access(
                 let subst = crate::substitute::build_subst_map(&params, &args);
                 for (name, ty) in fields {
                     if name == field_name {
+                        if let Some(field_def) = crate::check_decl::find_field_def(field_name, base, definitions) {
+                            table.set_field_resolution(field_span, field_def);
+                        }
                         return crate::substitute::substitute_mut(ty, &subst, table);
                     }
                 }

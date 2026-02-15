@@ -585,7 +585,7 @@ mod tests {
             let byte_start = rope.char_to_byte(char_idx);
             let byte_end = byte_start + tok.length as usize;
             if byte_end <= source.len() && &source[byte_start..byte_end] == "x" {
-                x_tokens.push(tok.clone());
+                x_tokens.push(*tok);
             }
         }
         assert!(!x_tokens.is_empty(), "should find at least one 'x' token");

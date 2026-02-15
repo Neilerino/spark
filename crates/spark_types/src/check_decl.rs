@@ -449,7 +449,7 @@ fn find_param_def(
 }
 
 /// Finds a struct field definition.
-fn find_field_def(
+pub(crate) fn find_field_def(
     name: spark_intern::Symbol,
     parent_struct: DefId,
     definitions: &DefinitionTable,

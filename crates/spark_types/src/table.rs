@@ -41,6 +41,8 @@ pub struct TypeTable {
     pub(crate) type_methods: FxHashMap<DefId, Vec<(Symbol, DefId)>>,
     /// Resolved method `DefId` for each method call site (keyed by call `Span`).
     pub(crate) method_resolutions: FxHashMap<Span, DefId>,
+    /// Resolved field `DefId` for each field access site (keyed by field name `Span`).
+    pub(crate) field_resolutions: FxHashMap<Span, DefId>,
     /// Maps a generic definition (struct/enum/function `DefId`) to its ordered generic param `DefId`s.
     pub(crate) generic_params: FxHashMap<DefId, Vec<DefId>>,
     /// Monomorphization instances: call-site `Span` → (callee `DefId`, substitution map).
@@ -75,6 +77,7 @@ impl TypeTable {
             },
             type_methods: FxHashMap::default(),
             method_resolutions: FxHashMap::default(),
+            field_resolutions: FxHashMap::default(),
             generic_params: FxHashMap::default(),
             mono_instances: FxHashMap::default(),
         }
@@ -172,6 +175,22 @@ impl TypeTable {
     #[must_use]
     pub fn get_method_resolution(&self, span: Span) -> Option<DefId> {
         self.method_resolutions.get(&span).copied()
+    }
+
+    /// Records the resolved field `DefId` for a field access site.
+    pub fn set_field_resolution(&mut self, span: Span, def_id: DefId) {
+        self.field_resolutions.insert(span, def_id);
+    }
+
+    /// Returns the resolved field `DefId` for a field access site.
+    #[must_use]
+    pub fn get_field_resolution(&self, span: Span) -> Option<DefId> {
+        self.field_resolutions.get(&span).copied()
+    }
+
+    /// Returns an iterator over all field resolution entries.
+    pub fn field_resolutions(&self) -> impl Iterator<Item = (&Span, &DefId)> {
+        self.field_resolutions.iter()
     }
 
     /// Records the generic parameter `DefId`s for a generic definition.
