@@ -717,6 +717,24 @@ fn emit_aggregate<M: Module>(
         AggregateKind::Union { union_ty, member_ty } => {
             emit_union_construction(ctx, *union_ty, *member_ty, operands, dest_local, table, definitions, func_ids, thunk_ids, module)
         }
+
+        AggregateKind::Channel => {
+            // Channel[T]() → call __spark_channel_new(elem_size)
+            let dest_ty = ctx.local_type_id(dest_local);
+            let (_, unwrapped) = clif_types::unwrap_mutable(dest_ty, table);
+            let elem_size = if let Ty::Channel { inner } = unwrapped {
+                let layout = ctx.layouts.layout_of(*inner, table);
+                i64::from(layout.size)
+            } else {
+                8 // fallback
+            };
+            let elem_size_val = ctx.builder.ins().iconst(types::I64, elem_size);
+            let func_ref = module.declare_func_in_func(ctx.stubs.channel_new, ctx.builder.func);
+            let call = ctx.builder.ins().call(func_ref, &[elem_size_val]);
+            let result = ctx.builder.inst_results(call)[0];
+            ctx.write_local(dest_local, result);
+            Some(result)
+        }
     }
 }
 
@@ -1044,6 +1062,11 @@ fn emit_discriminant<M: Module>(
             return ctx.load(tag_ty, addr, 0);
         }
         let _ = members;
+    }
+
+    // Optional[T] — tag byte at offset 0 (0 = null, 1 = Some).
+    if matches!(unwrapped, Ty::Optional(_)) {
+        return ctx.load(types::I8, addr, 0);
     }
 
     // Single-variant or non-enum/non-union — discriminant is 0.

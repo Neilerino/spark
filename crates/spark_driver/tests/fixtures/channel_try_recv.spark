@@ -1,0 +1,9 @@
+fn main(): Int {
+    ch: Channel[Int] = Channel[Int]()
+    ch.send(99)
+    maybe: Int? = ch.tryRecv()
+    ch.send(88)
+    val: Int = ch.recv()
+    print(val)
+    return 0
+}

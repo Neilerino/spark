@@ -152,6 +152,27 @@ impl Parser {
         self.peek_nth(i).kind == TokenKind::LBrace
     }
 
+    /// Returns true if the current token is `[` and the matching `]` is followed by `(`.
+    ///
+    /// Used to detect generic constructor calls: `Channel[Int]()`.
+    fn brackets_followed_by_paren(&self) -> bool {
+        if self.current_kind() != TokenKind::LBracket {
+            return false;
+        }
+        let mut depth = 1;
+        let mut i = 1;
+        while depth > 0 && i < 200 {
+            match self.peek_nth(i).kind {
+                TokenKind::LBracket => depth += 1,
+                TokenKind::RBracket => depth -= 1,
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        self.peek_nth(i).kind == TokenKind::LParen
+    }
+
     /// Parses generic type arguments in expression position: `[Type, Type, ...]`.
     ///
     /// Consumes the `[`, the type args, and the `]`.
@@ -437,6 +458,24 @@ impl Parser {
                     let args = self.parse_partial_args();
                     let span = self.span_from(start);
                     return Self::convert_to_struct_or_partial_generic(path, type_args, args, span);
+                }
+                // Check: generic constructor call — `Type[Args]()`
+                if Self::lhs_is_path(&lhs) && self.brackets_followed_by_paren() {
+                    let type_args = self.parse_type_args_in_expr();
+                    let path = Self::lhs_as_path(&lhs).unwrap();
+                    // Consume `()`
+                    self.expect(TokenKind::LParen);
+                    self.expect(TokenKind::RParen);
+                    let span = self.span_from(start);
+                    return Expr::new(
+                        ExprKind::StructInit {
+                            path,
+                            type_args,
+                            fields: vec![],
+                            spread: None,
+                        },
+                        span,
+                    );
                 }
                 // Existing index parsing
                 self.advance();

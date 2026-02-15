@@ -47,6 +47,9 @@ pub fn spark_type_to_clif(ty_id: TypeId, table: &TypeTable, ptr_type: ClifType) 
         // Future[T] is an opaque heap pointer (SparkFuture*)
         Ty::Future { .. } => Some(ptr_type),
 
+        // Channel[T] is an opaque heap pointer (SparkChannel*)
+        Ty::Channel { .. } => Some(ptr_type),
+
         // Async state struct — always an aggregate, passed by pointer
         Ty::AsyncState { .. } => Some(ptr_type),
 
@@ -81,6 +84,7 @@ pub fn is_scalar(ty_id: TypeId, table: &TypeTable) -> bool {
             | Ty::Set(_)
             | Ty::Ref { .. }
     ) || matches!(ty, Ty::Future { .. })
+      || matches!(ty, Ty::Channel { .. })
       || matches!(ty, Ty::Mutable(inner) if is_scalar(*inner, table))
 }
 

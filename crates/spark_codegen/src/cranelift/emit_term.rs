@@ -1261,6 +1261,65 @@ fn emit_builtin_method<M: Module>(
         return;
     }
 
+    // --- CHANNEL METHODS: send, recv, tryRecv, close ---
+    if matches!(stripped_ty, Ty::Channel { .. }) {
+        let inner_ty = if let Ty::Channel { inner } = stripped_ty {
+            *inner
+        } else {
+            unreachable!()
+        };
+        let elem_layout = ctx.layouts.layout_of(inner_ty, table);
+        let elem_size = i64::from(elem_layout.size);
+        let elem_size_val = ctx.builder.ins().iconst(types::I64, elem_size);
+
+        if method_name == kw::SEND {
+            // ch.send(value) → store value to temp, call __spark_channel_send(ch, &val, elem_size)
+            if let Some(arg) = args.get(1) {
+                if let Some(val_addr) = emit_rvalue::emit_operand_addr(
+                    ctx, arg, inner_ty, table, definitions, func_ids, thunk_ids, module,
+                ) {
+                    let func_ref = module.declare_func_in_func(ctx.stubs.channel_send, ctx.builder.func);
+                    ctx.builder.ins().call(func_ref, &[recv_ptr, val_addr, elem_size_val]);
+                }
+            }
+        } else if method_name == kw::RECV {
+            // ch.recv() → call __spark_channel_recv(ch, elem_size) → ptr to value
+            let func_ref = module.declare_func_in_func(ctx.stubs.channel_recv, ctx.builder.func);
+            let call = ctx.builder.ins().call(func_ref, &[recv_ptr, elem_size_val]);
+            let result_ptr = ctx.builder.inst_results(call)[0];
+
+            // Load the value from the returned pointer.
+            if let Some(clif_ty) = abi::spark_type_to_clif(inner_ty, table, ctx.ptr_type) {
+                let val = ctx.builder.ins().load(clif_ty, MemFlags::new(), result_ptr, 0);
+                if destination.projections.is_empty() {
+                    ctx.write_local(destination.local, val);
+                }
+            }
+        } else if method_name == kw::TRY_RECV {
+            // ch.tryRecv() → runtime writes Optional directly to dest StackSlot.
+            // __spark_channel_try_recv(ch, elem_size, dest_ptr, payload_offset)
+            if destination.projections.is_empty() {
+                if let Some(dest_addr) = ctx.local_stack_addr(destination.local) {
+                    let payload_offset = (1 + elem_layout.align - 1) & !(elem_layout.align - 1);
+                    let payload_offset_val = ctx.builder.ins().iconst(types::I64, i64::from(payload_offset));
+                    let func_ref = module.declare_func_in_func(ctx.stubs.channel_try_recv, ctx.builder.func);
+                    ctx.builder.ins().call(
+                        func_ref,
+                        &[recv_ptr, elem_size_val, dest_addr, payload_offset_val],
+                    );
+                }
+            }
+        } else if method_name == kw::CLOSE {
+            // ch.close() → call __spark_channel_close(ch)
+            let func_ref = module.declare_func_in_func(ctx.stubs.channel_close, ctx.builder.func);
+            ctx.builder.ins().call(func_ref, &[recv_ptr]);
+        }
+
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    }
+
     // Fallback: unknown method — jump to continuation
     let target_block = ctx.clif_block(target);
     ctx.builder.ins().jump(target_block, &[]);

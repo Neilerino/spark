@@ -205,6 +205,13 @@ pub enum Ty {
         inner: TypeId,
     },
 
+    // === Channels ===
+    /// A channel type: `Channel[T]`. Scalar pointer to a heap-allocated MPSC channel.
+    Channel {
+        /// The element type sent/received through the channel.
+        inner: TypeId,
+    },
+
     // === Generics ===
     /// An unresolved generic type parameter.
     Param(DefId),

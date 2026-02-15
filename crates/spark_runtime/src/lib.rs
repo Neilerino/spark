@@ -14,9 +14,11 @@
 #![allow(unsafe_code)]
 #![allow(clippy::missing_const_for_fn)] // extern "C" FFI stubs are not const
 
+mod channel;
 mod io;
 mod json;
 mod math;
+mod time;
 
 // =============================================================================
 // Print functions

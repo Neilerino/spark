@@ -1,0 +1,14 @@
+async fn producer(ch: Channel[Int]): Void {
+    ch.send(10)
+    ch.send(20)
+}
+
+fn main(): Int {
+    ch: Channel[Int] = Channel[Int]()
+    f: Future[Void] = spawn { producer(ch) }
+    a: Int = ch.recv()
+    b: Int = ch.recv()
+    print(a + b)
+    await f
+    return 0
+}

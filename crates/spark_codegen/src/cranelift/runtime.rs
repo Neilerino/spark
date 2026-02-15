@@ -111,6 +111,18 @@ pub struct RuntimeStubs {
     pub spawn_coop: FuncId,
     /// `__spark_try_poll(future_ptr) -> ptr`
     pub try_poll: FuncId,
+    /// `__spark_channel_new(elem_size: i64) -> ptr`
+    pub channel_new: FuncId,
+    /// `__spark_channel_send(ch: ptr, value_ptr: ptr, elem_size: i64)`
+    pub channel_send: FuncId,
+    /// `__spark_channel_recv(ch: ptr, elem_size: i64) -> ptr`
+    pub channel_recv: FuncId,
+    /// `__spark_channel_try_recv(ch: ptr, elem_size: i64) -> ptr`
+    pub channel_try_recv: FuncId,
+    /// `__spark_channel_close(ch: ptr)`
+    pub channel_close: FuncId,
+    /// `__spark_channel_rc_dec(ch: ptr)`
+    pub channel_rc_dec: FuncId,
 }
 
 impl RuntimeStubs {
@@ -468,6 +480,48 @@ impl RuntimeStubs {
                 "__spark_try_poll",
                 &[ptr_type],
                 Some(ptr_type),
+                call_conv,
+            ),
+            channel_new: declare_fn(
+                module,
+                "__spark_channel_new",
+                &[types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            channel_send: declare_fn(
+                module,
+                "__spark_channel_send",
+                &[ptr_type, ptr_type, types::I64],
+                None,
+                call_conv,
+            ),
+            channel_recv: declare_fn(
+                module,
+                "__spark_channel_recv",
+                &[ptr_type, types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            channel_try_recv: declare_fn(
+                module,
+                "__spark_channel_try_recv",
+                &[ptr_type, types::I64, ptr_type, types::I64],
+                None,
+                call_conv,
+            ),
+            channel_close: declare_fn(
+                module,
+                "__spark_channel_close",
+                &[ptr_type],
+                None,
+                call_conv,
+            ),
+            channel_rc_dec: declare_fn(
+                module,
+                "__spark_channel_rc_dec",
+                &[ptr_type],
+                None,
                 call_conv,
             ),
         }

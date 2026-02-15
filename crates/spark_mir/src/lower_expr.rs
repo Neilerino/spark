@@ -109,6 +109,18 @@ pub fn lower_expr(
 
         // ── Constructors ─────────────────────────────────────────
         HirExprKind::StructInit { def_id, fields } => {
+            // Channel[T]() constructor: type is Ty::Channel, fields are empty.
+            let resolved = type_table.resolve(expr.ty);
+            if matches!(resolved, Ty::Channel { .. }) {
+                let temp = fb.fresh_temp(expr.ty, expr.span);
+                fb.push_assign(
+                    Place::from_local(temp),
+                    Rvalue::Aggregate(AggregateKind::Channel, vec![]),
+                    expr.span,
+                );
+                return temp;
+            }
+
             let field_names: Vec<Symbol> = fields.iter().map(|(name, _)| *name).collect();
             let operands: Vec<Operand> = fields
                 .iter()

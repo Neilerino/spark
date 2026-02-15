@@ -368,6 +368,18 @@ impl Interner {
             "__spark_spawn_coop",
             "__spark_try_poll",
             "__spark_wake_current",
+            // Channel methods
+            "send",
+            "recv",
+            "tryRecv",
+            "close",
+            // Channel runtime stubs
+            "__spark_channel_new",
+            "__spark_channel_send",
+            "__spark_channel_recv",
+            "__spark_channel_try_recv",
+            "__spark_channel_close",
+            "__spark_channel_rc_dec",
         ];
 
         for kw in keywords {
@@ -680,6 +692,30 @@ pub mod kw {
     /// `__spark_wake_current` (internal runtime stub)
     pub const WAKE_CURRENT: Symbol = Symbol(98);
 
+    // Channel methods
+    /// `send`
+    pub const SEND: Symbol = Symbol(99);
+    /// `recv`
+    pub const RECV: Symbol = Symbol(100);
+    /// `tryRecv`
+    pub const TRY_RECV: Symbol = Symbol(101);
+    /// `close`
+    pub const CLOSE: Symbol = Symbol(102);
+
+    // Channel runtime stubs
+    /// `__spark_channel_new` (internal runtime stub)
+    pub const CHANNEL_NEW: Symbol = Symbol(103);
+    /// `__spark_channel_send` (internal runtime stub)
+    pub const CHANNEL_SEND: Symbol = Symbol(104);
+    /// `__spark_channel_recv` (internal runtime stub)
+    pub const CHANNEL_RECV: Symbol = Symbol(105);
+    /// `__spark_channel_try_recv` (internal runtime stub)
+    pub const CHANNEL_TRY_RECV: Symbol = Symbol(106);
+    /// `__spark_channel_close` (internal runtime stub)
+    pub const CHANNEL_CLOSE: Symbol = Symbol(107);
+    /// `__spark_channel_rc_dec` (internal runtime stub)
+    pub const CHANNEL_RC_DEC: Symbol = Symbol(108);
+
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
     pub const fn is_builtin_function(sym: Symbol) -> bool {
@@ -689,7 +725,9 @@ pub mod kw {
     /// Returns true if the given symbol is a built-in method name.
     #[must_use]
     pub const fn is_builtin_method(sym: Symbol) -> bool {
-        sym.0 >= 70 && sym.0 <= 74
+        // 70-74: len, append, contains, remove, add
+        // 99-102: send, recv, tryRecv, close
+        (sym.0 >= 70 && sym.0 <= 74) || (sym.0 >= 99 && sym.0 <= 102)
     }
 
     /// Returns true if the given symbol is a keyword.

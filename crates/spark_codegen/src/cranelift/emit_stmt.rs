@@ -162,6 +162,11 @@ fn emit_drop<M: Module>(
             let func_ref = module.declare_func_in_func(ctx.stubs.future_rc_dec, ctx.builder.func);
             ctx.builder.ins().call(func_ref, &[ptr_val]);
         }
+        Ty::Channel { .. } => {
+            // Channel[T] is an opaque heap pointer — call __spark_channel_rc_dec.
+            let func_ref = module.declare_func_in_func(ctx.stubs.channel_rc_dec, ctx.builder.func);
+            ctx.builder.ins().call(func_ref, &[ptr_val]);
+        }
         _ => {
             // Non-droppable type — no-op (shouldn't reach here due to early return).
         }

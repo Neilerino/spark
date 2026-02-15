@@ -43,6 +43,10 @@ pub fn stdlib_sources() -> Vec<StdlibSource> {
             path: "spark/io.spark",
             source: include_str!("../spark/io.spark"),
         },
+        StdlibSource {
+            path: "spark/time.spark",
+            source: include_str!("../spark/time.spark"),
+        },
     ]
 }
 
@@ -53,7 +57,7 @@ mod tests {
     #[test]
     fn has_math_source() {
         let sources = stdlib_sources();
-        assert_eq!(sources.len(), 3);
+        assert_eq!(sources.len(), 4);
         assert_eq!(sources[0].path, "spark/math.spark");
     }
 
@@ -145,5 +149,29 @@ mod tests {
     fn io_source_contains_write_stderr() {
         let sources = stdlib_sources();
         assert!(sources[2].source.contains("pub fn writeStderr"));
+    }
+
+    #[test]
+    fn has_time_source() {
+        let sources = stdlib_sources();
+        assert_eq!(sources[3].path, "spark/time.spark");
+    }
+
+    #[test]
+    fn time_source_contains_module_decl() {
+        let sources = stdlib_sources();
+        assert!(sources[3].source.contains("module time"));
+    }
+
+    #[test]
+    fn time_source_contains_sleep() {
+        let sources = stdlib_sources();
+        assert!(sources[3].source.contains("pub fn sleep"));
+    }
+
+    #[test]
+    fn time_source_contains_extern_fns() {
+        let sources = stdlib_sources();
+        assert!(sources[3].source.contains("extern fn __spark_time_sleep"));
     }
 }

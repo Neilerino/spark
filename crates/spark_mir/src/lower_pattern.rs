@@ -171,8 +171,23 @@ fn compile_pattern(
                         otherwise: fail_bb,
                     });
                 }
+                Constant::Null => {
+                    // For Optional types, null means discriminant tag == 0.
+                    let disc_temp =
+                        fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
+                    fb.push_assign(
+                        Place::from_local(disc_temp),
+                        Rvalue::Discriminant(Place::from_local(scrut)),
+                        spark_span::Span::DUMMY,
+                    );
+                    fb.terminate(Terminator::SwitchInt {
+                        discriminant: Operand::Copy(Place::from_local(disc_temp)),
+                        targets: vec![(0, match_bb)],
+                        otherwise: fail_bb,
+                    });
+                }
                 _ => {
-                    // For String/Float/Null, fall through to match_bb
+                    // For String/Float, fall through to match_bb
                     // (a real compiler would need equality checks; we simplify here)
                     fb.terminate(Terminator::Goto { target: match_bb });
                 }

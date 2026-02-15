@@ -339,6 +339,18 @@ fn lower_builtin_generic(
         return table.intern(Ty::Future { inner });
     }
 
+    if name == kw::CHANNEL {
+        if type_args.len() != 1 {
+            diagnostics.push(
+                Diagnostic::error("Channel requires exactly one type argument")
+                    .with_label(Label::primary(type_expr.span, "expected Channel[T]")),
+            );
+            return TypeId::ERROR;
+        }
+        let inner = lower_type_expr(&type_args[0], table, builtins, definitions, resolutions, diagnostics);
+        return table.intern(Ty::Channel { inner });
+    }
+
     // Not a known builtin generic — report error
     diagnostics.push(
         Diagnostic::error(format!("unresolved type `{name}`"))

@@ -681,3 +681,20 @@ fn io_stderr() {
         result.stderr
     );
 }
+
+// ── Channel tests ───────────────────────────────────────────────────────
+
+#[test]
+fn channel_basic() {
+    assert_output("channel_basic.spark", "42");
+}
+
+#[test]
+fn channel_try_recv() {
+    assert_output("channel_try_recv.spark", "88");
+}
+
+#[test]
+fn channel_async() {
+    assert_output("channel_async.spark", "30");
+}

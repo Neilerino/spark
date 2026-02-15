@@ -367,6 +367,11 @@ impl LayoutCache {
                 size: self.ptr_size,
                 align: self.ptr_size,
             },
+            // Channel[T] is a heap-allocated SparkChannel pointer.
+            Ty::Channel { .. } => TypeLayout {
+                size: self.ptr_size,
+                align: self.ptr_size,
+            },
             // Async state struct — compute layout like a C struct from its fields.
             Ty::AsyncState { fields, .. } => {
                 let fields = fields.clone();

@@ -191,6 +191,10 @@ fn check_expr_inner(
 
         // === Struct initialization ===
         ExprKind::StructInit { path, type_args, fields, spread } => {
+            // Intercept Channel[T]() constructor
+            if path.is_simple() && path.segments[0].name == kw::CHANNEL {
+                return check_channel_constructor(type_args, fields, expr.span, table, builtins, definitions, resolutions, diagnostics);
+            }
             check_struct_init(path, type_args, fields, spread.as_deref(), expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
         }
 
@@ -1426,6 +1430,7 @@ pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -
             format!("{}[{}]", base_name, arg_names.join(", "))
         }
         Ty::Future { inner } => format!("Future[{}]", type_name(*inner, table, definitions)),
+        Ty::Channel { inner } => format!("Channel[{}]", type_name(*inner, table, definitions)),
         Ty::AsyncState { .. } => "<async-state>".to_string(),
         Ty::Error => "<error>".to_string(),
     }
@@ -1464,6 +1469,7 @@ fn check_method_call(
         Ty::Map(k, v) => check_map_method(method, k, v, is_mutable, arg_tys, call_span, recv_span, table, builtins, diagnostics),
         Ty::Set(elem) => check_set_method(method, elem, is_mutable, arg_tys, call_span, recv_span, table, builtins, diagnostics),
         Ty::String => check_string_method(method, arg_tys, call_span, builtins, diagnostics),
+        Ty::Channel { inner } => check_channel_method(method, inner, arg_tys, call_span, table, builtins, diagnostics),
         Ty::Struct(def_id) | Ty::Enum(def_id) => {
             check_user_method_call(def_id, method, arg_tys, recv_span, call_span, table, definitions, diagnostics)
         }
@@ -1605,6 +1611,81 @@ fn check_string_method(
     } else {
         diagnostics.push(
             Diagnostic::error(format!("String has no method `{method}`"))
+                .with_label(Label::primary(call_span, "unknown method")),
+        );
+        TypeId::ERROR
+    }
+}
+
+/// Type-checks a `Channel[T]()` constructor expression.
+///
+/// Validates exactly 1 type argument and 0 value fields.
+#[allow(clippy::too_many_arguments)]
+fn check_channel_constructor(
+    type_args: &[spark_ast::TypeExpr],
+    fields: &[spark_ast::FieldInit],
+    init_span: Span,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if type_args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error("Channel requires exactly one type argument")
+                .with_label(Label::primary(init_span, "expected Channel[T]()")),
+        );
+        return TypeId::ERROR;
+    }
+    if !fields.is_empty() {
+        diagnostics.push(
+            Diagnostic::error("Channel constructor takes no arguments")
+                .with_label(Label::primary(init_span, "unexpected fields")),
+        );
+    }
+    let inner = lower_type_expr(&type_args[0], table, builtins, definitions, resolutions, diagnostics);
+    table.intern(Ty::Channel { inner })
+}
+
+/// Checks a method call on `Channel[T]`.
+///
+/// | Method   | Args       | Returns        |
+/// |----------|------------|----------------|
+/// | send     | 1 (T)      | Void           |
+/// | recv     | 0          | T (blocking)   |
+/// | tryRecv  | 0          | T? (Optional)  |
+/// | close    | 0          | Void           |
+fn check_channel_method(
+    method: Symbol,
+    inner: TypeId,
+    arg_tys: &[TypeId],
+    call_span: Span,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if method == kw::SEND {
+        expect_args(1, arg_tys.len(), call_span, diagnostics);
+        if !arg_tys.is_empty() && !is_compatible(arg_tys[0], inner, table) {
+            diagnostics.push(
+                Diagnostic::error("send argument type does not match channel element type")
+                    .with_label(Label::primary(call_span, "type mismatch")),
+            );
+        }
+        builtins.void
+    } else if method == kw::RECV {
+        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        inner
+    } else if method == kw::TRY_RECV {
+        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        table.intern(Ty::Optional(inner))
+    } else if method == kw::CLOSE {
+        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        builtins.void
+    } else {
+        diagnostics.push(
+            Diagnostic::error(format!("Channel has no method `{method}`"))
                 .with_label(Label::primary(call_span, "unknown method")),
         );
         TypeId::ERROR

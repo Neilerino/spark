@@ -197,6 +197,9 @@ impl PrettyPrinter<'_> {
                         self.print_operand_list(ops);
                         self.out.push(')');
                     }
+                    AggregateKind::Channel => {
+                        self.out.push_str("Channel()");
+                    }
                 }
             }
             Rvalue::Discriminant(place) => {

@@ -264,6 +264,9 @@ pub enum AggregateKind {
         /// The DefId of the lifted closure function.
         func_def_id: DefId,
     },
+    /// Channel construction: `Channel[T]()` allocates a new MPSC channel.
+    /// No operands (the channel is created empty).
+    Channel,
     /// Union construction: wraps a value of `member_ty` into a union of
     /// `union_ty` by writing a tag byte (the member's index in the union)
     /// followed by the payload.

@@ -1,0 +1,9 @@
+module time
+
+extern fn __spark_time_sleep(ms: Int): Void
+
+/// Sleeps the current thread for the given number of milliseconds.
+/// A value of 0 or negative returns immediately.
+pub fn sleep(ms: Int): Void {
+    __spark_time_sleep(ms)
+}

@@ -113,10 +113,13 @@ impl Resolver {
             self.builtin_defs.push((fn_name, fn_def_id, DefinitionKind::BuiltinFunction));
         }
 
-        // Register built-in methods (len, append, contains, remove, add).
+        // Register built-in methods (len, append, contains, remove, add, send, recv, tryRecv, close).
         // These are NOT added to ribs (can't be called as free functions),
         // but need DefIds so MIR and codegen can reference them.
-        for &method_name in &[kw::LEN, kw::APPEND, kw::CONTAINS, kw::REMOVE, kw::ADD] {
+        for &method_name in &[
+            kw::LEN, kw::APPEND, kw::CONTAINS, kw::REMOVE, kw::ADD,
+            kw::SEND, kw::RECV, kw::TRY_RECV, kw::CLOSE,
+        ] {
             let info = DefinitionInfo::new(
                 DefinitionKind::BuiltinMethod,
                 method_name,
