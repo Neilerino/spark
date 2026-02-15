@@ -280,6 +280,8 @@ impl CraneliftBackend {
         func_ids: &FxHashMap<DefId, FuncId>,
         thunk_ids: &FxHashMap<DefId, FuncId>,
         stubs: &runtime::RuntimeStubs,
+        poll_fn_map: &FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
+        lambda_to_async: &FxHashMap<DefId, DefId>,
         diagnostics: &mut Diagnostics,
     ) {
         let ptr_type = self.module.target_config().pointer_type();
@@ -470,6 +472,8 @@ impl CraneliftBackend {
                 func_ids,
                 thunk_ids,
                 &mut self.module,
+                poll_fn_map,
+                lambda_to_async,
                 diagnostics,
             );
         }
@@ -500,6 +504,7 @@ impl CodegenBackend for CraneliftBackend {
         mir: &Mir,
         table: &TypeTable,
         definitions: &DefinitionTable,
+        poll_fn_map: &FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
         diagnostics: &mut Diagnostics,
     ) -> Vec<u8> {
         // Phase 0: Declare runtime stubs.
@@ -509,7 +514,23 @@ impl CodegenBackend for CraneliftBackend {
         // Phase 1: Declare all functions.
         let func_ids = self.declare_all_functions(mir, table, definitions, diagnostics);
 
-        // Phase 2: Compile each function.
+        // Phase 2: Precompute lambda → async function mapping for spawn_coop.
+        // For each lambda that calls an async function with a poll entry,
+        // record the mapping so emit_spawn_call can use the cooperative path.
+        let mut lambda_to_async: FxHashMap<DefId, DefId> = FxHashMap::default();
+        for (_, mir_func) in &mir.functions {
+            for block in &mir_func.blocks {
+                if let spark_mir::Terminator::Call { func, .. } = &block.terminator {
+                    if let spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(callee)) = func {
+                        if poll_fn_map.contains_key(callee) {
+                            lambda_to_async.insert(mir_func.def_id, *callee);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Compile each function.
         let thunk_ids = self.thunk_ids.clone();
         for (def_id, mir_func) in &mir.functions {
             if let Some(&func_id) = func_ids.get(def_id) {
@@ -521,12 +542,14 @@ impl CodegenBackend for CraneliftBackend {
                     &func_ids,
                     &thunk_ids,
                     &stubs,
+                    poll_fn_map,
+                    &lambda_to_async,
                     diagnostics,
                 );
             }
         }
 
-        // Phase 3: Emit the object file.
+        // Phase 4: Emit the object file.
         let is_macos = matches!(
             self.module.isa().triple().operating_system,
             target_lexicon::OperatingSystem::Darwin

@@ -470,6 +470,17 @@ fn build_state_fields(
         fields.push((field_name, local_decl.ty));
     }
 
+    // Ensure ALL params have state fields (for segment 0 restoration and
+    // cooperative spawn parameter injection), even if they're not live-across-await.
+    for param_idx in 1..=func.param_count {
+        let local = Local(param_idx);
+        if !all_live.contains(&local) {
+            let local_decl = &func.locals[local.index()];
+            let field_name = sym(&format!("__local_{}", local.0));
+            fields.push((field_name, local_decl.ty));
+        }
+    }
+
     // Result field.
     fields.push((sym("__result"), func.return_type));
 
@@ -478,23 +489,27 @@ fn build_state_fields(
 
 // ── Poll Function Generation ────────────────────────────────────────────
 
-/// Generates the poll function MIR.
+/// Generates the poll function MIR (segmented state machine).
 ///
 /// The poll function has signature `fn(state_ptr: ptr) -> i8` where:
 /// - Returns 0 = Pending (awaited sub-future not ready)
 /// - Returns 1 = Ready (function completed, result in state.__result)
 ///
-/// The function body is a dispatch table: load `state.__tag`, switch to the
-/// appropriate segment, execute code, and either return Ready or save state
-/// and return Pending.
+/// The function body is a segmented dispatch table:
+/// 1. Load `state.__tag`, dispatch to the correct segment
+/// 2. Segment 0: restore params from state, execute original code up to first await
+/// 3. At await: save live locals, store sub-future, set tag = next segment, return 0
+/// 4. Segment K (K>0): call `__spark_try_poll(sub_future)`, if null return 0 (Pending),
+///    else restore live locals, load result, continue execution
+/// 5. On function return: store result in `state.__result`, return 1 (Ready)
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn generate_poll_function(
     original: &MirFunction,
     poll_def_id: DefId,
     state_type_id: TypeId,
     state_fields: &[(Symbol, TypeId)],
-    _await_points: &[AwaitPoint],
-    _live_across: &[FxHashSet<Local>],
+    await_points: &[AwaitPoint],
+    live_across: &[FxHashSet<Local>],
     table: &mut TypeTable,
 ) -> MirFunction {
     let i8_ty = table.intern(Ty::Int(IntWidth::I8));
@@ -529,13 +544,11 @@ fn generate_poll_function(
     // Local for loaded tag.
     let tag_local = alloc_local(&mut locals, &mut next_local_id, i32_ty, Some(sym("__tag")), original.span);
 
-    // Locals for each original function local that might need to be restored.
     // Map: original Local → poll function Local.
     let mut orig_to_poll: FxHashMap<Local, Local> = FxHashMap::default();
 
-    // We need locals for ALL original locals (not just live-across-await ones)
-    // because the segments execute the original code. But we only save/restore
-    // the live-across-await ones.
+    // We need locals for ALL original locals because segments execute cloned
+    // original code. We only save/restore the live-across-await ones.
     for local_decl in &original.locals {
         let poll_local = alloc_local(
             &mut locals,
@@ -547,9 +560,8 @@ fn generate_poll_function(
         orig_to_poll.insert(local_decl.local, poll_local);
     }
 
-    // Locals for try_poll result and sub-future.
-    // Reserved for future segmented polling (Phase 3 v2).
-    let _try_poll_result_local =
+    // Local for try_poll result pointer.
+    let try_poll_result_local =
         alloc_local(&mut locals, &mut next_local_id, i64_ty, Some(sym("__poll_result")), original.span);
 
     // Build field name → field index map for state struct access.
@@ -559,31 +571,404 @@ fn generate_poll_function(
         .map(|(i, (name, _))| (*name, i))
         .collect();
 
-    // Collect all live-across-await locals (union across all await points).
     // Re-type state_ptr to state_type_id so Field projections resolve correctly.
-    // The state_ptr parameter is a pointer to the state struct; codegen will
-    // treat it as a StackSlot/aggregate pointer and use Field projections to
-    // access fields at their computed offsets.
     locals[state_ptr_local.index()].ty = state_type_id;
+
+    // Compute segment ranges via BFS from entry/resume points.
+    let segments = compute_segment_ranges(original, await_points);
 
     // ── Build blocks ────────────────────────────────────────────────────
     //
-    // Phase 3 v1: the poll function calls the original function synchronously
-    // on first poll and immediately returns Ready. This establishes the full
-    // cooperative infrastructure (state struct, poll function, spawn_coop)
-    // without the complexity of segmenting the original MIR at await points.
-    // Segmented suspension will be added in a follow-up.
+    // Phase 3 v2: Segmented state machine.
     //
     // Structure:
-    //   bb0 (entry): load tag, switchInt → [0: bb_run, else: bb_already_ready]
-    //   bb1 (bb_run): load params from state, call original function → bb_store
-    //   bb2 (bb_already_ready): return 1
-    //   bb3 (bb_store): store result in state.__result, set tag = 1, return 1
+    //   bb0 (entry): load tag, switchInt → [0: seg0_entry, 1: seg1_entry, ..., else: already_ready]
+    //   seg0_entry: restore params from state → jump to cloned segment 0 blocks
+    //     ... cloned blocks from segment 0 ...
+    //     await_call_block (rewritten): save live locals, set tag, return 0
+    //   seg1_entry: try_poll(sub_future) → if null return 0, else restore + jump
+    //     ... cloned blocks from segment 1 ...
+    //   [more segments...]
+    //   already_ready: return 1
 
     let mut blocks: Vec<BasicBlock> = Vec::new();
+    let num_segments = segments.len();
 
-    // Block 0: entry — dispatch on tag.
-    let bb_entry = BasicBlock {
+    // We'll build segment entry block indices as we go.
+    // First, reserve block 0 (entry) — we'll fill it later when we know all targets.
+    blocks.push(BasicBlock {
+        statements: vec![],
+        terminator: Terminator::Unreachable, // placeholder
+        is_cleanup: false,
+    });
+
+    // Build a block index for the "already_ready" block — placed after all segments.
+    // We'll track its final index.
+    let mut segment_entry_indices: Vec<usize> = Vec::with_capacity(num_segments);
+
+    // For each segment, build: entry block + cloned blocks from original.
+    for seg_idx in 0..num_segments {
+        let seg_entry_block_idx = blocks.len();
+        segment_entry_indices.push(seg_entry_block_idx);
+
+        let mut entry_stmts = Vec::new();
+
+        if seg_idx == 0 {
+            // Segment 0: restore params from state.
+            for param_idx in 1..=original.param_count {
+                let orig_local = Local(param_idx);
+                let field_name = sym(&format!("__local_{param_idx}"));
+
+                if field_index.contains_key(&field_name) {
+                    if let Some(&poll_local) = orig_to_poll.get(&orig_local) {
+                        entry_stmts.push(Statement::Assign {
+                            place: Place::from_local(poll_local),
+                            rvalue: Rvalue::Use(Operand::Copy(Place {
+                                local: state_ptr_local,
+                                projections: vec![Projection::Field(field_name)],
+                            })),
+                            span: original.span,
+                        });
+                    }
+                }
+            }
+        } else {
+            // Segment K>0: poll the sub-future, check result.
+            // Load sub_future from state.__sub_future
+            let sub_future_local = alloc_local(
+                &mut locals,
+                &mut next_local_id,
+                i64_ty,
+                None,
+                original.span,
+            );
+            entry_stmts.push(Statement::Assign {
+                place: Place::from_local(sub_future_local),
+                rvalue: Rvalue::Use(Operand::Copy(Place {
+                    local: state_ptr_local,
+                    projections: vec![Projection::Field(sym("__sub_future"))],
+                })),
+                span: original.span,
+            });
+
+            // Allocate a local for the __spark_try_poll function ref.
+            let try_poll_fn_local = alloc_local(
+                &mut locals,
+                &mut next_local_id,
+                i64_ty,
+                Some(sym("__try_poll_fn")),
+                original.span,
+            );
+
+            // Find try_poll DefId — we'll use kw::TRY_POLL as a FunctionRef constant.
+            // Since the resolver registers it, we search definitions at runtime.
+            // But in MIR we don't have the DefId directly. We'll use a sentinel
+            // approach: emit FunctionRef with a placeholder DefId that codegen will
+            // resolve by name. Actually, since try_poll is a builtin and codegen
+            // intercepts it by name, we need its DefId. We'll store the FunctionRef
+            // constant and let codegen intercept.
+            //
+            // For now, emit as a call terminator to a try_poll FunctionRef.
+            // We need to know the try_poll DefId. Since we're in the MIR transform
+            // and have access to definitions via the outer function, we'll need it
+            // passed in. Add a parameter for try_poll_def_id.
+            //
+            // However, to avoid changing the function signature too much, we'll
+            // search for it lazily. Actually the simpler approach: the poll function
+            // just uses Operand::Constant(Constant::FunctionRef(try_poll_def_id)).
+            // We need the caller to pass it. Let's use a helper.
+            //
+            // Actually, the cleanest approach is: store the try_poll FunctionRef
+            // in a local and use Call terminator. The try_poll_def_id will be
+            // passed into generate_poll_function.
+            //
+            // For now, we'll add try_poll_def_id as a field that we stash.
+            // This will be resolved after we update the call site below.
+            //
+            // PLAN: We'll emit the try_poll call as a Call terminator. The
+            // entry block ends with a Call to try_poll, and the continuation
+            // block checks the result.
+
+            // We'll split: entry_stmts sets up sub_future + try_poll fn ref,
+            // then a Call terminator calls try_poll, then a continuation block
+            // checks the result pointer (null = pending, non-null = ready).
+
+            // First, assign the try_poll function ref.
+            // We use TRY_POLL_DEF_ID placeholder — will be set by caller.
+            entry_stmts.push(Statement::Assign {
+                place: Place::from_local(try_poll_fn_local),
+                rvalue: Rvalue::Use(Operand::Constant(Constant::Null)),
+                span: original.span,
+            });
+
+            // Push the entry block with the Call terminator.
+            let poll_cont_block_idx = blocks.len() + 1;
+            blocks.push(BasicBlock {
+                statements: entry_stmts,
+                terminator: Terminator::Call {
+                    func: Operand::Copy(Place::from_local(try_poll_fn_local)),
+                    args: vec![Operand::Copy(Place::from_local(sub_future_local))],
+                    destination: Place::from_local(try_poll_result_local),
+                    target: BlockId(poll_cont_block_idx as u32),
+                    span: original.span,
+                },
+                is_cleanup: false,
+            });
+
+            // Continuation block: check if result_ptr is null.
+            // If null → return 0 (Pending).
+            // If non-null → restore locals, load await result, jump to cloned resume.
+
+            let mut cont_stmts = Vec::new();
+
+            // Compare result_ptr == 0
+            let cmp_local = alloc_local(
+                &mut locals,
+                &mut next_local_id,
+                table.intern(Ty::Bool),
+                None,
+                original.span,
+            );
+            cont_stmts.push(Statement::Assign {
+                place: Place::from_local(cmp_local),
+                rvalue: Rvalue::BinaryOp(
+                    spark_ast::BinaryOp::Eq,
+                    Operand::Copy(Place::from_local(try_poll_result_local)),
+                    Operand::Constant(Constant::Int(0)),
+                ),
+                span: original.span,
+            });
+
+            // We need two targets: pending_block and ready_block.
+            let pending_block_idx = blocks.len() + 1;
+            let ready_block_idx = blocks.len() + 2;
+
+            blocks.push(BasicBlock {
+                statements: cont_stmts,
+                terminator: Terminator::SwitchInt {
+                    discriminant: Operand::Copy(Place::from_local(cmp_local)),
+                    targets: vec![(1, BlockId(pending_block_idx as u32))], // null → pending
+                    otherwise: BlockId(ready_block_idx as u32),             // non-null → ready
+                },
+                is_cleanup: false,
+            });
+
+            // Pending block: return 0.
+            blocks.push(BasicBlock {
+                statements: vec![Statement::Assign {
+                    place: Place::from_local(Local::RETURN_PLACE),
+                    rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))),
+                    span: original.span,
+                }],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            });
+
+            // Ready block: load result from try_poll, restore live locals, jump to cloned resume.
+            let mut ready_stmts = Vec::new();
+
+            // Load await result: the try_poll returns a pointer to the result buffer.
+            // We need to load the result value. In MIR we represent this as
+            // assigning from the result pointer. However, the await dest local
+            // receives the concrete type. In the poll function, we'll use a
+            // Deref projection to load through the pointer.
+            //
+            // Actually, the simplest approach for MIR: the try_poll_result_local
+            // holds a pointer. We need to load the concrete value from it.
+            // MIR doesn't have a "load from raw pointer" operation directly.
+            // We use Projection::Deref on a Ref-typed local.
+            //
+            // Simpler: store try_poll result as an Int (raw ptr), then codegen
+            // will handle loading the actual value from the pointer based on the
+            // dest type. We'll just do a Copy of try_poll_result_local into the
+            // await dest local — codegen will need to load from the pointer.
+            //
+            // For now, store the pointer in the dest local. Codegen intercepts
+            // try_poll calls and loads the result. (Step 6 handles this.)
+            let prev_await = &await_points[seg_idx - 1];
+            if let Some(&poll_dest_local) = orig_to_poll.get(&prev_await.dest_local) {
+                ready_stmts.push(Statement::Assign {
+                    place: Place::from_local(poll_dest_local),
+                    rvalue: Rvalue::Use(Operand::Copy(Place::from_local(try_poll_result_local))),
+                    span: original.span,
+                });
+            }
+
+            // Restore live-across-await locals from state.
+            let live_set = &live_across[seg_idx - 1];
+            for &live_local in live_set {
+                let field_name = sym(&format!("__local_{}", live_local.0));
+                if field_index.contains_key(&field_name) {
+                    if let Some(&poll_local) = orig_to_poll.get(&live_local) {
+                        ready_stmts.push(Statement::Assign {
+                            place: Place::from_local(poll_local),
+                            rvalue: Rvalue::Use(Operand::Copy(Place {
+                                local: state_ptr_local,
+                                projections: vec![Projection::Field(field_name)],
+                            })),
+                            span: original.span,
+                        });
+                    }
+                }
+            }
+
+            // The ready block will jump to the first cloned block of this segment.
+            // We'll set the terminator after we know the cloned block index.
+            let ready_block_actual_idx = blocks.len();
+            blocks.push(BasicBlock {
+                statements: ready_stmts,
+                terminator: Terminator::Unreachable, // placeholder — fixed below
+                is_cleanup: false,
+            });
+
+            // Now clone the segment's blocks.
+            let seg_blocks = &segments[seg_idx];
+            if seg_blocks.is_empty() {
+                // Edge case: empty segment — ready block goes to already_ready.
+                // Fix the terminator below after we know already_ready index.
+                // For now, leave as Unreachable — will be patched.
+            } else {
+                let first_cloned_block_idx = blocks.len();
+                // Fix ready block terminator to jump to first cloned block.
+                blocks[ready_block_actual_idx].terminator =
+                    Terminator::Goto { target: BlockId(first_cloned_block_idx as u32) };
+
+                // Build the block remapping for this segment.
+                let remap = build_block_remap(seg_blocks, blocks.len());
+
+                for &orig_block_idx in seg_blocks {
+                    let cloned = clone_block_with_remap(
+                        &original.blocks[orig_block_idx],
+                        &orig_to_poll,
+                        &remap,
+                        original.span,
+                    );
+                    blocks.push(cloned);
+                }
+
+                // Now rewrite: if this segment contains an await point (i.e., not the
+                // last segment), rewrite the await call block's terminator.
+                if seg_idx < await_points.len() {
+                    let ap = &await_points[seg_idx];
+                    // Find which cloned block corresponds to ap.call_block_idx.
+                    if let Some(pos) = seg_blocks.iter().position(|&b| b == ap.call_block_idx) {
+                        let cloned_block_idx = first_cloned_block_idx + pos;
+                        rewrite_await_block(
+                            &mut blocks[cloned_block_idx],
+                            &orig_to_poll,
+                            &live_across[seg_idx],
+                            &field_index,
+                            state_ptr_local,
+                            ap,
+                            (seg_idx + 1) as i64,
+                            original.span,
+                        );
+                    }
+                }
+
+                // Rewrite Return terminators in cloned blocks → store result + return 1.
+                for block_idx in first_cloned_block_idx..blocks.len() {
+                    if matches!(blocks[block_idx].terminator, Terminator::Return) {
+                        rewrite_return_block(
+                            &mut blocks[block_idx],
+                            &orig_to_poll,
+                            state_ptr_local,
+                            original.span,
+                        );
+                    }
+                }
+            }
+
+            continue; // Skip the segment 0 path below
+        }
+
+        // ── Segment 0 path ──────────────────────────────────────────────
+        // The entry block for segment 0 restores params, then jumps to
+        // the first cloned block of segment 0.
+
+        let seg_blocks = &segments[seg_idx];
+        if seg_blocks.is_empty() {
+            // Empty segment 0 — just push the entry block going to already_ready.
+            blocks.push(BasicBlock {
+                statements: entry_stmts,
+                terminator: Terminator::Unreachable, // patched below
+                is_cleanup: false,
+            });
+            continue;
+        }
+
+        let first_cloned_block_idx = blocks.len() + 1;
+        blocks.push(BasicBlock {
+            statements: entry_stmts,
+            terminator: Terminator::Goto { target: BlockId(first_cloned_block_idx as u32) },
+            is_cleanup: false,
+        });
+
+        // Build the block remapping for segment 0.
+        let remap = build_block_remap(seg_blocks, blocks.len());
+
+        for &orig_block_idx in seg_blocks {
+            let cloned = clone_block_with_remap(
+                &original.blocks[orig_block_idx],
+                &orig_to_poll,
+                &remap,
+                original.span,
+            );
+            blocks.push(cloned);
+        }
+
+        let first_cloned = first_cloned_block_idx;
+
+        // If segment 0 has an await point, rewrite the await call block.
+        if !await_points.is_empty() {
+            let ap = &await_points[0];
+            if let Some(pos) = seg_blocks.iter().position(|&b| b == ap.call_block_idx) {
+                let cloned_block_idx = first_cloned + pos;
+                rewrite_await_block(
+                    &mut blocks[cloned_block_idx],
+                    &orig_to_poll,
+                    &live_across[0],
+                    &field_index,
+                    state_ptr_local,
+                    ap,
+                    1, // next segment tag
+                    original.span,
+                );
+            }
+        }
+
+        // Rewrite Return terminators in cloned blocks.
+        for block_idx in first_cloned..blocks.len() {
+            if matches!(blocks[block_idx].terminator, Terminator::Return) {
+                rewrite_return_block(
+                    &mut blocks[block_idx],
+                    &orig_to_poll,
+                    state_ptr_local,
+                    original.span,
+                );
+            }
+        }
+    }
+
+    // Already-ready block: return 1.
+    let already_ready_idx = blocks.len();
+    blocks.push(BasicBlock {
+        statements: vec![Statement::Assign {
+            place: Place::from_local(Local::RETURN_PLACE),
+            rvalue: Rvalue::Use(Operand::Constant(Constant::Int(1))),
+            span: original.span,
+        }],
+        terminator: Terminator::Return,
+        is_cleanup: false,
+    });
+
+    // Fix the entry block (bb0): dispatch on tag.
+    let mut switch_targets: Vec<(i128, BlockId)> = Vec::with_capacity(num_segments);
+    for (seg_idx, &entry_idx) in segment_entry_indices.iter().enumerate() {
+        switch_targets.push((seg_idx as i128, BlockId(entry_idx as u32)));
+    }
+
+    blocks[0] = BasicBlock {
         statements: vec![Statement::Assign {
             place: Place::from_local(tag_local),
             rvalue: Rvalue::Use(Operand::Copy(Place {
@@ -594,134 +979,18 @@ fn generate_poll_function(
         }],
         terminator: Terminator::SwitchInt {
             discriminant: Operand::Copy(Place::from_local(tag_local)),
-            targets: vec![(0, BlockId(1))],
-            otherwise: BlockId(2),
+            targets: switch_targets,
+            otherwise: BlockId(already_ready_idx as u32),
         },
         is_cleanup: false,
     };
-    blocks.push(bb_entry);
 
-    // Block 1 (bb_run): Load params from state, call original function, store result.
-    let mut run_stmts = Vec::new();
-
-    // Load each parameter from the state struct.
-    // Parameters are locals 1..=param_count in the original function.
-    // In the state struct, they're stored as __local_N fields.
-    for param_idx in 1..=original.param_count {
-        let orig_local = Local(param_idx);
-        let field_name = sym(&format!("__local_{param_idx}"));
-
-        if field_index.contains_key(&field_name) {
-            if let Some(&poll_local) = orig_to_poll.get(&orig_local) {
-                run_stmts.push(Statement::Assign {
-                    place: Place::from_local(poll_local),
-                    rvalue: Rvalue::Use(Operand::Copy(Place {
-                        local: state_ptr_local,
-                        projections: vec![Projection::Field(field_name)],
-                    })),
-                    span: original.span,
-                });
-            }
+    // Patch any remaining Unreachable terminators (from empty segments) to go to already_ready.
+    for block in &mut blocks {
+        if matches!(block.terminator, Terminator::Unreachable) {
+            block.terminator = Terminator::Goto { target: BlockId(already_ready_idx as u32) };
         }
     }
-
-    // Call the original function with the loaded parameters.
-    let mut call_args: Vec<Operand> = Vec::new();
-    for param_idx in 1..=original.param_count {
-        let orig_local = Local(param_idx);
-        if let Some(&poll_local) = orig_to_poll.get(&orig_local) {
-            call_args.push(Operand::Copy(Place::from_local(poll_local)));
-        }
-    }
-
-    // Destination for the call result.
-    let call_result_local = if let Some(&poll_local) = orig_to_poll.get(&Local::RETURN_PLACE) {
-        poll_local
-    } else {
-        alloc_local(
-            &mut locals,
-            &mut next_local_id,
-            original.return_type,
-            None,
-            original.span,
-        )
-    };
-
-    // We need the original function's DefId to call it.
-    let orig_fn_local = alloc_local(
-        &mut locals,
-        &mut next_local_id,
-        i64_ty,
-        Some(sym("__orig_fn")),
-        original.span,
-    );
-    run_stmts.push(Statement::Assign {
-        place: Place::from_local(orig_fn_local),
-        rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(original.def_id))),
-        span: original.span,
-    });
-
-    let bb_run = BasicBlock {
-        statements: run_stmts,
-        terminator: Terminator::Call {
-            func: Operand::Copy(Place::from_local(orig_fn_local)),
-            args: call_args,
-            destination: Place::from_local(call_result_local),
-            target: BlockId(3), // bb_store_result
-            span: original.span,
-        },
-        is_cleanup: false,
-    };
-    blocks.push(bb_run);
-
-    // Block 2 (bb_already_ready): Return 1 immediately.
-    let bb_already_ready = BasicBlock {
-        statements: vec![Statement::Assign {
-            place: Place::from_local(Local::RETURN_PLACE),
-            rvalue: Rvalue::Use(Operand::Constant(Constant::Int(1))),
-            span: original.span,
-        }],
-        terminator: Terminator::Return,
-        is_cleanup: false,
-    };
-    blocks.push(bb_already_ready);
-
-    // Block 3 (bb_store_result): Store result in state.__result, set tag = 1, return 1.
-    let mut store_stmts = Vec::new();
-
-    // Store result: state.__result = call_result
-    store_stmts.push(Statement::Assign {
-        place: Place {
-            local: state_ptr_local,
-            projections: vec![Projection::Field(sym("__result"))],
-        },
-        rvalue: Rvalue::Use(Operand::Copy(Place::from_local(call_result_local))),
-        span: original.span,
-    });
-
-    // Set tag = 1 (completed).
-    store_stmts.push(Statement::Assign {
-        place: Place {
-            local: state_ptr_local,
-            projections: vec![Projection::Field(sym("__tag"))],
-        },
-        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(1))),
-        span: original.span,
-    });
-
-    // Return 1 (Ready).
-    store_stmts.push(Statement::Assign {
-        place: Place::from_local(Local::RETURN_PLACE),
-        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(1))),
-        span: original.span,
-    });
-
-    let bb_store_result = BasicBlock {
-        statements: store_stmts,
-        terminator: Terminator::Return,
-        is_cleanup: false,
-    };
-    blocks.push(bb_store_result);
 
     MirFunction {
         def_id: poll_def_id,
@@ -735,14 +1004,12 @@ fn generate_poll_function(
     }
 }
 
-/// Computes which original blocks belong to each segment.
+/// Computes which original blocks belong to each segment via BFS.
 ///
-/// Segment 0: blocks from entry up to (but not including) the first await call block.
-/// Segment k: blocks from `await_points[k-1].resume_block` up to `await_points[k].call_block`.
-/// Last segment: blocks from last `resume_block` to the end.
-///
-/// Reserved for Phase 3 v2 segmented poll functions.
-#[allow(dead_code)]
+/// Segment 0: blocks reachable from entry, stopping at first await call block.
+/// Segment K: blocks reachable from `await_points[K-1].resume_block`, stopping at
+///            `await_points[K].call_block` (if K < await_points.len()).
+/// Last segment: blocks reachable from last resume block, no barrier.
 fn compute_segment_ranges(
     func: &MirFunction,
     await_points: &[AwaitPoint],
@@ -756,14 +1023,327 @@ fn compute_segment_ranges(
         return segments;
     }
 
-    // For simplicity in v1, we don't actually use segment ranges since
-    // the poll function calls the original function as a whole. This is
-    // a placeholder for future segmented execution.
-    for i in 0..num_blocks {
-        segments[0].push(i);
+    let successors = build_successor_map(func);
+
+    for seg_idx in 0..num_segments {
+        let entry = if seg_idx == 0 {
+            0 // entry block
+        } else {
+            await_points[seg_idx - 1].resume_block.index()
+        };
+
+        // Barrier: the await call block for this segment's await point (if any).
+        let barrier = if seg_idx < await_points.len() {
+            Some(await_points[seg_idx].call_block_idx)
+        } else {
+            None
+        };
+
+        // BFS from entry, including the barrier block itself but not going past it.
+        let mut visited = FxHashSet::default();
+        let mut queue = vec![entry];
+        while let Some(idx) = queue.pop() {
+            if !visited.insert(idx) {
+                continue;
+            }
+            // If this is the barrier block, include it but don't explore successors.
+            if barrier == Some(idx) {
+                continue;
+            }
+            for &succ in &successors[idx] {
+                if !visited.contains(&succ) {
+                    queue.push(succ);
+                }
+            }
+        }
+
+        let mut seg: Vec<usize> = visited.into_iter().collect();
+        seg.sort_unstable();
+        segments[seg_idx] = seg;
     }
 
     segments
+}
+
+/// Builds a mapping from original block index → cloned block index.
+fn build_block_remap(
+    seg_blocks: &[usize],
+    cloned_start: usize,
+) -> FxHashMap<usize, usize> {
+    seg_blocks
+        .iter()
+        .enumerate()
+        .map(|(i, &orig_idx)| (orig_idx, cloned_start + i))
+        .collect()
+}
+
+/// Clones a block with local and block ID remapping.
+fn clone_block_with_remap(
+    block: &BasicBlock,
+    local_remap: &FxHashMap<Local, Local>,
+    block_remap: &FxHashMap<usize, usize>,
+    _span: spark_span::Span,
+) -> BasicBlock {
+    let statements = block
+        .statements
+        .iter()
+        .map(|stmt| remap_statement(stmt, local_remap))
+        .collect();
+
+    let terminator = remap_terminator(&block.terminator, local_remap, block_remap);
+
+    BasicBlock {
+        statements,
+        terminator,
+        is_cleanup: block.is_cleanup,
+    }
+}
+
+/// Remaps a statement's locals.
+fn remap_statement(
+    stmt: &Statement,
+    local_remap: &FxHashMap<Local, Local>,
+) -> Statement {
+    match stmt {
+        Statement::Assign { place, rvalue, span } => Statement::Assign {
+            place: remap_place(place, local_remap),
+            rvalue: remap_rvalue(rvalue, local_remap),
+            span: *span,
+        },
+        Statement::Drop { place, span } => Statement::Drop {
+            place: remap_place(place, local_remap),
+            span: *span,
+        },
+        Statement::Nop => Statement::Nop,
+    }
+}
+
+/// Remaps a place's local.
+fn remap_place(place: &Place, local_remap: &FxHashMap<Local, Local>) -> Place {
+    Place {
+        local: local_remap.get(&place.local).copied().unwrap_or(place.local),
+        projections: place.projections.iter().map(|p| remap_projection(p, local_remap)).collect(),
+    }
+}
+
+/// Remaps a projection's index local (if any).
+fn remap_projection(proj: &Projection, local_remap: &FxHashMap<Local, Local>) -> Projection {
+    match proj {
+        Projection::Index(idx_local) => {
+            Projection::Index(local_remap.get(idx_local).copied().unwrap_or(*idx_local))
+        }
+        other => other.clone(),
+    }
+}
+
+/// Remaps an operand's locals.
+fn remap_operand(op: &Operand, local_remap: &FxHashMap<Local, Local>) -> Operand {
+    match op {
+        Operand::Copy(place) => Operand::Copy(remap_place(place, local_remap)),
+        Operand::Move(place) => Operand::Move(remap_place(place, local_remap)),
+        Operand::Constant(c) => Operand::Constant(c.clone()),
+    }
+}
+
+/// Remaps an rvalue's locals.
+fn remap_rvalue(rvalue: &Rvalue, local_remap: &FxHashMap<Local, Local>) -> Rvalue {
+    match rvalue {
+        Rvalue::Use(op) => Rvalue::Use(remap_operand(op, local_remap)),
+        Rvalue::BinaryOp(op, a, b) => Rvalue::BinaryOp(
+            *op,
+            remap_operand(a, local_remap),
+            remap_operand(b, local_remap),
+        ),
+        Rvalue::UnaryOp(op, a) => Rvalue::UnaryOp(*op, remap_operand(a, local_remap)),
+        Rvalue::Ref { place, mutable } => Rvalue::Ref {
+            place: remap_place(place, local_remap),
+            mutable: *mutable,
+        },
+        Rvalue::Aggregate(kind, ops) => Rvalue::Aggregate(
+            kind.clone(),
+            ops.iter().map(|o| remap_operand(o, local_remap)).collect(),
+        ),
+        Rvalue::Discriminant(place) => Rvalue::Discriminant(remap_place(place, local_remap)),
+        Rvalue::Cast { operand, target_ty } => Rvalue::Cast {
+            operand: remap_operand(operand, local_remap),
+            target_ty: *target_ty,
+        },
+        Rvalue::StringInterp(ops) => Rvalue::StringInterp(
+            ops.iter().map(|o| remap_operand(o, local_remap)).collect(),
+        ),
+    }
+}
+
+/// Remaps a terminator's locals and block IDs.
+fn remap_terminator(
+    term: &Terminator,
+    local_remap: &FxHashMap<Local, Local>,
+    block_remap: &FxHashMap<usize, usize>,
+) -> Terminator {
+    let remap_block = |bid: &BlockId| -> BlockId {
+        block_remap
+            .get(&bid.index())
+            .map_or(*bid, |&new_idx| BlockId(new_idx as u32))
+    };
+
+    match term {
+        Terminator::Goto { target } => Terminator::Goto {
+            target: remap_block(target),
+        },
+        Terminator::Return => Terminator::Return,
+        Terminator::Unreachable => Terminator::Unreachable,
+        Terminator::SwitchInt {
+            discriminant,
+            targets,
+            otherwise,
+        } => Terminator::SwitchInt {
+            discriminant: remap_operand(discriminant, local_remap),
+            targets: targets
+                .iter()
+                .map(|(val, bid)| (*val, remap_block(bid)))
+                .collect(),
+            otherwise: remap_block(otherwise),
+        },
+        Terminator::Call {
+            func,
+            args,
+            destination,
+            target,
+            span,
+        } => Terminator::Call {
+            func: remap_operand(func, local_remap),
+            args: args.iter().map(|a| remap_operand(a, local_remap)).collect(),
+            destination: remap_place(destination, local_remap),
+            target: remap_block(target),
+            span: *span,
+        },
+    }
+}
+
+/// Rewrites an await call block to save state and return Pending.
+///
+/// Replaces the `Call { __spark_await }` terminator with:
+/// 1. Save each live-across-await local → `state.__local_N`
+/// 2. Store future pointer → `state.__sub_future`
+/// 3. Set `state.__tag` = next_tag
+/// 4. Return 0 (Pending)
+#[allow(clippy::too_many_arguments)]
+fn rewrite_await_block(
+    block: &mut BasicBlock,
+    orig_to_poll: &FxHashMap<Local, Local>,
+    live_set: &FxHashSet<Local>,
+    field_index: &FxHashMap<Symbol, usize>,
+    state_ptr_local: Local,
+    await_point: &AwaitPoint,
+    next_tag: i64,
+    span: spark_span::Span,
+) {
+    // The block currently ends with a Call terminator to __spark_await.
+    // Extract the future argument local from the call.
+    let future_poll_local = orig_to_poll
+        .get(&await_point.future_local)
+        .copied()
+        .unwrap_or(await_point.future_local);
+
+    let mut save_stmts = Vec::new();
+
+    // Save each live-across-await local to the state struct.
+    for &live_local in live_set {
+        let field_name = sym(&format!("__local_{}", live_local.0));
+        if field_index.contains_key(&field_name) {
+            let poll_local = orig_to_poll
+                .get(&live_local)
+                .copied()
+                .unwrap_or(live_local);
+            save_stmts.push(Statement::Assign {
+                place: Place {
+                    local: state_ptr_local,
+                    projections: vec![Projection::Field(field_name)],
+                },
+                rvalue: Rvalue::Use(Operand::Copy(Place::from_local(poll_local))),
+                span,
+            });
+        }
+    }
+
+    // Store sub_future pointer to state.__sub_future.
+    save_stmts.push(Statement::Assign {
+        place: Place {
+            local: state_ptr_local,
+            projections: vec![Projection::Field(sym("__sub_future"))],
+        },
+        rvalue: Rvalue::Use(Operand::Copy(Place::from_local(future_poll_local))),
+        span,
+    });
+
+    // Set state.__tag = next_tag.
+    save_stmts.push(Statement::Assign {
+        place: Place {
+            local: state_ptr_local,
+            projections: vec![Projection::Field(sym("__tag"))],
+        },
+        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(next_tag))),
+        span,
+    });
+
+    // Return 0 (Pending).
+    save_stmts.push(Statement::Assign {
+        place: Place::from_local(Local::RETURN_PLACE),
+        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))),
+        span,
+    });
+
+    // Replace the block's statements (keep everything before the call, add saves).
+    block.statements.append(&mut save_stmts);
+    block.terminator = Terminator::Return;
+}
+
+/// Rewrites a Return terminator in a cloned block to store the result in
+/// `state.__result`, set `state.__tag` to a completed value, and return 1 (Ready).
+fn rewrite_return_block(
+    block: &mut BasicBlock,
+    orig_to_poll: &FxHashMap<Local, Local>,
+    state_ptr_local: Local,
+    span: spark_span::Span,
+) {
+    // The original function stores its result in Local(0) (return place).
+    // We need to copy that to state.__result.
+    let poll_return_local = orig_to_poll
+        .get(&Local::RETURN_PLACE)
+        .copied()
+        .unwrap_or(Local::RETURN_PLACE);
+
+    let mut store_stmts = Vec::new();
+
+    // Store result: state.__result = poll_return_local (which mirrors original Local(0))
+    store_stmts.push(Statement::Assign {
+        place: Place {
+            local: state_ptr_local,
+            projections: vec![Projection::Field(sym("__result"))],
+        },
+        rvalue: Rvalue::Use(Operand::Copy(Place::from_local(poll_return_local))),
+        span,
+    });
+
+    // Set completed tag.
+    store_stmts.push(Statement::Assign {
+        place: Place {
+            local: state_ptr_local,
+            projections: vec![Projection::Field(sym("__tag"))],
+        },
+        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(-1))),
+        span,
+    });
+
+    // Return 1 (Ready).
+    store_stmts.push(Statement::Assign {
+        place: Place::from_local(Local::RETURN_PLACE),
+        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(1))),
+        span,
+    });
+
+    block.statements.append(&mut store_stmts);
+    // Terminator stays as Return.
 }
 
 #[cfg(test)]
@@ -1080,6 +1660,261 @@ mod tests {
         assert!(
             !live_across[0].contains(&Local(0)),
             "Return place should not be live-across"
+        );
+    }
+
+    #[test]
+    fn segmented_poll_has_dispatch_entry() {
+        let mut table = TypeTable::new();
+        let mut definitions = DefinitionTable::new();
+
+        let await_def = definitions.insert(DefinitionInfo::new(
+            DefinitionKind::BuiltinFunction,
+            kw::SPARK_AWAIT,
+            Span::DUMMY,
+            Visibility::Private,
+            spark_modules::ModulePath::root(),
+        ));
+
+        let func_def = definitions.insert(DefinitionInfo::new(
+            DefinitionKind::Function,
+            sym("my_async"),
+            Span::DUMMY,
+            Visibility::Private,
+            spark_modules::ModulePath::root(),
+        ));
+
+        let func = make_simple_async_fn(func_def, await_def, &mut table);
+        let mut mir = Mir {
+            functions: HashMap::new(),
+        };
+        mir.functions.insert(func_def, func);
+
+        let output = transform(AsyncTransformInput {
+            mir,
+            table,
+            definitions,
+        });
+
+        let poll_info = &output.poll_fn_map[&func_def];
+        let poll_fn = &output.mir.functions[&poll_info.poll_def_id];
+
+        // Entry block (bb0) should be a SwitchInt on the tag.
+        assert!(
+            matches!(poll_fn.blocks[0].terminator, Terminator::SwitchInt { .. }),
+            "Poll function entry should dispatch via SwitchInt on tag"
+        );
+
+        // Should have at least 2 segments (segment 0 + segment 1) + entry + already_ready.
+        assert!(
+            poll_fn.blocks.len() >= 4,
+            "Expected at least 4 blocks (entry + 2 segments + already_ready), got {}",
+            poll_fn.blocks.len()
+        );
+
+        // At least one block should return 0 (Pending).
+        let has_pending_return = poll_fn.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| {
+                matches!(s,
+                    Statement::Assign { rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))), .. }
+                )
+            }) && matches!(b.terminator, Terminator::Return)
+        });
+        assert!(has_pending_return, "Expected a block that returns 0 (Pending)");
+
+        // At least one block should return 1 (Ready).
+        let has_ready_return = poll_fn.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| {
+                matches!(s,
+                    Statement::Assign { rvalue: Rvalue::Use(Operand::Constant(Constant::Int(1))), .. }
+                )
+            }) && matches!(b.terminator, Terminator::Return)
+        });
+        assert!(has_ready_return, "Expected a block that returns 1 (Ready)");
+    }
+
+    #[test]
+    fn multi_await_creates_multiple_segments() {
+        let mut table = TypeTable::new();
+        let i64_ty = table.intern(Ty::Int(IntWidth::I64));
+        let void_ty = table.intern(Ty::Void);
+        let future_ty = table.intern(Ty::Future { inner: i64_ty });
+        let mut definitions = DefinitionTable::new();
+
+        let await_def = definitions.insert(DefinitionInfo::new(
+            DefinitionKind::BuiltinFunction,
+            kw::SPARK_AWAIT,
+            Span::DUMMY,
+            Visibility::Private,
+            spark_modules::ModulePath::root(),
+        ));
+
+        let func_def = definitions.insert(DefinitionInfo::new(
+            DefinitionKind::Function,
+            sym("pipeline"),
+            Span::DUMMY,
+            Visibility::Private,
+            spark_modules::ModulePath::root(),
+        ));
+
+        // Async function with 2 awaits:
+        //   _0: Int (return)
+        //   _1: Future[Int] (future 1)
+        //   _2: fn (await ref)
+        //   _3: Int (await result 1)
+        //   _4: Future[Int] (future 2)
+        //   _5: fn (await ref 2)
+        //   _6: Int (await result 2)
+        //
+        // bb0: _1 = 0; _2 = FunctionRef(__spark_await); call _2(_1) → bb1, dest = _3
+        // bb1: _4 = 0; _5 = FunctionRef(__spark_await); call _5(_4) → bb2, dest = _6
+        // bb2: _0 = _3 + _6; return
+        let func = MirFunction {
+            def_id: func_def,
+            param_count: 0,
+            return_type: i64_ty,
+            locals: vec![
+                LocalDecl { local: Local(0), ty: i64_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl { local: Local(1), ty: future_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl { local: Local(2), ty: void_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl { local: Local(3), ty: i64_ty, name: Some(sym("a")), is_user_variable: true, mutable: false, span: Span::DUMMY },
+                LocalDecl { local: Local(4), ty: future_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl { local: Local(5), ty: void_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl { local: Local(6), ty: i64_ty, name: Some(sym("b")), is_user_variable: true, mutable: false, span: Span::DUMMY },
+            ],
+            blocks: vec![
+                BasicBlock {
+                    statements: vec![
+                        Statement::Assign { place: Place::from_local(Local(1)), rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))), span: Span::DUMMY },
+                        Statement::Assign { place: Place::from_local(Local(2)), rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(await_def))), span: Span::DUMMY },
+                    ],
+                    terminator: Terminator::Call {
+                        func: Operand::Copy(Place::from_local(Local(2))),
+                        args: vec![Operand::Copy(Place::from_local(Local(1)))],
+                        destination: Place::from_local(Local(3)),
+                        target: BlockId(1),
+                        span: Span::DUMMY,
+                    },
+                    is_cleanup: false,
+                },
+                BasicBlock {
+                    statements: vec![
+                        Statement::Assign { place: Place::from_local(Local(4)), rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))), span: Span::DUMMY },
+                        Statement::Assign { place: Place::from_local(Local(5)), rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(await_def))), span: Span::DUMMY },
+                    ],
+                    terminator: Terminator::Call {
+                        func: Operand::Copy(Place::from_local(Local(5))),
+                        args: vec![Operand::Copy(Place::from_local(Local(4)))],
+                        destination: Place::from_local(Local(6)),
+                        target: BlockId(2),
+                        span: Span::DUMMY,
+                    },
+                    is_cleanup: false,
+                },
+                BasicBlock {
+                    statements: vec![Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::BinaryOp(
+                            spark_ast::BinaryOp::Add,
+                            Operand::Copy(Place::from_local(Local(3))),
+                            Operand::Copy(Place::from_local(Local(6))),
+                        ),
+                        span: Span::DUMMY,
+                    }],
+                    terminator: Terminator::Return,
+                    is_cleanup: false,
+                },
+            ],
+            captures: vec![],
+            is_async: true,
+            span: Span::DUMMY,
+        };
+
+        let mut mir = Mir { functions: HashMap::new() };
+        mir.functions.insert(func_def, func);
+
+        let output = transform(AsyncTransformInput {
+            mir,
+            table,
+            definitions,
+        });
+
+        assert!(output.poll_fn_map.contains_key(&func_def));
+        let poll_info = &output.poll_fn_map[&func_def];
+        let poll_fn = &output.mir.functions[&poll_info.poll_def_id];
+
+        // Entry block should dispatch to 3 segments (0, 1, 2).
+        if let Terminator::SwitchInt { targets, .. } = &poll_fn.blocks[0].terminator {
+            assert_eq!(
+                targets.len(), 3,
+                "Expected 3 segment targets (for 2 awaits), got {}",
+                targets.len()
+            );
+        } else {
+            panic!("Entry block should be SwitchInt");
+        }
+
+        // Local(3) = `a` is used in bb2 (after both awaits), so it should be
+        // live-across the second await → has a state field.
+        let has_local_3_field = poll_info
+            .state_fields
+            .iter()
+            .any(|(name, _)| name.as_str() == "__local_3");
+        assert!(has_local_3_field, "Local(3) 'a' should be in state fields (live-across-await)");
+    }
+
+    #[test]
+    fn params_always_in_state_fields() {
+        let mut table = TypeTable::new();
+        let mut definitions = DefinitionTable::new();
+
+        let await_def = definitions.insert(DefinitionInfo::new(
+            DefinitionKind::BuiltinFunction,
+            kw::SPARK_AWAIT,
+            Span::DUMMY,
+            Visibility::Private,
+            spark_modules::ModulePath::root(),
+        ));
+
+        let func_def = definitions.insert(DefinitionInfo::new(
+            DefinitionKind::Function,
+            sym("my_async"),
+            Span::DUMMY,
+            Visibility::Private,
+            spark_modules::ModulePath::root(),
+        ));
+
+        let func = make_simple_async_fn(func_def, await_def, &mut table);
+
+        // In make_simple_async_fn, Local(1) is param x but is never used
+        // in the body. With the fix, it should still be in state fields
+        // so that cooperative spawn can inject the param value.
+        let mut mir = Mir { functions: HashMap::new() };
+        mir.functions.insert(func_def, func);
+
+        let output = transform(AsyncTransformInput {
+            mir,
+            table,
+            definitions,
+        });
+
+        let poll_info = &output.poll_fn_map[&func_def];
+
+        // Param Local(1) should have a __local_1 field even though it's not live-across-await.
+        let has_param_field = poll_info
+            .state_fields
+            .iter()
+            .any(|(name, _)| name.as_str() == "__local_1");
+        assert!(
+            has_param_field,
+            "Param Local(1) should always be in state fields for coop spawn"
+        );
+
+        // __result should still be the last field.
+        assert_eq!(
+            poll_info.state_fields.last().unwrap().0,
+            sym("__result"),
+            "__result should be the last state field"
         );
     }
 }

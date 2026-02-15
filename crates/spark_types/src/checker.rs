@@ -158,6 +158,14 @@ impl TypeChecker {
                     is_async: false,
                 });
                 self.table.set_def_type(def_id, fn_type);
+            } else if info.name == kw::TRY_POLL {
+                // __spark_try_poll(future_ptr: Int) -> Int (opaque ptr args)
+                let fn_type = self.table.intern(Ty::Function {
+                    params: vec![int_type],
+                    ret: int_type,
+                    is_async: false,
+                });
+                self.table.set_def_type(def_id, fn_type);
             } else if info.name == kw::PARALLEL_MAP {
                 // Internal: __parallel_map(list, callback) -> List[Int]
                 // Actual calling convention handled at codegen level

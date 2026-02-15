@@ -38,9 +38,10 @@ pub mod backend;
 pub mod cranelift;
 pub mod layout;
 
+use rustc_hash::FxHashMap;
 use spark_diagnostics::Diagnostics;
 use spark_mir::Mir;
-use spark_resolve::DefinitionTable;
+use spark_resolve::{DefId, DefinitionTable};
 use spark_types::TypeTable;
 
 use crate::backend::CodegenBackend;
@@ -81,6 +82,8 @@ pub struct CodegenInput {
     pub definitions: DefinitionTable,
     /// Target specification (defaults to host).
     pub target: TargetSpec,
+    /// Mapping from async function DefId → poll function info (from async transform).
+    pub poll_fn_map: FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
 }
 
 /// Output from the code generation pass.
@@ -115,6 +118,7 @@ pub fn generate(input: CodegenInput) -> CodegenOutput {
         table,
         definitions,
         target,
+        poll_fn_map,
     } = input;
 
     let mut diagnostics = Diagnostics::new();
@@ -130,7 +134,7 @@ pub fn generate(input: CodegenInput) -> CodegenOutput {
         }
     };
 
-    let object_bytes = backend.compile(&mir, &table, &definitions, &mut diagnostics);
+    let object_bytes = backend.compile(&mir, &table, &definitions, &poll_fn_map, &mut diagnostics);
 
     CodegenOutput {
         object_bytes,
@@ -167,6 +171,7 @@ mod tests {
             table,
             definitions,
             target: TargetSpec::host(),
+            poll_fn_map: rustc_hash::FxHashMap::default(),
         }
     }
 
@@ -193,6 +198,7 @@ mod tests {
             table: TypeTable::new(),
             definitions: DefinitionTable::new(),
             target: TargetSpec::host(),
+            poll_fn_map: rustc_hash::FxHashMap::default(),
         };
 
         let output = generate(input);

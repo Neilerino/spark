@@ -3,9 +3,10 @@
 //! The [`CodegenBackend`] trait defines the interface that any code generation
 //! backend (Cranelift, LLVM, etc.) must implement.
 
+use rustc_hash::FxHashMap;
 use spark_diagnostics::Diagnostics;
 use spark_mir::Mir;
-use spark_resolve::DefinitionTable;
+use spark_resolve::{DefId, DefinitionTable};
 use spark_types::TypeTable;
 
 /// A code generation backend that compiles MIR to native object bytes.
@@ -22,6 +23,7 @@ pub trait CodegenBackend {
         mir: &Mir,
         table: &TypeTable,
         definitions: &DefinitionTable,
+        poll_fn_map: &FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
         diagnostics: &mut Diagnostics,
     ) -> Vec<u8>;
 }

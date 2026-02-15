@@ -303,6 +303,15 @@ pub(super) fn emit_place_addr<M: Module>(
                             }
                         }
                     }
+                    Ty::AsyncState { fields, .. } => {
+                        let fields = fields.clone();
+                        if let Some(offset) = ctx.layouts.field_offset_for_type(unwrapped_id, *field_name, table) {
+                            addr = ctx.builder.ins().iadd_imm(addr, i64::from(offset));
+                        }
+                        if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
+                            current_ty = *field_ty;
+                        }
+                    }
                     _ => {
                         // For enums or other types with field access, we'd handle
                         // similarly. For now, just offset by 0.
@@ -395,6 +404,11 @@ pub(super) fn resolve_place_type(ctx: &FunctionContext<'_>, place: &Place, table
                                 let subst = spark_types::substitute::build_subst_map(&params, &args.clone());
                                 current_ty = spark_types::substitute::substitute(*field_ty, &subst, table);
                             }
+                        }
+                    }
+                    Ty::AsyncState { fields, .. } => {
+                        if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
+                            current_ty = *field_ty;
                         }
                     }
                     _ => {}

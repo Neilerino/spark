@@ -279,6 +279,12 @@ impl LayoutCache {
                 let sl = self.applied_struct_layout_of(ty_id, table);
                 Some(sl.field_offsets[field_idx])
             }
+            Ty::AsyncState { fields, .. } => {
+                let field_idx = fields.iter().position(|(name, _)| *name == field_name)?;
+                let fields = fields.clone();
+                let sl = self.async_state_layout_of(&fields, table);
+                Some(sl.field_offsets[field_idx])
+            }
             _ => None,
         }
     }

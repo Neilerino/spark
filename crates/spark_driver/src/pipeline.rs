@@ -207,6 +207,9 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     emit_warnings(&async_output.diagnostics, &source_map);
     let definitions = async_output.definitions;
 
+    // Save poll_fn_map before optimizer consumes the async output.
+    let poll_fn_map = async_output.poll_fn_map;
+
     // -- Phase 10.5: Optimization ---------------------------------------------
     let opt_output = spark_opt::optimize(spark_opt::OptInput {
         mir: async_output.mir,
@@ -222,6 +225,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
         table: opt_output.table,
         definitions,
         target: TargetSpec::host(),
+        poll_fn_map,
     });
     if codegen_output.diagnostics.has_errors() {
         codegen_output.diagnostics.emit_all(&source_map);

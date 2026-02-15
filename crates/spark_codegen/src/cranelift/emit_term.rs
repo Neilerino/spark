@@ -27,6 +27,8 @@ pub fn emit_terminator<M: Module>(
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
+    poll_fn_map: &FxHashMap<spark_resolve::DefId, spark_mir::async_transform::PollFnInfo>,
+    lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,
     diagnostics: &mut Diagnostics,
 ) {
     match terminator {
@@ -100,6 +102,8 @@ pub fn emit_terminator<M: Module>(
                 func_ids,
                 thunk_ids,
                 module,
+                poll_fn_map,
+                lambda_to_async,
                 diagnostics,
             );
         }
@@ -169,6 +173,8 @@ fn emit_call<M: Module>(
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
+    poll_fn_map: &FxHashMap<spark_resolve::DefId, spark_mir::async_transform::PollFnInfo>,
+    lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,
     diagnostics: &mut Diagnostics,
 ) {
     // Intercept built-in `print` calls and method calls for type-based dispatch.
@@ -267,6 +273,8 @@ fn emit_call<M: Module>(
                     func_ids,
                     thunk_ids,
                     module,
+                    poll_fn_map,
+                    lambda_to_async,
                 );
                 return;
             }
@@ -274,6 +282,22 @@ fn emit_call<M: Module>(
                 && info.name == kw::SPARK_AWAIT
             {
                 emit_await_call(
+                    ctx,
+                    args,
+                    destination,
+                    target,
+                    table,
+                    definitions,
+                    func_ids,
+                    thunk_ids,
+                    module,
+                );
+                return;
+            }
+            if matches!(info.kind, DefinitionKind::BuiltinFunction)
+                && info.name == kw::TRY_POLL
+            {
+                emit_try_poll_call(
                     ctx,
                     args,
                     destination,
@@ -646,8 +670,16 @@ fn emit_parallel_call<M: Module>(
     ctx.builder.ins().jump(target_block, &[]);
 }
 
-/// Emits a `spawn` call: extracts fn_ptr and env_ptr from the closure fat pointer,
-/// computes result_size from the inner type's layout, and calls `__spark_spawn`.
+/// Emits a `spawn` call, using the cooperative path when a poll function is available.
+///
+/// **Cooperative path** (when the spawned lambda wraps an async function with a poll entry):
+/// 1. Allocates an async state struct via `__spark_alloc_state(state_size)`
+/// 2. Stores the async function's parameters into the state struct
+/// 3. Sets the dispatch tag to 0 (initial segment)
+/// 4. Calls `__spark_spawn_coop(poll_fn_ptr, state_ptr, state_size, result_size, result_offset)`
+///
+/// **Blocking fallback** (no poll function available):
+/// Extracts fn_ptr and env_ptr from the closure fat pointer and calls `__spark_spawn`.
 #[allow(clippy::too_many_arguments)]
 fn emit_spawn_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
@@ -659,8 +691,18 @@ fn emit_spawn_call<M: Module>(
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
+    poll_fn_map: &FxHashMap<spark_resolve::DefId, spark_mir::async_transform::PollFnInfo>,
+    lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,
 ) {
-    // args[0] is the closure (fat pointer) wrapping the spawn body.
+    // Try cooperative spawn path.
+    if try_emit_coop_spawn(
+        ctx, args, destination, target, table, definitions,
+        func_ids, thunk_ids, module, poll_fn_map, lambda_to_async,
+    ).is_some() {
+        return;
+    }
+
+    // Fallback: blocking spawn via __spark_spawn.
     let cb_val = args.first().and_then(|arg| {
         emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
     });
@@ -725,6 +767,162 @@ fn emit_spawn_call<M: Module>(
     ctx.builder.ins().jump(target_block, &[]);
 }
 
+/// Attempts to emit a cooperative spawn. Returns `Some(())` if successful.
+///
+/// Detects if the spawned closure wraps an async function that has a poll entry,
+/// and if so, emits the cooperative spawn sequence instead of the blocking path.
+#[allow(clippy::too_many_arguments)]
+fn try_emit_coop_spawn<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    args: &[Operand],
+    destination: &Place,
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+    poll_fn_map: &FxHashMap<spark_resolve::DefId, spark_mir::async_transform::PollFnInfo>,
+    lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,
+) -> Option<()> {
+    // Step 1: Find the closure local from the spawn argument.
+    let closure_local = match args.first() {
+        Some(Operand::Copy(place) | Operand::Move(place)) if place.projections.is_empty() => {
+            place.local
+        }
+        _ => return None,
+    };
+
+    // Step 2: Scan MIR for the MakeClosure that assigned to this local.
+    let mut lambda_def_id = None;
+    let mut capture_operands = Vec::new();
+    for block in &ctx.mir_func.blocks {
+        for stmt in &block.statements {
+            if let spark_mir::Statement::Assign { place, rvalue, .. } = stmt {
+                if place.local == closure_local && place.projections.is_empty() {
+                    if let spark_mir::Rvalue::Aggregate(
+                        spark_mir::AggregateKind::Closure { func_def_id },
+                        operands,
+                    ) = rvalue
+                    {
+                        lambda_def_id = Some(*func_def_id);
+                        capture_operands = operands.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    let lambda_def_id = lambda_def_id?;
+
+    // Step 3: Check if this lambda wraps an async function with a poll entry.
+    let async_def_id = lambda_to_async.get(&lambda_def_id)?;
+    let poll_info = poll_fn_map.get(async_def_id)?;
+
+    // Step 4: Get the poll function's FuncId.
+    let poll_func_id = func_ids.get(&poll_info.poll_def_id)?;
+
+    // Step 5: Compute state layout.
+    let state_layout = ctx.layouts.async_state_layout_of(&poll_info.state_fields, table);
+    let state_size = state_layout.layout.size;
+
+    // Step 6: Allocate state via __spark_alloc_state(state_size).
+    let state_size_val = ctx.builder.ins().iconst(types::I64, i64::from(state_size));
+    let alloc_ref = module.declare_func_in_func(ctx.stubs.alloc_state, ctx.builder.func);
+    let alloc_call = ctx.builder.ins().call(alloc_ref, &[state_size_val]);
+    let state_ptr = ctx.builder.inst_results(alloc_call)[0];
+
+    // Step 7: Store capture values (async function params) into state struct fields.
+    // The state struct fields begin with __tag, then __param_<name> fields for each param.
+    // Captures correspond to the param fields in order.
+    let tag_offset = state_layout.field_offsets.first().copied().unwrap_or(0);
+
+    // Store __tag = 0 (initial segment).
+    let tag_zero = ctx.builder.ins().iconst(types::I64, 0);
+    ctx.builder
+        .ins()
+        .store(MemFlags::new(), tag_zero, state_ptr, i32::try_from(tag_offset).unwrap_or(0));
+
+    // Store each capture into its corresponding state field.
+    // Captures correspond to the async function's params (Local(1), Local(2), ...).
+    // State field names are __local_1, __local_2, etc.
+    for (i, cap_op) in capture_operands.iter().enumerate() {
+        let param_idx = i + 1; // Local(1), Local(2), ...
+        let field_name = format!("__local_{param_idx}");
+
+        // Find the state field by name.
+        let field_pos = poll_info.state_fields.iter().position(|(name, _)| name.as_str() == field_name);
+        let Some(field_idx) = field_pos else { continue };
+        if field_idx >= state_layout.field_offsets.len() {
+            continue;
+        }
+        let field_offset = state_layout.field_offsets[field_idx];
+        let field_ty = poll_info.state_fields[field_idx].1;
+
+        if let Some(val) = emit_rvalue::emit_operand(
+            ctx, cap_op, table, definitions, func_ids, thunk_ids, module,
+        ) {
+            if abi::is_scalar(field_ty, table) {
+                ctx.builder.ins().store(
+                    MemFlags::new(),
+                    val,
+                    state_ptr,
+                    i32::try_from(field_offset).unwrap_or(0),
+                );
+            } else {
+                // Aggregate capture: memcpy from the value address.
+                let field_layout = ctx.layouts.layout_of(field_ty, table);
+                let dest = ctx.builder.ins().iadd_imm(state_ptr, i64::from(field_offset));
+                let config = module.target_config();
+                ctx.builder.emit_small_memory_copy(
+                    config, dest, val, u64::from(field_layout.size), 1, 1, true, MemFlags::new(),
+                );
+            }
+        }
+    }
+
+    // Step 8: Get poll function pointer.
+    let poll_func_ref = module.declare_func_in_func(*poll_func_id, ctx.builder.func);
+    let poll_fn_ptr = ctx.builder.ins().func_addr(ctx.ptr_type, poll_func_ref);
+
+    // Step 9: Compute result_size and result_offset.
+    let dest_ty_id = ctx.local_type_id(destination.local);
+    let inner_ty = match table.resolve(dest_ty_id) {
+        Ty::Future { inner } => *inner,
+        _ => dest_ty_id,
+    };
+    let result_layout = ctx.layouts.layout_of(inner_ty, table);
+    let result_size_val = ctx.builder.ins().iconst(types::I64, i64::from(result_layout.size));
+
+    // Find __result field offset in the state struct.
+    let result_field_idx = poll_info
+        .state_fields
+        .iter()
+        .position(|(name, _)| name.as_str() == "__result")
+        .unwrap_or(2); // __result is typically field index 2
+    let result_offset = if result_field_idx < state_layout.field_offsets.len() {
+        state_layout.field_offsets[result_field_idx]
+    } else {
+        0
+    };
+    let result_offset_val = ctx.builder.ins().iconst(types::I64, i64::from(result_offset));
+
+    // Step 10: Call __spark_spawn_coop(poll_fn_ptr, state_ptr, state_size, result_size, result_offset) -> ptr.
+    let spawn_coop_ref = module.declare_func_in_func(ctx.stubs.spawn_coop, ctx.builder.func);
+    let spawn_call = ctx.builder.ins().call(
+        spawn_coop_ref,
+        &[poll_fn_ptr, state_ptr, state_size_val, result_size_val, result_offset_val],
+    );
+    let future_ptr = ctx.builder.inst_results(spawn_call)[0];
+    if destination.projections.is_empty() {
+        ctx.write_local(destination.local, future_ptr);
+    }
+
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+    Some(())
+}
+
 /// Emits an `await` call: passes the future pointer to `__spark_await` and
 /// loads the result value from the returned buffer pointer.
 #[allow(clippy::too_many_arguments)]
@@ -765,6 +963,45 @@ fn emit_await_call<M: Module>(
         if destination.projections.is_empty() {
             ctx.write_local(destination.local, result_val);
         }
+    }
+
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+}
+
+/// Emits a `__spark_try_poll` call: passes the future pointer to `__spark_try_poll`
+/// and stores the returned result pointer (null if pending, non-null if ready).
+#[allow(clippy::too_many_arguments)]
+fn emit_try_poll_call<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    args: &[Operand],
+    destination: &Place,
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) {
+    // args[0] is the future pointer (opaque i64/ptr).
+    let future_val = args.first().and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
+
+    let Some(future_ptr) = future_val else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    // Call __spark_try_poll(future_ptr) -> ptr (null = pending, non-null = result pointer)
+    let func_ref = module.declare_func_in_func(ctx.stubs.try_poll, ctx.builder.func);
+    let call = ctx.builder.ins().call(func_ref, &[future_ptr]);
+    let result_ptr = ctx.builder.inst_results(call)[0];
+
+    // Store the result pointer to the destination (the poll function checks for null).
+    if destination.projections.is_empty() {
+        ctx.write_local(destination.local, result_ptr);
     }
 
     let target_block = ctx.clif_block(target);
