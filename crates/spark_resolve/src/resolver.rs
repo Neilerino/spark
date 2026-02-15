@@ -46,8 +46,8 @@ pub struct Resolver {
     /// Per-module collected `DefId`s (`module_path` -> [(name, `def_id`, kind)]).
     /// Used to repopulate ribs during the resolution pass.
     module_defs: FxHashMap<ModulePath, Vec<(Symbol, DefId, DefinitionKind)>>,
-    /// Per-file import `DefId`s (`file_id` -> [(`local_name`, `def_id`)]).
-    file_imports: FxHashMap<FileId, Vec<(Symbol, DefId, DefinitionKind)>>,
+    /// Per-file import `DefId`s (`file_id` -> [(`local_name`, `def_id`, kind, span)]).
+    file_imports: FxHashMap<FileId, Vec<(Symbol, DefId, DefinitionKind, Span)>>,
     /// Built-in function definitions to inject into every module rib.
     builtin_defs: Vec<(Symbol, DefId, DefinitionKind)>,
 }
@@ -391,7 +391,14 @@ impl Resolver {
     }
 
     /// Collects import bindings for a file and stores resolved `DefId`s.
+    ///
+    /// Detects duplicate imports: if the same local name is imported from two
+    /// different modules, an `E0252` error is emitted. Re-importing the same
+    /// name from the same module is silently ignored (idempotent).
     fn collect_import_bindings(&mut self, file_id: FileId, ast: &Ast, _module_path: &ModulePath) {
+        // Track which names have been imported in this file to detect conflicts.
+        let mut imported_names: FxHashMap<Symbol, (ModulePath, Span)> = FxHashMap::default();
+
         for import_decl in &ast.imports {
             let path_segments: Vec<Symbol> =
                 import_decl.path.segments.iter().map(|s| s.name).collect();
@@ -407,6 +414,36 @@ impl Resolver {
             for import_item in &import_decl.items {
                 let original_name = import_item.name.name;
                 let local_name = import_item.alias.as_ref().map_or(original_name, |a| a.name);
+
+                // Check for duplicate import of the same local name
+                if let Some((prev_module, prev_span)) = imported_names.get(&local_name) {
+                    if *prev_module != target_module {
+                        self.diagnostics.push(
+                            Diagnostic::error(format!(
+                                "the name `{}` is imported from both `{}` and `{}`",
+                                local_name.as_str(),
+                                prev_module,
+                                target_module
+                            ))
+                            .with_code("E0252")
+                            .with_label(Label::primary(
+                                import_item.span,
+                                "conflicting import",
+                            ))
+                            .with_label(Label::secondary(
+                                *prev_span,
+                                "previously imported here",
+                            ))
+                            .with_help(format!(
+                                "use an alias: `{} as {}_alias`",
+                                local_name.as_str(),
+                                local_name.as_str()
+                            )),
+                        );
+                    }
+                    // Either way (same or different module), skip duplicate
+                    continue;
+                }
 
                 // Check if the name is exported from the target module
                 if !self.graph.is_exported(&target_module, original_name) {
@@ -427,10 +464,12 @@ impl Resolver {
                         .definitions
                         .get(def_id)
                         .map_or(DefinitionKind::Function, |info| info.kind.clone());
+                    imported_names
+                        .insert(local_name, (target_module.clone(), import_item.span));
                     self.file_imports
                         .entry(file_id)
                         .or_default()
-                        .push((local_name, def_id, kind));
+                        .push((local_name, def_id, kind, import_item.span));
                 }
             }
         }
@@ -497,12 +536,34 @@ impl Resolver {
             for &file_id in &module_info.files {
                 // Add imports for this file to the rib
                 if let Some(imports) = self.file_imports.get(&file_id).cloned() {
-                    for (local_name, def_id, kind) in &imports {
-                        if kind.is_type() {
-                            self.rib_stack.define_type(*local_name, *def_id);
-                        }
+                    for (local_name, def_id, kind, import_span) in &imports {
                         if kind.is_value() {
-                            self.rib_stack.define_value(*local_name, *def_id);
+                            if let Some(prev_id) =
+                                self.rib_stack.define_value(*local_name, *def_id)
+                            {
+                                self.warn_import_shadows_local(
+                                    *local_name,
+                                    *import_span,
+                                    prev_id,
+                                    module_path,
+                                );
+                            }
+                        }
+                        if kind.is_type() {
+                            if let Some(prev_id) =
+                                self.rib_stack.define_type(*local_name, *def_id)
+                            {
+                                // Only warn for type-only imports to avoid
+                                // double warnings for names in both namespaces
+                                if !kind.is_value() {
+                                    self.warn_import_shadows_local(
+                                        *local_name,
+                                        *import_span,
+                                        prev_id,
+                                        module_path,
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -1269,6 +1330,28 @@ impl Resolver {
         );
     }
 
+    /// Warns when an import shadows a local definition from the same module.
+    fn warn_import_shadows_local(
+        &mut self,
+        name: Symbol,
+        import_span: Span,
+        prev_def_id: DefId,
+        module_path: &ModulePath,
+    ) {
+        if let Some(prev_info) = self.definitions.get(prev_def_id) {
+            if prev_info.module == *module_path {
+                self.diagnostics.push(
+                    Diagnostic::warning(format!(
+                        "import `{}` shadows local definition",
+                        name.as_str()
+                    ))
+                    .with_label(Label::primary(import_span, "this import"))
+                    .with_label(Label::secondary(prev_info.span, "local definition here")),
+                );
+            }
+        }
+    }
+
     /// Reports an undefined value name error.
     fn error_undefined_name(&mut self, name: Symbol, span: Span) {
         self.diagnostics.push(
@@ -1644,6 +1727,148 @@ mod tests {
                         c: Int = b
                     }
                 }
+            }
+            "#,
+        );
+        assert!(!output.diagnostics.has_errors());
+    }
+
+    /// Helper: set up a multi-module resolver scenario.
+    ///
+    /// `modules` is a list of `(module_name, source_code, exports)` for dependency modules.
+    /// `main_source` is the source for the "main" module that imports from them.
+    fn resolve_multi_module(
+        modules: &[(&str, &str, &[&str])],
+        main_source: &str,
+    ) -> ResolverOutput {
+        use spark_lexer::Lexer;
+        use spark_parser::parse;
+
+        let mut asts = HashMap::new();
+        let mut graph = ModuleGraph::default();
+        let mut file_counter = 0u32;
+
+        for (mod_name, source, exports) in modules {
+            let file_id = FileId::new(file_counter);
+            file_counter += 1;
+
+            let mut lexer = Lexer::new(file_id, source);
+            let tokens = lexer.tokenize();
+            let (ast, _) = parse(tokens, file_id);
+
+            let module_path = ModulePath::from_single(spark_intern::sym(mod_name));
+            let mut module_info = ModuleInfo::new(module_path.clone());
+            module_info.files.push(file_id);
+            for &export_name in *exports {
+                module_info.exports.insert(spark_intern::sym(export_name));
+            }
+
+            graph.modules.insert(module_path.clone(), module_info);
+            graph.compilation_order.push(module_path);
+            asts.insert(file_id, ast);
+        }
+
+        let main_file_id = FileId::new(file_counter);
+        let mut lexer = Lexer::new(main_file_id, main_source);
+        let tokens = lexer.tokenize();
+        let (ast, _) = parse(tokens, main_file_id);
+
+        let main_module_path = ModulePath::from_single(spark_intern::sym("main"));
+        let mut main_info = ModuleInfo::new(main_module_path.clone());
+        main_info.files.push(main_file_id);
+
+        graph
+            .modules
+            .insert(main_module_path.clone(), main_info);
+        graph.compilation_order.push(main_module_path);
+        asts.insert(main_file_id, ast);
+
+        let input = ResolverInput { graph, asts };
+        crate::resolve(input)
+    }
+
+    #[test]
+    fn duplicate_import_from_different_modules_errors() {
+        let output = resolve_multi_module(
+            &[
+                ("mod_a", "fn isError(): Bool { return false }", &["isError"]),
+                ("mod_b", "fn isError(): Bool { return true }", &["isError"]),
+            ],
+            r#"
+            import mod_a { isError }
+            import mod_b { isError }
+
+            fn main(): Void {
+                isError()
+            }
+            "#,
+        );
+        assert!(output.diagnostics.has_errors());
+        let errors: Vec<_> = output
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_error())
+            .collect();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("imported from both"));
+    }
+
+    #[test]
+    fn same_import_twice_from_same_module_no_error() {
+        let output = resolve_multi_module(
+            &[("mod_a", "fn helper(): Void {}", &["helper"])],
+            r#"
+            import mod_a { helper }
+            import mod_a { helper }
+
+            fn main(): Void {
+                helper()
+            }
+            "#,
+        );
+        assert!(!output.diagnostics.has_errors());
+    }
+
+    #[test]
+    fn import_shadows_local_def_warns() {
+        let output = resolve_multi_module(
+            &[("mod_a", "fn doStuff(): Void {}", &["doStuff"])],
+            r#"
+            import mod_a { doStuff }
+
+            fn doStuff(): Void {}
+
+            fn main(): Void {
+                doStuff()
+            }
+            "#,
+        );
+        // Should not produce errors, but should produce a warning
+        assert!(!output.diagnostics.has_errors());
+        assert!(output.diagnostics.has_warnings());
+        let warnings: Vec<_> = output
+            .diagnostics
+            .iter()
+            .filter(|d| d.is_warning())
+            .collect();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].message.contains("shadows local definition"));
+    }
+
+    #[test]
+    fn aliased_import_avoids_conflict() {
+        let output = resolve_multi_module(
+            &[
+                ("mod_a", "fn isError(): Bool { return false }", &["isError"]),
+                ("mod_b", "fn isError(): Bool { return true }", &["isError"]),
+            ],
+            r#"
+            import mod_a { isError }
+            import mod_b { isError as isErrorB }
+
+            fn main(): Void {
+                isError()
+                isErrorB()
             }
             "#,
         );
