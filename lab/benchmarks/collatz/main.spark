@@ -1,0 +1,30 @@
+fn collatz_len(start: Int): Int {
+    n: Int! = start
+    steps: Int! = 0
+    loop {
+        if n == 1 {
+            break
+        }
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = 3 * n + 1
+        }
+        steps = steps + 1
+    }
+    return steps
+}
+
+fn main(): Int {
+    total: Int! = 0
+    n: Int! = 1
+    loop {
+        if n > 5000000 {
+            break
+        }
+        total = total + collatz_len(n)
+        n = n + 1
+    }
+    print(total)
+    return 0
+}

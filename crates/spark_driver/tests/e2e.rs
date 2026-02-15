@@ -235,6 +235,16 @@ fn string_len() {
     assert_output("string_len.spark", "5");
 }
 
+#[test]
+fn list_range() {
+    assert_output("list_range.spark", "5\n6\n5\n11\n5");
+}
+
+#[test]
+fn list_range_each() {
+    assert_output("list_range_each.spark", "0\n1\n2\n3\n4");
+}
+
 // ============================================================================
 // Match expressions
 // ============================================================================

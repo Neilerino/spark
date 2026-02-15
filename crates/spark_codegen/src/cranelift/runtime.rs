@@ -123,6 +123,8 @@ pub struct RuntimeStubs {
     pub channel_close: FuncId,
     /// `__spark_channel_rc_dec(ch: ptr)`
     pub channel_rc_dec: FuncId,
+    /// `__spark_list_from_range(start: i64, end: i64, inclusive: i8, step: i64) -> ptr`
+    pub list_from_range: FuncId,
 }
 
 impl RuntimeStubs {
@@ -132,13 +134,7 @@ impl RuntimeStubs {
         let ptr_type = module.target_config().pointer_type();
 
         Self {
-            string_new: declare_fn(
-                module,
-                "__spark_string_new",
-                &[],
-                Some(ptr_type),
-                call_conv,
-            ),
+            string_new: declare_fn(module, "__spark_string_new", &[], Some(ptr_type), call_conv),
             string_from_literal: declare_fn(
                 module,
                 "__spark_string_from_literal",
@@ -202,20 +198,8 @@ impl RuntimeStubs {
                 None,
                 call_conv,
             ),
-            rc_release: declare_fn(
-                module,
-                "__spark_rc_release",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
-            rc_inc: declare_fn(
-                module,
-                "__spark_rc_inc",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
+            rc_release: declare_fn(module, "__spark_rc_release", &[ptr_type], None, call_conv),
+            rc_inc: declare_fn(module, "__spark_rc_inc", &[ptr_type], None, call_conv),
             string_rc_dec: declare_fn(
                 module,
                 "__spark_string_rc_dec",
@@ -335,27 +319,9 @@ impl RuntimeStubs {
                 Some(types::I64),
                 call_conv,
             ),
-            print_int: declare_fn(
-                module,
-                "__spark_print_int",
-                &[types::I64],
-                None,
-                call_conv,
-            ),
-            print_string: declare_fn(
-                module,
-                "__spark_print_string",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
-            print_bool: declare_fn(
-                module,
-                "__spark_print_bool",
-                &[types::I8],
-                None,
-                call_conv,
-            ),
+            print_int: declare_fn(module, "__spark_print_int", &[types::I64], None, call_conv),
+            print_string: declare_fn(module, "__spark_print_string", &[ptr_type], None, call_conv),
+            print_bool: declare_fn(module, "__spark_print_bool", &[types::I8], None, call_conv),
             print_float: declare_fn(
                 module,
                 "__spark_print_float",
@@ -398,13 +364,7 @@ impl RuntimeStubs {
                 Some(ptr_type),
                 call_conv,
             ),
-            env_rc_dec: declare_fn(
-                module,
-                "__spark_env_rc_dec",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
+            env_rc_dec: declare_fn(module, "__spark_env_rc_dec", &[ptr_type], None, call_conv),
             list_sort: declare_fn(
                 module,
                 "__spark_list_sort",
@@ -436,7 +396,14 @@ impl RuntimeStubs {
             parallel_map: declare_fn(
                 module,
                 "__spark_parallel_map",
-                &[ptr_type, ptr_type, ptr_type, types::I64, types::I64, types::I8],
+                &[
+                    ptr_type,
+                    ptr_type,
+                    ptr_type,
+                    types::I64,
+                    types::I64,
+                    types::I8,
+                ],
                 Some(ptr_type),
                 call_conv,
             ),
@@ -522,6 +489,13 @@ impl RuntimeStubs {
                 "__spark_channel_rc_dec",
                 &[ptr_type],
                 None,
+                call_conv,
+            ),
+            list_from_range: declare_fn(
+                module,
+                "__spark_list_from_range",
+                &[types::I64, types::I64, types::I8, types::I64],
+                Some(ptr_type),
                 call_conv,
             ),
         }

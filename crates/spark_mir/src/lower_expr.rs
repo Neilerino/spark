@@ -366,6 +366,30 @@ pub fn lower_expr(
             lower_string_interp(parts, expr, fb, mir, type_table, defs)
         }
 
+        // ── List range ───────────────────────────────────────────
+        HirExprKind::ListRange { start, end, inclusive, step } => {
+            let start_local = lower_expr(start, fb, mir, type_table, defs);
+            let end_local = lower_expr(end, fb, mir, type_table, defs);
+            let step_operand = if let Some(step_expr) = step {
+                let step_local = lower_expr(step_expr, fb, mir, type_table, defs);
+                Operand::Copy(Place::from_local(step_local))
+            } else {
+                Operand::Constant(Constant::Int(1))
+            };
+            let temp = fb.fresh_temp(expr.ty, expr.span);
+            fb.push_assign(
+                Place::from_local(temp),
+                Rvalue::ListRange {
+                    start: Operand::Copy(Place::from_local(start_local)),
+                    end: Operand::Copy(Place::from_local(end_local)),
+                    inclusive: *inclusive,
+                    step: step_operand,
+                },
+                expr.span,
+            );
+            temp
+        }
+
         // ── Parallel iteration ────────────────────────────────────
         HirExprKind::ParallelForEach { list, callback, .. }
         | HirExprKind::ParallelMap { list, callback, .. } => {

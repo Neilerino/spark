@@ -425,10 +425,24 @@ fn lower_expr_kind(
             HirExprKind::Error
         }
 
-        ExprKind::Range { start, end, .. } | ExprKind::ListRange { start, end, .. } => {
+        ExprKind::Range { start, end, .. } => {
             let _ = lower_expr(start, table, definitions, resolutions, diagnostics, current_fn_ret);
             let _ = lower_expr(end, table, definitions, resolutions, diagnostics, current_fn_ret);
             HirExprKind::Error
+        }
+
+        ExprKind::ListRange { start, end, inclusive, step } => {
+            let start_hir = lower_expr(start, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let end_hir = lower_expr(end, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let step_hir = step.as_ref().map(|s| {
+                Box::new(lower_expr(s, table, definitions, resolutions, diagnostics, current_fn_ret))
+            });
+            HirExprKind::ListRange {
+                start: Box::new(start_hir),
+                end: Box::new(end_hir),
+                inclusive: *inclusive,
+                step: step_hir,
+            }
         }
 
         ExprKind::Error => HirExprKind::Error,

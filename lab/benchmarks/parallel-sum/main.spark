@@ -1,0 +1,28 @@
+fn main(): Int {
+    nums: List[Int]! = [0]
+    i: Int! = 1
+    loop {
+        if i >= 10000000 {
+            break
+        }
+        nums.append(i)
+        i = i + 1
+    }
+
+    results: List[Int] = nums parallel each via (n: Int): Int {
+        return (n * n) % 1000
+    }
+
+    total: Int! = 0
+    j: Int! = 0
+    loop {
+        if j >= results.len() {
+            break
+        }
+        total = total + results[j]
+        j = j + 1
+    }
+
+    print(total)
+    return 0
+}

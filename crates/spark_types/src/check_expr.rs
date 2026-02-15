@@ -561,11 +561,38 @@ fn check_expr_inner(
             table.intern(Ty::List(ret_ty))
         }
 
-        ExprKind::Range { start, end, .. } | ExprKind::ListRange { start, end, .. } => {
+        ExprKind::Range { start, end, .. } => {
             let _ = check_expr(start, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
             let _ = check_expr(end, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            // Range type — simplified for now
+            // Bare range type — not yet supported
             TypeId::ERROR
+        }
+
+        ExprKind::ListRange { start, end, step, .. } => {
+            let start_ty = check_expr(start, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let end_ty = check_expr(end, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            if let Some(s) = step {
+                let step_ty = check_expr(s, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                if step_ty != builtins.int && !step_ty.is_error() {
+                    diagnostics.push(
+                        Diagnostic::error("list range step must be `Int`")
+                            .with_label(Label::primary(s.span, "expected `Int`")),
+                    );
+                }
+            }
+            if start_ty != builtins.int && !start_ty.is_error() {
+                diagnostics.push(
+                    Diagnostic::error("list range start must be `Int`")
+                        .with_label(Label::primary(start.span, "expected `Int`")),
+                );
+            }
+            if end_ty != builtins.int && !end_ty.is_error() {
+                diagnostics.push(
+                    Diagnostic::error("list range end must be `Int`")
+                        .with_label(Label::primary(end.span, "expected `Int`")),
+                );
+            }
+            table.intern(Ty::List(builtins.int))
         }
 
         ExprKind::Partial { callee, args } => {

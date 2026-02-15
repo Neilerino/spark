@@ -1,0 +1,27 @@
+fn main(): Int {
+    nums: List[Int]! = [1]
+    i: Int! = 2
+    loop {
+        if i > 1000000 {
+            break
+        }
+        nums.append(i)
+        i = i + 1
+    }
+
+    squared: List[Int] = nums each via (x: Int): Int { x * x }
+    modded: List[Int] = squared each via (x: Int): Int { x % 1000 }
+
+    total: Int! = 0
+    j: Int! = 0
+    loop {
+        if j >= modded.len() {
+            break
+        }
+        total = total + modded[j]
+        j = j + 1
+    }
+
+    print(total)
+    return 0
+}
