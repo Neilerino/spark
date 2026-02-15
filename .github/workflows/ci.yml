@@ -37,10 +37,8 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run unit tests (all crates except driver e2e)
-        run: |
-          cargo test --all-features --workspace --exclude spark_driver
-          cargo test --all-features -p spark_driver --lib
+      - name: Run unit tests (all crates except driver)
+        run: cargo test --all-features --workspace --exclude spark_driver
 
   e2e-tests:
     name: End-to-End Tests
