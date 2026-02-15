@@ -145,7 +145,15 @@ pub fn analyze_workspace(
         file_id_to_uri.insert(file_id, uri.clone());
         uri_to_file_id.insert(uri.clone(), file_id);
         ropes.insert(file_id, Rope::from_str(source));
-        file_paths.insert(file_id, file_path);
+
+        // Store relative path for module resolution (mirrors spark_driver).
+        // The module resolver uses file paths relative to root_path to
+        // compute module paths (e.g., "mymod/mymod.spark" → module "mymod").
+        let relative_path = file_path
+            .strip_prefix(root_path)
+            .unwrap_or(&file_path)
+            .to_path_buf();
+        file_paths.insert(file_id, relative_path);
 
         // Phase 1: Lex
         let tokens = Lexer::new(file_id, source).tokenize();
@@ -397,6 +405,29 @@ mod tests {
         let uri = file_path_to_uri(&path).expect("should create URI");
         let back = uri.to_file_path().expect("should convert back");
         assert_eq!(back, path);
+    }
+
+    #[test]
+    fn cross_file_import_resolves() {
+        // Mirrors the multimod test project: main.spark imports from mymod.
+        let output = analyze_workspace_sources(&[
+            ("main.spark", "import mymod { hello }\nfn main(): Void { hello() }"),
+            ("mymod/mymod.spark", "module mymod\npub fn hello(): Void { }"),
+        ]);
+
+        // Import should resolve without errors (no "module not found" or
+        // "not exported" diagnostics).
+        let has_import_error = output.diagnostics_by_uri.values().any(|diags| {
+            diags.iter().any(|d| {
+                d.message.contains("cannot find module")
+                    || d.message.contains("not exported")
+            })
+        });
+        assert!(
+            !has_import_error,
+            "Cross-file import should resolve without errors. Diagnostics: {:?}",
+            output.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 
     #[test]
