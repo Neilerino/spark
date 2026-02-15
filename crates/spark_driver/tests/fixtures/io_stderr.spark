@@ -1,0 +1,7 @@
+import spark.io { writeStderr }
+
+fn main(): Int {
+    writeStderr("error output")
+    print("normal output")
+    return 0
+}

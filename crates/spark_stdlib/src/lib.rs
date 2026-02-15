@@ -134,4 +134,16 @@ mod tests {
         let sources = stdlib_sources();
         assert!(sources[2].source.contains("extern fn __spark_io_read_file"));
     }
+
+    #[test]
+    fn io_source_contains_read_line() {
+        let sources = stdlib_sources();
+        assert!(sources[2].source.contains("pub fn readLine"));
+    }
+
+    #[test]
+    fn io_source_contains_write_stderr() {
+        let sources = stdlib_sources();
+        assert!(sources[2].source.contains("pub fn writeStderr"));
+    }
 }

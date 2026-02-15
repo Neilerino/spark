@@ -275,6 +275,42 @@ pub unsafe extern "C" fn __spark_io_list_dir(path: *mut u8) -> *mut u8 {
     }
 }
 
+/// Reads a single line from standard input.
+///
+/// Returns the line with trailing newline stripped (Python `input()` semantics).
+/// Returns an empty string on EOF or error (with error stored in `LAST_IO_ERROR`).
+#[no_mangle]
+pub extern "C" fn __spark_io_read_line() -> *mut u8 {
+    let mut buf = String::new();
+    match std::io::stdin().read_line(&mut buf) {
+        Ok(0) => {
+            // EOF
+            clear_error();
+            rust_str_to_spark("")
+        }
+        Ok(_) => {
+            clear_error();
+            let trimmed = buf.trim_end_matches('\n').trim_end_matches('\r');
+            rust_str_to_spark(trimmed)
+        }
+        Err(e) => {
+            set_error(format!("{e}"));
+            rust_str_to_spark("")
+        }
+    }
+}
+
+/// Writes a line of text to standard error.
+///
+/// # Safety
+///
+/// `text` must be a valid `SparkString` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn __spark_io_write_stderr(text: *mut u8) {
+    let text_str = unsafe { read_spark_str(text) };
+    eprintln!("{text_str}");
+}
+
 /// Returns the last IO error message as a new `SparkString`.
 #[no_mangle]
 pub extern "C" fn __spark_io_error() -> *mut u8 {
@@ -427,6 +463,18 @@ mod tests {
             let code = __spark_io_delete_file(path);
             assert_eq!(code, 1, "should return NotFound error code");
         }
+    }
+
+    #[test]
+    fn write_stderr_basic() {
+        // Smoke test: calling write_stderr with a valid SparkString should not panic.
+        let text = make_spark_str("stderr test message");
+        unsafe {
+            __spark_io_write_stderr(text);
+        }
+        // If we get here without panicking, the function works.
+        // The actual output goes to stderr which is hard to capture in unit tests;
+        // the E2E test (io_stderr.spark) validates the full pipeline.
     }
 
     #[test]

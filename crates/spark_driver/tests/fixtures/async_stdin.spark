@@ -1,0 +1,19 @@
+import spark.io { readLine }
+
+async fn readInput(): String {
+    return readLine()
+}
+
+async fn compute(x: Int): Int {
+    return x * 2
+}
+
+fn main(): Int {
+    f1: Future[Int] = spawn { compute(21) }
+    f2: Future[String] = spawn { readInput() }
+    result: Int = await f1
+    input: String = await f2
+    print(result)
+    print(input)
+    return 0
+}

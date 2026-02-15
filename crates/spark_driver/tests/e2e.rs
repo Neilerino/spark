@@ -8,8 +8,9 @@
 //! (`/tmp/spark_output.o`) during linking.
 
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
+use std::time::Duration;
 
 /// Serialize all E2E tests to avoid races on the shared `/tmp/spark_output.o`.
 static LOCK: Mutex<()> = Mutex::new(());
@@ -110,6 +111,84 @@ fn assert_compile_error(fixture: &str, expected_fragment: &str) {
         result.stderr.contains(expected_fragment),
         "expected stderr to contain '{expected_fragment}' for {fixture}, got:\n{}",
         result.stderr
+    );
+}
+
+/// Runs `spark run <fixture>` with piped stdin and captures output.
+///
+/// Writes `stdin_input` to the child's stdin, then waits up to 5 seconds for
+/// the process to exit. Panics on timeout to prevent CI deadlocks.
+fn run_spark_with_stdin(fixture: &str, stdin_input: &str) -> SparkOutput {
+    let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(fixture);
+
+    assert!(
+        fixture_path.exists(),
+        "fixture not found: {}",
+        fixture_path.display()
+    );
+
+    let spark_bin = env!("CARGO_BIN_EXE_spark");
+
+    let mut child = Command::new(spark_bin)
+        .arg("run")
+        .arg(&fixture_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn spark binary");
+
+    // Write stdin and drop handle to signal EOF.
+    {
+        use std::io::Write;
+        let stdin_handle = child.stdin.take().expect("failed to open stdin");
+        let mut writer = std::io::BufWriter::new(stdin_handle);
+        writer
+            .write_all(stdin_input.as_bytes())
+            .expect("failed to write to stdin");
+        // Handle dropped here, closing the pipe.
+    }
+
+    // Wait with a 5-second timeout.
+    let timeout = Duration::from_secs(5);
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let output = child.wait_with_output().expect("failed to read output");
+                return SparkOutput {
+                    stdout: String::from_utf8_lossy(&output.stdout).into(),
+                    stderr: String::from_utf8_lossy(&output.stderr).into(),
+                    exit_code: status.code().unwrap_or(-1),
+                };
+            }
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    panic!("spark process timed out after {timeout:?} for fixture {fixture}");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => panic!("error waiting for spark process: {e}"),
+        }
+    }
+}
+
+/// Runs a fixture with piped stdin and asserts stdout matches expected output.
+fn assert_output_with_stdin(fixture: &str, stdin_input: &str, expected_stdout: &str) {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let result = run_spark_with_stdin(fixture, stdin_input);
+    assert_eq!(
+        result.exit_code, 0,
+        "fixture {fixture} exited with code {}:\n{}",
+        result.exit_code, result.stderr
+    );
+    assert_eq!(
+        result.stdout.trim(),
+        expected_stdout.trim(),
+        "stdout mismatch for {fixture}"
     );
 }
 
@@ -570,5 +649,35 @@ fn multimod_using_import() {
         result.stdout.trim(),
         "hello\nhelper",
         "stdout mismatch for multimod project"
+    );
+}
+
+// ============================================================================
+// Stdin / Stderr I/O
+// ============================================================================
+
+#[test]
+fn async_stdin() {
+    assert_output_with_stdin("async_stdin.spark", "hello\n", "42\nhello");
+}
+
+#[test]
+fn io_stderr() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let result = run_spark("io_stderr.spark");
+    assert_eq!(
+        result.exit_code, 0,
+        "fixture io_stderr.spark exited with code {}:\n{}",
+        result.exit_code, result.stderr
+    );
+    assert_eq!(
+        result.stdout.trim(),
+        "normal output",
+        "stdout mismatch for io_stderr.spark"
+    );
+    assert!(
+        result.stderr.contains("error output"),
+        "stderr should contain 'error output', got:\n{}",
+        result.stderr
     );
 }

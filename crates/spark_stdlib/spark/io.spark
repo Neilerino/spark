@@ -22,6 +22,8 @@ extern fn __spark_io_delete_file(path: String): Int
 extern fn __spark_io_create_dir(path: String): Int
 extern fn __spark_io_create_dir_all(path: String): Int
 extern fn __spark_io_list_dir(path: String): String
+extern fn __spark_io_read_line(): String
+extern fn __spark_io_write_stderr(text: String): Void
 extern fn __spark_io_error(): String
 
 // =============================================================================
@@ -96,4 +98,20 @@ pub fn createDirAll(path: String): IoError {
 /// Returns empty string on error; check error() for details.
 pub fn listDir(path: String): String {
     return __spark_io_list_dir(path)
+}
+
+// =============================================================================
+// Standard I/O
+// =============================================================================
+
+/// Reads a single line from standard input (blocking).
+/// Returns the line with trailing newline stripped.
+/// Returns empty string on EOF or error.
+pub fn readLine(): String {
+    return __spark_io_read_line()
+}
+
+/// Writes a line of text to standard error.
+pub fn writeStderr(text: String): Void {
+    __spark_io_write_stderr(text)
 }
