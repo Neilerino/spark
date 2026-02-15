@@ -78,7 +78,7 @@ fn collect_function(
     } else {
         DefinitionKind::Function
     };
-    if let Some(def_id) = find_def_by_name_and_kind(func.name.name, &expected_kind, definitions) {
+    if let Some(def_id) = find_item_def(func.name.span, func.name.name, &expected_kind, resolutions, definitions) {
         table.set_def_type(def_id, fn_type);
 
         // Store generic param list for this function
@@ -104,7 +104,7 @@ fn collect_struct(
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
-    if let Some(def_id) = find_def_by_name_and_kind(struct_def.name.name, &DefinitionKind::Struct, definitions) {
+    if let Some(def_id) = find_item_def(struct_def.name.span, struct_def.name.name, &DefinitionKind::Struct, resolutions, definitions) {
         // Register generic parameter types before lowering field types.
         let generic_param_def_ids = collect_generic_params(&struct_def.generics, table, resolutions);
 
@@ -140,7 +140,7 @@ fn collect_enum(
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
-    if let Some(def_id) = find_def_by_name_and_kind(enum_def.name.name, &DefinitionKind::Enum, definitions) {
+    if let Some(def_id) = find_item_def(enum_def.name.span, enum_def.name.name, &DefinitionKind::Enum, resolutions, definitions) {
         // Register generic parameter types before lowering variant field types.
         let generic_param_def_ids = collect_generic_params(&enum_def.generics, table, resolutions);
 
@@ -188,7 +188,7 @@ fn collect_const(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     let ty = lower_type_expr(&const_def.ty, table, builtins, definitions, resolutions, diagnostics);
-    if let Some(def_id) = find_def_by_name_and_kind(const_def.name.name, &DefinitionKind::Const, definitions) {
+    if let Some(def_id) = find_item_def(const_def.name.span, const_def.name.name, &DefinitionKind::Const, resolutions, definitions) {
         table.set_def_type(def_id, ty);
     }
 }
@@ -203,7 +203,7 @@ fn collect_type_alias(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     let ty = lower_type_expr(&alias_def.ty, table, builtins, definitions, resolutions, diagnostics);
-    if let Some(def_id) = find_def_by_name_and_kind(alias_def.name.name, &DefinitionKind::TypeAlias, definitions) {
+    if let Some(def_id) = find_item_def(alias_def.name.span, alias_def.name.name, &DefinitionKind::TypeAlias, resolutions, definitions) {
         table.set_def_type(def_id, ty);
     }
 }
@@ -218,7 +218,7 @@ fn collect_type_def(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     let ty = lower_type_expr(&type_def.ty, table, builtins, definitions, resolutions, diagnostics);
-    if let Some(def_id) = find_def_by_name_and_kind(type_def.name.name, &DefinitionKind::TypeDef, definitions) {
+    if let Some(def_id) = find_item_def(type_def.name.span, type_def.name.name, &DefinitionKind::TypeDef, resolutions, definitions) {
         table.set_def_type(def_id, ty);
     }
 }
@@ -232,11 +232,11 @@ fn collect_interface(
     table: &mut TypeTable,
     _builtins: &BuiltinTypes,
     definitions: &DefinitionTable,
-    _resolutions: Option<&ResolutionMap>,
+    resolutions: Option<&ResolutionMap>,
     _diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     // Register the interface type itself
-    if let Some(def_id) = find_def_by_name_and_kind(iface.name.name, &DefinitionKind::Interface, definitions) {
+    if let Some(def_id) = find_item_def(iface.name.span, iface.name.name, &DefinitionKind::Interface, resolutions, definitions) {
         let iface_type = table.intern(Ty::Param(def_id));
         table.set_def_type(def_id, iface_type);
     }
@@ -423,6 +423,25 @@ fn collect_generic_params(
 }
 
 // === Helper functions for finding DefIds ===
+
+/// Finds the `DefId` for a top-level item, preferring the resolver's binding
+/// map (which is file-scoped and correct in multi-file workspaces) and falling
+/// back to a name+kind scan for single-file tests without resolution data.
+fn find_item_def(
+    name_span: spark_span::Span,
+    name: spark_intern::Symbol,
+    kind: &DefinitionKind,
+    resolutions: Option<&ResolutionMap>,
+    definitions: &DefinitionTable,
+) -> Option<DefId> {
+    // Prefer the resolution map — it already resolved this name to the
+    // correct per-file DefId during name resolution.
+    if let Some(def_id) = resolutions.and_then(|r| r.get_binding(name_span)) {
+        return Some(def_id);
+    }
+    // Fallback: linear scan by name (works for single-file tests).
+    find_def_by_name_and_kind(name, kind, definitions)
+}
 
 /// Finds a definition by name and kind in the definition table.
 fn find_def_by_name_and_kind(

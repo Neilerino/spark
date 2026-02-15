@@ -322,10 +322,11 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
 fn find_field_at_offset(
     table: &spark_types::TypeTable,
     offset: u32,
+    file_id: spark_span::FileId,
 ) -> Option<(spark_span::Span, spark_resolve::DefId)> {
     table
         .field_resolutions()
-        .filter(|(span, _)| span.contains(offset))
+        .filter(|(span, _)| span.file == file_id && span.contains(offset))
         .min_by_key(|(span, _)| span.end - span.start)
         .map(|(span, def_id)| (*span, *def_id))
 }
@@ -757,7 +758,8 @@ impl LanguageServer for Backend {
                 def_id
             } else {
                 let table = analysis.type_table.as_ref()?;
-                let (_field_span, field_def_id) = find_field_at_offset(table, offset)?;
+                let (_field_span, field_def_id) =
+                    find_field_at_offset(table, offset, analysis.file_id)?;
                 field_def_id
             };
 
@@ -790,7 +792,7 @@ impl LanguageServer for Backend {
                 result
             } else {
                 let table = analysis.type_table.as_ref()?;
-                find_field_at_offset(table, offset)?
+                find_field_at_offset(table, offset, analysis.file_id)?
             };
 
             let content = format_hover(analysis, def_id)?;
@@ -1302,7 +1304,7 @@ mod tests {
         let x_offset = (source.len() - 3) as u32;
         // Normal resolution won't find it, but field resolution fallback should.
         let table = analysis.type_table.as_ref().expect("type table should exist");
-        let field_result = find_field_at_offset(table, x_offset);
+        let field_result = find_field_at_offset(table, x_offset, analysis.file_id);
         assert!(field_result.is_some(), "field resolution should find x");
         let (_span, def_id) = field_result.unwrap();
         let hover = format_hover(&analysis, def_id);
