@@ -1,0 +1,32 @@
+fn is_prime(n: Int): Bool {
+    if n < 2 {
+        return false
+    }
+    i: Int! = 2
+    loop {
+        if i * i > n {
+            break
+        }
+        if n % i == 0 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fn main(): Int {
+    count: Int! = 0
+    n: Int! = 2
+    loop {
+        if n > 2000000 {
+            break
+        }
+        if is_prime(n) {
+            count = count + 1
+        }
+        n = n + 1
+    }
+    print(count)
+    return 0
+}
