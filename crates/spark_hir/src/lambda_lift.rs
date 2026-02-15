@@ -188,6 +188,13 @@ fn walk_expr(
                 walk_expr(e, lifted, definitions, table, counter, diagnostics);
             }
         }
+        HirExprKind::ListRange { start, end, step, .. } => {
+            walk_expr(start, lifted, definitions, table, counter, diagnostics);
+            walk_expr(end, lifted, definitions, table, counter, diagnostics);
+            if let Some(s) = step {
+                walk_expr(s, lifted, definitions, table, counter, diagnostics);
+            }
+        }
         HirExprKind::MapLit(pairs) => {
             for (k, v) in pairs {
                 walk_expr(k, lifted, definitions, table, counter, diagnostics);
@@ -541,6 +548,13 @@ fn collect_captures_walk(
         | HirExprKind::TupleLit(elems) => {
             for e in elems {
                 collect_captures_walk(e, param_defs, definitions, captures, seen);
+            }
+        }
+        HirExprKind::ListRange { start, end, step, .. } => {
+            collect_captures_walk(start, param_defs, definitions, captures, seen);
+            collect_captures_walk(end, param_defs, definitions, captures, seen);
+            if let Some(s) = step {
+                collect_captures_walk(s, param_defs, definitions, captures, seen);
             }
         }
         HirExprKind::MapLit(pairs) => {

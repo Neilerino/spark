@@ -1,0 +1,6 @@
+fn main(): Int {
+    [0..5] each (i: Int): Void {
+        print(i)
+    }
+    return 0
+}

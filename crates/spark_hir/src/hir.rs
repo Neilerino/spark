@@ -173,6 +173,17 @@ pub enum HirExprKind {
     },
     /// List literal: `[a, b, c]`.
     ListLit(Vec<HirExpr>),
+    /// List range: `[start..end]`, `[start..=end]`, `[start..end:step]`.
+    ListRange {
+        /// Range start.
+        start: Box<HirExpr>,
+        /// Range end.
+        end: Box<HirExpr>,
+        /// Whether the range is inclusive (`..=`).
+        inclusive: bool,
+        /// Optional step expression.
+        step: Option<Box<HirExpr>>,
+    },
     /// Map literal: `{k: v, ...}`.
     MapLit(Vec<(HirExpr, HirExpr)>),
     /// Set literal: `{a, b, c}`.

@@ -111,6 +111,8 @@ pub struct RuntimeStubs {
     pub spawn_coop: FuncId,
     /// `__spark_try_poll(future_ptr) -> ptr`
     pub try_poll: FuncId,
+    /// `__spark_list_from_range(start: i64, end: i64, inclusive: i8, step: i64) -> ptr`
+    pub list_from_range: FuncId,
 }
 
 impl RuntimeStubs {
@@ -467,6 +469,13 @@ impl RuntimeStubs {
                 module,
                 "__spark_try_poll",
                 &[ptr_type],
+                Some(ptr_type),
+                call_conv,
+            ),
+            list_from_range: declare_fn(
+                module,
+                "__spark_list_from_range",
+                &[types::I64, types::I64, types::I8, types::I64],
                 Some(ptr_type),
                 call_conv,
             ),

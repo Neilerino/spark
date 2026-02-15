@@ -150,6 +150,11 @@ fn collect_used_in_rvalue(rvalue: &spark_mir::Rvalue, used: &mut FxHashSet<Local
                 collect_used_in_operand(op, used);
             }
         }
+        spark_mir::Rvalue::ListRange { start, end, step, .. } => {
+            collect_used_in_operand(start, used);
+            collect_used_in_operand(end, used);
+            collect_used_in_operand(step, used);
+        }
         spark_mir::Rvalue::Cast { operand, .. } => collect_used_in_operand(operand, used),
     }
 }
