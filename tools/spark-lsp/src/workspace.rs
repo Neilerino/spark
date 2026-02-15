@@ -22,6 +22,65 @@ use spark_types::{TypeCheckerInput, TypeTable};
 
 use crate::document;
 
+/// Scans file URIs for files named `main.spark` and returns their parent
+/// directories as project roots.
+///
+/// When the workspace root encompasses multiple projects (e.g., a monorepo),
+/// each sub-project with a `main.spark` is treated as its own root for
+/// module path computation. This ensures `import mymod { hello }` resolves
+/// correctly regardless of the workspace root directory.
+fn find_project_roots(files: &[(Url, String)]) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for (uri, _) in files {
+        if let Ok(path) = uri.to_file_path() {
+            if path.file_name().is_some_and(|n| n == "main.spark") {
+                if let Some(parent) = path.parent() {
+                    roots.push(parent.to_path_buf());
+                }
+            }
+        }
+    }
+    // Sort by path length descending so the most specific root is checked first.
+    roots.sort_by_key(|b| std::cmp::Reverse(b.as_os_str().len()));
+    roots
+}
+
+/// Finds the most specific project root that is an ancestor of `file_path`.
+///
+/// Falls back to `ws_root` if no project root matches.
+fn effective_root_for_file<'a>(
+    file_path: &Path,
+    project_roots: &'a [PathBuf],
+    ws_root: &'a Path,
+) -> &'a Path {
+    for root in project_roots {
+        if file_path.starts_with(root) {
+            return root;
+        }
+    }
+    ws_root
+}
+
+/// Detects if a file is inside a `spark_stdlib` directory and returns its
+/// path relative to the stdlib root (e.g., `spark/math.spark`).
+///
+/// Returns `None` if the file is not a stdlib file.
+fn stdlib_relative_path(file_path: &Path) -> Option<PathBuf> {
+    let components: Vec<_> = file_path.components().collect();
+    for (i, component) in components.iter().enumerate() {
+        if let std::path::Component::Normal(s) = component {
+            if **s == *"spark_stdlib" {
+                // Take everything after "spark_stdlib/"
+                let remainder: PathBuf = components[i + 1..].iter().collect();
+                if !remainder.as_os_str().is_empty() {
+                    return Some(remainder);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Workspace-level state shared across all documents.
 ///
 /// Tracks the project root, file ID mappings, and source text for
@@ -135,6 +194,13 @@ pub fn analyze_workspace(
     let mut asts = HashMap::new();
     let mut file_paths = HashMap::new();
 
+    // Detect project roots (directories containing main.spark) so that
+    // module paths are computed relative to the correct root.
+    let project_roots = find_project_roots(files);
+
+    // Track whether on-disk stdlib files were found.
+    let mut found_stdlib_on_disk = false;
+
     for (uri, source) in files {
         let file_path = uri
             .to_file_path()
@@ -146,13 +212,23 @@ pub fn analyze_workspace(
         uri_to_file_id.insert(uri.clone(), file_id);
         ropes.insert(file_id, Rope::from_str(source));
 
-        // Store relative path for module resolution (mirrors spark_driver).
-        // The module resolver uses file paths relative to root_path to
-        // compute module paths (e.g., "mymod/mymod.spark" → module "mymod").
-        let relative_path = file_path
-            .strip_prefix(root_path)
-            .unwrap_or(&file_path)
-            .to_path_buf();
+        // Compute relative path for module resolution (mirrors spark_driver).
+        // - Stdlib files inside a spark_stdlib directory get paths like
+        //   "spark/math.spark" so their module paths match the canonical names.
+        // - Other files use the nearest project root (directory with main.spark)
+        //   so that e.g. "mymod/mymod.spark" → module "mymod".
+        #[allow(clippy::option_if_let_else)] // closure can't mutate found_stdlib_on_disk
+        let relative_path = if let Some(stdlib_rel) = stdlib_relative_path(&file_path) {
+            found_stdlib_on_disk = true;
+            stdlib_rel
+        } else {
+            let effective_root =
+                effective_root_for_file(&file_path, &project_roots, root_path);
+            file_path
+                .strip_prefix(effective_root)
+                .unwrap_or(&file_path)
+                .to_path_buf()
+        };
         file_paths.insert(file_id, relative_path);
 
         // Phase 1: Lex
@@ -162,6 +238,25 @@ pub fn analyze_workspace(
         let (ast, parse_diags) = parse(tokens, file_id);
         all_diagnostics.extend(parse_diags);
         asts.insert(file_id, ast);
+    }
+
+    // Inject stdlib from embedded sources if not found on disk.
+    // This ensures `import spark.math { sqrt }` works in any workspace.
+    if !found_stdlib_on_disk {
+        for stdlib_src in spark_stdlib::stdlib_sources() {
+            let file_id = source_map.add_file(stdlib_src.path, stdlib_src.source);
+            let uri = Url::parse(&format!("spark-stdlib:///{}", stdlib_src.path))
+                .expect("valid synthetic URI");
+            file_id_to_uri.insert(file_id, uri.clone());
+            uri_to_file_id.insert(uri, file_id);
+            ropes.insert(file_id, Rope::from_str(stdlib_src.source));
+            file_paths.insert(file_id, PathBuf::from(stdlib_src.path));
+
+            let tokens = Lexer::new(file_id, stdlib_src.source).tokenize();
+            let (ast, parse_diags) = parse(tokens, file_id);
+            all_diagnostics.extend(parse_diags);
+            asts.insert(file_id, ast);
+        }
     }
 
     // Phase 3: Module resolution
@@ -365,12 +460,21 @@ mod tests {
         assert!(files.iter().any(|p| p.ends_with("utils.spark")));
     }
 
+    /// Counts URIs with the `file` scheme (excludes injected stdlib).
+    fn count_file_uris(map: &HashMap<Url, impl std::any::Any>) -> usize {
+        map.keys().filter(|u| u.scheme() == "file").count()
+    }
+
     #[test]
     fn single_file_analysis_works() {
         let output = analyze_workspace_sources(&[
             ("main.spark", "fn main(): Void { x: Int = 42\nx }"),
         ]);
-        assert_eq!(output.file_id_to_uri.len(), 1);
+        // 1 user file (stdlib files are also present but use synthetic URIs).
+        let file_count = output.file_id_to_uri.values()
+            .filter(|u| u.scheme() == "file")
+            .count();
+        assert_eq!(file_count, 1);
         assert!(output.type_table.is_some());
     }
 
@@ -380,8 +484,12 @@ mod tests {
             ("main.spark", "fn main(): Void { }"),
             ("utils.spark", "fn helper(): Int { return 1 }"),
         ]);
-        assert_eq!(output.file_id_to_uri.len(), 2);
-        assert_eq!(output.resolved.asts.len(), 2);
+        let file_count = output.file_id_to_uri.values()
+            .filter(|u| u.scheme() == "file")
+            .count();
+        assert_eq!(file_count, 2);
+        // Resolved asts include user files + stdlib.
+        assert!(output.resolved.asts.len() >= 2);
     }
 
     #[test]
@@ -391,11 +499,12 @@ mod tests {
             ("bad.spark", "fn broken(): Int { }"),  // missing return value
         ]);
 
-        // Each file should have its own diagnostics entry
+        // Each user file should have its own diagnostics entry.
+        let user_diag_count = count_file_uris(&output.diagnostics_by_uri);
         assert_eq!(
-            output.diagnostics_by_uri.len(),
+            user_diag_count,
             2,
-            "Expected diagnostics entry for each file"
+            "Expected diagnostics entry for each user file"
         );
     }
 
@@ -441,5 +550,110 @@ mod tests {
 
         let files = discover_spark_files(root);
         assert_eq!(files.len(), 1);
+    }
+
+    #[test]
+    fn stdlib_import_resolves() {
+        // Verifies that stdlib modules are injected and resolvable
+        // when no on-disk stdlib is present.
+        let output = analyze_workspace_sources(&[
+            ("main.spark", "import spark.math { sqrt }\nfn main(): Void { sqrt(4.0) }"),
+        ]);
+
+        let has_module_error = output.diagnostics_by_uri.values().any(|diags| {
+            diags.iter().any(|d| {
+                d.message.contains("cannot find module")
+                    || d.message.contains("not exported")
+            })
+        });
+        assert!(
+            !has_module_error,
+            "stdlib import should resolve without errors. Diagnostics: {:?}",
+            output.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn project_root_module_paths() {
+        // Simulates a monorepo layout where the workspace root is a parent
+        // directory containing a sub-project with main.spark.
+        // Files should get module paths relative to the sub-project root,
+        // not the workspace root.
+        let tmp = TempDir::new().expect("failed to create temp dir");
+        let root = tmp.path();
+
+        // Create a sub-project: root/subproject/main.spark imports mymod
+        let project_dir = root.join("subproject");
+        fs::create_dir_all(project_dir.join("mymod")).unwrap();
+        fs::write(
+            project_dir.join("main.spark"),
+            "import mymod { greet }\nfn main(): Void { greet() }",
+        ).unwrap();
+        fs::write(
+            project_dir.join("mymod/mymod.spark"),
+            "module mymod\npub fn greet(): Void { }",
+        ).unwrap();
+
+        // Build file list with URIs and sources
+        let files: Vec<(Url, String)> = vec![
+            (
+                Url::from_file_path(project_dir.join("main.spark")).unwrap(),
+                "import mymod { greet }\nfn main(): Void { greet() }".to_string(),
+            ),
+            (
+                Url::from_file_path(project_dir.join("mymod/mymod.spark")).unwrap(),
+                "module mymod\npub fn greet(): Void { }".to_string(),
+            ),
+        ];
+
+        // Analyze with the parent as workspace root (not the project dir).
+        let output = analyze_workspace(&files, root);
+
+        let has_import_error = output.diagnostics_by_uri.values().any(|diags| {
+            diags.iter().any(|d| {
+                d.message.contains("cannot find module")
+                    || d.message.contains("not exported")
+            })
+        });
+        assert!(
+            !has_import_error,
+            "Import should resolve when workspace root is a parent of the project. Diagnostics: {:?}",
+            output.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn stdlib_relative_path_detection() {
+        // Files inside spark_stdlib should get correct relative paths.
+        let path = Path::new("/workspace/crates/spark_stdlib/spark/math.spark");
+        let rel = stdlib_relative_path(path);
+        assert_eq!(rel, Some(PathBuf::from("spark/math.spark")));
+
+        // Non-stdlib files should return None.
+        let path = Path::new("/workspace/src/main.spark");
+        let rel = stdlib_relative_path(path);
+        assert_eq!(rel, None);
+    }
+
+    #[test]
+    fn find_project_roots_detects_main_spark() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        fs::create_dir_all(root.join("proj_a")).unwrap();
+        fs::write(root.join("proj_a/main.spark"), "").unwrap();
+        fs::create_dir_all(root.join("proj_b")).unwrap();
+        fs::write(root.join("proj_b/main.spark"), "").unwrap();
+
+        let files: Vec<(Url, String)> = vec![
+            (Url::from_file_path(root.join("proj_a/main.spark")).unwrap(), String::new()),
+            (Url::from_file_path(root.join("proj_b/main.spark")).unwrap(), String::new()),
+            (Url::from_file_path(root.join("proj_a/lib.spark")).unwrap(), String::new()),
+        ];
+
+        let roots = find_project_roots(&files);
+        assert_eq!(roots.len(), 2);
+        assert!(roots.iter().any(|r| r.ends_with("proj_a")));
+        assert!(roots.iter().any(|r| r.ends_with("proj_b")));
     }
 }
