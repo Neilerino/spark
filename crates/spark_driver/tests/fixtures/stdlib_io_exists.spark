@@ -1,0 +1,11 @@
+import spark.io { writeFile, deleteFile, fileExists, IoError }
+
+fn main(): Int {
+    before: Bool = fileExists("/tmp/spark_e2e_io_exists.txt")
+    print(before)
+    err: IoError = writeFile("/tmp/spark_e2e_io_exists.txt", "test")
+    after: Bool = fileExists("/tmp/spark_e2e_io_exists.txt")
+    print(after)
+    deleteFile("/tmp/spark_e2e_io_exists.txt")
+    return 0
+}

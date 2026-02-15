@@ -1,0 +1,99 @@
+module io
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/// An opaque error from an IO operation.
+/// A code of 0 means no error occurred.
+pub struct IoError {
+    code: Int
+}
+
+// =============================================================================
+// Extern FFI declarations (private — not exported)
+// =============================================================================
+
+extern fn __spark_io_read_file(path: String): String
+extern fn __spark_io_write_file(path: String, content: String): Int
+extern fn __spark_io_append_file(path: String, content: String): Int
+extern fn __spark_io_file_exists(path: String): Int
+extern fn __spark_io_delete_file(path: String): Int
+extern fn __spark_io_create_dir(path: String): Int
+extern fn __spark_io_create_dir_all(path: String): Int
+extern fn __spark_io_list_dir(path: String): String
+extern fn __spark_io_error(): String
+
+// =============================================================================
+// Error handling
+// =============================================================================
+
+/// Returns true if an IoError represents a failure (code != 0).
+pub fn failed(err: IoError): Bool {
+    return err.code != 0
+}
+
+/// Returns the last IO error message.
+pub fn lastError(): String {
+    return __spark_io_error()
+}
+
+// =============================================================================
+// File reading
+// =============================================================================
+
+/// Reads the entire contents of a file as a string.
+/// Returns empty string on error; check error() for details.
+pub fn readFile(path: String): String {
+    return __spark_io_read_file(path)
+}
+
+// =============================================================================
+// File writing
+// =============================================================================
+
+/// Writes content to a file, creating it if it doesn't exist, overwriting if it does.
+/// Returns IoError with code 0 on success.
+pub fn writeFile(path: String, content: String): IoError {
+    return IoError { code: __spark_io_write_file(path, content) }
+}
+
+/// Appends content to a file, creating it if it doesn't exist.
+/// Returns IoError with code 0 on success.
+pub fn appendFile(path: String, content: String): IoError {
+    return IoError { code: __spark_io_append_file(path, content) }
+}
+
+// =============================================================================
+// File system queries
+// =============================================================================
+
+/// Returns true if a file or directory exists at the given path.
+pub fn fileExists(path: String): Bool {
+    return __spark_io_file_exists(path) != 0
+}
+
+/// Deletes a file. Returns IoError with code 0 on success.
+pub fn deleteFile(path: String): IoError {
+    return IoError { code: __spark_io_delete_file(path) }
+}
+
+// =============================================================================
+// Directory operations
+// =============================================================================
+
+/// Creates a directory. Returns IoError if it already exists or parent doesn't exist.
+pub fn createDir(path: String): IoError {
+    return IoError { code: __spark_io_create_dir(path) }
+}
+
+/// Creates a directory and all parent directories.
+pub fn createDirAll(path: String): IoError {
+    return IoError { code: __spark_io_create_dir_all(path) }
+}
+
+/// Lists directory entries as a newline-separated string.
+/// Returns empty string on error; check error() for details.
+pub fn listDir(path: String): String {
+    return __spark_io_list_dir(path)
+}

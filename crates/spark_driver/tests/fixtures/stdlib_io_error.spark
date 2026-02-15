@@ -1,0 +1,12 @@
+import spark.io { readFile, lastError }
+
+fn main(): Int {
+    content: String = readFile("/tmp/spark_e2e_io_nonexistent_file_xyz.txt")
+    msg: String = lastError()
+    if msg == "" {
+        print("no error")
+    } else {
+        print("got error")
+    }
+    return 0
+}

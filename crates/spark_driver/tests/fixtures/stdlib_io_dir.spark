@@ -1,0 +1,16 @@
+import spark.io { createDir, writeFile, listDir, deleteFile, failed, IoError }
+
+fn main(): Int {
+    err: IoError = createDir("/tmp/spark_e2e_io_dir_test")
+    if failed(err) {
+        print("create dir failed")
+        return 1
+    }
+    writeFile("/tmp/spark_e2e_io_dir_test/a.txt", "a")
+    writeFile("/tmp/spark_e2e_io_dir_test/b.txt", "b")
+    listing: String = listDir("/tmp/spark_e2e_io_dir_test")
+    print(listing)
+    deleteFile("/tmp/spark_e2e_io_dir_test/a.txt")
+    deleteFile("/tmp/spark_e2e_io_dir_test/b.txt")
+    return 0
+}
