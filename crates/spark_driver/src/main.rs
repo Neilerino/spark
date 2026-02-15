@@ -296,6 +296,9 @@ fn link_object(object_bytes: &[u8], output_path: &Path) -> Result<(), ()> {
         .arg(&runtime_lib)
         .arg("-o")
         .arg(output_path)
+        .arg("-lm")
+        .arg("-lpthread")
+        .arg("-ldl")
         .status();
 
     // Clean up temp .o
