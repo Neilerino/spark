@@ -652,6 +652,77 @@ pub unsafe extern "C" fn __spark_string_len(ptr: *mut u8) -> i64 {
 }
 
 // =============================================================================
+// List range construction
+// =============================================================================
+
+/// Creates a list of `i64` values from a range.
+///
+/// Parameters:
+/// - `start`: the first value in the range
+/// - `end`: the exclusive (or inclusive, if `inclusive != 0`) bound
+/// - `inclusive`: 0 for exclusive (`..`), non-zero for inclusive (`..=`)
+/// - `step`: increment between values (0 is treated as 1)
+///
+/// Returns a new `SparkList` pointer (rc = 1) containing `i64` elements.
+/// If the range is empty (e.g. `start >= end` with positive step), returns
+/// an empty list.
+#[no_mangle]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub extern "C" fn __spark_list_from_range(start: i64, end: i64, inclusive: i8, step: i64) -> *mut u8 {
+    let step = if step == 0 { 1 } else { step };
+    let inclusive = inclusive != 0;
+
+    // Calculate element count.
+    let count = if step > 0 {
+        let limit = if inclusive { end } else { end - 1 };
+        if start > limit {
+            0usize
+        } else {
+            ((limit - start) / step + 1) as usize
+        }
+    } else {
+        // Negative step: counting down.
+        let limit = if inclusive { end } else { end + 1 };
+        if start < limit {
+            0usize
+        } else {
+            ((start - limit) / (-step) + 1) as usize
+        }
+    };
+
+    let elem_size = std::mem::size_of::<i64>();
+    let list_ptr = __spark_list_new(elem_size as i64);
+
+    if count == 0 {
+        return list_ptr;
+    }
+
+    // Pre-allocate exact capacity.
+    let list = unsafe { &mut *(list_ptr.cast::<SparkList>()) };
+    let buf_size = count * elem_size;
+    let align = std::mem::align_of::<u64>();
+    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(buf_size, align) };
+    let buf = unsafe { std::alloc::alloc(layout) };
+    if buf.is_null() {
+        eprintln!("spark: out of memory allocating list range");
+        std::process::abort();
+    }
+    list.data = buf;
+    list.cap = count;
+
+    // Fill the buffer.
+    let data = buf.cast::<i64>();
+    let mut val = start;
+    for i in 0..count {
+        unsafe { *data.add(i) = val };
+        val += step;
+    }
+    list.len = count;
+
+    list_ptr
+}
+
+// =============================================================================
 // List pipeline operations — sort, take, reverse
 // =============================================================================
 
@@ -1382,6 +1453,72 @@ mod tests {
     fn env_rc_dec_null_is_noop() {
         unsafe {
             __spark_env_rc_dec(std::ptr::null_mut());
+        }
+    }
+
+    /// Helper: read elements from a SparkList of i64.
+    unsafe fn read_list_i64(ptr: *mut u8) -> Vec<i64> {
+        let list = unsafe { &*(ptr.cast::<SparkList>()) };
+        let mut result = Vec::with_capacity(list.len);
+        for i in 0..list.len {
+            let elem = unsafe { list.data.add(i * list.elem_size).cast::<i64>() };
+            result.push(unsafe { *elem });
+        }
+        result
+    }
+
+    #[test]
+    fn list_range_exclusive() {
+        unsafe {
+            let ptr = __spark_list_from_range(0, 5, 0, 1);
+            assert_eq!(read_list_i64(ptr), vec![0, 1, 2, 3, 4]);
+            __spark_list_rc_dec(ptr, 0);
+        }
+    }
+
+    #[test]
+    fn list_range_inclusive() {
+        unsafe {
+            let ptr = __spark_list_from_range(0, 5, 1, 1);
+            assert_eq!(read_list_i64(ptr), vec![0, 1, 2, 3, 4, 5]);
+            __spark_list_rc_dec(ptr, 0);
+        }
+    }
+
+    #[test]
+    fn list_range_stepped() {
+        unsafe {
+            let ptr = __spark_list_from_range(0, 10, 0, 2);
+            assert_eq!(read_list_i64(ptr), vec![0, 2, 4, 6, 8]);
+            __spark_list_rc_dec(ptr, 0);
+        }
+    }
+
+    #[test]
+    fn list_range_negative_step() {
+        unsafe {
+            let ptr = __spark_list_from_range(10, 0, 0, -2);
+            assert_eq!(read_list_i64(ptr), vec![10, 8, 6, 4, 2]);
+            __spark_list_rc_dec(ptr, 0);
+        }
+    }
+
+    #[test]
+    fn list_range_empty() {
+        unsafe {
+            // start >= end with positive step → empty
+            let ptr = __spark_list_from_range(5, 3, 0, 1);
+            assert_eq!(read_list_i64(ptr), Vec::<i64>::new());
+            __spark_list_rc_dec(ptr, 0);
+        }
+    }
+
+    #[test]
+    fn list_range_zero_step_treated_as_one() {
+        unsafe {
+            let ptr = __spark_list_from_range(0, 3, 0, 0);
+            assert_eq!(read_list_i64(ptr), vec![0, 1, 2]);
+            __spark_list_rc_dec(ptr, 0);
         }
     }
 }

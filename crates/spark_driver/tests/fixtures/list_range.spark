@@ -1,0 +1,21 @@
+fn main(): Int {
+    nums: List[Int] = [0..5]
+    print(nums.len())
+
+    inclusive: List[Int] = [0..=5]
+    print(inclusive.len())
+
+    stepped: List[Int] = [0..10:2]
+    print(stepped.len())
+
+    x: Int = 10
+    items: List[Int] = [0..=x]
+    print(items.len())
+
+    start: Int = 3
+    end: Int = 8
+    bounded: List[Int] = [start..end]
+    print(bounded.len())
+
+    return 0
+}

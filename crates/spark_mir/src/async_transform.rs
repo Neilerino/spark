@@ -396,6 +396,11 @@ fn add_rvalue_uses(rvalue: &Rvalue, gen: &mut FxHashSet<Local>) {
                 add_operand_uses(op, gen);
             }
         }
+        Rvalue::ListRange { start, end, step, .. } => {
+            add_operand_uses(start, gen);
+            add_operand_uses(end, gen);
+            add_operand_uses(step, gen);
+        }
         Rvalue::Discriminant(place) => {
             gen.insert(place.local);
         }

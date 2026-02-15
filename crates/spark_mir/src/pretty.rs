@@ -211,6 +211,19 @@ impl PrettyPrinter<'_> {
                 self.print_operand_list(ops);
                 self.out.push(')');
             }
+            Rvalue::ListRange { start, end, inclusive, step } => {
+                self.out.push_str("ListRange(");
+                self.print_operand(start);
+                if *inclusive {
+                    self.out.push_str("..=");
+                } else {
+                    self.out.push_str("..");
+                }
+                self.print_operand(end);
+                self.out.push_str(", step=");
+                self.print_operand(step);
+                self.out.push(')');
+            }
         }
     }
 

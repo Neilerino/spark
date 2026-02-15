@@ -231,6 +231,19 @@ pub enum Rvalue {
     /// expressions). Each carries its original type; the codegen emits
     /// to-string conversions and a concat chain.
     StringInterp(Vec<Operand>),
+    /// List range construction: `[start..end]` or `[start..=end:step]`.
+    ///
+    /// Calls `__spark_list_from_range(start, end, inclusive, step)` at runtime.
+    ListRange {
+        /// Range start.
+        start: Operand,
+        /// Range end.
+        end: Operand,
+        /// Whether the range is inclusive (`..=`).
+        inclusive: bool,
+        /// Step value.
+        step: Operand,
+    },
 }
 
 /// The kind of aggregate being constructed.
