@@ -18,6 +18,7 @@ spark_parser.workspace = true
 spark_modules.workspace = true
 spark_resolve.workspace = true
 spark_types.workspace = true
+spark_stdlib.workspace = true
 
 # LSP framework
 tower-lsp.workspace = true

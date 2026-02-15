@@ -202,6 +202,10 @@ impl Backend {
 
         // 6. Publish diagnostics for all files.
         for (uri, diags) in &output.diagnostics_by_uri {
+            // Skip synthetic stdlib URLs — they don't correspond to editor files.
+            if uri.scheme() != "file" {
+                continue;
+            }
             self.client
                 .publish_diagnostics(uri.clone(), diags.clone(), None)
                 .await;
