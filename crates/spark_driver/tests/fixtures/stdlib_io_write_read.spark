@@ -1,0 +1,13 @@
+import spark.io { writeFile, readFile, deleteFile, failed, IoError }
+
+fn main(): Int {
+    err: IoError = writeFile("/tmp/spark_e2e_io_write_read.txt", "hello from spark")
+    if failed(err) {
+        print("write failed")
+        return 1
+    }
+    content: String = readFile("/tmp/spark_e2e_io_write_read.txt")
+    print(content)
+    deleteFile("/tmp/spark_e2e_io_write_read.txt")
+    return 0
+}

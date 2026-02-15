@@ -476,6 +476,30 @@ fn stdlib_json_nested() {
     assert_output("stdlib_json_nested.spark", "2\nfirst\nsecond");
 }
 
+#[test]
+fn stdlib_io_write_read() {
+    assert_output("stdlib_io_write_read.spark", "hello from spark");
+}
+
+#[test]
+fn stdlib_io_exists() {
+    assert_output("stdlib_io_exists.spark", "false\ntrue");
+}
+
+#[test]
+fn stdlib_io_error() {
+    assert_output("stdlib_io_error.spark", "got error");
+}
+
+#[test]
+fn stdlib_io_dir() {
+    // Clean up from any previous failed run
+    let _ = std::fs::remove_dir_all("/tmp/spark_e2e_io_dir_test");
+    assert_output("stdlib_io_dir.spark", "a.txt\nb.txt");
+    // Clean up the directory after test
+    let _ = std::fs::remove_dir_all("/tmp/spark_e2e_io_dir_test");
+}
+
 // Multi-file compilation
 // ============================================================================
 #[test]
