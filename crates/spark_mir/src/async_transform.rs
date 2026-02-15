@@ -109,7 +109,8 @@ pub fn transform(input: AsyncTransformInput) -> AsyncTransformOutput {
         let live_across = compute_live_across_awaits(func, &await_points);
 
         // Phase 3: Build the state struct type.
-        let all_live: FxHashSet<Local> = live_across.iter().flat_map(|s| s.iter().copied()).collect();
+        let all_live: FxHashSet<Local> =
+            live_across.iter().flat_map(|s| s.iter().copied()).collect();
         let state_fields = build_state_fields(func, &all_live, &mut table);
         let state_type = Ty::AsyncState {
             func_def_id: *def_id,
@@ -396,7 +397,9 @@ fn add_rvalue_uses(rvalue: &Rvalue, gen: &mut FxHashSet<Local>) {
                 add_operand_uses(op, gen);
             }
         }
-        Rvalue::ListRange { start, end, step, .. } => {
+        Rvalue::ListRange {
+            start, end, step, ..
+        } => {
             add_operand_uses(start, gen);
             add_operand_uses(end, gen);
             add_operand_uses(step, gen);
@@ -543,11 +546,22 @@ fn generate_poll_function(
     let _return_place = alloc_local(&mut locals, &mut next_local_id, i8_ty, None, original.span);
 
     // Local(1) = state_ptr parameter (pointer — use i64 as opaque ptr).
-    let state_ptr_local =
-        alloc_local(&mut locals, &mut next_local_id, i64_ty, Some(sym("__state_ptr")), original.span);
+    let state_ptr_local = alloc_local(
+        &mut locals,
+        &mut next_local_id,
+        i64_ty,
+        Some(sym("__state_ptr")),
+        original.span,
+    );
 
     // Local for loaded tag.
-    let tag_local = alloc_local(&mut locals, &mut next_local_id, i32_ty, Some(sym("__tag")), original.span);
+    let tag_local = alloc_local(
+        &mut locals,
+        &mut next_local_id,
+        i32_ty,
+        Some(sym("__tag")),
+        original.span,
+    );
 
     // Map: original Local → poll function Local.
     let mut orig_to_poll: FxHashMap<Local, Local> = FxHashMap::default();
@@ -566,8 +580,13 @@ fn generate_poll_function(
     }
 
     // Local for try_poll result pointer.
-    let try_poll_result_local =
-        alloc_local(&mut locals, &mut next_local_id, i64_ty, Some(sym("__poll_result")), original.span);
+    let try_poll_result_local = alloc_local(
+        &mut locals,
+        &mut next_local_id,
+        i64_ty,
+        Some(sym("__poll_result")),
+        original.span,
+    );
 
     // Build field name → field index map for state struct access.
     let field_index: FxHashMap<Symbol, usize> = state_fields
@@ -640,13 +659,8 @@ fn generate_poll_function(
         } else {
             // Segment K>0: poll the sub-future, check result.
             // Load sub_future from state.__sub_future
-            let sub_future_local = alloc_local(
-                &mut locals,
-                &mut next_local_id,
-                i64_ty,
-                None,
-                original.span,
-            );
+            let sub_future_local =
+                alloc_local(&mut locals, &mut next_local_id, i64_ty, None, original.span);
             entry_stmts.push(Statement::Assign {
                 place: Place::from_local(sub_future_local),
                 rvalue: Rvalue::Use(Operand::Copy(Place {
@@ -753,7 +767,7 @@ fn generate_poll_function(
                 terminator: Terminator::SwitchInt {
                     discriminant: Operand::Copy(Place::from_local(cmp_local)),
                     targets: vec![(1, BlockId(pending_block_idx as u32))], // null → pending
-                    otherwise: BlockId(ready_block_idx as u32),             // non-null → ready
+                    otherwise: BlockId(ready_block_idx as u32),            // non-null → ready
                 },
                 is_cleanup: false,
             });
@@ -835,8 +849,9 @@ fn generate_poll_function(
             } else {
                 let first_cloned_block_idx = blocks.len();
                 // Fix ready block terminator to jump to first cloned block.
-                blocks[ready_block_actual_idx].terminator =
-                    Terminator::Goto { target: BlockId(first_cloned_block_idx as u32) };
+                blocks[ready_block_actual_idx].terminator = Terminator::Goto {
+                    target: BlockId(first_cloned_block_idx as u32),
+                };
 
                 // Build the block remapping for this segment.
                 let remap = build_block_remap(seg_blocks, blocks.len());
@@ -905,7 +920,9 @@ fn generate_poll_function(
         let first_cloned_block_idx = blocks.len() + 1;
         blocks.push(BasicBlock {
             statements: entry_stmts,
-            terminator: Terminator::Goto { target: BlockId(first_cloned_block_idx as u32) },
+            terminator: Terminator::Goto {
+                target: BlockId(first_cloned_block_idx as u32),
+            },
             is_cleanup: false,
         });
 
@@ -993,7 +1010,9 @@ fn generate_poll_function(
     // Patch any remaining Unreachable terminators (from empty segments) to go to already_ready.
     for block in &mut blocks {
         if matches!(block.terminator, Terminator::Unreachable) {
-            block.terminator = Terminator::Goto { target: BlockId(already_ready_idx as u32) };
+            block.terminator = Terminator::Goto {
+                target: BlockId(already_ready_idx as u32),
+            };
         }
     }
 
@@ -1015,10 +1034,7 @@ fn generate_poll_function(
 /// Segment K: blocks reachable from `await_points[K-1].resume_block`, stopping at
 ///            `await_points[K].call_block` (if K < await_points.len()).
 /// Last segment: blocks reachable from last resume block, no barrier.
-fn compute_segment_ranges(
-    func: &MirFunction,
-    await_points: &[AwaitPoint],
-) -> Vec<Vec<usize>> {
+fn compute_segment_ranges(func: &MirFunction, await_points: &[AwaitPoint]) -> Vec<Vec<usize>> {
     let num_blocks = func.blocks.len();
     let num_segments = await_points.len() + 1;
     let mut segments = vec![Vec::new(); num_segments];
@@ -1071,10 +1087,7 @@ fn compute_segment_ranges(
 }
 
 /// Builds a mapping from original block index → cloned block index.
-fn build_block_remap(
-    seg_blocks: &[usize],
-    cloned_start: usize,
-) -> FxHashMap<usize, usize> {
+fn build_block_remap(seg_blocks: &[usize], cloned_start: usize) -> FxHashMap<usize, usize> {
     seg_blocks
         .iter()
         .enumerate()
@@ -1105,12 +1118,13 @@ fn clone_block_with_remap(
 }
 
 /// Remaps a statement's locals.
-fn remap_statement(
-    stmt: &Statement,
-    local_remap: &FxHashMap<Local, Local>,
-) -> Statement {
+fn remap_statement(stmt: &Statement, local_remap: &FxHashMap<Local, Local>) -> Statement {
     match stmt {
-        Statement::Assign { place, rvalue, span } => Statement::Assign {
+        Statement::Assign {
+            place,
+            rvalue,
+            span,
+        } => Statement::Assign {
             place: remap_place(place, local_remap),
             rvalue: remap_rvalue(rvalue, local_remap),
             span: *span,
@@ -1126,8 +1140,15 @@ fn remap_statement(
 /// Remaps a place's local.
 fn remap_place(place: &Place, local_remap: &FxHashMap<Local, Local>) -> Place {
     Place {
-        local: local_remap.get(&place.local).copied().unwrap_or(place.local),
-        projections: place.projections.iter().map(|p| remap_projection(p, local_remap)).collect(),
+        local: local_remap
+            .get(&place.local)
+            .copied()
+            .unwrap_or(place.local),
+        projections: place
+            .projections
+            .iter()
+            .map(|p| remap_projection(p, local_remap))
+            .collect(),
     }
 }
 
@@ -1173,9 +1194,20 @@ fn remap_rvalue(rvalue: &Rvalue, local_remap: &FxHashMap<Local, Local>) -> Rvalu
             operand: remap_operand(operand, local_remap),
             target_ty: *target_ty,
         },
-        Rvalue::StringInterp(ops) => Rvalue::StringInterp(
-            ops.iter().map(|o| remap_operand(o, local_remap)).collect(),
-        ),
+        Rvalue::StringInterp(ops) => {
+            Rvalue::StringInterp(ops.iter().map(|o| remap_operand(o, local_remap)).collect())
+        }
+        Rvalue::ListRange {
+            start,
+            end,
+            step,
+            inclusive,
+        } => Rvalue::ListRange {
+            start: remap_operand(start, local_remap),
+            end: remap_operand(end, local_remap),
+            step: remap_operand(step, local_remap),
+            inclusive: *inclusive,
+        },
     }
 }
 
@@ -1256,10 +1288,7 @@ fn rewrite_await_block(
     for &live_local in live_set {
         let field_name = sym(&format!("__local_{}", live_local.0));
         if field_index.contains_key(&field_name) {
-            let poll_local = orig_to_poll
-                .get(&live_local)
-                .copied()
-                .unwrap_or(live_local);
+            let poll_local = orig_to_poll.get(&live_local).copied().unwrap_or(live_local);
             save_stmts.push(Statement::Assign {
                 place: Place {
                     local: state_ptr_local,
@@ -1624,10 +1653,7 @@ mod tests {
             poll_info.state_fields.len()
         );
         assert_eq!(poll_info.state_fields[0].0, sym("__tag"));
-        assert_eq!(
-            poll_info.state_fields.last().unwrap().0,
-            sym("__result")
-        );
+        assert_eq!(poll_info.state_fields.last().unwrap().0, sym("__result"));
     }
 
     #[test]
@@ -1720,18 +1746,29 @@ mod tests {
         // At least one block should return 0 (Pending).
         let has_pending_return = poll_fn.blocks.iter().any(|b| {
             b.statements.iter().any(|s| {
-                matches!(s,
-                    Statement::Assign { rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))), .. }
+                matches!(
+                    s,
+                    Statement::Assign {
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))),
+                        ..
+                    }
                 )
             }) && matches!(b.terminator, Terminator::Return)
         });
-        assert!(has_pending_return, "Expected a block that returns 0 (Pending)");
+        assert!(
+            has_pending_return,
+            "Expected a block that returns 0 (Pending)"
+        );
 
         // At least one block should return 1 (Ready).
         let has_ready_return = poll_fn.blocks.iter().any(|b| {
             b.statements.iter().any(|s| {
-                matches!(s,
-                    Statement::Assign { rvalue: Rvalue::Use(Operand::Constant(Constant::Int(1))), .. }
+                matches!(
+                    s,
+                    Statement::Assign {
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(1))),
+                        ..
+                    }
                 )
             }) && matches!(b.terminator, Terminator::Return)
         });
@@ -1779,19 +1816,78 @@ mod tests {
             param_count: 0,
             return_type: i64_ty,
             locals: vec![
-                LocalDecl { local: Local(0), ty: i64_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: future_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(2), ty: void_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(3), ty: i64_ty, name: Some(sym("a")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(4), ty: future_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(5), ty: void_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(6), ty: i64_ty, name: Some(sym("b")), is_user_variable: true, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: i64_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: future_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(2),
+                    ty: void_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(3),
+                    ty: i64_ty,
+                    name: Some(sym("a")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(4),
+                    ty: future_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(5),
+                    ty: void_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(6),
+                    ty: i64_ty,
+                    name: Some(sym("b")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![
                 BasicBlock {
                     statements: vec![
-                        Statement::Assign { place: Place::from_local(Local(1)), rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))), span: Span::DUMMY },
-                        Statement::Assign { place: Place::from_local(Local(2)), rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(await_def))), span: Span::DUMMY },
+                        Statement::Assign {
+                            place: Place::from_local(Local(1)),
+                            rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))),
+                            span: Span::DUMMY,
+                        },
+                        Statement::Assign {
+                            place: Place::from_local(Local(2)),
+                            rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(
+                                await_def,
+                            ))),
+                            span: Span::DUMMY,
+                        },
                     ],
                     terminator: Terminator::Call {
                         func: Operand::Copy(Place::from_local(Local(2))),
@@ -1804,8 +1900,18 @@ mod tests {
                 },
                 BasicBlock {
                     statements: vec![
-                        Statement::Assign { place: Place::from_local(Local(4)), rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))), span: Span::DUMMY },
-                        Statement::Assign { place: Place::from_local(Local(5)), rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(await_def))), span: Span::DUMMY },
+                        Statement::Assign {
+                            place: Place::from_local(Local(4)),
+                            rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))),
+                            span: Span::DUMMY,
+                        },
+                        Statement::Assign {
+                            place: Place::from_local(Local(5)),
+                            rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(
+                                await_def,
+                            ))),
+                            span: Span::DUMMY,
+                        },
                     ],
                     terminator: Terminator::Call {
                         func: Operand::Copy(Place::from_local(Local(5))),
@@ -1835,7 +1941,9 @@ mod tests {
             span: Span::DUMMY,
         };
 
-        let mut mir = Mir { functions: HashMap::new() };
+        let mut mir = Mir {
+            functions: HashMap::new(),
+        };
         mir.functions.insert(func_def, func);
 
         let output = transform(AsyncTransformInput {
@@ -1851,7 +1959,8 @@ mod tests {
         // Entry block should dispatch to 3 segments (0, 1, 2).
         if let Terminator::SwitchInt { targets, .. } = &poll_fn.blocks[0].terminator {
             assert_eq!(
-                targets.len(), 3,
+                targets.len(),
+                3,
                 "Expected 3 segment targets (for 2 awaits), got {}",
                 targets.len()
             );
@@ -1865,7 +1974,10 @@ mod tests {
             .state_fields
             .iter()
             .any(|(name, _)| name.as_str() == "__local_3");
-        assert!(has_local_3_field, "Local(3) 'a' should be in state fields (live-across-await)");
+        assert!(
+            has_local_3_field,
+            "Local(3) 'a' should be in state fields (live-across-await)"
+        );
     }
 
     #[test]
@@ -1894,7 +2006,9 @@ mod tests {
         // In make_simple_async_fn, Local(1) is param x but is never used
         // in the body. With the fix, it should still be in state fields
         // so that cooperative spawn can inject the param value.
-        let mut mir = Mir { functions: HashMap::new() };
+        let mut mir = Mir {
+            functions: HashMap::new(),
+        };
         mir.functions.insert(func_def, func);
 
         let output = transform(AsyncTransformInput {
