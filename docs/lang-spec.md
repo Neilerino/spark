@@ -97,7 +97,7 @@ x += 1            // compiler error
 
 ### Comments
 
-```
+````
 // Single line comment
 
 /*
@@ -112,13 +112,13 @@ x += 1            // compiler error
 
 /**
  * Multi-line doc comment
- * 
+ *
  * Example:
  * ```
  * result: Int = add(2, 3)
  * ```
  */
-```
+````
 
 ### Identifiers
 
@@ -245,34 +245,34 @@ r"""
 
 #### Integers
 
-| Type | Size | Range |
-|------|------|-------|
-| `Int8` | 8-bit | -128 to 127 |
-| `Int16` | 16-bit | -32,768 to 32,767 |
-| `Int32` | 32-bit | -2³¹ to 2³¹-1 |
-| `Int64` | 64-bit | -2⁶³ to 2⁶³-1 |
-| `Int` | 64-bit | Alias for `Int64` |
-| `UInt8` | 8-bit | 0 to 255 |
-| `UInt16` | 16-bit | 0 to 65,535 |
-| `UInt32` | 32-bit | 0 to 2³²-1 |
-| `UInt64` | 64-bit | 0 to 2⁶⁴-1 |
-| `UInt` | 64-bit | Alias for `UInt64` |
+| Type     | Size   | Range              |
+| -------- | ------ | ------------------ |
+| `Int8`   | 8-bit  | -128 to 127        |
+| `Int16`  | 16-bit | -32,768 to 32,767  |
+| `Int32`  | 32-bit | -2³¹ to 2³¹-1      |
+| `Int64`  | 64-bit | -2⁶³ to 2⁶³-1      |
+| `Int`    | 64-bit | Alias for `Int64`  |
+| `UInt8`  | 8-bit  | 0 to 255           |
+| `UInt16` | 16-bit | 0 to 65,535        |
+| `UInt32` | 32-bit | 0 to 2³²-1         |
+| `UInt64` | 64-bit | 0 to 2⁶⁴-1         |
+| `UInt`   | 64-bit | Alias for `UInt64` |
 
 #### Floating Point
 
-| Type | Size | Precision |
-|------|------|-----------|
-| `Float32` | 32-bit | Single precision |
-| `Float64` | 64-bit | Double precision |
-| `Float` | 64-bit | Alias for `Float64` |
+| Type      | Size   | Precision           |
+| --------- | ------ | ------------------- |
+| `Float32` | 32-bit | Single precision    |
+| `Float64` | 64-bit | Double precision    |
+| `Float`   | 64-bit | Alias for `Float64` |
 
 #### Other Primitives
 
-| Type | Description |
-|------|-------------|
-| `Bool` | `true` or `false` |
+| Type   | Description                 |
+| ------ | --------------------------- |
+| `Bool` | `true` or `false`           |
 | `Char` | Single Unicode scalar value |
-| `Byte` | Alias for `UInt8` |
+| `Byte` | Alias for `UInt8`           |
 
 ### Text Types
 
@@ -287,14 +287,14 @@ greeting: String = "Hello, {name}!"
 
 ##### Escape Sequences
 
-| Sequence | Meaning |
-|----------|---------|
-| `\n` | Newline |
-| `\t` | Tab |
-| `\r` | Carriage return |
-| `\\` | Backslash |
-| `\"` | Double quote |
-| `\{` | Literal brace |
+| Sequence   | Meaning            |
+| ---------- | ------------------ |
+| `\n`       | Newline            |
+| `\t`       | Tab                |
+| `\r`       | Carriage return    |
+| `\\`       | Backslash          |
+| `\"`       | Double quote       |
+| `\{`       | Literal brace      |
 | `\u{XXXX}` | Unicode code point |
 
 ##### String Methods
@@ -537,16 +537,17 @@ raw: Int = userId.value  // explicit unwrap
 
 ### Arithmetic Operators
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `+` | Addition | `a + b` |
-| `-` | Subtraction | `a - b` |
-| `*` | Multiplication | `a * b` |
-| `/` | Division | `a / b` |
-| `%` | Modulo | `a % b` |
-| `-` | Negation (unary) | `-a` |
+| Operator | Description      | Example |
+| -------- | ---------------- | ------- |
+| `+`      | Addition         | `a + b` |
+| `-`      | Subtraction      | `a - b` |
+| `*`      | Multiplication   | `a * b` |
+| `/`      | Division         | `a / b` |
+| `%`      | Modulo           | `a % b` |
+| `-`      | Negation (unary) | `-a`    |
 
 Division behavior is determined by operand types:
+
 - `Int / Int` → `Int` (integer division)
 - `Float / Float` → `Float`
 
@@ -554,24 +555,24 @@ For exponentiation, use `pow()` from the math library.
 
 ### Comparison Operators
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `==` | Equality | `a == b` |
-| `!=` | Inequality | `a != b` |
-| `<` | Less than | `a < b` |
-| `>` | Greater than | `a > b` |
-| `<=` | Less than or equal | `a <= b` |
-| `>=` | Greater than or equal | `a >= b` |
+| Operator | Description           | Example  |
+| -------- | --------------------- | -------- |
+| `==`     | Equality              | `a == b` |
+| `!=`     | Inequality            | `a != b` |
+| `<`      | Less than             | `a < b`  |
+| `>`      | Greater than          | `a > b`  |
+| `<=`     | Less than or equal    | `a <= b` |
+| `>=`     | Greater than or equal | `a >= b` |
 
 All comparison operators return `Bool`.
 
 ### Logical Operators
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `and` | Logical AND | `a and b` |
-| `or` | Logical OR | `a or b` |
-| `not` | Logical NOT | `not a` |
+| Operator | Description | Example   |
+| -------- | ----------- | --------- |
+| `and`    | Logical AND | `a and b` |
+| `or`     | Logical OR  | `a or b`  |
+| `not`    | Logical NOT | `not a`   |
 
 ```
 if user.isAdmin and user.isActive {
@@ -585,34 +586,34 @@ if not user.isVerified or user.isBanned {
 
 ### Bitwise Operators
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `&` | Bitwise AND | `a & b` |
-| `\|` | Bitwise OR | `a \| b` |
-| `^` | Bitwise XOR | `a ^ b` |
-| `~` | Bitwise NOT | `~a` |
-| `<<` | Left shift | `a << n` |
-| `>>` | Right shift | `a >> n` |
+| Operator | Description | Example  |
+| -------- | ----------- | -------- |
+| `&`      | Bitwise AND | `a & b`  |
+| `\|`     | Bitwise OR  | `a \| b` |
+| `^`      | Bitwise XOR | `a ^ b`  |
+| `~`      | Bitwise NOT | `~a`     |
+| `<<`     | Left shift  | `a << n` |
+| `>>`     | Right shift | `a >> n` |
 
 ### Assignment Operators
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `=` | Assignment | `x = 5` |
-| `+=` | Add and assign | `x += 1` |
-| `-=` | Subtract and assign | `x -= 1` |
-| `*=` | Multiply and assign | `x *= 2` |
-| `/=` | Divide and assign | `x /= 2` |
+| Operator | Description         | Example  |
+| -------- | ------------------- | -------- |
+| `=`      | Assignment          | `x = 5`  |
+| `+=`     | Add and assign      | `x += 1` |
+| `-=`     | Subtract and assign | `x -= 1` |
+| `*=`     | Multiply and assign | `x *= 2` |
+| `/=`     | Divide and assign   | `x /= 2` |
 
 Assignment operators only work on mutable variables (`Type!`).
 
 ### Null/Optional Operators
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `??` | Null coalescing | `a ?? default` |
-| `?.` | Optional chaining | `a?.field` |
-| `!` | Unwrap/propagate | `a!` |
+| Operator | Description       | Example        |
+| -------- | ----------------- | -------------- |
+| `??`     | Null coalescing   | `a ?? default` |
+| `?.`     | Optional chaining | `a?.field`     |
+| `!`      | Unwrap/propagate  | `a!`           |
 
 ```
 // Null coalescing
@@ -630,10 +631,10 @@ name: String = user!.name    // if user is Null, propagates
 
 ### Type Operators
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `is` | Type check | `x is Type` |
-| `as` | Type cast | `x as Type` |
+| Operator | Description | Example     |
+| -------- | ----------- | ----------- |
+| `is`     | Type check  | `x is Type` |
+| `as`     | Type cast   | `x as Type` |
 
 ```
 if value is String {
@@ -645,11 +646,11 @@ number: Int = someValue as Int
 
 ### Range Operators
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `..` | Exclusive range | `0..10` (0-9) |
-| `..=` | Inclusive range | `0..=10` (0-10) |
-| `:` | Step (in range) | `0..10:2` (0,2,4,6,8) |
+| Operator | Description     | Example               |
+| -------- | --------------- | --------------------- |
+| `..`     | Exclusive range | `0..10` (0-9)         |
+| `..=`    | Inclusive range | `0..=10` (0-10)       |
+| `:`      | Step (in range) | `0..10:2` (0,2,4,6,8) |
 
 ```
 [0..10]       // [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
@@ -660,11 +661,12 @@ number: Int = someValue as Int
 
 ### String Operators
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `+` | Concatenation | `"hello" + " " + "world"` |
+| Operator | Description   | Example                   |
+| -------- | ------------- | ------------------------- |
+| `+`      | Concatenation | `"hello" + " " + "world"` |
 
 Interpolation is preferred for complex string building:
+
 ```
 greeting: String = "Hello, {name}! You have {count} messages."
 ```
@@ -764,15 +766,15 @@ Infinite loop with explicit control flow.
 ```
 loop {
     data: Data = poll()
-    
+
     if data.isEmpty() {
         continue
     }
-    
+
     if data.isEnd() {
         break
     }
-    
+
     process(data)
 }
 ```
@@ -1218,7 +1220,7 @@ Functions without bodies must be implemented by binding types.
 interface ISerializable {
     // Required (no default implementation)
     fn serialize[T: Self](item: T): String
-    
+
     // Default implementation using required function
     fn serializePretty[T: Self](item: T): String {
         return "pretty: {item.serialize()}"
@@ -1294,7 +1296,7 @@ interface IAdminUser extends IUser {
     fn printUser[T: AdminUser](user: T): Void {
         print("AdminUser[{user.id}]: {user.email} ({user.role})")
     }
-    
+
     fn getPermissions[T: AdminUser](user: T): List[String] {
         return user.permissions
     }
@@ -1537,12 +1539,12 @@ fn independent(a: Ref[String, A], b: Ref[String, B]): Int {
 ```
 fn process(): Void {
     user: User = User { name: "Alice" }
-    
+
     // Immutable reference
     ref: Ref[User] = user
     print(ref.name)        // ok
     ref.name = "Bob"       // compiler error
-    
+
     // Mutable reference
     mutRef: Ref[User]! = user
     mutRef.name = "Bob"    // ok
@@ -1663,7 +1665,7 @@ The `block` keyword runs an async function synchronously.
 True multi-threaded parallelism.
 
 ```
-handle: Handle[Int] = spawn {
+handle: Future[Int] = spawn {
     return heavyComputation()
 }
 
@@ -1671,22 +1673,6 @@ handle: Handle[Int] = spawn {
 
 // Wait for result
 result: Int = handle.join()!
-```
-
-### Thread Safety Rules
-
-```
-// Immutable data: freely shared
-user: User = User { name: "Alice" }
-spawn {
-    print(user.name)  // ok, user is immutable
-}
-
-// Mutable data: cannot be captured
-counter: Int! = 0
-spawn {
-    counter += 1  // compiler error: cannot capture mutable binding
-}
 ```
 
 ### Channels
@@ -1897,7 +1883,7 @@ For iterable types.
 ```
 interface ISequence {
     fn next[T: Self](seq: T): Tup[Item, T]?
-    
+
     fn each[T: Self](seq: T, action: (Item): Void): Void { ... }
     fn enumerate[T: Self](seq: T): ISequence[Tup[Int, Item]] { ... }
     fn take[T: Self](seq: T, count: Int): List[Item] { ... }

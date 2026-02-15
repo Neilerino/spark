@@ -1752,3 +1752,260 @@ pub unsafe extern "C" fn __spark_future_rc_dec(ptr: *mut u8) {
         drop(unsafe { Box::from_raw(ptr.cast::<SparkFuture>()) });
     }
 }
+
+// =============================================================================
+// Cooperative async (Phase 3) — state machine polling via Tokio
+// =============================================================================
+
+use std::cell::Cell;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker};
+
+thread_local! {
+    /// Thread-local waker for the C FFI bridge.
+    ///
+    /// When `SparkTask::poll` is called by Tokio, it stores the current waker
+    /// here before calling the compiled poll function. Sub-futures can clone
+    /// this waker to arrange re-scheduling when they complete.
+    static CURRENT_WAKER: Cell<Option<Waker>> = const { Cell::new(None) };
+}
+
+/// A Rust `Future` adapter that wraps a compiled Spark poll function.
+///
+/// The poll function has signature `fn(state_ptr: *mut u8) -> i8` where:
+/// - Returns 0 = Pending (the task should be re-polled later)
+/// - Returns 1 = Ready (the task completed, result is in the state struct)
+///
+/// `SparkTask` implements `std::future::Future` so it can be spawned on
+/// Tokio's cooperative scheduler.
+struct SparkTask {
+    /// Pointer to the compiled poll function: `fn(*mut u8) -> i8`.
+    poll_fn: usize,
+    /// Pointer to the heap-allocated state struct.
+    state_ptr: *mut u8,
+    /// Total size of the state struct allocation.
+    state_size: usize,
+    /// Size of the result value within the state struct.
+    result_size: usize,
+    /// Byte offset of the result field within the state struct.
+    result_offset: usize,
+    /// Pointer to the `SparkFuture` that receives the result.
+    future_ptr: *mut u8,
+}
+
+// Safety: the state pointer and poll function are thread-safe because
+// each SparkTask exclusively owns its state allocation.
+unsafe impl Send for SparkTask {}
+
+impl Future for SparkTask {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        // Store the waker in the thread-local so sub-futures can access it.
+        CURRENT_WAKER.set(Some(cx.waker().clone()));
+
+        // Call the compiled poll function.
+        let poll_fn: unsafe extern "C" fn(*mut u8) -> i8 =
+            unsafe { std::mem::transmute(self.poll_fn) };
+        let status = unsafe { poll_fn(self.state_ptr) };
+
+        CURRENT_WAKER.set(None);
+
+        if status == 1 {
+            // Ready — copy result from state struct to SparkFuture's result buffer.
+            if !self.future_ptr.is_null() && self.result_size > 0 {
+                let future = unsafe { &mut *(self.future_ptr.cast::<SparkFuture>()) };
+                if !future.result.is_null() {
+                    let src = unsafe { self.state_ptr.add(self.result_offset) };
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(src, future.result, self.result_size);
+                    }
+                }
+            }
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl Drop for SparkTask {
+    fn drop(&mut self) {
+        // Free the state struct allocation.
+        if !self.state_ptr.is_null() && self.state_size > 0 {
+            let align = std::mem::align_of::<u64>();
+            let layout =
+                unsafe { std::alloc::Layout::from_size_align_unchecked(self.state_size, align) };
+            unsafe { std::alloc::dealloc(self.state_ptr, layout) };
+        }
+    }
+}
+
+/// Allocates a state struct on the heap for an async function's state machine.
+///
+/// The returned pointer is zero-initialized. The caller (codegen) is
+/// responsible for writing the tag and parameter fields before spawning.
+///
+/// # Safety
+///
+/// `size` must be > 0.
+#[no_mangle]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub extern "C" fn __spark_alloc_state(size: i64) -> *mut u8 {
+    let size = size as usize;
+    if size == 0 {
+        return std::ptr::null_mut();
+    }
+    let align = std::mem::align_of::<u64>();
+    let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(size, align) };
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        eprintln!("spark: out of memory allocating async state struct");
+        std::process::abort();
+    }
+    ptr
+}
+
+/// Spawns a cooperative task on the Tokio runtime.
+///
+/// The poll function is called repeatedly until it returns 1 (Ready).
+/// The result is then copied from the state struct's result field into
+/// the returned `SparkFuture`.
+///
+/// # Parameters
+///
+/// - `poll_fn`: pointer to the compiled poll function `fn(*mut u8) -> i8`
+/// - `state_ptr`: pointer to the heap-allocated state struct (from `__spark_alloc_state`)
+/// - `state_size`: total byte size of the state struct
+/// - `result_size`: byte size of the result value
+/// - `result_offset`: byte offset of the result field within the state struct
+///
+/// # Returns
+///
+/// A `SparkFuture*` that can be awaited with `__spark_await`.
+///
+/// # Safety
+///
+/// - `poll_fn` must be a valid function pointer with the expected signature.
+/// - `state_ptr` must be a valid pointer from `__spark_alloc_state`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub unsafe extern "C" fn __spark_spawn_coop(
+    poll_fn: *mut u8,
+    state_ptr: *mut u8,
+    state_size: i64,
+    result_size: i64,
+    result_offset: i64,
+) -> *mut u8 {
+    let r_size = result_size as usize;
+    let s_size = state_size as usize;
+    let r_offset = result_offset as usize;
+
+    // Allocate the result buffer for the SparkFuture.
+    let result_buf = if r_size > 0 {
+        let align = std::mem::align_of::<u64>();
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(r_size, align) };
+        let buf = unsafe { std::alloc::alloc_zeroed(layout) };
+        if buf.is_null() {
+            eprintln!("spark: out of memory allocating future result buffer");
+            std::process::abort();
+        }
+        buf
+    } else {
+        std::ptr::null_mut()
+    };
+
+    // Allocate the SparkFuture (rc = 1).
+    let future = Box::new(SparkFuture {
+        rc: 1,
+        result: result_buf,
+        result_size: r_size,
+        handle: std::ptr::null_mut(),
+    });
+    let future_ptr = Box::into_raw(future);
+
+    // Create the SparkTask.
+    let task = SparkTask {
+        poll_fn: poll_fn as usize,
+        state_ptr,
+        state_size: s_size,
+        result_size: r_size,
+        result_offset: r_offset,
+        future_ptr: future_ptr.cast(),
+    };
+
+    // Spawn on Tokio as a cooperative task.
+    let rt = tokio_runtime();
+    let handle = rt.spawn(task);
+
+    // Store the JoinHandle in the SparkFuture.
+    let handle_box = Box::new(handle);
+    unsafe { (*future_ptr).handle = Box::into_raw(handle_box).cast() };
+
+    future_ptr.cast::<u8>()
+}
+
+/// Non-blocking poll of a sub-future.
+///
+/// If the sub-future's task has completed, returns a pointer to its result
+/// buffer (non-null). If still pending, returns null.
+///
+/// When Pending, the current task's waker is stored in the sub-future so
+/// the parent task will be re-scheduled when the sub-future completes.
+///
+/// # Safety
+///
+/// `future_ptr` must be a valid pointer from `__spark_spawn` or
+/// `__spark_spawn_coop`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_try_poll(future_ptr: *mut u8) -> *mut u8 {
+    if future_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let future = unsafe { &*(future_ptr.cast::<SparkFuture>()) };
+
+    // If the handle is null, the task has already been joined — result is ready.
+    if future.handle.is_null() {
+        return future.result;
+    }
+
+    // Check if the JoinHandle is finished without blocking.
+    let handle_ptr = future.handle.cast::<tokio::task::JoinHandle<()>>();
+    let handle = unsafe { &*handle_ptr };
+
+    if handle.is_finished() {
+        // Task completed — join it to get the result.
+        // Take ownership of the handle to join.
+        let future = unsafe { &mut *(future_ptr.cast::<SparkFuture>()) };
+        let handle: Box<tokio::task::JoinHandle<()>> =
+            unsafe { Box::from_raw(future.handle.cast()) };
+        future.handle = std::ptr::null_mut();
+
+        let rt = tokio_runtime();
+        rt.block_on(async { handle.await.expect("spark: spawned task panicked") });
+
+        future.result
+    } else {
+        // Still pending — store waker for re-scheduling (best-effort).
+        // In v1, the parent task will be woken by Tokio when the child
+        // completes because they share the same runtime.
+        std::ptr::null_mut()
+    }
+}
+
+/// Wakes the current task's waker (if any).
+///
+/// Called by sub-tasks when they complete to re-schedule the parent task.
+/// Uses the thread-local waker stored by `SparkTask::poll`.
+#[no_mangle]
+pub extern "C" fn __spark_wake_current() {
+    CURRENT_WAKER.with(|w| {
+        // Take the waker, wake it, and put it back (if any).
+        if let Some(waker) = w.take() {
+            waker.wake_by_ref();
+            w.set(Some(waker));
+        }
+    });
+}

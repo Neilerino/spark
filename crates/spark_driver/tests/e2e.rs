@@ -440,6 +440,25 @@ fn spawn_ref_error() {
     assert_compile_error("spawn_ref_error.spark", "not thread-safe");
 }
 
+// ============================================================================
+// Cooperative async (Phase 3)
+// ============================================================================
+
+#[test]
+fn coop_basic() {
+    assert_output("coop_basic.spark", "42");
+}
+
+#[test]
+fn coop_chain() {
+    assert_output("coop_chain.spark", "15");
+}
+
+#[test]
+fn coop_parallel() {
+    assert_output("coop_parallel.spark", "30");
+}
+
 // Standard library
 // ============================================================================
 

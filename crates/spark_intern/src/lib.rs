@@ -363,6 +363,11 @@ impl Interner {
             "__spark_spawn",
             "__spark_await",
             "__spark_future_rc_dec",
+            // Cooperative async runtime stubs
+            "__spark_alloc_state",
+            "__spark_spawn_coop",
+            "__spark_try_poll",
+            "__spark_wake_current",
         ];
 
         for kw in keywords {
@@ -664,6 +669,16 @@ pub mod kw {
     pub const SPARK_AWAIT: Symbol = Symbol(93);
     /// `__spark_future_rc_dec` (internal runtime stub)
     pub const FUTURE_RC_DEC: Symbol = Symbol(94);
+
+    // Cooperative async runtime stubs
+    /// `__spark_alloc_state` (internal runtime stub)
+    pub const ALLOC_STATE: Symbol = Symbol(95);
+    /// `__spark_spawn_coop` (internal runtime stub)
+    pub const SPAWN_COOP: Symbol = Symbol(96);
+    /// `__spark_try_poll` (internal runtime stub)
+    pub const TRY_POLL: Symbol = Symbol(97);
+    /// `__spark_wake_current` (internal runtime stub)
+    pub const WAKE_CURRENT: Symbol = Symbol(98);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]

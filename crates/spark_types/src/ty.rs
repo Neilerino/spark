@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use spark_intern::Symbol;
 use spark_resolve::DefId;
 
 /// A lifetime identifier. `LifetimeId(0)` is the anonymous/inferred lifetime.
@@ -213,6 +214,18 @@ pub enum Ty {
         base: DefId,
         /// Concrete type arguments.
         args: Vec<TypeId>,
+    },
+
+    /// State struct for an async function's state machine.
+    ///
+    /// Contains a tag for dispatch, saved locals across await points,
+    /// and the final result slot.
+    AsyncState {
+        /// The async function this state belongs to.
+        func_def_id: DefId,
+        /// Fields: `(field_name, field_type)` in order (tag, sub-future,
+        /// saved locals, result).
+        fields: Vec<(Symbol, TypeId)>,
     },
 
     // === Error recovery ===

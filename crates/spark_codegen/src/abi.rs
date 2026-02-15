@@ -47,6 +47,9 @@ pub fn spark_type_to_clif(ty_id: TypeId, table: &TypeTable, ptr_type: ClifType) 
         // Future[T] is an opaque heap pointer (SparkFuture*)
         Ty::Future { .. } => Some(ptr_type),
 
+        // Async state struct — always an aggregate, passed by pointer
+        Ty::AsyncState { .. } => Some(ptr_type),
+
         // Mutable wrapping is transparent at runtime
         Ty::Mutable(inner) => spark_type_to_clif(*inner, table, ptr_type),
     }

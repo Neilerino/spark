@@ -1,0 +1,12 @@
+async fn double(x: Int): Int {
+    return x * 2
+}
+
+fn main(): Int {
+    f1: Future[Int] = spawn { double(5) }
+    f2: Future[Int] = spawn { double(10) }
+    a: Int = await f1
+    b: Int = await f2
+    print(a + b)
+    return 0
+}

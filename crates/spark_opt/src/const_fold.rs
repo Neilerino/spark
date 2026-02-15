@@ -172,6 +172,7 @@ mod tests {
             }],
             blocks,
             captures: vec![],
+            is_async: false,
             span: Span::DUMMY,
         }
     }

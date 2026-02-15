@@ -87,6 +87,8 @@ pub struct MirFunction {
     /// The corresponding MIR locals are at indices
     /// `(1 + param_count)..(1 + param_count + captures.len())`.
     pub captures: Vec<(DefId, TypeId)>,
+    /// Whether this function is declared `async`.
+    pub is_async: bool,
     /// Source span of the function.
     pub span: Span,
 }
@@ -390,6 +392,7 @@ mod tests {
             locals: vec![],
             blocks: vec![],
             captures: vec![],
+            is_async: false,
             span: Span::DUMMY,
         };
         assert_eq!(func.param_count, 0);

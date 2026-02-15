@@ -1426,6 +1426,7 @@ pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -
             format!("{}[{}]", base_name, arg_names.join(", "))
         }
         Ty::Future { inner } => format!("Future[{}]", type_name(*inner, table, definitions)),
+        Ty::AsyncState { .. } => "<async-state>".to_string(),
         Ty::Error => "<error>".to_string(),
     }
 }

@@ -196,10 +196,21 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     }
     emit_warnings(&borrow_output.diagnostics, &source_map);
 
+    // -- Phase 10.25: Async state machine transform ----------------------------
+    let async_output = spark_mir::async_transform::transform(
+        spark_mir::async_transform::AsyncTransformInput {
+            mir: borrow_output.mir,
+            table: borrow_output.table,
+            definitions: definitions.clone(),
+        },
+    );
+    emit_warnings(&async_output.diagnostics, &source_map);
+    let definitions = async_output.definitions;
+
     // -- Phase 10.5: Optimization ---------------------------------------------
     let opt_output = spark_opt::optimize(spark_opt::OptInput {
-        mir: borrow_output.mir,
-        table: borrow_output.table,
+        mir: async_output.mir,
+        table: async_output.table,
         definitions: definitions.clone(),
         opt_level,
     });

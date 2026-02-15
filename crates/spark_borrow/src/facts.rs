@@ -328,6 +328,7 @@ mod tests {
                 is_cleanup: false,
             }],
             captures: vec![],
+            is_async: false,
             span: Span::DUMMY,
         }
     }
@@ -414,6 +415,7 @@ mod tests {
                 is_cleanup: false,
             }],
             captures: vec![],
+            is_async: false,
             span: Span::DUMMY,
         };
 

@@ -25,7 +25,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_resolve`     | Name resolution: scoping, DefIds, imports                      | 56    | Complete |
 | `spark_types`       | Type checking: two-pass signature collection + body checking   | 155   | Complete |
 | `spark_hir`         | HIR lowering: desugar typed AST into core IR                   | 28    | Complete |
-| `spark_mir`         | MIR construction + monomorphization: CFG-based IR              | 44    | Complete |
+| `spark_mir`         | MIR construction + monomorphization + async transform: CFG-based IR | 48    | Complete |
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
 | `spark_drop`        | Type queries for RC/drop decisions (`needs_rc`, `needs_drop`)  | 14    | Complete |
@@ -33,7 +33,7 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_opt`         | MIR optimization passes (5 passes, 2 iterations)               | 75    | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
-**Total: 894 tests passing across workspace.**
+**Total: 900+ tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 
@@ -112,7 +112,7 @@ String literals work end-to-end. `print("hello world")` produces output.
 | Modules / imports | **Partial** | Resolver infrastructure done, no multi-file E2E test |
 | References (`Ref`) | **Partial** | Backend wired (borrow checker, MIR, codegen) but no user-facing creation syntax. See KNOWN_ISSUES.md |
 | `each` / `each via` | **Working** | Index-loop desugaring, callback via fat pointer |
-| `async` / `await` / `spawn` | **Working** | Phase 2 — real concurrency via Tokio `spawn_blocking` |
+| `async` / `await` / `spawn` | **Working** | Phase 3 — cooperative async infrastructure (state machine transform, poll functions, `spawn_coop` runtime). v1: poll calls original synchronously; v2 will add segmented suspension at await points |
 | Generic constraints (`T: IFoo`) | **Not implemented** | Type params work but constraints not validated |
 | Weak references | **Not implemented** | Mentioned in spec, no type system support |
 
@@ -122,10 +122,11 @@ String literals work end-to-end. `print("hello world")` produces output.
 2. **Nested closure RC cleanup** — Closure environments are now RC'd, but captured RC values (e.g., Strings inside an env) are not decremented when the env is freed. Phase 2 follow-up.
 3. **Tuples / modules E2E tests** — These features appear to work but have no E2E coverage. Quick wins for confidence.
 4. **Generic constraint validation** (`T: Comparable`) — Low priority but needed for correct generic programming.
-5. **Async Phase 3** — Cooperative async (`spawn` uses tokio `spawn` instead of `spawn_blocking`), channels for inter-task communication, `select` for multiplexing futures.
+5. **Async Phase 3 v2** — Complete the cooperative async state machine: segmented poll functions that suspend/resume at each await point (currently v1 calls the original function synchronously). Then channels for inter-task communication, `select` for multiplexing futures.
 
 ### Recently Completed
 
+- **Async Phase 3 — Cooperative async infrastructure (v1)** — MIR-level async state machine transform (`spark_mir/src/async_transform.rs`). For each async function with await points: computes live-across-await sets via backward dataflow liveness, builds `Ty::AsyncState` struct type, generates a poll function (`fn(state_ptr) -> i8`, returns 0=Pending/1=Ready). v1 simplification: poll function calls the original function synchronously on first poll. Full infrastructure in place: `RuntimeStubs` for `__spark_alloc_state`, `__spark_spawn_coop`, `__spark_try_poll`; `SparkTask` Rust Future adapter with thread-local waker bridge; pipeline integration between borrow checking and optimization. Original function preserved for sync callers. 3 new E2E tests (`coop_basic`, `coop_chain`, `coop_parallel`). v2 will add segmented suspension at await points for true cooperative scheduling.
 - **Async/Await/Spawn Phase 2** — Real concurrency via Tokio `spawn_blocking`. `Future[T]` is now an opaque heap-allocated RC'd pointer (`SparkFuture*`) instead of a transparent type. `spawn { body }` lifts the body into a zero-arg closure, spawns it on Tokio's blocking thread pool, and returns a `SparkFuture*`. `await future` joins the handle and returns the inner `T`. Direct `await async_fn()` (no spawn) stays synchronous for backward compatibility. Thread safety: spawn blocks cannot capture `Ref[T]` or mutable bindings. Runtime stubs: `__spark_spawn`, `__spark_await`, `__spark_future_rc_dec`. 7 E2E tests covering basic spawn, parallel execution, closure capture, and error cases.
 - **Closure environment RC** — Closure environments now have a 16-byte RC header (`rc`, `alloc_size`). `__spark_env_alloc` prepends the header; `__spark_env_rc_dec` frees at rc=0. `needs_drop()` (superset of `needs_rc`) registers function-typed locals for drop. `Operand::Copy` RC-incs the env_ptr. Nested RC cleanup (captured RC values inside envs) deferred to Phase 2.
 - **Lambdas & capturing closures** — Full lambda/closure pipeline: lambda lifting, fat-pointer ABI (`(fn_ptr, env_ptr)`), thunk generation for function references, capture-by-value semantics with heap-allocated environments (`__spark_env_alloc`). Sret calling convention for aggregate returns.
@@ -163,6 +164,7 @@ String literals work end-to-end. `print("hello world")` produces output.
 6. HIR Lowering (spark_hir) ✅
 7. MIR Construction (spark_mir) ✅
 8. Borrow Checking (spark_borrow) ✅
+8.5. Async State Machine Transform (spark_mir::async_transform) ✅
 9. Optimization (spark_opt) ✅ (nop elim, const fold, CFG simplify, DCE, copy prop; `--no-opt` to skip)
 10. Code Generation (spark_codegen) ✅
 11. Runtime (spark_runtime) ✅ (strings, print, collections, RC implemented)
@@ -272,7 +274,7 @@ fn main(): Int {
 
 ```bash
 cargo build                      # Build all
-cargo test                       # Test all (894 tests)
+cargo test                       # Test all (900+ tests)
 cargo clippy                     # Lint all
 cargo test -p spark_codegen      # Test code generator
 cargo doc --open                 # View documentation

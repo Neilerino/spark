@@ -82,6 +82,12 @@ impl FunctionBuilder {
     /// Creates a new function builder with a return place and entry block.
     #[must_use]
     pub fn new(def_id: DefId, return_type: TypeId, span: Span) -> Self {
+        Self::new_with_async(def_id, return_type, false, span)
+    }
+
+    /// Creates a new function builder, specifying whether this is an async function.
+    #[must_use]
+    pub fn new_with_async(def_id: DefId, return_type: TypeId, _is_async: bool, span: Span) -> Self {
         let mut builder = Self {
             def_id,
             return_type,
@@ -316,7 +322,7 @@ impl FunctionBuilder {
     /// Finishes building and returns the completed [`MirFunction`].
     #[must_use]
     pub fn finish(self, param_count: u32, span: Span) -> MirFunction {
-        self.finish_with_captures(param_count, span, vec![])
+        self.finish_with_captures(param_count, span, vec![], false)
     }
 
     /// Finishes building and produces a [`MirFunction`] with capture metadata.
@@ -325,6 +331,7 @@ impl FunctionBuilder {
         param_count: u32,
         span: Span,
         captures: Vec<(DefId, TypeId)>,
+        is_async: bool,
     ) -> MirFunction {
         MirFunction {
             def_id: self.def_id,
@@ -334,6 +341,7 @@ impl FunctionBuilder {
             blocks: self.blocks,
             span,
             captures,
+            is_async,
         }
     }
 }

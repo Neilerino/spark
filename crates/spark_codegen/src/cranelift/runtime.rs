@@ -105,6 +105,12 @@ pub struct RuntimeStubs {
     pub await_future: FuncId,
     /// `__spark_future_rc_dec(future_ptr)`
     pub future_rc_dec: FuncId,
+    /// `__spark_alloc_state(size: i64) -> ptr`
+    pub alloc_state: FuncId,
+    /// `__spark_spawn_coop(poll_fn, state_ptr, state_size, result_size, result_offset) -> ptr`
+    pub spawn_coop: FuncId,
+    /// `__spark_try_poll(future_ptr) -> ptr`
+    pub try_poll: FuncId,
 }
 
 impl RuntimeStubs {
@@ -441,6 +447,27 @@ impl RuntimeStubs {
                 "__spark_future_rc_dec",
                 &[ptr_type],
                 None,
+                call_conv,
+            ),
+            alloc_state: declare_fn(
+                module,
+                "__spark_alloc_state",
+                &[types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            spawn_coop: declare_fn(
+                module,
+                "__spark_spawn_coop",
+                &[ptr_type, ptr_type, types::I64, types::I64, types::I64],
+                Some(ptr_type),
+                call_conv,
+            ),
+            try_poll: declare_fn(
+                module,
+                "__spark_try_poll",
+                &[ptr_type],
+                Some(ptr_type),
                 call_conv,
             ),
         }

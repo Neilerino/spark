@@ -1,0 +1,19 @@
+async fn step1(): Int {
+    return 10
+}
+
+async fn step2(x: Int): Int {
+    return x + 5
+}
+
+async fn pipeline(): Int {
+    a: Int = await step1()
+    b: Int = await step2(a)
+    return b
+}
+
+fn main(): Int {
+    f: Future[Int] = spawn { pipeline() }
+    print(await f)
+    return 0
+}

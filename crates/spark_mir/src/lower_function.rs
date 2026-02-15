@@ -20,7 +20,7 @@ pub fn lower_function(
     type_table: &TypeTable,
     defs: &DefinitionTable,
 ) -> MirFunction {
-    let mut fb = FunctionBuilder::new(hir_fn.def_id, hir_fn.ret_type, hir_fn.span);
+    let mut fb = FunctionBuilder::new_with_async(hir_fn.def_id, hir_fn.ret_type, hir_fn.is_async, hir_fn.span);
 
     // Allocate parameter locals
     for param in &hir_fn.params {
@@ -66,7 +66,7 @@ pub fn lower_function(
         fb.terminate(Terminator::Return);
     }
 
-    fb.finish_with_captures(param_count, hir_fn.span, hir_fn.captures.clone())
+    fb.finish_with_captures(param_count, hir_fn.span, hir_fn.captures.clone(), hir_fn.is_async)
 }
 
 /// Allocates a local for a function parameter.

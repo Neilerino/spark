@@ -230,6 +230,37 @@ impl LayoutCache {
         layout
     }
 
+    /// Computes the struct layout (with field offsets) for an async state type.
+    pub fn async_state_layout_of(
+        &mut self,
+        fields: &[(spark_intern::Symbol, TypeId)],
+        table: &TypeTable,
+    ) -> StructLayout {
+        if fields.is_empty() {
+            return StructLayout {
+                layout: TypeLayout { size: 0, align: 1 },
+                field_offsets: Vec::new(),
+            };
+        }
+        let mut offset = 0u32;
+        let mut max_align = 1u32;
+        let mut field_offsets = Vec::with_capacity(fields.len());
+        for (_, field_ty) in fields {
+            let field_layout = self.layout_of(*field_ty, table);
+            offset = align_to(offset, field_layout.align);
+            field_offsets.push(offset);
+            offset += field_layout.size;
+            max_align = max_align.max(field_layout.align);
+        }
+        StructLayout {
+            layout: TypeLayout {
+                size: align_to(offset, max_align),
+                align: max_align,
+            },
+            field_offsets,
+        }
+    }
+
     /// Computes the byte offset of a named field, handling both `Ty::Struct`
     /// and `Ty::Applied` types.
     pub fn field_offset_for_type(
@@ -330,10 +361,39 @@ impl LayoutCache {
                 size: self.ptr_size,
                 align: self.ptr_size,
             },
+            // Async state struct — compute layout like a C struct from its fields.
+            Ty::AsyncState { fields, .. } => {
+                let fields = fields.clone();
+                self.compute_async_state_layout(&fields, table)
+            }
+
             Ty::Mutable(inner) => {
                 let inner = *inner;
                 self.layout_of(inner, table)
             }
+        }
+    }
+
+    /// Computes the layout of an async state struct from its fields.
+    fn compute_async_state_layout(
+        &mut self,
+        fields: &[(spark_intern::Symbol, TypeId)],
+        table: &TypeTable,
+    ) -> TypeLayout {
+        if fields.is_empty() {
+            return TypeLayout { size: 0, align: 1 };
+        }
+        let mut offset = 0u32;
+        let mut max_align = 1u32;
+        for (_, field_ty) in fields {
+            let field_layout = self.layout_of(*field_ty, table);
+            offset = align_to(offset, field_layout.align);
+            offset += field_layout.size;
+            max_align = max_align.max(field_layout.align);
+        }
+        TypeLayout {
+            size: align_to(offset, max_align),
+            align: max_align,
         }
     }
 

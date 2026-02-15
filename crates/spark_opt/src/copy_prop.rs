@@ -329,6 +329,7 @@ mod tests {
             locals,
             blocks,
             captures: vec![],
+            is_async: false,
             span: Span::DUMMY,
         }
     }

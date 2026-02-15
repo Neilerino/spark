@@ -482,8 +482,9 @@ fn lower_call(
         })
         .collect();
 
-    // If the callee is an async function, it returns T at runtime even though
-    // the type system says Future[T]. Unwrap so the dest local has the correct type.
+    // Async functions execute synchronously when called directly (not via spawn).
+    // The type system says they return Future[T], but at runtime they return T.
+    // Unwrap so the dest local has the correct runtime type.
     let result_ty = if callee_is_async(callee, type_table) {
         unwrap_future_type(expr.ty, type_table)
     } else {

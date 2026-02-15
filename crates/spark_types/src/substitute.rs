@@ -187,6 +187,7 @@ fn substitute_inner(ty_id: TypeId, subst: &SubstMap, table: &TypeTable) -> TypeI
         | Ty::Never
         | Ty::Struct(_)
         | Ty::Enum(_)
+        | Ty::AsyncState { .. }
         | Ty::Error => ty_id,
     }
 }
@@ -265,7 +266,8 @@ fn substitute_mut_inner(ty_id: TypeId, subst: &SubstMap, table: &mut TypeTable) 
         }
 
         Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::String | Ty::Byte
-        | Ty::Void | Ty::Null | Ty::Never | Ty::Struct(_) | Ty::Enum(_) | Ty::Error => ty_id,
+        | Ty::Void | Ty::Null | Ty::Never | Ty::Struct(_) | Ty::Enum(_)
+        | Ty::AsyncState { .. } | Ty::Error => ty_id,
     }
 }
 

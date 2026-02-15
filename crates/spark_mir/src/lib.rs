@@ -31,6 +31,7 @@
 #![warn(missing_docs)]
 #![allow(clippy::cast_possible_truncation)]
 
+pub mod async_transform;
 pub mod builder;
 pub mod lower_expr;
 pub mod lower_function;
