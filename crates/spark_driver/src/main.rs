@@ -144,7 +144,12 @@ fn cmd_build(
 }
 
 /// Compiles and runs `input`, returning the program's exit code.
-fn cmd_run(input: &Path, args: &[String], opt_level: spark_opt::OptLevel, single_file: bool) -> i32 {
+fn cmd_run(
+    input: &Path,
+    args: &[String],
+    opt_level: spark_opt::OptLevel,
+    single_file: bool,
+) -> i32 {
     // Compile to a temp directory
     let tmp_dir = std::env::temp_dir().join("spark_run");
     if fs::create_dir_all(&tmp_dir).is_err() {
