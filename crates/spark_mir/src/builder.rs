@@ -220,6 +220,15 @@ impl FunctionBuilder {
         self.def_to_local.get(&def_id).copied()
     }
 
+    /// Returns `true` if `local` is a named binding registered via `register_def`.
+    ///
+    /// This distinguishes user variables (which may be referenced again) from
+    /// compiler temporaries (which are used once and can be moved from).
+    #[must_use]
+    pub fn is_def_local(&self, local: Local) -> bool {
+        self.def_to_local.values().any(|&l| l == local)
+    }
+
     /// Pushes a new loop context.
     pub fn push_loop(&mut self, ctx: LoopContext) {
         self.loop_stack.push(ctx);

@@ -1176,6 +1176,12 @@ fn remap_rvalue(rvalue: &Rvalue, local_remap: &FxHashMap<Local, Local>) -> Rvalu
         Rvalue::StringInterp(ops) => Rvalue::StringInterp(
             ops.iter().map(|o| remap_operand(o, local_remap)).collect(),
         ),
+        Rvalue::ListRange { start, end, inclusive, step } => Rvalue::ListRange {
+            start: remap_operand(start, local_remap),
+            end: remap_operand(end, local_remap),
+            inclusive: *inclusive,
+            step: remap_operand(step, local_remap),
+        },
     }
 }
 

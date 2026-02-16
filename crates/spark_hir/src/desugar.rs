@@ -258,7 +258,7 @@ pub fn desugar_each(
 ) -> HirExpr {
     let (stmts, _) = build_each_loop(
         iterable, callback, elem_ty, cb_ret_ty, int_ty, bool_ty, void_ty,
-        span, definitions, false,
+        None, span, definitions, false,
     );
 
     HirExpr::new(
@@ -304,7 +304,7 @@ pub fn desugar_each_via(
 ) -> HirExpr {
     let (stmts, result_id) = build_each_loop(
         iterable, callback, elem_ty, cb_ret_ty, int_ty, bool_ty, void_ty,
-        span, definitions, true,
+        Some(result_list_ty), span, definitions, true,
     );
 
     // The result_id is the __result local (always set when via=true)
@@ -312,20 +312,6 @@ pub fn desugar_each_via(
     let Some(result_def_id) = result_id else {
         return HirExpr::new(HirExprKind::Error, result_list_ty, span);
     };
-
-    // Update __result's type: it's actually List[U], not void
-    // We need to rebuild stmts with the correct type on __result
-    let mut final_stmts = Vec::with_capacity(stmts.len());
-    for stmt in stmts {
-        match stmt {
-            HirStmt::Let { def_id, mutable, value } if def_id == result_def_id => {
-                // Replace the empty list literal's type with result_list_ty
-                let fixed_value = HirExpr::new(value.kind, result_list_ty, value.span);
-                final_stmts.push(HirStmt::Let { def_id, mutable, value: fixed_value });
-            }
-            other => final_stmts.push(other),
-        }
-    }
 
     // Trailing expression: __result
     let trailing = HirExpr::new(
@@ -336,7 +322,7 @@ pub fn desugar_each_via(
 
     HirExpr::new(
         HirExprKind::Block {
-            stmts: final_stmts,
+            stmts,
             expr: Some(Box::new(trailing)),
         },
         result_list_ty,
@@ -358,6 +344,7 @@ fn build_each_loop(
     int_ty: TypeId,
     bool_ty: TypeId,
     void_ty: TypeId,
+    result_list_ty: Option<TypeId>,
     span: Span,
     definitions: &mut DefinitionTable,
     via: bool,
@@ -485,9 +472,10 @@ fn build_each_loop(
             mutable: false,
             value: call_expr,
         });
+        let recv_ty = result_list_ty.unwrap_or(void_ty);
         loop_stmts.push(HirStmt::Expr(HirExpr::new(
             HirExprKind::MethodCall {
-                receiver: Box::new(HirExpr::new(HirExprKind::Local(rid), void_ty, span)),
+                receiver: Box::new(HirExpr::new(HirExprKind::Local(rid), recv_ty, span)),
                 method: spark_intern::kw::APPEND,
                 args: vec![HirExpr::new(HirExprKind::Local(elem_id), cb_ret_ty, span)],
             },
@@ -518,10 +506,11 @@ fn build_each_loop(
 
     if let Some(rid) = result_id {
         // let __result: List[U]! = []
+        let lit_ty = result_list_ty.unwrap_or(void_ty);
         stmts.push(HirStmt::Let {
             def_id: rid,
             mutable: true,
-            value: HirExpr::new(HirExprKind::ListLit(vec![]), void_ty, span),
+            value: HirExpr::new(HirExprKind::ListLit(vec![]), lit_ty, span),
         });
     }
 

@@ -32,9 +32,18 @@ pub fn lower_stmt(
             };
             fb.register_def(*def_id, local);
 
+            // Use Move for temporaries (avoids RC leak: Copy would
+            // increment the refcount with no corresponding drop for
+            // the temp).  Use Copy for named bindings because
+            // lower_expr(Local) returns the *original* local.
+            let operand = if fb.is_def_local(val_local) {
+                Operand::Copy(Place::from_local(val_local))
+            } else {
+                Operand::Move(Place::from_local(val_local))
+            };
             fb.push_stmt(Statement::Assign {
                 place: Place::from_local(local),
-                rvalue: Rvalue::Use(Operand::Copy(Place::from_local(val_local))),
+                rvalue: Rvalue::Use(operand),
                 span: value.span,
             });
 
@@ -58,9 +67,14 @@ pub fn lower_stmt(
                 });
             }
 
+            let operand = if fb.is_def_local(val_local) {
+                Operand::Copy(Place::from_local(val_local))
+            } else {
+                Operand::Move(Place::from_local(val_local))
+            };
             fb.push_stmt(Statement::Assign {
                 place,
-                rvalue: Rvalue::Use(Operand::Copy(Place::from_local(val_local))),
+                rvalue: Rvalue::Use(operand),
                 span: value.span,
             });
         }
