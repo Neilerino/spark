@@ -41,6 +41,7 @@
 mod const_fold;
 mod copy_prop;
 mod dce;
+mod inline;
 mod nop_elim;
 mod simplify_cfg;
 
@@ -100,6 +101,10 @@ pub fn optimize(input: OptInput) -> OptOutput {
     let diagnostics = Diagnostics::new();
 
     if opt_level != OptLevel::None {
+        // Cross-function inlining runs first (needs the full MIR).
+        inline::inline_calls(&mut mir);
+
+        // Per-function optimization passes.
         for func in mir.functions.values_mut() {
             optimize_function(func);
         }

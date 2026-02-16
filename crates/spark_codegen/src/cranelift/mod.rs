@@ -57,8 +57,21 @@ impl CraneliftBackend {
             .set("is_pic", "true")
             .map_err(|e| format!("failed to set is_pic: {e}"))?;
 
-        let isa = cranelift_codegen::isa::lookup(target.triple.clone())
-            .map_err(|e| format!("unsupported target: {e}"))?
+        // Enable additional Cranelift optimizations (ignore if unavailable).
+        let _ = flag_builder.enable("enable_alias_analysis");
+
+        // Use the native ISA builder when compiling for the host to
+        // auto-detect CPU features (SSE4.2, AVX, AVX2, etc.).
+        let is_host = target.triple == target_lexicon::Triple::host();
+        let isa_builder = if is_host {
+            cranelift_native::builder()
+                .map_err(|e| format!("failed to create native ISA builder: {e}"))?
+        } else {
+            cranelift_codegen::isa::lookup(target.triple.clone())
+                .map_err(|e| format!("unsupported target: {e}"))?
+        };
+
+        let isa = isa_builder
             .finish(settings::Flags::new(flag_builder))
             .map_err(|e| format!("failed to create ISA: {e}"))?;
 
