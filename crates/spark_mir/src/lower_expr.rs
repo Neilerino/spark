@@ -85,7 +85,22 @@ pub fn lower_expr(
         HirExprKind::Index { base, index } => {
             let base_local = lower_expr(base, fb, mir, type_table, defs);
             let index_local = lower_expr(index, fb, mir, type_table, defs);
-            let temp = fb.fresh_temp(expr.ty, expr.span);
+            // Use the element type from the base collection, not expr.ty
+            // (which is Optional(elem_ty) from the type checker). This
+            // ensures the MIR temp matches resolve_place_type in codegen.
+            let elem_ty = {
+                let base_resolved = type_table.resolve(base.ty);
+                let unwrapped = match base_resolved {
+                    Ty::Mutable(inner) => type_table.resolve(*inner),
+                    other => other,
+                };
+                match unwrapped {
+                    Ty::List(elem) => *elem,
+                    Ty::Map(_, val) => *val,
+                    _ => expr.ty,
+                }
+            };
+            let temp = fb.fresh_temp(elem_ty, expr.span);
             let mut place = Place::from_local(base_local);
             place.projections.push(Projection::Index(index_local));
             fb.push_assign(

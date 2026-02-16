@@ -1,0 +1,12 @@
+fn main(): Int {
+    nums: List[Int]! = [1]
+    i: Int! = 2
+    loop {
+        if i > 50 { break }
+        nums.append(i)
+        i = i + 1
+    }
+    squared: List[Int] = nums each via (x: Int): Int { x * x }
+    print(squared.len())
+    return 0
+}
