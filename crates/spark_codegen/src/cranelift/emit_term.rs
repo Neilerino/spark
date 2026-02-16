@@ -313,8 +313,24 @@ fn emit_call<M: Module>(
         }
     }
 
-    let func_val =
-        emit_rvalue::emit_operand(ctx, func, table, definitions, func_ids, thunk_ids, module);
+    // Devirtualization: if the function operand traces back to a known
+    // FunctionRef, we can emit a direct call even when the operand is
+    // Copy/Move of a local (skipping the fat-pointer thunk entirely).
+    //
+    // Lambda functions are excluded: they have a hidden env_ptr parameter
+    // in their Cranelift signature that isn't present in MIR call args.
+    // Calling a lambda directly without env_ptr would cause a verifier error.
+    let is_lambda = |id: &spark_resolve::DefId| {
+        definitions
+            .get(*id)
+            .map_or(false, |info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda))
+    };
+    let resolved_def_id = match func {
+        spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(def_id)) => Some(*def_id),
+        _ => resolve_callee_def_id(func, ctx)
+            .filter(|id| func_ids.contains_key(id)),
+    }
+    .filter(|id| !is_lambda(id));
 
     let arg_vals: Vec<Value> = args
         .iter()
@@ -333,38 +349,37 @@ fn emit_call<M: Module>(
         let sret_addr = ctx
             .local_stack_addr(destination.local)
             .unwrap_or_else(|| ctx.builder.ins().iconst(ctx.ptr_type, 0));
-        match func {
-            spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(def_id)) => {
-                emit_direct_call_sret(
-                    ctx,
-                    *def_id,
-                    sret_addr,
-                    &arg_vals,
-                    func_ids,
-                    module,
-                    diagnostics,
-                );
-            }
-            _ => {
-                emit_indirect_call_sret(
-                    ctx,
-                    func_val,
-                    sret_addr,
-                    &arg_vals,
-                    destination,
-                    table,
-                    module,
-                );
-            }
+        if let Some(def_id) = resolved_def_id {
+            emit_direct_call_sret(
+                ctx,
+                def_id,
+                sret_addr,
+                &arg_vals,
+                func_ids,
+                module,
+                diagnostics,
+            );
+        } else {
+            let func_val = emit_rvalue::emit_operand(
+                ctx, func, table, definitions, func_ids, thunk_ids, module,
+            );
+            emit_indirect_call_sret(
+                ctx,
+                func_val,
+                sret_addr,
+                &arg_vals,
+                destination,
+                table,
+                module,
+            );
         }
         None // data already written to sret_addr
+    } else if let Some(def_id) = resolved_def_id {
+        emit_direct_call(ctx, def_id, &arg_vals, func_ids, module, diagnostics)
     } else {
-        match func {
-            spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(def_id)) => {
-                emit_direct_call(ctx, *def_id, &arg_vals, func_ids, module, diagnostics)
-            }
-            _ => emit_indirect_call(ctx, func_val, &arg_vals, destination, table, module),
-        }
+        let func_val =
+            emit_rvalue::emit_operand(ctx, func, table, definitions, func_ids, thunk_ids, module);
+        emit_indirect_call(ctx, func_val, &arg_vals, destination, table, module)
     };
 
     if let Some(result_val) = call_result {

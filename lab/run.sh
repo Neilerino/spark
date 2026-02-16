@@ -23,11 +23,24 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# Language filtering — all enabled by default
+LANG_PYTHON=true
+LANG_GO=true
+LANG_RUST=true
+LANG_SPARK=true
+
 usage() {
     echo "Usage:"
-    echo "  ./run.sh                    # Run all benchmarks"
-    echo "  ./run.sh fibonacci          # Run one benchmark"
-    echo "  ./run.sh --verify           # Verify all outputs match (no timing)"
+    echo "  ./run.sh                          # Run all benchmarks, all languages"
+    echo "  ./run.sh fibonacci                # Run one benchmark"
+    echo "  ./run.sh --verify                 # Verify outputs match (no timing)"
+    echo "  ./run.sh --only spark             # Run only Spark"
+    echo "  ./run.sh --only rust,spark        # Run only Rust and Spark"
+    echo "  ./run.sh --exclude python         # Skip Python"
+    echo "  ./run.sh --exclude python,go      # Skip Python and Go"
+    echo "  ./run.sh fibonacci --only spark   # Single benchmark, single language"
+    echo ""
+    echo "Languages: python, go, rust, spark"
     exit 1
 }
 
@@ -37,18 +50,103 @@ log_warn()  { echo -e "${YELLOW}[warn]${NC}  $*"; }
 log_error() { echo -e "${RED}[error]${NC} $*"; }
 log_header(){ echo -e "\n${BOLD}=== $* ===${NC}\n"; }
 
+# --- Parse a comma-separated language list into normalized names ---
+parse_langs() {
+    local input="$1"
+    local -a langs=()
+    IFS=',' read -ra parts <<< "$input"
+    for part in "${parts[@]}"; do
+        local lang
+        lang="$(echo "$part" | tr '[:upper:]' '[:lower:]' | xargs)"
+        case "$lang" in
+            python|py) langs+=(python) ;;
+            go|golang) langs+=(go) ;;
+            rust|rs)   langs+=(rust) ;;
+            spark)     langs+=(spark) ;;
+            *)
+                log_error "Unknown language: '$lang'"
+                log_info  "Valid languages: python, go, rust, spark"
+                exit 1
+                ;;
+        esac
+    done
+    echo "${langs[@]}"
+}
+
+# --- Check if a language is enabled ---
+lang_enabled() {
+    case "$1" in
+        python) $LANG_PYTHON ;;
+        go)     $LANG_GO ;;
+        rust)   $LANG_RUST ;;
+        spark)  $LANG_SPARK ;;
+        *)      return 1 ;;
+    esac
+}
+
+# --- Count enabled languages ---
+count_enabled_langs() {
+    local count=0
+    $LANG_PYTHON && ((count++)) || true
+    $LANG_GO     && ((count++)) || true
+    $LANG_RUST   && ((count++)) || true
+    $LANG_SPARK  && ((count++)) || true
+    echo "$count"
+}
+
+# --- Show which languages are enabled ---
+show_lang_filter() {
+    local enabled=()
+    $LANG_PYTHON && enabled+=(Python)
+    $LANG_GO     && enabled+=(Go)
+    $LANG_RUST   && enabled+=(Rust)
+    $LANG_SPARK  && enabled+=(Spark)
+    log_info "Languages: ${enabled[*]}"
+}
+
 # --- Prerequisite check ---
 check_prereqs() {
     log_header "Checking prerequisites"
     local missing=()
-    for cmd in python3 go rustc spark hyperfine; do
-        if command -v "$cmd" &>/dev/null; then
-            log_ok "$cmd  $(command -v "$cmd")"
+    # Only check prereqs for enabled languages
+    if $LANG_PYTHON; then
+        if command -v python3 &>/dev/null; then
+            log_ok "python3  $(command -v python3)"
         else
-            log_error "$cmd  NOT FOUND"
-            missing+=("$cmd")
+            log_error "python3  NOT FOUND"
+            missing+=(python3)
         fi
-    done
+    fi
+    if $LANG_GO; then
+        if command -v go &>/dev/null; then
+            log_ok "go  $(command -v go)"
+        else
+            log_error "go  NOT FOUND"
+            missing+=(go)
+        fi
+    fi
+    if $LANG_RUST; then
+        if command -v rustc &>/dev/null; then
+            log_ok "rustc  $(command -v rustc)"
+        else
+            log_error "rustc  NOT FOUND"
+            missing+=(rustc)
+        fi
+    fi
+    if $LANG_SPARK; then
+        if command -v spark &>/dev/null; then
+            log_ok "spark  $(command -v spark)"
+        else
+            log_error "spark  NOT FOUND"
+            missing+=(spark)
+        fi
+    fi
+    if command -v hyperfine &>/dev/null; then
+        log_ok "hyperfine  $(command -v hyperfine)"
+    else
+        log_error "hyperfine  NOT FOUND"
+        missing+=(hyperfine)
+    fi
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo ""
         log_error "Missing tools: ${missing[*]}"
@@ -68,7 +166,7 @@ compile_benchmark() {
     log_info "Compiling $name ..."
 
     # Rust
-    if [[ -f "$dir/main.rs" ]]; then
+    if $LANG_RUST && [[ -f "$dir/main.rs" ]]; then
         rustc -O -o "$build_dir/main_rs" "$dir/main.rs" 2>&1 || {
             log_error "Rust compilation failed for $name"
             return 1
@@ -76,7 +174,7 @@ compile_benchmark() {
     fi
 
     # Go
-    if [[ -f "$dir/main.go" ]]; then
+    if $LANG_GO && [[ -f "$dir/main.go" ]]; then
         go build -o "$build_dir/main_go" "$dir/main.go" 2>&1 || {
             log_error "Go compilation failed for $name"
             return 1
@@ -84,7 +182,7 @@ compile_benchmark() {
     fi
 
     # Spark
-    if [[ -f "$dir/main.spark" ]]; then
+    if $LANG_SPARK && [[ -f "$dir/main.spark" ]]; then
         spark build "$dir/main.spark" -o "$build_dir/main_spark" 2>&1 || {
             log_warn "Spark compilation failed for $name (skipping Spark)"
         }
@@ -104,32 +202,47 @@ verify_benchmark() {
 
     log_info "Verifying $name ..."
 
-    # Run each implementation and capture output
+    # Run each enabled implementation and capture output
     local has_spark=false
-    [[ -f "$build_dir/main_spark" ]] && has_spark=true
+    $LANG_SPARK && [[ -f "$build_dir/main_spark" ]] && has_spark=true
 
-    python3 "$dir/main.py"          > "$tmp_dir/python.out"  2>&1
-    "$build_dir/main_go"            > "$tmp_dir/go.out"      2>&1
-    "$build_dir/main_rs"            > "$tmp_dir/rust.out"    2>&1
+    # Collect outputs for enabled languages
+    local -a out_files=()
+    local -a out_names=()
+
+    if $LANG_PYTHON && [[ -f "$dir/main.py" ]]; then
+        python3 "$dir/main.py" > "$tmp_dir/python.out" 2>&1
+        out_files+=("$tmp_dir/python.out")
+        out_names+=(Python)
+    fi
+    if $LANG_GO && [[ -f "$build_dir/main_go" ]]; then
+        "$build_dir/main_go" > "$tmp_dir/go.out" 2>&1
+        out_files+=("$tmp_dir/go.out")
+        out_names+=(Go)
+    fi
+    if $LANG_RUST && [[ -f "$build_dir/main_rs" ]]; then
+        "$build_dir/main_rs" > "$tmp_dir/rust.out" 2>&1
+        out_files+=("$tmp_dir/rust.out")
+        out_names+=(Rust)
+    fi
     if $has_spark; then
-        "$build_dir/main_spark"     > "$tmp_dir/spark.out"   2>&1
+        "$build_dir/main_spark" > "$tmp_dir/spark.out" 2>&1
+        out_files+=("$tmp_dir/spark.out")
+        out_names+=(Spark)
     fi
 
-    # Compare all outputs against Python as reference
+    # Compare all outputs against the first one as reference
     local failed=false
-    for lang in go rust; do
-        if ! diff -q "$tmp_dir/python.out" "$tmp_dir/${lang}.out" &>/dev/null; then
-            log_error "$name: Python vs ${lang} output MISMATCH"
-            diff "$tmp_dir/python.out" "$tmp_dir/${lang}.out" || true
-            failed=true
-        fi
-    done
-    if $has_spark; then
-        if ! diff -q "$tmp_dir/python.out" "$tmp_dir/spark.out" &>/dev/null; then
-            log_error "$name: Python vs Spark output MISMATCH"
-            diff "$tmp_dir/python.out" "$tmp_dir/spark.out" || true
-            failed=true
-        fi
+    if [[ ${#out_files[@]} -ge 2 ]]; then
+        local ref_file="${out_files[0]}"
+        local ref_name="${out_names[0]}"
+        for i in $(seq 1 $(( ${#out_files[@]} - 1 ))); do
+            if ! diff -q "$ref_file" "${out_files[$i]}" &>/dev/null; then
+                log_error "$name: ${ref_name} vs ${out_names[$i]} output MISMATCH"
+                diff "$ref_file" "${out_files[$i]}" || true
+                failed=true
+            fi
+        done
     fi
 
     rm -rf "$tmp_dir"
@@ -137,7 +250,11 @@ verify_benchmark() {
     if $failed; then
         return 1
     fi
-    log_ok "Verified $name — all outputs match"
+    if [[ ${#out_files[@]} -ge 2 ]]; then
+        log_ok "Verified $name — all outputs match"
+    else
+        log_ok "Verified $name — ran successfully"
+    fi
 }
 
 # --- Run benchmark with hyperfine ---
@@ -147,17 +264,27 @@ run_benchmark() {
     name="$(basename "$dir")"
     local build_dir="$dir/.build"
     local has_spark=false
-    [[ -f "$build_dir/main_spark" ]] && has_spark=true
+    $LANG_SPARK && [[ -f "$build_dir/main_spark" ]] && has_spark=true
 
     log_header "Benchmarking: $name"
 
-    local cmds=(
-        -n "Python"  "python3 $dir/main.py"
-        -n "Go"      "$build_dir/main_go"
-        -n "Rust"    "$build_dir/main_rs"
-    )
+    local cmds=()
+    if $LANG_PYTHON && [[ -f "$dir/main.py" ]]; then
+        cmds+=(-n "Python" "python3 $dir/main.py")
+    fi
+    if $LANG_GO && [[ -f "$build_dir/main_go" ]]; then
+        cmds+=(-n "Go" "$build_dir/main_go")
+    fi
+    if $LANG_RUST && [[ -f "$build_dir/main_rs" ]]; then
+        cmds+=(-n "Rust" "$build_dir/main_rs")
+    fi
     if $has_spark; then
         cmds+=(-n "Spark" "$build_dir/main_spark")
+    fi
+
+    if [[ ${#cmds[@]} -eq 0 ]]; then
+        log_warn "No implementations available for $name — skipping"
+        return 0
     fi
 
     hyperfine --warmup 3 \
@@ -201,15 +328,54 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --verify) verify_only=true; shift ;;
+            --only|-l)
+                # Disable all, then enable specified
+                LANG_PYTHON=false; LANG_GO=false; LANG_RUST=false; LANG_SPARK=false
+                local -a selected
+                read -ra selected <<< "$(parse_langs "$2")"
+                for lang in "${selected[@]}"; do
+                    case "$lang" in
+                        python) LANG_PYTHON=true ;;
+                        go)     LANG_GO=true ;;
+                        rust)   LANG_RUST=true ;;
+                        spark)  LANG_SPARK=true ;;
+                    esac
+                done
+                shift 2
+                ;;
+            --exclude|-x)
+                local -a excluded
+                read -ra excluded <<< "$(parse_langs "$2")"
+                for lang in "${excluded[@]}"; do
+                    case "$lang" in
+                        python) LANG_PYTHON=false ;;
+                        go)     LANG_GO=false ;;
+                        rust)   LANG_RUST=false ;;
+                        spark)  LANG_SPARK=false ;;
+                    esac
+                done
+                shift 2
+                ;;
             --help|-h) usage ;;
+            -*) log_error "Unknown option: $1"; usage ;;
             *) filter="$1"; shift ;;
         esac
     done
 
+    local enabled_count
+    enabled_count="$(count_enabled_langs)"
+    if [[ "$enabled_count" -eq 0 ]]; then
+        log_error "No languages enabled — nothing to do"
+        exit 1
+    fi
+
+    show_lang_filter
     check_prereqs
 
     local benchmarks
     read -ra benchmarks <<< "$(discover_benchmarks "$filter")"
+
+    mkdir -p "$RESULTS_DIR"
 
     # Compile all
     log_header "Compilation"
