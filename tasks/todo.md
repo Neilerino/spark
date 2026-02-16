@@ -262,6 +262,28 @@ these tags automatically — open the tree view to jump between tasks and their 
   run sequentially behind a mutex. Use `tempfile::NamedTempFile` or a per-test temp directory to
   allow parallel execution.
 
+### `TODO` [SPARK-027] — Operators on `Ref[T]` should auto-deref to the enclosed type
+
+- **Type**: feature
+- **Effort**: medium
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_resolve, spark_types, spark_codegen
+- **Files**:
+  - `crates/spark_resolve/src/lib.rs` — operator resolution should unwrap Ref types
+  - `crates/spark_types/src/lib.rs` — type-checking for binary/compound-assign through refs
+  - `crates/spark_codegen/src/lib.rs` — emit implicit load before operator, store after compound assign
+- **Description**: Arithmetic, comparison, and compound-assignment operators (`+`, `-`, `+=`, etc.)
+  currently only work on bare value types. When the operand is a `Ref[T]` (or `Ref[T!]!`), the
+  compiler should auto-dereference to `T` for the operator and, for compound-assignment on a
+  mutable ref, write the result back through the reference. Example:
+  ```spark
+  test: Ref[Int!]! = 0
+  test += 1          // should desugar to: *test = *test + 1
+  test = test + 1    // should also work via auto-deref on the RHS
+  ```
+  This is analogous to Rust's `Deref`/`DerefMut` coercion for operators.
+
 ---
 
 ## Priority 4 — Maintainability / Long-term
