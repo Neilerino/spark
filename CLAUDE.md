@@ -28,39 +28,104 @@
 
 | File                                                           | Contains                                             |
 | -------------------------------------------------------------- | ---------------------------------------------------- |
+| [tasks/todo.md](tasks/todo.md)                                 | Open tasks, ticket IDs, status, effort estimates     |
+| [tasks/research/](tasks/research/)                             | Research & planning deliverables (SPARK-NNN.md)      |
 | [HANDOFF.md](HANDOFF.md)                                       | Status, completed crates, next tasks                 |
 | [docs/lang-spec.md](docs/lang-spec.md)                         | Grammar, syntax, all language features with examples |
 | [docs/compiler-architecture.md](docs/compiler-architecture.md) | Pipeline phases, schemas, design decisions           |
+| [docs/roadmap.md](docs/roadmap.md)                             | Feature roadmap, work streams, priority order        |
+| [docs/known-issues.md](docs/known-issues.md)                   | Active bugs with reproducers and workarounds         |
+| [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)                   | Architectural loose ends (closures, codegen, refs)   |
+| [docs/design-notes/](docs/design-notes/)                       | Concurrency, stdlib, lambda/closure design plans     |
 | `crates/*/README.md`                                           | Per-crate purpose, design rationale, examples        |
 | `crates/*/src/lib.rs`                                          | Crate-level docs, type tables, API examples          |
 
 ### Key Source Files
 
-| Need                  | Look Here                                                                    |
-| --------------------- | ---------------------------------------------------------------------------- |
-| Token definitions     | [crates/spark_lexer/src/token.rs](crates/spark_lexer/src/token.rs)           |
-| AST node types        | [crates/spark_ast/src/](crates/spark_ast/src/) (expr.rs, stmt.rs, decl.rs)   |
-| Pre-interned keywords | [crates/spark_intern/src/lib.rs](crates/spark_intern/src/lib.rs) (kw module) |
-| Diagnostic patterns   | [crates/spark_diagnostics/src/lib.rs](crates/spark_diagnostics/src/lib.rs)   |
-| Test patterns         | Any `#[cfg(test)]` mod in completed crates                                   |
-| Visitor pattern       | [crates/spark_ast/src/visitor.rs](crates/spark_ast/src/visitor.rs)           |
+| Need                   | Look Here                                                                    |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| Token definitions      | [crates/spark_lexer/src/token.rs](crates/spark_lexer/src/token.rs)           |
+| AST node types         | [crates/spark_ast/src/](crates/spark_ast/src/) (expr.rs, stmt.rs, decl.rs)   |
+| Pre-interned keywords  | [crates/spark_intern/src/lib.rs](crates/spark_intern/src/lib.rs) (kw module) |
+| Diagnostic patterns    | [crates/spark_diagnostics/src/lib.rs](crates/spark_diagnostics/src/lib.rs)   |
+| Visitor pattern        | [crates/spark_ast/src/visitor.rs](crates/spark_ast/src/visitor.rs)           |
+| Pipeline orchestration | [crates/spark_driver/src/pipeline.rs](crates/spark_driver/src/pipeline.rs)   |
+| Name resolution        | [crates/spark_resolve/src/resolver.rs](crates/spark_resolve/src/resolver.rs) |
+| Type checker           | [crates/spark_types/src/checker.rs](crates/spark_types/src/checker.rs)       |
+| Type table             | [crates/spark_types/src/table.rs](crates/spark_types/src/table.rs)           |
+| HIR desugaring         | [crates/spark_hir/src/desugar.rs](crates/spark_hir/src/desugar.rs)           |
+| MIR data structures    | [crates/spark_mir/src/mir.rs](crates/spark_mir/src/mir.rs)                   |
+| Codegen backend trait  | [crates/spark_codegen/src/backend.rs](crates/spark_codegen/src/backend.rs)   |
+| Cranelift emission     | [crates/spark_codegen/src/cranelift/](crates/spark_codegen/src/cranelift/)   |
+| Drop / RC type queries | [crates/spark_drop/src/lib.rs](crates/spark_drop/src/lib.rs)                 |
+| Runtime FFI functions  | [crates/spark_runtime/src/lib.rs](crates/spark_runtime/src/lib.rs)           |
+| Optimization passes    | [crates/spark_opt/src/lib.rs](crates/spark_opt/src/lib.rs)                   |
+| Borrow checker         | [crates/spark_borrow/src/check.rs](crates/spark_borrow/src/check.rs)         |
+| E2E tests              | [crates/spark_driver/tests/e2e.rs](crates/spark_driver/tests/e2e.rs)         |
+| LSP server             | [tools/spark-lsp/](tools/spark-lsp/)                                         |
+| Test patterns          | Any `#[cfg(test)]` mod across crates                                         |
 
 ### Architecture Quick Reference
 
 ```
-Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR → Borrow → Opt → Codegen
-           ✅      ✅        ⏳         ⏳        ⏳      ⏳    ⏳      ⏳       ⏳     ⏳
+Source → Lexer → Parser → Modules → Resolve → Types → HIR → MIR → Borrow → Opt → Codegen → Link
+           ✅      ✅        ✅         ✅        ✅      ✅    ✅      ✅       ✅     ✅        ✅
 
-Dependencies:
-spark_span ──┬──► spark_diagnostics ──┬──► spark_lexer ──► spark_ast
-spark_intern ┘                         └───────────────────────┘
+17 crates, 900+ tests. All phases complete.
+
+Infrastructure:  spark_span, spark_intern, spark_diagnostics
+Front-end:       spark_lexer → spark_ast → spark_parser → spark_modules → spark_resolve
+Middle-end:      spark_types → spark_hir → spark_mir (+ spark_drop) → spark_borrow → spark_opt
+Back-end:        spark_codegen (Cranelift) → spark_runtime (libspark_runtime.a) → spark_driver (CLI)
+Tooling:         tools/spark-lsp, spark_stdlib
 ```
+
+---
+
+## Task Tracking System
+
+All open work is tracked in **[tasks/todo.md](tasks/todo.md)**. Every task has a `SPARK-NNN` ticket
+ID that cross-references code comments with the task file.
+
+### How it works
+
+1. **[tasks/todo.md](tasks/todo.md)** — The single source of truth for all open, in-progress, and
+   completed tasks. Contains full descriptions, affected crates/files, effort estimates, and status.
+2. **Code comments** — In any source file, a comment like `// TODO [SPARK-001]` links that location
+   to the corresponding task in `todo.md`. The **TODO Tree** VS Code extension indexes these and
+   shows them in a sidebar tree view, grouped by tag.
+3. **[tasks/research/](tasks/research/)** — Research and planning tasks produce deliverables as
+   markdown files here, named `SPARK-NNN.md` matching the ticket ID.
+
+### Tags
+
+| Tag     | Meaning                                | When to use                              |
+| ------- | -------------------------------------- | ---------------------------------------- |
+| `TODO`  | Planned work, not yet started          | Default for new tasks                    |
+| `FIXME` | Broken behaviour that needs correcting | Something works but incorrectly          |
+| `BUG`   | User-facing correctness issue          | End users would encounter this           |
+| `PERF`  | Performance improvement opportunity    | Measurable or architectural perf concern |
+| `HACK`  | Temporary workaround, must be replaced | Known tech debt with a plan to fix       |
+| `NOTE`  | Context for future readers, no action  | Explain _why_ something is a certain way |
+
+### Adding a task
+
+1. Open `tasks/todo.md`, find the highest `SPARK-NNN` ID, increment by 1.
+2. Add the entry using the template defined at the top of that file.
+3. Add `// TAG [SPARK-NNN] - todo.md` comments in every affected source file.
+4. For research/planning tasks, create `tasks/research/SPARK-NNN.md` with deliverables.
+
+### VS Code integration
+
+The TODO Tree extension is configured in `.vscode/settings.json`. It scans `**/*.rs`, `**/*.spark`,
+`**/*.md`, and `**/*.toml` for tag patterns. Open the TODO Tree sidebar to browse all tagged
+comments, grouped by tag type and filterable by crate.
 
 ---
 
 ## Critical Rules (Non-Negotiable)
 
-1. **NO UNSAFE CODE** - `#![forbid(unsafe_code)]` in every crate
+1. **NO UNSAFE CODE** - `#![forbid(unsafe_code)]` in every crate (except `spark_runtime` which uses `extern "C"` FFI)
 2. **NO PANICS ON INVALID INPUT** - Use error nodes (`ExprKind::Error`), continue parsing
 3. **COMPREHENSIVE TESTS** - Every feature, every error path, edge cases
 4. **ALL PUBLIC ITEMS DOCUMENTED** - Doc comments required
@@ -96,7 +161,7 @@ use spark_intern::kw;
 if symbol == kw::FN { ... }
 ```
 
-**See**: [spark_intern/src/lib.rs](crates/spark_intern/src/lib.rs) - 67 pre-interned symbols
+**See**: [spark_intern/src/lib.rs](crates/spark_intern/src/lib.rs) - 108 pre-interned symbols
 
 ### 3. Span Management
 
@@ -118,8 +183,8 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn parse(tokens: Vec<Token>) -> (Ast, Diagnostics) {
-        let mut parser = Parser::new(tokens);
+    pub fn parse(tokens: Vec<Token>, file_id: FileId) -> (Ast, Diagnostics) {
+        let mut parser = Parser::new(tokens, file_id);
         let ast = parser.parse_ast();
         (ast, parser.diagnostics)
     }
@@ -180,61 +245,43 @@ See [docs/compiler-architecture.md](docs/compiler-architecture.md) section "Phas
 
 ### Token Kinds
 
-65 total: 4 literals, 31 keywords, 25 operators, 5 special.  
+92 total: 8 literals, 37 keywords, 15 punctuation, 28 operators, 4 special.  
 **See**: [spark_lexer/src/token.rs](crates/spark_lexer/src/token.rs) for complete enum
 
 ### AST Structure
 
 - **Ast** - Top level (file)
 - **Item** - 8 variants (Function, Struct, Enum, Interface, TypeAlias, TypeDef, Const, Binding)
-- **Expr** - 35+ variants (see [spark_ast/src/expr.rs](crates/spark_ast/src/expr.rs))
-- **Pattern** - 9 variants (see [spark_ast/src/pattern.rs](crates/spark_ast/src/pattern.rs))
+- **Expr** - 41 variants (see [spark_ast/src/expr.rs](crates/spark_ast/src/expr.rs))
+- **Pattern** - 11 variants (see [spark_ast/src/pattern.rs](crates/spark_ast/src/pattern.rs))
 
 ### Naming Conventions
 
-| Item      | Style            | Example             |
-| --------- | ---------------- | ------------------- |
-| Crates    | `snake_case`     | `spark_lexer`       |
-| Types     | `PascalCase`     | `Token`, `ExprKind` |
-| Functions | `snake_case`     | `parse_expr`        |
-| IDs       | Suffix with `Id` | `FileId`, `Symbol`  |
+| Item      | Style            | Example                     |
+| --------- | ---------------- | --------------------------- |
+| Crates    | `snake_case`     | `spark_lexer`               |
+| Types     | `PascalCase`     | `Token`, `ExprKind`         |
+| Functions | `snake_case`     | `parse_expr`                |
+| IDs       | Suffix with `Id` | `FileId`, `DefId`, `TypeId` |
 
 ---
 
-## Next Phase: spark_parser
+## Running Spark Programs
 
-**Goal**: Parse `Vec<Token>` → `Ast`
+```bash
+# From the source tree — compile and run a .spark file
+cargo run -p spark_driver -- run hello.spark
 
-### Required Files
+# Compile to a standalone executable
+cargo run -p spark_driver -- build hello.spark -o hello
+./hello
 
+# Install system-wide (copies spark + libspark_runtime.a to prefix)
+./install.sh              # default: ~/.local/bin + ~/.local/lib
+./install.sh /usr/local   # or a custom prefix
 ```
-crates/spark_parser/src/
-├── lib.rs       # Public API, Parser struct
-├── expr.rs      # Expression parsing (precedence climbing)
-├── stmt.rs      # Statement parsing
-├── decl.rs      # Declaration parsing
-├── types.rs     # Type expression parsing
-└── pattern.rs   # Pattern parsing
-```
 
-### Implementation Strategy
-
-1. **Start with basic structure** - Parser struct with utilities (current, advance, expect, check)
-2. **Expression parsing** - Use precedence climbing algorithm (see architecture doc)
-3. **Error recovery** - Synchronize at semicolons, braces, item keywords
-4. **Test each feature** - Parse simple cases first, add complexity
-
-### Key References for Parser
-
-- **Grammar**: [docs/lang-spec.md](docs/lang-spec.md) sections 6-9 (operators, control flow, functions)
-- **Precedence table**: [docs/compiler-architecture.md](docs/compiler-architecture.md) Phase 2
-- **AST nodes**: [crates/spark_ast/src/](crates/spark_ast/src/)
-- **Existing patterns**: Look at [spark_lexer/src/lexer.rs](crates/spark_lexer/src/lexer.rs) for cursor/advance patterns
-
-### Precedence Climbing Resources
-
-- [Pratt Parsing Explanation](https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html)
-- [Crafting Interpreters - Parsing](https://craftinginterpreters.com/parsing-expressions.html)
+Requires a C compiler accessible as `cc` (Xcode CLI tools on macOS, `gcc`/`clang` on Linux).
 
 ---
 
@@ -273,11 +320,13 @@ mod tests {
 ## Development Commands
 
 ```bash
-cargo build                    # Build all
-cargo test                     # Test all
-cargo test -p spark_parser     # Test specific crate
-cargo clippy                   # Lint (pedantic + nursery)
-cargo doc --open               # View docs
+cargo build                                    # Build all
+cargo test                                     # Test all (900+ tests)
+cargo test -p spark_codegen                    # Test specific crate
+cargo clippy                                   # Lint (pedantic + nursery)
+cargo doc --open                               # View docs
+cargo run -p spark_driver -- run hello.spark   # Compile + run a .spark file
+cargo run -p spark_driver -- build f.spark -o f # Compile to executable
 ```
 
 ---
@@ -300,8 +349,9 @@ cargo doc --open               # View docs
 
 1. **Read the spec** - [lang-spec.md](docs/lang-spec.md) has examples of every feature
 2. **Check architecture doc** - [compiler-architecture.md](docs/compiler-architecture.md) has schemas and design rationale
-3. **Look at tests** - They show expected usage patterns
-4. **READMEs explain "why"** - Every crate README has "Design Decisions" section
+3. **Check the task tracker** - [tasks/todo.md](tasks/todo.md) has all open work with affected files
+4. **Look at tests** - They show expected usage patterns
+5. **READMEs explain "why"** - Every crate README has "Design Decisions" section
 
 ---
 
