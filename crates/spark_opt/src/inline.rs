@@ -31,7 +31,7 @@ use spark_resolve::DefId;
 use spark_span::Span;
 
 /// Maximum inlining cost score. Functions with a higher score are not inlined.
-const INLINE_THRESHOLD: usize = 60;
+const INLINE_THRESHOLD: usize = 100;
 
 /// Inlines eligible function calls within each function of the MIR.
 ///

@@ -5,7 +5,7 @@
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{InstBuilder, MemFlags, Value};
+use cranelift_codegen::ir::{InstBuilder, InstructionData, MemFlags, Value};
 use cranelift_module::Module;
 use spark_ast::{BinaryOp, UnaryOp};
 use spark_diagnostics::Diagnostics;
@@ -481,6 +481,66 @@ fn emit_binop(
     }
 }
 
+/// Extracts the immediate value from a Cranelift `iconst` instruction.
+///
+/// Returns `Some(imm)` if the value was produced by an `iconst`, `None` otherwise.
+fn try_get_iconst(ctx: &FunctionContext<'_>, val: Value) -> Option<i64> {
+    let dfg = &ctx.builder.func.dfg;
+    let inst = match dfg.value_def(val) {
+        cranelift_codegen::ir::ValueDef::Result(inst, _) => inst,
+        _ => return None,
+    };
+    match dfg.insts[inst] {
+        InstructionData::UnaryImm { imm, .. } => Some(imm.bits()),
+        _ => None,
+    }
+}
+
+/// Attempts to strength-reduce signed division or modulo by a constant
+/// power-of-2 into bitwise operations.
+///
+/// For signed `x / (2^k)`, emits the standard compiler trick:
+/// ```text
+/// sign     = sshr x, (bits - 1)      // -1 if negative, 0 if positive
+/// bias     = ushr sign, (bits - k)   // (2^k - 1) if negative, 0 if positive
+/// adjusted = iadd x, bias
+/// result   = sshr adjusted, k
+/// ```
+///
+/// For signed `x % (2^k)`, computes `x - (x / 2^k) * 2^k`.
+///
+/// Returns `Some(value)` if the optimization applied, `None` to fall through.
+fn try_strength_reduce_signed_divmod(
+    ctx: &mut FunctionContext<'_>,
+    op: BinaryOp,
+    lhs: Value,
+    rhs: Value,
+) -> Option<Value> {
+    let divisor = try_get_iconst(ctx, rhs)?;
+    if divisor <= 0 || !(divisor as u64).is_power_of_two() {
+        return None;
+    }
+
+    let k = (divisor as u64).trailing_zeros();
+    let bits = i64::from(ctx.builder.func.dfg.value_type(lhs).bits());
+
+    // Compute signed division: (x + bias) >> k where bias = (2^k - 1) if x < 0
+    let sign = ctx.builder.ins().sshr_imm(lhs, bits - 1);
+    let bias = ctx.builder.ins().ushr_imm(sign, bits - i64::from(k));
+    let adjusted = ctx.builder.ins().iadd(lhs, bias);
+    let div_result = ctx.builder.ins().sshr_imm(adjusted, i64::from(k));
+
+    match op {
+        BinaryOp::Div => Some(div_result),
+        BinaryOp::Mod => {
+            // x % (2^k) = x - (x / 2^k) * 2^k
+            let mul_back = ctx.builder.ins().ishl_imm(div_result, i64::from(k));
+            Some(ctx.builder.ins().isub(lhs, mul_back))
+        }
+        _ => None,
+    }
+}
+
 /// Emits an integer binary operation.
 fn emit_int_binop(
     ctx: &mut FunctionContext<'_>,
@@ -495,6 +555,9 @@ fn emit_int_binop(
         BinaryOp::Mul => ctx.builder.ins().imul(lhs, rhs),
         BinaryOp::Div => {
             if signed {
+                if let Some(result) = try_strength_reduce_signed_divmod(ctx, op, lhs, rhs) {
+                    return result;
+                }
                 ctx.builder.ins().sdiv(lhs, rhs)
             } else {
                 ctx.builder.ins().udiv(lhs, rhs)
@@ -502,6 +565,9 @@ fn emit_int_binop(
         }
         BinaryOp::Mod => {
             if signed {
+                if let Some(result) = try_strength_reduce_signed_divmod(ctx, op, lhs, rhs) {
+                    return result;
+                }
                 ctx.builder.ins().srem(lhs, rhs)
             } else {
                 ctx.builder.ins().urem(lhs, rhs)
