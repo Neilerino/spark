@@ -469,4 +469,4 @@ these tags automatically — open the tree view to jump between tasks and their 
 ## Completed
 
 <!-- Move completed tasks here with their original ID and a completion date -->
-<!-- ### TAG [SPARK-NNN] — Title (completed YYYY-MM-DD) -->
+<!-- ### TAG [SPARK-NNN] — Title (completed YYYY-MM-DD) [very short high level description]-->
