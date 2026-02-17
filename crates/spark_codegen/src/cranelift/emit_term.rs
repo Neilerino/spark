@@ -177,6 +177,15 @@ fn emit_call<M: Module>(
     lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,
     diagnostics: &mut Diagnostics,
 ) {
+    // Intercept intrinsic calls introduced by the deforestation pass.
+    if let Some(intrinsic) = resolve_intrinsic(func, ctx) {
+        emit_intrinsic_call(
+            ctx, intrinsic, args, destination, target, table, definitions,
+            func_ids, thunk_ids, module,
+        );
+        return;
+    }
+
     // Intercept built-in `print` calls and method calls for type-based dispatch.
     // The func operand is typically `Copy(place)` of a local that was assigned
     // a `Constant::FunctionRef(def_id)`, so we resolve the DefId from the MIR.
@@ -450,6 +459,291 @@ fn resolve_callee_def_id(
     }
 
     None
+}
+
+/// Resolves an [`Intrinsic`] from a function operand.
+///
+/// The deforestation pass stores `Constant::IntrinsicRef(intrinsic)` directly
+/// in the function operand. We also check locals that were assigned one.
+fn resolve_intrinsic(
+    func: &Operand,
+    ctx: &FunctionContext<'_>,
+) -> Option<spark_mir::Intrinsic> {
+    if let spark_mir::Operand::Constant(spark_mir::Constant::IntrinsicRef(intrinsic)) = func {
+        return Some(*intrinsic);
+    }
+
+    let local = match func {
+        spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place)
+            if place.projections.is_empty() =>
+        {
+            place.local
+        }
+        _ => return None,
+    };
+
+    for block in &ctx.mir_func.blocks {
+        for stmt in &block.statements {
+            if let spark_mir::Statement::Assign { place, rvalue, .. } = stmt {
+                if place.local == local && place.projections.is_empty() {
+                    if let spark_mir::Rvalue::Use(spark_mir::Operand::Constant(
+                        spark_mir::Constant::IntrinsicRef(intrinsic),
+                    )) = rvalue
+                    {
+                        return Some(*intrinsic);
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Emits a call to a compiler intrinsic introduced by the deforestation pass.
+///
+/// Intrinsic args are already rewritten by the deforestation pass:
+/// `[start, end, inclusive_i64, step, ...rest_args]`
+#[allow(clippy::too_many_arguments)]
+fn emit_intrinsic_call<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    intrinsic: spark_mir::Intrinsic,
+    args: &[Operand],
+    destination: &spark_mir::Place,
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) {
+    // Evaluate range parameters: start, end, inclusive, step (args[0..4]).
+    let start_val = args.first().and_then(|a| {
+        emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
+    });
+    let end_val = args.get(1).and_then(|a| {
+        emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
+    });
+    let inclusive_val = args.get(2).and_then(|a| {
+        emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
+    });
+    let step_val = args.get(3).and_then(|a| {
+        emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
+    });
+
+    let (Some(s), Some(e), Some(inc), Some(st)) = (start_val, end_val, inclusive_val, step_val)
+    else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    // Truncate inclusive from i64 to i8 (the runtime expects i8).
+    let inc_i8 = ctx.builder.ins().ireduce(types::I8, inc);
+
+    match intrinsic {
+        spark_mir::Intrinsic::ParallelRangeForEach => {
+            // args[4] = callback fat pointer
+            let cb_val = args.get(4).and_then(|a| {
+                emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
+            });
+            let Some(fat_ptr) = cb_val else {
+                let target_block = ctx.clif_block(target);
+                ctx.builder.ins().jump(target_block, &[]);
+                return;
+            };
+            let fn_ptr = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), fat_ptr, 0);
+            let env_ptr = ctx.builder.ins().load(
+                ctx.ptr_type,
+                MemFlags::new(),
+                fat_ptr,
+                ctx.ptr_type.bytes() as i32,
+            );
+
+            // Compute cb_kind from callback type.
+            let cb_kind = compute_cb_kind_for_arg(ctx, args, 4, table);
+            let cb_kind_val = ctx.builder.ins().iconst(types::I8, i64::from(cb_kind));
+
+            let func_ref = module.declare_func_in_func(
+                ctx.stubs.parallel_range_foreach,
+                ctx.builder.func,
+            );
+            ctx.builder.ins().call(
+                func_ref,
+                &[s, e, inc_i8, st, fn_ptr, env_ptr, cb_kind_val],
+            );
+        }
+
+        spark_mir::Intrinsic::ParallelRangeMap => {
+            // args[4] = callback fat pointer
+            let cb_val = args.get(4).and_then(|a| {
+                emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
+            });
+            let Some(fat_ptr) = cb_val else {
+                let target_block = ctx.clif_block(target);
+                ctx.builder.ins().jump(target_block, &[]);
+                return;
+            };
+            let fn_ptr = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), fat_ptr, 0);
+            let env_ptr = ctx.builder.ins().load(
+                ctx.ptr_type,
+                MemFlags::new(),
+                fat_ptr,
+                ctx.ptr_type.bytes() as i32,
+            );
+
+            let cb_kind = compute_cb_kind_for_arg(ctx, args, 4, table);
+            let cb_kind_val = ctx.builder.ins().iconst(types::I8, i64::from(cb_kind));
+
+            // Compute result_elem_size from the callback's return type.
+            let ret_ty = get_callback_return_type(ctx, args, 4, table);
+            let result_layout = ctx.layouts.layout_of(ret_ty, table);
+            let result_elem_size_val = ctx
+                .builder
+                .ins()
+                .iconst(types::I64, i64::from(result_layout.size));
+
+            let func_ref = module.declare_func_in_func(
+                ctx.stubs.parallel_range_map,
+                ctx.builder.func,
+            );
+            let call = ctx.builder.ins().call(
+                func_ref,
+                &[s, e, inc_i8, st, fn_ptr, env_ptr, result_elem_size_val, cb_kind_val],
+            );
+            let result = ctx.builder.inst_results(call)[0];
+            if destination.projections.is_empty() {
+                ctx.write_local(destination.local, result);
+            }
+        }
+
+        spark_mir::Intrinsic::ParallelRangeMapReduce => {
+            // args: [start, end, inclusive, step, mapper, combiner, initial]
+            let mapper_val = args.get(4).and_then(|a| {
+                emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
+            });
+            let combiner_val = args.get(5).and_then(|a| {
+                emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
+            });
+            let initial_val = args.get(6).and_then(|a| {
+                emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
+            });
+
+            let (Some(mapper_fp), Some(combiner_fp), Some(initial)) =
+                (mapper_val, combiner_val, initial_val)
+            else {
+                let target_block = ctx.clif_block(target);
+                ctx.builder.ins().jump(target_block, &[]);
+                return;
+            };
+
+            let map_fn = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), mapper_fp, 0);
+            let map_env = ctx.builder.ins().load(
+                ctx.ptr_type,
+                MemFlags::new(),
+                mapper_fp,
+                ctx.ptr_type.bytes() as i32,
+            );
+            let reduce_fn =
+                ctx.builder
+                    .ins()
+                    .load(ctx.ptr_type, MemFlags::new(), combiner_fp, 0);
+            let reduce_env = ctx.builder.ins().load(
+                ctx.ptr_type,
+                MemFlags::new(),
+                combiner_fp,
+                ctx.ptr_type.bytes() as i32,
+            );
+
+            let map_cb_kind = compute_cb_kind_for_arg(ctx, args, 4, table);
+            let map_cb_kind_val = ctx.builder.ins().iconst(types::I8, i64::from(map_cb_kind));
+            let reduce_cb_kind = compute_cb_kind_for_arg(ctx, args, 5, table);
+            let reduce_cb_kind_val =
+                ctx.builder.ins().iconst(types::I8, i64::from(reduce_cb_kind));
+
+            let func_ref = module.declare_func_in_func(
+                ctx.stubs.parallel_range_map_reduce,
+                ctx.builder.func,
+            );
+            let call = ctx.builder.ins().call(
+                func_ref,
+                &[
+                    s,
+                    e,
+                    inc_i8,
+                    st,
+                    map_fn,
+                    map_env,
+                    reduce_fn,
+                    reduce_env,
+                    initial,
+                    map_cb_kind_val,
+                    reduce_cb_kind_val,
+                ],
+            );
+            let result = ctx.builder.inst_results(call)[0];
+            if destination.projections.is_empty() {
+                ctx.write_local(destination.local, result);
+            }
+        }
+    }
+
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+}
+
+/// Computes the `cb_kind` bitmask for a callback argument at the given index.
+fn compute_cb_kind_for_arg(
+    ctx: &FunctionContext<'_>,
+    args: &[Operand],
+    arg_idx: usize,
+    table: &TypeTable,
+) -> u8 {
+    let cb_ty_id = match args.get(arg_idx) {
+        Some(Operand::Copy(place)) | Some(Operand::Move(place)) => ctx.local_type_id(place.local),
+        _ => spark_types::TypeId::ERROR,
+    };
+    let (param_ty, ret_ty) = match table.resolve(cb_ty_id).clone() {
+        Ty::Function { params, ret, .. } => {
+            let p = params
+                .first()
+                .copied()
+                .unwrap_or(spark_types::TypeId::ERROR);
+            (p, ret)
+        }
+        _ => (spark_types::TypeId::ERROR, spark_types::TypeId::ERROR),
+    };
+
+    let input_kind: u8 = if matches!(table.resolve(param_ty), Ty::Float(_)) {
+        1
+    } else {
+        0
+    };
+    let output_kind: u8 = if matches!(table.resolve(ret_ty), Ty::Void) {
+        2
+    } else if matches!(table.resolve(ret_ty), Ty::Float(_)) {
+        1
+    } else {
+        0
+    };
+    input_kind | (output_kind << 2)
+}
+
+/// Gets the return type of a callback at the given argument index.
+fn get_callback_return_type(
+    ctx: &FunctionContext<'_>,
+    args: &[Operand],
+    arg_idx: usize,
+    table: &TypeTable,
+) -> spark_types::TypeId {
+    let cb_ty_id = match args.get(arg_idx) {
+        Some(Operand::Copy(place)) | Some(Operand::Move(place)) => ctx.local_type_id(place.local),
+        _ => return spark_types::TypeId::ERROR,
+    };
+    match table.resolve(cb_ty_id).clone() {
+        Ty::Function { ret, .. } => ret,
+        _ => spark_types::TypeId::ERROR,
+    }
 }
 
 /// Emits a built-in `print` call, dispatching to the correct runtime stub

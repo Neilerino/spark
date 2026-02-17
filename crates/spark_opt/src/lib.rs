@@ -41,6 +41,7 @@
 mod const_fold;
 mod copy_prop;
 mod dce;
+mod deforest;
 mod inline;
 mod nop_elim;
 mod simplify_cfg;
@@ -101,7 +102,13 @@ pub fn optimize(input: OptInput) -> OptOutput {
     let diagnostics = Diagnostics::new();
 
     if opt_level != OptLevel::None {
-        // Cross-function inlining runs first (needs the full MIR).
+        // Deforestation runs first: eliminates intermediate allocations
+        // (e.g. ListRange → arithmetic) before per-function passes.
+        for func in mir.functions.values_mut() {
+            deforest::deforest(func, &definitions);
+        }
+
+        // Cross-function inlining runs next (needs the full MIR).
         inline::inline_calls(&mut mir);
 
         // Per-function optimization passes.
@@ -109,8 +116,6 @@ pub fn optimize(input: OptInput) -> OptOutput {
             optimize_function(func);
         }
     }
-
-    let _ = &definitions;
 
     OptOutput {
         mir,

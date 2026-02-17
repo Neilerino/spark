@@ -175,7 +175,8 @@ fn rvalue_reads_local(rvalue: &spark_mir::Rvalue, local: Local) -> bool {
         spark_mir::Rvalue::Aggregate(_, ops) | spark_mir::Rvalue::StringInterp(ops) => {
             ops.iter().any(|op| operand_reads_local(op, local))
         }
-        spark_mir::Rvalue::ListRange { start, end, step, .. } => {
+        spark_mir::Rvalue::ListRange { start, end, step, .. }
+        | spark_mir::Rvalue::RangeLen { start, end, step, .. } => {
             operand_reads_local(start, local) || operand_reads_local(end, local) || operand_reads_local(step, local)
         }
         spark_mir::Rvalue::Cast { operand, .. } => operand_reads_local(operand, local),
@@ -270,7 +271,8 @@ fn replace_local_in_rvalue(rvalue: &mut spark_mir::Rvalue, from: Local, to: Loca
             }
             changed
         }
-        spark_mir::Rvalue::ListRange { start, end, step, .. } => {
+        spark_mir::Rvalue::ListRange { start, end, step, .. }
+        | spark_mir::Rvalue::RangeLen { start, end, step, .. } => {
             let mut changed = replace_local_in_operand(start, from, to);
             changed |= replace_local_in_operand(end, from, to);
             changed |= replace_local_in_operand(step, from, to);

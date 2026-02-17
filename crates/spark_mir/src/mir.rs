@@ -244,6 +244,21 @@ pub enum Rvalue {
         /// Step value.
         step: Operand,
     },
+    /// Compute the length of a range without allocating a list.
+    ///
+    /// Result: number of elements in `[start..end]` or `[start..=end]` with
+    /// the given step. Introduced by the deforestation pass to replace
+    /// `list_len(ListRange(...))`.
+    RangeLen {
+        /// Range start.
+        start: Operand,
+        /// Range end.
+        end: Operand,
+        /// Whether the range is inclusive (`..=`).
+        inclusive: bool,
+        /// Step value.
+        step: Operand,
+    },
 }
 
 /// The kind of aggregate being constructed.
@@ -323,6 +338,24 @@ pub enum Constant {
     FunctionRef(DefId),
     /// Void / unit value.
     Void,
+    /// Reference to a compiler intrinsic (introduced by optimization passes).
+    /// Unlike `FunctionRef`, does not require a `DefId` or symbol registration.
+    IntrinsicRef(Intrinsic),
+}
+
+/// Compiler intrinsics introduced by optimization passes.
+///
+/// These bypass the symbol/builtin system — codegen maps them directly to
+/// runtime stubs. The `Intrinsic` enum is extensible: future deforestation
+/// patterns just add variants here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intrinsic {
+    /// Parallel foreach over a range (no list allocation).
+    ParallelRangeForEach,
+    /// Parallel map over a range (no input list allocation).
+    ParallelRangeMap,
+    /// Fused parallel map+reduce over a range (zero allocation).
+    ParallelRangeMapReduce,
 }
 
 // ── Terminators ──────────────────────────────────────────────────────────

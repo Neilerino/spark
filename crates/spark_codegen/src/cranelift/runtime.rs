@@ -127,6 +127,14 @@ pub struct RuntimeStubs {
     pub channel_rc_dec: FuncId,
     /// `__spark_list_from_range(start: i64, end: i64, inclusive: i8, step: i64) -> ptr`
     pub list_from_range: FuncId,
+    /// `__spark_range_len(start: i64, end: i64, inclusive: i8, step: i64) -> i64`
+    pub range_len: FuncId,
+    /// `__spark_parallel_range_foreach(start, end, inclusive, step, fn_ptr, env_ptr, cb_kind) -> void`
+    pub parallel_range_foreach: FuncId,
+    /// `__spark_parallel_range_map(start, end, inclusive, step, fn_ptr, env_ptr, result_elem_size, cb_kind) -> ptr`
+    pub parallel_range_map: FuncId,
+    /// `__spark_parallel_range_map_reduce(start, end, inclusive, step, map_fn, map_env, reduce_fn, reduce_env, initial, map_cb_kind, reduce_cb_kind) -> i64`
+    pub parallel_range_map_reduce: FuncId,
 }
 
 impl RuntimeStubs {
@@ -515,6 +523,63 @@ impl RuntimeStubs {
                 "__spark_list_from_range",
                 &[types::I64, types::I64, types::I8, types::I64],
                 Some(ptr_type),
+                call_conv,
+            ),
+            range_len: declare_fn(
+                module,
+                "__spark_range_len",
+                &[types::I64, types::I64, types::I8, types::I64],
+                Some(types::I64),
+                call_conv,
+            ),
+            parallel_range_foreach: declare_fn(
+                module,
+                "__spark_parallel_range_foreach",
+                &[
+                    types::I64, // start
+                    types::I64, // end
+                    types::I8,  // inclusive
+                    types::I64, // step
+                    ptr_type,   // fn_ptr
+                    ptr_type,   // env_ptr
+                    types::I8,  // cb_kind
+                ],
+                None,
+                call_conv,
+            ),
+            parallel_range_map: declare_fn(
+                module,
+                "__spark_parallel_range_map",
+                &[
+                    types::I64, // start
+                    types::I64, // end
+                    types::I8,  // inclusive
+                    types::I64, // step
+                    ptr_type,   // fn_ptr
+                    ptr_type,   // env_ptr
+                    types::I64, // result_elem_size
+                    types::I8,  // cb_kind
+                ],
+                Some(ptr_type),
+                call_conv,
+            ),
+            parallel_range_map_reduce: declare_fn(
+                module,
+                "__spark_parallel_range_map_reduce",
+                &[
+                    types::I64, // start
+                    types::I64, // end
+                    types::I8,  // inclusive
+                    types::I64, // step
+                    ptr_type,   // map_fn
+                    ptr_type,   // map_env
+                    ptr_type,   // reduce_fn
+                    ptr_type,   // reduce_env
+                    types::I64, // initial
+                    types::I8,  // map_cb_kind
+                    types::I8,  // reduce_cb_kind
+                ],
+                Some(types::I64),
                 call_conv,
             ),
         }

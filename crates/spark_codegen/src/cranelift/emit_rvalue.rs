@@ -85,6 +85,16 @@ pub fn emit_rvalue<M: Module>(
             let call = ctx.builder.ins().call(func_ref, &[start_val, end_val, inclusive_val, step_val]);
             Some(ctx.builder.inst_results(call)[0])
         }
+
+        Rvalue::RangeLen { start, end, inclusive, step } => {
+            let start_val = emit_operand(ctx, start, table, definitions, func_ids, thunk_ids, module)?;
+            let end_val = emit_operand(ctx, end, table, definitions, func_ids, thunk_ids, module)?;
+            let step_val = emit_operand(ctx, step, table, definitions, func_ids, thunk_ids, module)?;
+            let inclusive_val = ctx.builder.ins().iconst(types::I8, i64::from(u8::from(*inclusive)));
+            let func_ref = module.declare_func_in_func(ctx.stubs.range_len, ctx.builder.func);
+            let call = ctx.builder.ins().call(func_ref, &[start_val, end_val, inclusive_val, step_val]);
+            Some(ctx.builder.inst_results(call)[0])
+        }
     }
 }
 
@@ -187,6 +197,11 @@ fn emit_constant<M: Module>(
             let func_ref = module.declare_func_in_func(ctx.stubs.string_from_literal, ctx.builder.func);
             let call = ctx.builder.ins().call(func_ref, &[data_ptr, len]);
             Some(ctx.builder.inst_results(call)[0])
+        }
+        Constant::IntrinsicRef(_) => {
+            // Intrinsic references are handled directly by the Call terminator
+            // emission, not as general constants. Return a null placeholder.
+            Some(ctx.builder.ins().iconst(ctx.ptr_type, 0))
         }
         Constant::FunctionRef(def_id) => {
             // For lambdas, use their own func_id (they already have env_ptr convention).

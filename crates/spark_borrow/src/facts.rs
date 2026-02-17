@@ -237,7 +237,8 @@ fn collect_rvalue_uses(rvalue: &Rvalue, point: Point, facts: &mut BorrowFacts) {
                 collect_operand_uses(op, point, facts);
             }
         }
-        Rvalue::ListRange { start, end, step, .. } => {
+        Rvalue::ListRange { start, end, step, .. }
+        | Rvalue::RangeLen { start, end, step, .. } => {
             collect_operand_uses(start, point, facts);
             collect_operand_uses(end, point, facts);
             collect_operand_uses(step, point, facts);

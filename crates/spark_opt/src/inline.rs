@@ -508,6 +508,17 @@ fn remap_rvalue(rvalue: &Rvalue, local_off: u32, block_off: u32) -> Rvalue {
             inclusive: *inclusive,
             step: remap_operand(step, local_off, block_off),
         },
+        Rvalue::RangeLen {
+            start,
+            end,
+            inclusive,
+            step,
+        } => Rvalue::RangeLen {
+            start: remap_operand(start, local_off, block_off),
+            end: remap_operand(end, local_off, block_off),
+            inclusive: *inclusive,
+            step: remap_operand(step, local_off, block_off),
+        },
     }
 }
 

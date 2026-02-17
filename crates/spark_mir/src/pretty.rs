@@ -227,6 +227,19 @@ impl PrettyPrinter<'_> {
                 self.print_operand(step);
                 self.out.push(')');
             }
+            Rvalue::RangeLen { start, end, inclusive, step } => {
+                self.out.push_str("RangeLen(");
+                self.print_operand(start);
+                if *inclusive {
+                    self.out.push_str("..=");
+                } else {
+                    self.out.push_str("..");
+                }
+                self.print_operand(end);
+                self.out.push_str(", step=");
+                self.print_operand(step);
+                self.out.push(')');
+            }
         }
     }
 
@@ -273,6 +286,9 @@ impl PrettyPrinter<'_> {
                 let _ = write!(self.out, "fn(def{})", def_id.as_u32());
             }
             Constant::Void => self.out.push_str("const void"),
+            Constant::IntrinsicRef(intrinsic) => {
+                let _ = write!(self.out, "intrinsic({intrinsic:?})");
+            }
         }
     }
 
