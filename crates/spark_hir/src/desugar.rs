@@ -520,6 +520,195 @@ fn build_each_loop(
 }
 
 
+/// Desugars `iterable reduce initial via callback` into an accumulator loop.
+///
+/// ```text
+/// {
+///     let __cb = callback
+///     let __iter = iterable
+///     let __idx: Int! = 0
+///     let __len: Int = __iter.len()
+///     let __acc: Acc! = initial
+///     loop {
+///         if __idx >= __len { break }
+///         let __item: T = __iter[__idx]
+///         __acc = __cb(__acc, __item)
+///         __idx = __idx + 1
+///     }
+///     __acc
+/// }
+/// ```
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn desugar_reduce(
+    iterable: HirExpr,
+    callback: HirExpr,
+    initial: HirExpr,
+    elem_ty: TypeId,
+    acc_ty: TypeId,
+    cb_ret_ty: TypeId,
+    int_ty: TypeId,
+    bool_ty: TypeId,
+    void_ty: TypeId,
+    span: Span,
+    definitions: &mut DefinitionTable,
+) -> HirExpr {
+    let cb_id = definitions.next_synthetic_id(span);
+    let iter_id = definitions.next_synthetic_id(span);
+    let idx_id = definitions.next_synthetic_id(span);
+    let len_id = definitions.next_synthetic_id(span);
+    let acc_id = definitions.next_synthetic_id(span);
+    let item_id = definitions.next_synthetic_id(span);
+
+    let cb_ty = callback.ty;
+    let iter_ty = iterable.ty;
+
+    // let __cb = callback
+    let cb_let = HirStmt::Let {
+        def_id: cb_id,
+        mutable: false,
+        value: callback,
+    };
+
+    // let __iter = iterable
+    let iter_let = HirStmt::Let {
+        def_id: iter_id,
+        mutable: false,
+        value: iterable,
+    };
+
+    // let __idx: Int! = 0
+    let idx_let = HirStmt::Let {
+        def_id: idx_id,
+        mutable: true,
+        value: HirExpr::new(HirExprKind::Literal(HirLiteral::Int(0)), int_ty, span),
+    };
+
+    // let __len: Int = __iter.len()
+    let len_let = HirStmt::Let {
+        def_id: len_id,
+        mutable: false,
+        value: HirExpr::new(
+            HirExprKind::MethodCall {
+                receiver: Box::new(HirExpr::new(HirExprKind::Local(iter_id), iter_ty, span)),
+                method: spark_intern::kw::LEN,
+                args: vec![],
+            },
+            int_ty,
+            span,
+        ),
+    };
+
+    // let __acc: Acc! = initial
+    let acc_let = HirStmt::Let {
+        def_id: acc_id,
+        mutable: true,
+        value: initial,
+    };
+
+    // if __idx >= __len { break }
+    let guard = HirExpr::new(
+        HirExprKind::If {
+            cond: Box::new(HirExpr::new(
+                HirExprKind::BinaryOp {
+                    op: BinaryOp::Ge,
+                    lhs: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+                    rhs: Box::new(HirExpr::new(HirExprKind::Local(len_id), int_ty, span)),
+                },
+                bool_ty,
+                span,
+            )),
+            then_: Box::new(HirExpr::new(HirExprKind::Break(None), void_ty, span)),
+            else_: None,
+        },
+        void_ty,
+        span,
+    );
+
+    // let __item: T = __iter[__idx]
+    let item_let = HirStmt::Let {
+        def_id: item_id,
+        mutable: false,
+        value: HirExpr::new(
+            HirExprKind::Index {
+                base: Box::new(HirExpr::new(HirExprKind::Local(iter_id), iter_ty, span)),
+                index: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+            },
+            elem_ty,
+            span,
+        ),
+    };
+
+    // __acc = __cb(__acc, __item)
+    let call_expr = HirExpr::new(
+        HirExprKind::Call {
+            callee: Box::new(HirExpr::new(HirExprKind::Local(cb_id), cb_ty, span)),
+            args: vec![
+                HirExpr::new(HirExprKind::Local(acc_id), acc_ty, span),
+                HirExpr::new(HirExprKind::Local(item_id), elem_ty, span),
+            ],
+        },
+        cb_ret_ty,
+        span,
+    );
+    let acc_assign = HirStmt::Assign {
+        target: HirExpr::new(HirExprKind::Local(acc_id), acc_ty, span),
+        value: call_expr,
+    };
+
+    // __idx = __idx + 1
+    let increment = HirStmt::Assign {
+        target: HirExpr::new(HirExprKind::Local(idx_id), int_ty, span),
+        value: HirExpr::new(
+            HirExprKind::BinaryOp {
+                op: BinaryOp::Add,
+                lhs: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+                rhs: Box::new(HirExpr::new(HirExprKind::Literal(HirLiteral::Int(1)), int_ty, span)),
+            },
+            int_ty,
+            span,
+        ),
+    };
+
+    // loop body
+    let loop_stmts = vec![
+        HirStmt::Expr(guard),
+        item_let,
+        acc_assign,
+        increment,
+    ];
+
+    let loop_body = HirExpr::new(
+        HirExprKind::Block { stmts: loop_stmts, expr: None },
+        void_ty,
+        span,
+    );
+
+    let loop_expr = HirStmt::Expr(HirExpr::new(
+        HirExprKind::Loop { body: Box::new(loop_body) },
+        void_ty,
+        span,
+    ));
+
+    // Outer block: [cb_let, iter_let, idx_let, len_let, acc_let, loop, __acc]
+    let stmts = vec![cb_let, iter_let, idx_let, len_let, acc_let, loop_expr];
+
+    let trailing = HirExpr::new(
+        HirExprKind::Local(acc_id),
+        acc_ty,
+        span,
+    );
+
+    HirExpr::new(
+        HirExprKind::Block {
+            stmts,
+            expr: Some(Box::new(trailing)),
+        },
+        acc_ty,
+        span,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

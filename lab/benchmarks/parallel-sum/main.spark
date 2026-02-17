@@ -1,19 +1,9 @@
 fn main(): Int {
     nums: List[Int] = [0..10000000]
 
-    results: List[Int] = nums parallel each via (n: Int): Int {
-        return (n * n) % 1000
-    }
-
-    total: Int! = 0
-    j: Int! = 0
-    loop {
-        if j >= results.len() {
-            break
-        }
-        total = total + results[j]
-        j = j + 1
-    }
+    total: Int = nums
+        parallel each via (n: Int): Int { return (n * n) % 1000 }
+        reduce 0 via (a: Int, b: Int): Int { return a + b }
 
     print(total)
     return 0

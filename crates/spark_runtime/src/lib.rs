@@ -1686,6 +1686,88 @@ unsafe fn call_map_cb(fn_addr: usize, env_addr: usize, elem_ptr: *const u8, cb_k
     }
 }
 
+/// Fused parallel map + reduce: maps elements in parallel, then reduces with
+/// no intermediate list allocation.
+///
+/// # Safety
+///
+/// - `list_ptr` must be a valid `SparkList` pointer.
+/// - `map_fn` and `reduce_fn` must be valid function pointers.
+/// - `map_env` and `reduce_env` may be null (non-capturing) or valid env pointers.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::missing_safety_doc, clippy::items_after_statements)]
+pub unsafe extern "C" fn __spark_parallel_map_reduce(
+    list_ptr: *mut u8,
+    map_fn: *mut u8,
+    map_env: *mut u8,
+    reduce_fn: *mut u8,
+    reduce_env: *mut u8,
+    initial: i64,
+    _elem_size: i64,
+    map_cb_kind: u8,
+    reduce_cb_kind: u8,
+) -> i64 {
+    use rayon::prelude::*;
+
+    let list = unsafe { &*(list_ptr.cast::<SparkList>()) };
+    if list.len == 0 {
+        return initial;
+    }
+
+    let elem_size = list.elem_size;
+    let len = list.len;
+
+    let map_fn_addr = map_fn as usize;
+    let map_env_addr = map_env as usize;
+    let reduce_fn_addr = reduce_fn as usize;
+    let reduce_env_addr = reduce_env as usize;
+    let data_addr = list.data as usize;
+
+    let result = (0..len)
+        .into_par_iter()
+        .map(|i| unsafe {
+            let elem_ptr = (data_addr as *const u8).add(i * elem_size);
+            call_map_cb(map_fn_addr, map_env_addr, elem_ptr, map_cb_kind)
+        })
+        .reduce(
+            || initial as u64,
+            |acc, val| unsafe {
+                call_reduce_cb(reduce_fn_addr, reduce_env_addr, acc, val, reduce_cb_kind)
+            },
+        );
+
+    result as i64
+}
+
+/// Calls a 2-argument reduce callback: `(acc, val) -> acc`.
+///
+/// # Safety
+///
+/// The caller must ensure `fn_addr` and `env_addr` are valid pointers.
+unsafe fn call_reduce_cb(fn_addr: usize, env_addr: usize, acc: u64, val: u64, cb_kind: u8) -> u64 {
+    let env = env_addr as *mut u8;
+    let input_float = (cb_kind & CB_INPUT_FLOAT) != 0;
+    let output_float = (cb_kind & CB_OUTPUT_FLOAT) != 0;
+
+    if input_float && output_float {
+        let f: unsafe extern "C" fn(*mut u8, f64, f64) -> f64 = unsafe { std::mem::transmute(fn_addr) };
+        let result = unsafe { f(env, f64::from_bits(acc), f64::from_bits(val)) };
+        result.to_bits()
+    } else if input_float {
+        let f: unsafe extern "C" fn(*mut u8, f64, f64) -> i64 = unsafe { std::mem::transmute(fn_addr) };
+        let result = unsafe { f(env, f64::from_bits(acc), f64::from_bits(val)) };
+        result as u64
+    } else if output_float {
+        let f: unsafe extern "C" fn(*mut u8, i64, i64) -> f64 = unsafe { std::mem::transmute(fn_addr) };
+        let result = unsafe { f(env, acc as i64, val as i64) };
+        result.to_bits()
+    } else {
+        let f: unsafe extern "C" fn(*mut u8, i64, i64) -> i64 = unsafe { std::mem::transmute(fn_addr) };
+        let result = unsafe { f(env, acc as i64, val as i64) };
+        result as u64
+    }
+}
+
 // =============================================================================
 // Async spawn / await (Tokio)
 // =============================================================================

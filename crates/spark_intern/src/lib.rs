@@ -380,6 +380,9 @@ impl Interner {
             "__spark_channel_try_recv",
             "__spark_channel_close",
             "__spark_channel_rc_dec",
+            // Reduce pipeline
+            "reduce",
+            "__spark_parallel_map_reduce",
         ];
 
         for kw in keywords {
@@ -716,6 +719,12 @@ pub mod kw {
     /// `__spark_channel_rc_dec` (internal runtime stub)
     pub const CHANNEL_RC_DEC: Symbol = Symbol(108);
 
+    // Reduce pipeline
+    /// `reduce`
+    pub const REDUCE: Symbol = Symbol(109);
+    /// `__spark_parallel_map_reduce` (internal runtime stub)
+    pub const PARALLEL_MAP_REDUCE: Symbol = Symbol(110);
+
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
     pub const fn is_builtin_function(sym: Symbol) -> bool {
@@ -733,8 +742,8 @@ pub mod kw {
     /// Returns true if the given symbol is a keyword.
     #[must_use]
     pub const fn is_keyword(sym: Symbol) -> bool {
-        // Keywords are symbols 1-37 (fn through Never) plus parallel (78) plus extern (91)
-        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78 || sym.0 == 91
+        // Keywords are symbols 1-37 (fn through Never) plus parallel (78) plus extern (91) plus reduce (109)
+        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78 || sym.0 == 91 || sym.0 == 109
     }
 
     /// Returns true if the given symbol is a primitive type name.

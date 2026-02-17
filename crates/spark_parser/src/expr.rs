@@ -24,7 +24,8 @@
 
 use spark_ast::{
     BinaryOp, Block, CallArg, Expr, ExprKind, FieldInit, FnParam, Ident, Literal, LiteralKind,
-    MapEntry, MatchArm, PartialArg, Path, StringLiteral, StringPart, ToHandler, UnaryOp,
+    MapEntry, MatchArm, PartialArg, Path, PipelineStage, PipelineStageKind, StringLiteral,
+    StringPart, UnaryOp,
 };
 use spark_intern::sym;
 use spark_lexer::TokenKind;
@@ -87,17 +88,31 @@ impl Parser {
                 continue;
             }
 
-            // Check for special expression continuations
-            if self.check(TokenKind::Parallel) {
-                lhs = self.parse_parallel_each(lhs, start);
+            // Check for pipeline stage (parallel, each, reduce) — accumulate into Pipeline node
+            if self.check(TokenKind::Parallel)
+                || self.check(TokenKind::Each)
+                || self.check(TokenKind::Reduce)
+            {
+                let stage = self.parse_pipeline_stage();
+                match &mut lhs.kind {
+                    ExprKind::Pipeline { stages, .. } => {
+                        stages.push(stage);
+                        lhs.span = self.span_from(start);
+                    }
+                    _ => {
+                        lhs = Expr::new(
+                            ExprKind::Pipeline {
+                                source: Box::new(lhs),
+                                stages: vec![stage],
+                            },
+                            self.span_from(start),
+                        );
+                    }
+                }
                 continue;
             }
 
-            if self.check(TokenKind::Each) {
-                lhs = self.parse_each(lhs, start);
-                continue;
-            }
-
+            // Pipeline apply: `via operation{args}` or `to operation`
             if self.check(TokenKind::Via) {
                 lhs = self.parse_via(lhs, start);
                 continue;
@@ -643,18 +658,59 @@ impl Parser {
         PartialArg::new(name, value, span)
     }
 
-    /// Parses an `each` expression.
+    /// Parses a single pipeline stage.
     ///
-    /// Each = Expr "each" ("via")? (Lambda | Ident)
-    ///
-    /// The callback is either an inline lambda `(x: T): U { body }` or a
-    /// function reference identifier like `show`.
-    fn parse_each(&mut self, iterable: Expr, start: Span) -> Expr {
-        self.expect(TokenKind::Each);
+    /// Handles: `[parallel] each [via] callback`, `reduce initial via callback`
+    fn parse_pipeline_stage(&mut self) -> PipelineStage {
+        let stage_start = self.current_span();
+        let parallel = self.eat(TokenKind::Parallel).is_some();
 
-        let is_via = self.eat(TokenKind::Via).is_some();
+        if self.check(TokenKind::Each) {
+            self.expect(TokenKind::Each);
+            let is_via = self.eat(TokenKind::Via).is_some();
+            let callback = self.parse_pipeline_callback();
+            let span = self.span_from(stage_start);
+            let kind = if is_via {
+                PipelineStageKind::Map { callback: Box::new(callback) }
+            } else {
+                PipelineStageKind::ForEach { callback: Box::new(callback) }
+            };
+            PipelineStage { kind, parallel, span }
+        } else if self.check(TokenKind::Reduce) {
+            self.expect(TokenKind::Reduce);
+            // Parse initial value as a primary expression (atom only)
+            // so it doesn't consume the following `via` keyword.
+            let initial = self.parse_primary();
+            self.expect(TokenKind::Via);
+            let callback = self.parse_pipeline_callback();
+            let span = self.span_from(stage_start);
+            PipelineStage {
+                kind: PipelineStageKind::Reduce {
+                    initial: Box::new(initial),
+                    callback: Box::new(callback),
+                },
+                parallel,
+                span,
+            }
+        } else {
+            if parallel {
+                self.error_expected("'each' or 'reduce' after 'parallel'");
+            } else {
+                self.error_expected("pipeline stage ('each', 'reduce')");
+            }
+            PipelineStage {
+                kind: PipelineStageKind::ForEach {
+                    callback: Box::new(Expr::error(self.current_span())),
+                },
+                parallel,
+                span: self.span_from(stage_start),
+            }
+        }
+    }
 
-        let callback = if self.check(TokenKind::LParen) {
+    /// Parses a pipeline callback: lambda, fn lambda, or function reference.
+    fn parse_pipeline_callback(&mut self) -> Expr {
+        if self.check(TokenKind::LParen) {
             let paren_start = self.current_span();
             self.advance(); // consume (
             if self.is_lambda_params() {
@@ -672,96 +728,22 @@ impl Parser {
                 .unwrap_or_else(|| Ident::dummy(sym("_")));
             let ident_span = ident.span;
             Expr::new(ExprKind::Ident(ident), ident_span)
-        };
-
-        let span = self.span_from(start);
-
-        if is_via {
-            Expr::new(
-                ExprKind::EachVia {
-                    iterable: Box::new(iterable),
-                    callback: Box::new(callback),
-                },
-                span,
-            )
-        } else {
-            Expr::new(
-                ExprKind::Each {
-                    iterable: Box::new(iterable),
-                    callback: Box::new(callback),
-                },
-                span,
-            )
         }
     }
 
-    /// Parses a `parallel each [via]` expression.
-    ///
-    /// `ParallelEach` = Expr "parallel" "each" ("via")? (Lambda | Ident)
-    fn parse_parallel_each(&mut self, iterable: Expr, start: Span) -> Expr {
-        self.expect(TokenKind::Parallel);
-
-        if !self.check(TokenKind::Each) {
-            self.error_expected("'each' after 'parallel'");
-            return Expr::error(self.current_span());
-        }
-        self.expect(TokenKind::Each);
-
-        let is_via = self.eat(TokenKind::Via).is_some();
-
-        let callback = if self.check(TokenKind::LParen) {
-            let paren_start = self.current_span();
-            self.advance(); // consume (
-            if self.is_lambda_params() {
-                self.parse_lambda_from_params(paren_start)
-            } else {
-                self.error_expected("lambda parameters");
-                Expr::error(self.current_span())
-            }
-        } else if self.check(TokenKind::Fn) {
-            self.parse_lambda()
-        } else {
-            // Function reference: `list parallel each show`
-            let ident = self
-                .expect_ident()
-                .unwrap_or_else(|| Ident::dummy(sym("_")));
-            let ident_span = ident.span;
-            Expr::new(ExprKind::Ident(ident), ident_span)
-        };
-
-        let span = self.span_from(start);
-
-        if is_via {
-            Expr::new(
-                ExprKind::ParallelEachVia {
-                    iterable: Box::new(iterable),
-                    callback: Box::new(callback),
-                },
-                span,
-            )
-        } else {
-            Expr::new(
-                ExprKind::ParallelEach {
-                    iterable: Box::new(iterable),
-                    callback: Box::new(callback),
-                },
-                span,
-            )
-        }
-    }
-
-    /// Parses a `to` expression.
+    /// Parses a `to` expression (narrowing or pipeline apply).
     ///
     /// To = Expr "to" (Block | Ident `PartialArgs`?)
     fn parse_to(&mut self, expr: Expr, start: Span) -> Expr {
         self.expect(TokenKind::To);
 
-        let handler = if self.check(TokenKind::LBrace) {
+        if self.check(TokenKind::LBrace) {
             // Narrowing block: to { Pattern -> Expr, ... }
             let arms = self.parse_match_arms();
-            ToHandler::Narrowing(arms)
+            let span = self.span_from(start);
+            Expr::new(ExprKind::To { expr: Box::new(expr), arms }, span)
         } else {
-            // Pipeline: to operation or to operation{args}
+            // Pipeline apply: to operation or to operation{args}
             let operation = self
                 .expect_ident()
                 .unwrap_or_else(|| Ident::dummy(sym("_")));
@@ -770,17 +752,12 @@ impl Parser {
             } else {
                 vec![]
             };
-            ToHandler::Pipeline { operation, args }
-        };
-
-        let span = self.span_from(start);
-        Expr::new(
-            ExprKind::To {
-                expr: Box::new(expr),
-                handler,
-            },
-            span,
-        )
+            let span = self.span_from(start);
+            Expr::new(
+                ExprKind::PipelineApply { expr: Box::new(expr), operation, args },
+                span,
+            )
+        }
     }
 
     /// Parses a standalone `via` pipeline expression.
@@ -798,10 +775,7 @@ impl Parser {
         };
         let span = self.span_from(start);
         Expr::new(
-            ExprKind::To {
-                expr: Box::new(expr),
-                handler: ToHandler::Pipeline { operation, args },
-            },
+            ExprKind::PipelineApply { expr: Box::new(expr), operation, args },
             span,
         )
     }
@@ -1958,28 +1932,40 @@ mod tests {
     fn parallel_each_with_lambda() {
         let (expr, diags) = parse_expr_str("items parallel each (x: Int): Void { print(x) }");
         assert!(!diags.has_errors(), "errors: {:?}", diags);
-        assert!(matches!(expr.kind, ExprKind::ParallelEach { .. }));
+        if let ExprKind::Pipeline { stages, .. } = &expr.kind {
+            assert_eq!(stages.len(), 1);
+            assert!(stages[0].parallel);
+            assert!(matches!(stages[0].kind, PipelineStageKind::ForEach { .. }));
+        } else {
+            panic!("expected Pipeline, got {:?}", expr.kind);
+        }
     }
 
     #[test]
     fn parallel_each_via_with_lambda() {
         let (expr, diags) = parse_expr_str("items parallel each via (x: Int): Int { x * 2 }");
         assert!(!diags.has_errors(), "errors: {:?}", diags);
-        assert!(matches!(expr.kind, ExprKind::ParallelEachVia { .. }));
+        if let ExprKind::Pipeline { stages, .. } = &expr.kind {
+            assert_eq!(stages.len(), 1);
+            assert!(stages[0].parallel);
+            assert!(matches!(stages[0].kind, PipelineStageKind::Map { .. }));
+        } else {
+            panic!("expected Pipeline, got {:?}", expr.kind);
+        }
     }
 
     #[test]
     fn parallel_each_with_fn_ref() {
         let (expr, diags) = parse_expr_str("items parallel each show");
         assert!(!diags.has_errors(), "errors: {:?}", diags);
-        assert!(matches!(expr.kind, ExprKind::ParallelEach { .. }));
+        assert!(matches!(expr.kind, ExprKind::Pipeline { .. }));
     }
 
     #[test]
     fn parallel_each_via_with_fn_ref() {
         let (expr, diags) = parse_expr_str("items parallel each via double");
         assert!(!diags.has_errors(), "errors: {:?}", diags);
-        assert!(matches!(expr.kind, ExprKind::ParallelEachVia { .. }));
+        assert!(matches!(expr.kind, ExprKind::Pipeline { .. }));
     }
 
     #[test]
@@ -1987,6 +1973,34 @@ mod tests {
         let (expr, diags) =
             parse_expr_str("items parallel each fn(x: Int): Void { print(x) }");
         assert!(!diags.has_errors(), "errors: {:?}", diags);
-        assert!(matches!(expr.kind, ExprKind::ParallelEach { .. }));
+        assert!(matches!(expr.kind, ExprKind::Pipeline { .. }));
+    }
+
+    #[test]
+    fn reduce_basic() {
+        let (expr, diags) = parse_expr_str("[1, 2, 3] reduce 0 via (a: Int, b: Int): Int { a + b }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        if let ExprKind::Pipeline { stages, .. } = &expr.kind {
+            assert_eq!(stages.len(), 1);
+            assert!(!stages[0].parallel);
+            assert!(matches!(stages[0].kind, PipelineStageKind::Reduce { .. }));
+        } else {
+            panic!("expected Pipeline, got {:?}", expr.kind);
+        }
+    }
+
+    #[test]
+    fn chained_pipeline_stages() {
+        let (expr, diags) = parse_expr_str(
+            "items each via (x: Int): Int { x * 2 } reduce 0 via (a: Int, b: Int): Int { a + b }",
+        );
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        if let ExprKind::Pipeline { stages, .. } = &expr.kind {
+            assert_eq!(stages.len(), 2);
+            assert!(matches!(stages[0].kind, PipelineStageKind::Map { .. }));
+            assert!(matches!(stages[1].kind, PipelineStageKind::Reduce { .. }));
+        } else {
+            panic!("expected Pipeline with 2 stages, got {:?}", expr.kind);
+        }
     }
 }

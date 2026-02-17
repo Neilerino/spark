@@ -99,6 +99,8 @@ pub struct RuntimeStubs {
     pub parallel_foreach: FuncId,
     /// `__spark_parallel_map(list_ptr, fn_ptr, env_ptr, elem_size, result_elem_size, cb_kind) -> ptr`
     pub parallel_map: FuncId,
+    /// `__spark_parallel_map_reduce(list_ptr, map_fn, map_env, reduce_fn, reduce_env, initial, elem_size, map_cb_kind, reduce_cb_kind) -> i64`
+    pub parallel_map_reduce: FuncId,
     /// `__spark_spawn(fn_ptr, env_ptr, result_size, is_float) -> ptr`
     pub spawn: FuncId,
     /// `__spark_await(future_ptr) -> ptr`
@@ -405,6 +407,23 @@ impl RuntimeStubs {
                     types::I8,
                 ],
                 Some(ptr_type),
+                call_conv,
+            ),
+            parallel_map_reduce: declare_fn(
+                module,
+                "__spark_parallel_map_reduce",
+                &[
+                    ptr_type,   // list_ptr
+                    ptr_type,   // map_fn
+                    ptr_type,   // map_env
+                    ptr_type,   // reduce_fn
+                    ptr_type,   // reduce_env
+                    types::I64, // initial
+                    types::I64, // elem_size
+                    types::I8,  // map_cb_kind
+                    types::I8,  // reduce_cb_kind
+                ],
+                Some(types::I64),
                 call_conv,
             ),
             spawn: declare_fn(

@@ -3,7 +3,7 @@
 //! Converts AST [`Expr`] nodes into HIR [`HirExpr`] nodes, resolving
 //! identifiers to [`DefId`]s and looking up types from the [`TypeTable`].
 
-use spark_ast::{Expr, ExprKind, LiteralKind, StringPart, ToHandler};
+use spark_ast::{Expr, ExprKind, LiteralKind, PipelineStageKind, StringPart};
 use spark_diagnostics::Diagnostics;
 use spark_resolve::{DefinitionTable, ResolutionMap};
 use spark_span::Span;
@@ -352,69 +352,20 @@ fn lower_expr_kind(
             desugar_propagate_expr(inner_hir, inner_ty, ty, current_fn_ret, expr.span, table, definitions)
         }
 
-        // === Each (side-effect iteration) ===
-        ExprKind::Each { iterable, callback } => {
-            let iterable_hir = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let elem_ty = extract_list_elem_ty(iterable_hir.ty, table);
-            let int_ty = find_int_type(table);
-            let bool_ty = find_bool_type(table);
-            let void_ty = find_void_type(table);
-            let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
-            desugar::desugar_each(
-                iterable_hir, callback_hir, elem_ty, cb_ret_ty,
-                int_ty, bool_ty, void_ty, expr.span, definitions,
-            ).kind
+        // === Unified Pipeline ===
+        ExprKind::Pipeline { source, stages } => {
+            lower_pipeline(source, stages, expr, table, definitions, resolutions, diagnostics, current_fn_ret)
         }
 
-        // === Each Via (transform iteration) ===
-        ExprKind::EachVia { iterable, callback } => {
-            let iterable_hir = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let elem_ty = extract_list_elem_ty(iterable_hir.ty, table);
-            let result_list_ty = expr_type(expr.span, table);
-            let int_ty = find_int_type(table);
-            let bool_ty = find_bool_type(table);
-            let void_ty = find_void_type(table);
-            let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
-            desugar::desugar_each_via(
-                iterable_hir, callback_hir, elem_ty, cb_ret_ty,
-                result_list_ty, int_ty, bool_ty, void_ty,
-                expr.span, definitions,
-            ).kind
-        }
-
-        // === Parallel Each (side-effect parallel iteration) ===
-        ExprKind::ParallelEach { iterable, callback } => {
-            let iterable_hir = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let elem_ty = extract_list_elem_ty(iterable_hir.ty, table);
-            HirExprKind::ParallelForEach {
-                list: Box::new(iterable_hir),
-                callback: Box::new(callback_hir),
-                elem_ty,
-            }
-        }
-
-        // === Parallel Each Via (transform parallel iteration) ===
-        ExprKind::ParallelEachVia { iterable, callback } => {
-            let iterable_hir = lower_expr(iterable, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let elem_ty = extract_list_elem_ty(iterable_hir.ty, table);
-            let void_ty = find_void_type(table);
-            let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
-            HirExprKind::ParallelMap {
-                list: Box::new(iterable_hir),
-                callback: Box::new(callback_hir),
-                elem_ty,
-                result_elem_ty: cb_ret_ty,
-            }
-        }
-
-        ExprKind::To { expr: inner, handler } => {
+        ExprKind::To { expr: inner, arms } => {
             let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
             let ty = expr_type(expr.span, table);
-            lower_to_expr(inner_hir, handler, ty, table, definitions, resolutions, diagnostics, current_fn_ret, expr.span)
+            lower_to_narrowing(inner_hir, arms, ty, table, definitions, resolutions, diagnostics, current_fn_ret, expr.span)
+        }
+
+        ExprKind::PipelineApply { expr: inner, operation, args } => {
+            let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
+            lower_pipeline_apply(inner_hir, operation, args, table, definitions, resolutions, diagnostics, current_fn_ret, expr.span)
         }
 
         ExprKind::Partial { callee, args } => {
@@ -494,11 +445,188 @@ fn desugar_propagate_expr(
     }
 }
 
-/// Lowers a `to` expression into a match.
+/// Lowers a unified pipeline expression.
+///
+/// Handles sequential/parallel stages and fusion optimization.
+/// For now, lowers each stage independently, chaining results.
 #[allow(clippy::too_many_arguments)]
-fn lower_to_expr(
+fn lower_pipeline(
+    source: &Expr,
+    stages: &[spark_ast::PipelineStage],
+    pipeline_expr: &Expr,
+    table: &TypeTable,
+    definitions: &mut DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> HirExprKind {
+    let span = pipeline_expr.span;
+
+    // Check for fusion opportunity: [parallel Map, Reduce] → ParallelMapReduce
+    if stages.len() == 2 {
+        if let (
+            spark_ast::PipelineStage { kind: PipelineStageKind::Map { callback: mapper }, parallel: true, .. },
+            spark_ast::PipelineStage { kind: PipelineStageKind::Reduce { initial, callback: combiner }, .. },
+        ) = (&stages[0], &stages[1])
+        {
+            let source_hir = lower_expr(source, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let mapper_hir = lower_expr(mapper, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let combiner_hir = lower_expr(combiner, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let initial_hir = lower_expr(initial, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let elem_ty = extract_list_elem_ty(source_hir.ty, table);
+            let void_ty = find_void_type(table);
+            let mapped_ty = extract_fn_ret_ty(mapper_hir.ty, table, void_ty);
+            let result_ty = extract_fn_ret_ty(combiner_hir.ty, table, void_ty);
+            return HirExprKind::ParallelMapReduce {
+                list: Box::new(source_hir),
+                mapper: Box::new(mapper_hir),
+                combiner: Box::new(combiner_hir),
+                initial: Box::new(initial_hir),
+                elem_ty,
+                mapped_ty,
+                result_ty,
+            };
+        }
+    }
+
+    // General case: lower each stage independently
+    // For single-stage pipelines, emit directly; for multi-stage, chain via let bindings
+    if stages.len() == 1 {
+        let source_hir = lower_expr(source, table, definitions, resolutions, diagnostics, current_fn_ret);
+        return lower_single_pipeline_stage(&stages[0], source_hir, span, table, definitions, resolutions, diagnostics, current_fn_ret);
+    }
+
+    // Multi-stage: build a block that chains stages via let bindings
+    let mut stmts = Vec::new();
+    let mut current_hir = lower_expr(source, table, definitions, resolutions, diagnostics, current_fn_ret);
+
+    for (i, stage) in stages.iter().enumerate() {
+        if i < stages.len() - 1 {
+            // Intermediate stage: wrap in a let binding
+            let stage_result_ty = infer_stage_output_ty(stage, current_hir.ty, table);
+            let temp_id = definitions.next_synthetic_id(stage.span);
+            let stage_hir_kind = lower_single_pipeline_stage(stage, current_hir, stage.span, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let stage_hir = HirExpr::new(stage_hir_kind, stage_result_ty, stage.span);
+            stmts.push(HirStmt::Let {
+                def_id: temp_id,
+                value: stage_hir,
+                mutable: false,
+            });
+            current_hir = HirExpr::new(HirExprKind::Local(temp_id), stage_result_ty, stage.span);
+        } else {
+            // Last stage: produce the final expression
+            let final_kind = lower_single_pipeline_stage(stage, current_hir, span, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let result_ty = expr_type(span, table);
+            let trailing = HirExpr::new(final_kind, result_ty, span);
+            return HirExprKind::Block {
+                stmts,
+                expr: Some(Box::new(trailing)),
+            };
+        }
+    }
+
+    // Should not reach here, but just in case
+    HirExprKind::Error
+}
+
+/// Infers the output type of a pipeline stage given its input type.
+fn infer_stage_output_ty(
+    stage: &spark_ast::PipelineStage,
+    _input_ty: TypeId,
+    table: &TypeTable,
+) -> TypeId {
+    match &stage.kind {
+        PipelineStageKind::ForEach { .. } => find_void_type(table),
+        PipelineStageKind::Map { callback } => {
+            // Output is List[cb_ret_ty] — we look it up from the type table using the callback span
+            let cb_ty = table.get_expr_type(callback.span).unwrap_or(TypeId::ERROR);
+            let void_ty = find_void_type(table);
+            let ret_ty = extract_fn_ret_ty(cb_ty, table, void_ty);
+            table.lookup(&Ty::List(ret_ty)).unwrap_or(TypeId::ERROR)
+        }
+        PipelineStageKind::Reduce { callback, .. } => {
+            // Output is the return type of the callback
+            let cb_ty = table.get_expr_type(callback.span).unwrap_or(TypeId::ERROR);
+            let void_ty = find_void_type(table);
+            extract_fn_ret_ty(cb_ty, table, void_ty)
+        }
+    }
+}
+
+/// Lowers a single pipeline stage to HIR, given the already-lowered source.
+#[allow(clippy::too_many_arguments)]
+fn lower_single_pipeline_stage(
+    stage: &spark_ast::PipelineStage,
+    source_hir: HirExpr,
+    span: Span,
+    table: &TypeTable,
+    definitions: &mut DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> HirExprKind {
+    let int_ty = find_int_type(table);
+    let bool_ty = find_bool_type(table);
+    let void_ty = find_void_type(table);
+
+    match &stage.kind {
+        PipelineStageKind::ForEach { callback } => {
+            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let elem_ty = extract_list_elem_ty(source_hir.ty, table);
+            if stage.parallel {
+                HirExprKind::ParallelForEach {
+                    list: Box::new(source_hir),
+                    callback: Box::new(callback_hir),
+                    elem_ty,
+                }
+            } else {
+                let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
+                desugar::desugar_each(
+                    source_hir, callback_hir, elem_ty, cb_ret_ty,
+                    int_ty, bool_ty, void_ty, span, definitions,
+                ).kind
+            }
+        }
+        PipelineStageKind::Map { callback } => {
+            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let elem_ty = extract_list_elem_ty(source_hir.ty, table);
+            let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
+            if stage.parallel {
+                HirExprKind::ParallelMap {
+                    list: Box::new(source_hir),
+                    callback: Box::new(callback_hir),
+                    elem_ty,
+                    result_elem_ty: cb_ret_ty,
+                }
+            } else {
+                let result_list_ty = table.lookup(&Ty::List(cb_ret_ty)).unwrap_or(TypeId::ERROR);
+                desugar::desugar_each_via(
+                    source_hir, callback_hir, elem_ty, cb_ret_ty,
+                    result_list_ty, int_ty, bool_ty, void_ty,
+                    span, definitions,
+                ).kind
+            }
+        }
+        PipelineStageKind::Reduce { initial, callback } => {
+            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let initial_hir = lower_expr(initial, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let elem_ty = extract_list_elem_ty(source_hir.ty, table);
+            let acc_ty = initial_hir.ty;
+            let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
+            // Sequential reduce: desugar to accumulator loop
+            desugar::desugar_reduce(
+                source_hir, callback_hir, initial_hir, elem_ty, acc_ty, cb_ret_ty,
+                int_ty, bool_ty, void_ty, span, definitions,
+            ).kind
+        }
+    }
+}
+
+/// Lowers a `to` narrowing expression into a match.
+#[allow(clippy::too_many_arguments)]
+fn lower_to_narrowing(
     inner_hir: HirExpr,
-    handler: &ToHandler,
+    arms: &[spark_ast::MatchArm],
     ty: TypeId,
     table: &TypeTable,
     definitions: &mut DefinitionTable,
@@ -507,59 +635,68 @@ fn lower_to_expr(
     current_fn_ret: Option<TypeId>,
     span: Span,
 ) -> HirExprKind {
-    match handler {
-        ToHandler::Narrowing(arms) => {
-            let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len() + 1);
+    let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len() + 1);
 
-            for arm in arms {
-                let pattern = lower_to_pattern(&arm.pattern, definitions, resolutions, table);
-                let body = lower_expr(&arm.body, table, definitions, resolutions, diagnostics, current_fn_ret);
-                hir_arms.push(HirMatchArm {
-                    pattern,
-                    guard: None,
-                    body,
-                    span: arm.span,
-                });
-            }
+    for arm in arms {
+        let pattern = lower_to_pattern(&arm.pattern, definitions, resolutions, table);
+        let body = lower_expr(&arm.body, table, definitions, resolutions, diagnostics, current_fn_ret);
+        hir_arms.push(HirMatchArm {
+            pattern,
+            guard: None,
+            body,
+            span: arm.span,
+        });
+    }
 
-            // Add a passthrough arm for unhandled members
-            let pass_id = definitions.next_synthetic_id(span);
-            hir_arms.push(HirMatchArm {
-                pattern: HirPattern::Binding { def_id: pass_id },
-                guard: None,
-                body: HirExpr::new(HirExprKind::Local(pass_id), ty, span),
-                span,
-            });
+    // Add a passthrough arm for unhandled members
+    let pass_id = definitions.next_synthetic_id(span);
+    hir_arms.push(HirMatchArm {
+        pattern: HirPattern::Binding { def_id: pass_id },
+        guard: None,
+        body: HirExpr::new(HirExprKind::Local(pass_id), ty, span),
+        span,
+    });
 
-            HirExprKind::Match {
-                scrutinee: Box::new(inner_hir),
-                arms: hir_arms,
-            }
+    HirExprKind::Match {
+        scrutinee: Box::new(inner_hir),
+        arms: hir_arms,
+    }
+}
+
+/// Lowers a pipeline apply expression (`expr via func{args}` or `expr to func{args}`).
+#[allow(clippy::too_many_arguments)]
+fn lower_pipeline_apply(
+    inner_hir: HirExpr,
+    operation: &spark_ast::Ident,
+    args: &[spark_ast::PartialArg],
+    table: &TypeTable,
+    definitions: &mut DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut Diagnostics,
+    current_fn_ret: Option<TypeId>,
+    _span: Span,
+) -> HirExprKind {
+    // Desugar `expr via func{a: v}` → `func(expr, v)`
+    let func_def_id = resolutions
+        .and_then(|r| r.get_ident(operation.span))
+        .unwrap_or(spark_resolve::DefId::DUMMY);
+    let func_ty = table.get_def_type(func_def_id).unwrap_or(TypeId::ERROR);
+
+    let callee = HirExpr::new(HirExprKind::Local(func_def_id), func_ty, operation.span);
+
+    let param_types = extract_param_types(func_ty, table);
+    let mut call_args = vec![inner_hir];
+    for (i, arg) in args.iter().enumerate() {
+        let mut arg_hir = lower_expr(&arg.value, table, definitions, resolutions, diagnostics, current_fn_ret);
+        if let Some(&param_ty) = param_types.get(i + 1) {
+            arg_hir = coerce_ref(arg_hir, param_ty, arg.value.span, table);
         }
-        ToHandler::Pipeline { operation, args } => {
-            // Desugar `expr via func{a: v}` → `func(expr, v)`
-            let func_def_id = resolutions
-                .and_then(|r| r.get_ident(operation.span))
-                .unwrap_or(spark_resolve::DefId::DUMMY);
-            let func_ty = table.get_def_type(func_def_id).unwrap_or(TypeId::ERROR);
+        call_args.push(arg_hir);
+    }
 
-            let callee = HirExpr::new(HirExprKind::Local(func_def_id), func_ty, operation.span);
-
-            let param_types = extract_param_types(func_ty, table);
-            let mut call_args = vec![inner_hir];
-            for (i, arg) in args.iter().enumerate() {
-                let mut arg_hir = lower_expr(&arg.value, table, definitions, resolutions, diagnostics, current_fn_ret);
-                if let Some(&param_ty) = param_types.get(i + 1) {
-                    arg_hir = coerce_ref(arg_hir, param_ty, arg.value.span, table);
-                }
-                call_args.push(arg_hir);
-            }
-
-            HirExprKind::Call {
-                callee: Box::new(callee),
-                args: call_args,
-            }
-        }
+    HirExprKind::Call {
+        callee: Box::new(callee),
+        args: call_args,
     }
 }
 

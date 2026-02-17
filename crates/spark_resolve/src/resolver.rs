@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use rustc_hash::FxHashMap;
 use spark_ast::{
     Ast, BindingDef, Block, Expr, ExprKind, FunctionDef, GenericConstraint, Item, Pattern,
-    PatternKind, Stmt, StmtKind, ToHandler, TypeExpr, TypeExprKind,
+    PatternKind, PipelineStageKind, Stmt, StmtKind, TypeExpr, TypeExprKind,
 };
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_intern::{kw, Symbol};
@@ -132,7 +132,7 @@ impl Resolver {
 
         // Register internal parallel runtime stubs.
         // NOT added to ribs — only called from desugared HIR/MIR.
-        for &stub_name in &[kw::PARALLEL_FOREACH, kw::PARALLEL_MAP] {
+        for &stub_name in &[kw::PARALLEL_FOREACH, kw::PARALLEL_MAP, kw::PARALLEL_MAP_REDUCE] {
             let info = DefinitionInfo::new(
                 DefinitionKind::BuiltinFunction,
                 stub_name,
@@ -936,54 +936,48 @@ impl Resolver {
                 }
             }
 
-            ExprKind::Each {
-                iterable,
-                callback,
-            }
-            | ExprKind::EachVia {
-                iterable,
-                callback,
-            }
-            | ExprKind::ParallelEach {
-                iterable,
-                callback,
-            }
-            | ExprKind::ParallelEachVia {
-                iterable,
-                callback,
-            } => {
-                self.resolve_expr(iterable);
-                self.resolve_expr(callback);
+            ExprKind::Pipeline { source, stages } => {
+                self.resolve_expr(source);
+                for stage in stages {
+                    match &stage.kind {
+                        PipelineStageKind::ForEach { callback }
+                        | PipelineStageKind::Map { callback } => {
+                            self.resolve_expr(callback);
+                        }
+                        PipelineStageKind::Reduce { initial, callback } => {
+                            self.resolve_expr(initial);
+                            self.resolve_expr(callback);
+                        }
+                    }
+                }
             }
 
-            ExprKind::To { expr, handler } => {
+            ExprKind::To { expr, arms } => {
                 self.resolve_expr(expr);
-                match handler {
-                    ToHandler::Narrowing(arms) => {
-                        for arm in arms {
-                            self.rib_stack.push_rib(RibKind::Normal);
-                            self.resolve_pattern(&arm.pattern);
-                            self.resolve_expr(&arm.body);
-                            self.rib_stack.pop_rib();
-                        }
-                    }
-                    ToHandler::Pipeline { operation, args } => {
-                        // Resolve the pipeline operation as a value-namespace identifier
-                        if let Some(def_id) = self.rib_stack.lookup_value(operation.name) {
-                            self.record_ident(operation.span, def_id);
-                        } else if !kw::is_builtin_type(operation.name) {
-                            self.diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "unknown function `{}`",
-                                    operation.name.as_str()
-                                ))
-                                .with_label(Label::primary(operation.span, "not found")),
-                            );
-                        }
-                        for arg in args {
-                            self.resolve_expr(&arg.value);
-                        }
-                    }
+                for arm in arms {
+                    self.rib_stack.push_rib(RibKind::Normal);
+                    self.resolve_pattern(&arm.pattern);
+                    self.resolve_expr(&arm.body);
+                    self.rib_stack.pop_rib();
+                }
+            }
+
+            ExprKind::PipelineApply { expr, operation, args } => {
+                self.resolve_expr(expr);
+                // Resolve the pipeline operation as a value-namespace identifier
+                if let Some(def_id) = self.rib_stack.lookup_value(operation.name) {
+                    self.record_ident(operation.span, def_id);
+                } else if !kw::is_builtin_type(operation.name) {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "unknown function `{}`",
+                            operation.name.as_str()
+                        ))
+                        .with_label(Label::primary(operation.span, "not found")),
+                    );
+                }
+                for arg in args {
+                    self.resolve_expr(&arg.value);
                 }
             }
 

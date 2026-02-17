@@ -159,6 +159,8 @@ pub enum TokenKind {
     Parallel,
     /// `extern`
     Extern,
+    /// `reduce`
+    Reduce,
     /// `true`
     True,
     /// `false`
@@ -313,6 +315,7 @@ impl TokenKind {
                 | Self::Block
                 | Self::Parallel
                 | Self::Extern
+                | Self::Reduce
                 | Self::True
                 | Self::False
                 | Self::Null
@@ -384,6 +387,7 @@ impl TokenKind {
             "block" => Some(Self::Block),
             "parallel" => Some(Self::Parallel),
             "extern" => Some(Self::Extern),
+            "reduce" => Some(Self::Reduce),
             "true" => Some(Self::True),
             "false" => Some(Self::False),
             "Null" => Some(Self::Null),
@@ -437,6 +441,7 @@ impl TokenKind {
             Self::Block => "block",
             Self::Parallel => "parallel",
             Self::Extern => "extern",
+            Self::Reduce => "reduce",
             Self::True => "true",
             Self::False => "false",
             Self::Null => "Null",

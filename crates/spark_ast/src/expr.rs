@@ -208,46 +208,33 @@ pub enum ExprKind {
     // ========================================================================
     // Iteration and Pipelines
     // ========================================================================
-    /// Each expression (side effects): `items each (x: T): Void { ... }` or `items each func`
-    Each {
-        /// The iterable expression.
-        iterable: Box<Expr>,
-        /// The callback (lambda or function reference).
-        callback: Box<Expr>,
+    /// Unified pipeline expression: `source stage1 stage2 ...`
+    ///
+    /// Replaces the former `Each`, `EachVia`, `ParallelEach`, `ParallelEachVia`
+    /// variants. Each stage is composable and carries a `parallel` flag.
+    Pipeline {
+        /// The source expression (e.g. a list).
+        source: Box<Expr>,
+        /// One or more pipeline stages.
+        stages: Vec<PipelineStage>,
     },
 
-    /// Each via expression (transform): `items each via (x: T): U { ... }` or `items each via func`
-    EachVia {
-        /// The iterable expression.
-        iterable: Box<Expr>,
-        /// The callback (lambda or function reference).
-        callback: Box<Expr>,
-    },
-
-    /// Parallel each expression (side effects): `items parallel each (x: T): Void { ... }`
-    ParallelEach {
-        /// The iterable expression.
-        iterable: Box<Expr>,
-        /// The callback (lambda or function reference).
-        callback: Box<Expr>,
-    },
-
-    /// Parallel each via expression (transform): `items parallel each via (x: T): U { ... }`
-    ParallelEachVia {
-        /// The iterable expression.
-        iterable: Box<Expr>,
-        /// The callback (lambda or function reference).
-        callback: Box<Expr>,
-    },
-
-    /// To expression (type narrowing or pipeline):
-    /// - `result to { NotFound -> ... }`
-    /// - `data to sort`
+    /// Type narrowing: `result to { NotFound -> ..., DbError(e) -> ... }`
     To {
         /// The source expression.
         expr: Box<Expr>,
-        /// The handler.
-        handler: ToHandler,
+        /// The match arms for type narrowing.
+        arms: Vec<MatchArm>,
+    },
+
+    /// Pipeline apply operation: `data to sort`, `data via sort{count: 5}`
+    PipelineApply {
+        /// The source expression.
+        expr: Box<Expr>,
+        /// The operation name.
+        operation: Ident,
+        /// Optional partial application arguments.
+        args: Vec<PartialArg>,
     },
 
     // ========================================================================
@@ -544,19 +531,38 @@ impl FieldInit {
     }
 }
 
-/// Handler for `to` expressions.
+/// A single stage in a pipeline expression.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum ToHandler {
-    /// Type narrowing block: `to { NotFound -> ..., DbError(e) -> ... }`
-    Narrowing(Vec<MatchArm>),
+pub struct PipelineStage {
+    /// The kind of pipeline stage.
+    pub kind: PipelineStageKind,
+    /// Whether this stage runs in parallel.
+    pub parallel: bool,
+    /// The source span.
+    pub span: Span,
+}
 
-    /// Pipeline operation: `to sort`, `to take{count: 5}`
-    Pipeline {
-        /// The operation name.
-        operation: Ident,
-        /// Optional partial application arguments.
-        args: Vec<PartialArg>,
+/// The different kinds of pipeline stages.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum PipelineStageKind {
+    /// `each callback` — side-effect iteration.
+    ForEach {
+        /// The callback (lambda or function reference).
+        callback: Box<Expr>,
+    },
+    /// `each via callback` — map/transform.
+    Map {
+        /// The callback (lambda or function reference).
+        callback: Box<Expr>,
+    },
+    /// `reduce initial via callback` — fold/accumulate.
+    Reduce {
+        /// The initial accumulator value.
+        initial: Box<Expr>,
+        /// The callback (lambda or function reference).
+        callback: Box<Expr>,
     },
 }
 

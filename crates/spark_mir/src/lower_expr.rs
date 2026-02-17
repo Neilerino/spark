@@ -411,6 +411,11 @@ pub fn lower_expr(
             lower_parallel_each(list, callback, expr, fb, mir, type_table, defs)
         }
 
+        // ── Fused parallel map + reduce ──────────────────────────
+        HirExprKind::ParallelMapReduce { list, mapper, combiner, initial, .. } => {
+            lower_parallel_map_reduce(list, mapper, combiner, initial, expr, fb, mir, type_table, defs)
+        }
+
         // ── Error recovery ───────────────────────────────────────
         HirExprKind::Error => void_temp(fb, expr),
     }
@@ -1258,6 +1263,55 @@ fn lower_parallel_each(
     let args = vec![
         Operand::Copy(Place::from_local(list_local)),
         Operand::Copy(Place::from_local(cb_local)),
+    ];
+
+    let dest = fb.fresh_temp(expr.ty, expr.span);
+    let cont = fb.new_block();
+
+    fb.terminate(Terminator::Call {
+        func: Operand::Copy(Place::from_local(func_temp)),
+        args,
+        destination: Place::from_local(dest),
+        target: cont,
+        span: expr.span,
+    });
+
+    fb.switch_to(cont);
+    dest
+}
+
+fn lower_parallel_map_reduce(
+    list: &HirExpr,
+    mapper: &HirExpr,
+    combiner: &HirExpr,
+    initial: &HirExpr,
+    expr: &HirExpr,
+    fb: &mut FunctionBuilder,
+    mir: &mut MirBuilder<'_>,
+    type_table: &TypeTable,
+    defs: &DefinitionTable,
+) -> Local {
+    let builtin_def_id = find_builtin_function(defs, kw::PARALLEL_MAP_REDUCE)
+        .unwrap_or(spark_resolve::DefId::DUMMY);
+
+    let list_local = lower_expr(list, fb, mir, type_table, defs);
+    let mapper_local = lower_expr(mapper, fb, mir, type_table, defs);
+    let combiner_local = lower_expr(combiner, fb, mir, type_table, defs);
+    let initial_local = lower_expr(initial, fb, mir, type_table, defs);
+
+    let func_ty = type_table.get_def_type(builtin_def_id).unwrap_or(TypeId::ERROR);
+    let func_temp = fb.fresh_temp(func_ty, expr.span);
+    fb.push_assign(
+        Place::from_local(func_temp),
+        Rvalue::Use(Operand::Constant(Constant::FunctionRef(builtin_def_id))),
+        expr.span,
+    );
+
+    let args = vec![
+        Operand::Copy(Place::from_local(list_local)),
+        Operand::Copy(Place::from_local(mapper_local)),
+        Operand::Copy(Place::from_local(combiner_local)),
+        Operand::Copy(Place::from_local(initial_local)),
     ];
 
     let dest = fb.fresh_temp(expr.ty, expr.span);

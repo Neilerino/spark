@@ -27,8 +27,8 @@
 
 use crate::{
     Ast, Block, EnumDef, EnumVariantData, Expr, ExprKind, FunctionDef, Ident, InterfaceDef, Item,
-    Literal, LiteralKind, Path, Pattern, PatternKind, Stmt, StmtKind, StringPart, StructDef,
-    ToHandler, TypeExpr, TypeExprKind,
+    Literal, LiteralKind, Path, Pattern, PatternKind, PipelineStageKind, Stmt, StmtKind,
+    StringPart, StructDef, TypeExpr, TypeExprKind,
 };
 
 /// A visitor for traversing AST nodes.
@@ -354,41 +354,32 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
                 v.visit_expr(e);
             }
         }
-        ExprKind::Each {
-            iterable,
-            callback,
+        ExprKind::Pipeline { source, stages } => {
+            v.visit_expr(source);
+            for stage in stages {
+                match &stage.kind {
+                    PipelineStageKind::ForEach { callback }
+                    | PipelineStageKind::Map { callback } => v.visit_expr(callback),
+                    PipelineStageKind::Reduce { initial, callback } => {
+                        v.visit_expr(initial);
+                        v.visit_expr(callback);
+                    }
+                }
+            }
         }
-        | ExprKind::EachVia {
-            iterable,
-            callback,
-        }
-        | ExprKind::ParallelEach {
-            iterable,
-            callback,
-        }
-        | ExprKind::ParallelEachVia {
-            iterable,
-            callback,
-        } => {
-            v.visit_expr(iterable);
-            v.visit_expr(callback);
-        }
-        ExprKind::To { expr, handler } => {
+        ExprKind::To { expr, arms } => {
             v.visit_expr(expr);
-            match handler {
-                ToHandler::Narrowing(arms) => {
-                    for arm in arms {
-                        v.visit_pattern(&arm.pattern);
-                        v.visit_expr(&arm.body);
-                    }
-                }
-                ToHandler::Pipeline { operation, args } => {
-                    v.visit_ident(operation);
-                    for arg in args {
-                        v.visit_ident(&arg.name);
-                        v.visit_expr(&arg.value);
-                    }
-                }
+            for arm in arms {
+                v.visit_pattern(&arm.pattern);
+                v.visit_expr(&arm.body);
+            }
+        }
+        ExprKind::PipelineApply { expr, operation, args } => {
+            v.visit_expr(expr);
+            v.visit_ident(operation);
+            for arg in args {
+                v.visit_ident(&arg.name);
+                v.visit_expr(&arg.value);
             }
         }
 

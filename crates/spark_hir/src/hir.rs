@@ -311,6 +311,24 @@ pub enum HirExprKind {
         /// Element type of the result list.
         result_elem_ty: TypeId,
     },
+    /// Fused parallel map + reduce: dispatches to `__spark_parallel_map_reduce` runtime stub.
+    /// Zero intermediate allocation — map and reduce are fused in a single parallel pass.
+    ParallelMapReduce {
+        /// The list expression.
+        list: Box<HirExpr>,
+        /// The map callback (fat pointer).
+        mapper: Box<HirExpr>,
+        /// The reduce callback (fat pointer).
+        combiner: Box<HirExpr>,
+        /// The initial accumulator value.
+        initial: Box<HirExpr>,
+        /// Element type of the input list.
+        elem_ty: TypeId,
+        /// Element type produced by the mapper.
+        mapped_ty: TypeId,
+        /// Result type (accumulator/output type).
+        result_ty: TypeId,
+    },
 
     // === Error recovery ===
     /// Error placeholder (from failed lowering).

@@ -3,7 +3,7 @@
 //! Walks expression trees and returns the type of each expression,
 //! recording the result in the type table's `expr_types` map.
 
-use spark_ast::{BinaryOp, Block, Expr, ExprKind, LiteralKind, StringPart, ToHandler, UnaryOp};
+use spark_ast::{BinaryOp, Block, Expr, ExprKind, LiteralKind, PipelineStageKind, StringPart, UnaryOp};
 use spark_diagnostics::{Diagnostic, Label};
 use spark_intern::{kw, Symbol};
 use spark_resolve::{DefId, DefinitionTable, ResolutionMap};
@@ -472,93 +472,22 @@ fn check_expr_inner(
             check_method_call(recv_ty, method.name, &arg_tys, receiver.span, expr.span, table, builtins, definitions, diagnostics)
         }
 
-        ExprKind::To { expr: inner, handler } => {
+        ExprKind::Pipeline { source, stages } => {
+            let mut current_ty = check_expr(source, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            for stage in stages {
+                current_ty = check_pipeline_stage(stage, current_ty, source.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            }
+            current_ty
+        }
+
+        ExprKind::To { expr: inner, arms } => {
             let inner_ty = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            check_to_expr(inner_ty, handler, expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+            check_to_narrowing(inner_ty, arms, expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
         }
 
-        ExprKind::Each { iterable, callback } => {
-            let iter_ty = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let base_ty = strip_mutable(iter_ty, table);
-            let elem_ty = match table.resolve(base_ty).clone() {
-                Ty::List(elem) => elem,
-                Ty::Error => TypeId::ERROR,
-                _ => {
-                    let name = type_name(base_ty, table, definitions);
-                    diagnostics.push(
-                        Diagnostic::error(format!("`each` requires a List, found `{name}`"))
-                            .with_label(Label::primary(iterable.span, "not a List")),
-                    );
-                    TypeId::ERROR
-                }
-            };
-
-            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            validate_each_callback(cb_ty, elem_ty, false, callback.span, table, definitions, diagnostics);
-            builtins.void
-        }
-
-        ExprKind::EachVia { iterable, callback } => {
-            let iter_ty = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let base_ty = strip_mutable(iter_ty, table);
-            let elem_ty = match table.resolve(base_ty).clone() {
-                Ty::List(elem) => elem,
-                Ty::Error => TypeId::ERROR,
-                _ => {
-                    let name = type_name(base_ty, table, definitions);
-                    diagnostics.push(
-                        Diagnostic::error(format!("`each via` requires a List, found `{name}`"))
-                            .with_label(Label::primary(iterable.span, "not a List")),
-                    );
-                    TypeId::ERROR
-                }
-            };
-
-            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let ret_ty = validate_each_callback(cb_ty, elem_ty, true, callback.span, table, definitions, diagnostics);
-            table.intern(Ty::List(ret_ty))
-        }
-
-        ExprKind::ParallelEach { iterable, callback } => {
-            let iter_ty = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let base_ty = strip_mutable(iter_ty, table);
-            let elem_ty = match table.resolve(base_ty).clone() {
-                Ty::List(elem) => elem,
-                Ty::Error => TypeId::ERROR,
-                _ => {
-                    let name = type_name(base_ty, table, definitions);
-                    diagnostics.push(
-                        Diagnostic::error(format!("`parallel each` requires a List, found `{name}`"))
-                            .with_label(Label::primary(iterable.span, "not a List")),
-                    );
-                    TypeId::ERROR
-                }
-            };
-
-            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            validate_each_callback(cb_ty, elem_ty, false, callback.span, table, definitions, diagnostics);
-            builtins.void
-        }
-
-        ExprKind::ParallelEachVia { iterable, callback } => {
-            let iter_ty = check_expr(iterable, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let base_ty = strip_mutable(iter_ty, table);
-            let elem_ty = match table.resolve(base_ty).clone() {
-                Ty::List(elem) => elem,
-                Ty::Error => TypeId::ERROR,
-                _ => {
-                    let name = type_name(base_ty, table, definitions);
-                    diagnostics.push(
-                        Diagnostic::error(format!("`parallel each via` requires a List, found `{name}`"))
-                            .with_label(Label::primary(iterable.span, "not a List")),
-                    );
-                    TypeId::ERROR
-                }
-            };
-
-            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let ret_ty = validate_each_callback(cb_ty, elem_ty, true, callback.span, table, definitions, diagnostics);
-            table.intern(Ty::List(ret_ty))
+        ExprKind::PipelineApply { expr: inner, operation, args } => {
+            let inner_ty = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            check_pipeline_apply(inner_ty, operation, args, expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
         }
 
         ExprKind::Range { start, end, .. } => {
@@ -1827,15 +1756,168 @@ fn expect_args(
 
 /// Type-checks a `to` expression.
 ///
-/// For narrowing handlers (`to { NotFound -> ..., DbError(e) -> ... }`):
+/// Checks a single pipeline stage, given the input type from the previous stage.
+#[allow(clippy::too_many_arguments)]
+fn check_pipeline_stage(
+    stage: &spark_ast::PipelineStage,
+    input_ty: TypeId,
+    source_span: Span,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let base_ty = strip_mutable(input_ty, table);
+
+    let label = if stage.parallel {
+        match &stage.kind {
+            PipelineStageKind::ForEach { .. } => "parallel each",
+            PipelineStageKind::Map { .. } => "parallel each via",
+            PipelineStageKind::Reduce { .. } => "parallel reduce",
+        }
+    } else {
+        match &stage.kind {
+            PipelineStageKind::ForEach { .. } => "each",
+            PipelineStageKind::Map { .. } => "each via",
+            PipelineStageKind::Reduce { .. } => "reduce",
+        }
+    };
+
+    match &stage.kind {
+        PipelineStageKind::ForEach { callback } => {
+            let elem_ty = extract_list_elem(base_ty, label, source_span, table, definitions, diagnostics);
+            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            validate_each_callback(cb_ty, elem_ty, false, callback.span, table, definitions, diagnostics);
+            builtins.void
+        }
+        PipelineStageKind::Map { callback } => {
+            let elem_ty = extract_list_elem(base_ty, label, source_span, table, definitions, diagnostics);
+            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let ret_ty = validate_each_callback(cb_ty, elem_ty, true, callback.span, table, definitions, diagnostics);
+            table.intern(Ty::List(ret_ty))
+        }
+        PipelineStageKind::Reduce { initial, callback } => {
+            let elem_ty = extract_list_elem(base_ty, label, source_span, table, definitions, diagnostics);
+            let init_ty = check_expr(initial, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            validate_reduce_callback(cb_ty, init_ty, elem_ty, callback.span, table, definitions, diagnostics)
+        }
+    }
+}
+
+/// Extracts the element type from a `List[T]`, reporting an error if not a list.
+fn extract_list_elem(
+    base_ty: TypeId,
+    operation: &str,
+    span: Span,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    match table.resolve(base_ty).clone() {
+        Ty::List(elem) => elem,
+        Ty::Error => TypeId::ERROR,
+        _ => {
+            let name = type_name(base_ty, table, definitions);
+            diagnostics.push(
+                Diagnostic::error(format!("`{operation}` requires a List, found `{name}`"))
+                    .with_label(Label::primary(span, "not a List")),
+            );
+            TypeId::ERROR
+        }
+    }
+}
+
+/// Validates a reduce callback: `(Acc, T) -> Acc`.
+///
+/// - Must be a 2-parameter function
+/// - First param must match the initial value type (accumulator)
+/// - Second param must match the element type
+/// - Return type must match the accumulator type
+fn validate_reduce_callback(
+    cb_ty: TypeId,
+    init_ty: TypeId,
+    elem_ty: TypeId,
+    span: Span,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> TypeId {
+    if cb_ty.is_error() || init_ty.is_error() || elem_ty.is_error() {
+        return TypeId::ERROR;
+    }
+
+    let cb = table.resolve(cb_ty).clone();
+    let Ty::Function { params, ret, .. } = cb else {
+        diagnostics.push(
+            Diagnostic::error("`reduce` callback must be a function")
+                .with_label(Label::primary(span, "not a function")),
+        );
+        return TypeId::ERROR;
+    };
+
+    if params.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`reduce` callback must take 2 parameters (accumulator, element), found {}",
+                params.len()
+            ))
+            .with_label(Label::primary(span, "expected 2 parameters")),
+        );
+        return TypeId::ERROR;
+    }
+
+    // First param should be compatible with init type (accumulator)
+    if !is_compatible(init_ty, params[0], table) {
+        let expected = type_name(params[0], table, definitions);
+        let found = type_name(init_ty, table, definitions);
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`reduce` initial value type mismatch: accumulator expects `{expected}`, found `{found}`"
+            ))
+            .with_label(Label::primary(span, format!("expected `{expected}`"))),
+        );
+    }
+
+    // Second param should be compatible with elem type
+    if !is_compatible(elem_ty, params[1], table) {
+        let expected = type_name(params[1], table, definitions);
+        let found = type_name(elem_ty, table, definitions);
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`reduce` element type mismatch: callback expects `{expected}`, found `{found}`"
+            ))
+            .with_label(Label::primary(span, format!("expected `{expected}`"))),
+        );
+    }
+
+    // Return type must match accumulator type
+    if !is_compatible(ret, params[0], table) {
+        let expected = type_name(params[0], table, definitions);
+        let found = type_name(ret, table, definitions);
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`reduce` callback return type must match accumulator: expected `{expected}`, found `{found}`"
+            ))
+            .with_label(Label::primary(span, format!("expected `{expected}`"))),
+        );
+    }
+
+    ret
+}
+
+/// Checks a `to` narrowing expression (`to { Pattern -> ... }`).
+///
 /// - The inner expression must be a union type
 /// - Each handler arm handles one or more union members
 /// - Unhandled members pass through
 /// - Result is the unified handler body types + unhandled member types
 #[allow(clippy::too_many_arguments)]
-fn check_to_expr(
+fn check_to_narrowing(
     inner_ty: TypeId,
-    handler: &ToHandler,
+    arms: &[spark_ast::MatchArm],
     span: Span,
     table: &mut TypeTable,
     builtins: &BuiltinTypes,
@@ -1844,149 +1926,159 @@ fn check_to_expr(
     diagnostics: &mut spark_diagnostics::Diagnostics,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
-    match handler {
-        ToHandler::Narrowing(arms) => {
-            let members = crate::union::union_members(inner_ty, table);
+    let members = crate::union::union_members(inner_ty, table);
 
-            if members.len() <= 1 && !matches!(table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_)) {
-                diagnostics.push(
-                    Diagnostic::error("'to' expression requires a union type")
-                        .with_label(Label::primary(span, "not a union type")),
-                );
-            }
+    if members.len() <= 1 && !matches!(table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_)) {
+        diagnostics.push(
+            Diagnostic::error("'to' expression requires a union type")
+                .with_label(Label::primary(span, "not a union type")),
+        );
+    }
 
-            let mut body_types = Vec::with_capacity(arms.len());
-            let mut handled_types = Vec::new();
+    let mut body_types = Vec::with_capacity(arms.len());
+    let mut handled_types = Vec::new();
 
-            for arm in arms {
-                // Check the pattern — for type narrowing patterns, resolve the type
-                if let spark_ast::PatternKind::TypeNarrowing { ty: pat_ty, .. } = &arm.pattern.kind {
-                    let narrowed_ty = crate::lower::lower_type_expr(
-                        pat_ty, table, builtins, definitions, resolutions, diagnostics,
-                    );
-                    handled_types.push(narrowed_ty);
-                } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
-                    // Enum variant pattern — resolve it
-                    let variant_ty = resolutions
-                        .and_then(|res| res.get_path(path.span))
-                        .and_then(|def_id| table.get_def_type(def_id))
-                        .unwrap_or(TypeId::ERROR);
-                    if !variant_ty.is_error() {
-                        handled_types.push(variant_ty);
-                    }
-                }
-
-                let body_ty = check_expr(&arm.body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-                body_types.push(body_ty);
-            }
-
-            // Determine unhandled member types
-            let unhandled: Vec<TypeId> = members
-                .iter()
-                .copied()
-                .filter(|m| !handled_types.contains(m))
-                .collect();
-
-            // Unify all body types
-            let mut result_ty = if let Some(&first) = body_types.first() {
-                first
-            } else {
-                builtins.void
-            };
-            for &bty in &body_types[1..] {
-                result_ty = unify_branches(result_ty, bty, table, builtins);
-            }
-
-            // If there are unhandled types, the result includes them
-            if unhandled.is_empty() {
-                result_ty
-            } else {
-                // Result is union of handler body types + unhandled types
-                for &u in &unhandled {
-                    result_ty = unify_branches(result_ty, u, table, builtins);
-                }
-                result_ty
+    for arm in arms {
+        // Check the pattern — for type narrowing patterns, resolve the type
+        if let spark_ast::PatternKind::TypeNarrowing { ty: pat_ty, .. } = &arm.pattern.kind {
+            let narrowed_ty = crate::lower::lower_type_expr(
+                pat_ty, table, builtins, definitions, resolutions, diagnostics,
+            );
+            handled_types.push(narrowed_ty);
+        } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
+            // Enum variant pattern — resolve it
+            let variant_ty = resolutions
+                .and_then(|res| res.get_path(path.span))
+                .and_then(|def_id| table.get_def_type(def_id))
+                .unwrap_or(TypeId::ERROR);
+            if !variant_ty.is_error() {
+                handled_types.push(variant_ty);
             }
         }
-        ToHandler::Pipeline { operation, args } => {
-            // Generic function-call validation: `expr via func{a: v}` → `func(expr, v)`
-            let func_def_id = resolutions.and_then(|r| r.get_ident(operation.span));
-            let Some(def_id) = func_def_id else {
-                // Unresolved — still check arg values for errors
-                for arg in args {
-                    let _ = check_expr(
-                        &arg.value, table, builtins, definitions,
-                        resolutions, diagnostics, current_fn_ret,
-                    );
-                }
-                return TypeId::ERROR;
-            };
-            let Some(func_ty_id) = table.get_def_type(def_id) else {
-                return TypeId::ERROR;
-            };
-            let func_ty = table.resolve(func_ty_id).clone();
-            let Ty::Function { params, ret, .. } = func_ty else {
-                diagnostics.push(
-                    Diagnostic::error("`via` target must be a function")
-                        .with_label(Label::primary(operation.span, "not a function")),
-                );
-                return TypeId::ERROR;
-            };
 
-            // Build full arg list: [inner_ty, partial_arg_types...]
-            let mut all_arg_types = vec![inner_ty];
-            for arg in args {
-                all_arg_types.push(check_expr(
-                    &arg.value, table, builtins, definitions,
-                    resolutions, diagnostics, current_fn_ret,
-                ));
-            }
+        let body_ty = check_expr(&arm.body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+        body_types.push(body_ty);
+    }
 
-            // Arity check
-            if all_arg_types.len() != params.len() {
+    // Determine unhandled member types
+    let unhandled: Vec<TypeId> = members
+        .iter()
+        .copied()
+        .filter(|m| !handled_types.contains(m))
+        .collect();
+
+    // Unify all body types
+    let mut result_ty = if let Some(&first) = body_types.first() {
+        first
+    } else {
+        builtins.void
+    };
+    for &bty in &body_types[1..] {
+        result_ty = unify_branches(result_ty, bty, table, builtins);
+    }
+
+    // If there are unhandled types, the result includes them
+    if unhandled.is_empty() {
+        result_ty
+    } else {
+        // Result is union of handler body types + unhandled types
+        for &u in &unhandled {
+            result_ty = unify_branches(result_ty, u, table, builtins);
+        }
+        result_ty
+    }
+}
+
+/// Checks a pipeline apply expression (`expr via func{args}` or `expr to func{args}`).
+#[allow(clippy::too_many_arguments)]
+fn check_pipeline_apply(
+    inner_ty: TypeId,
+    operation: &spark_ast::Ident,
+    args: &[spark_ast::PartialArg],
+    span: Span,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    // Generic function-call validation: `expr via func{a: v}` → `func(expr, v)`
+    let func_def_id = resolutions.and_then(|r| r.get_ident(operation.span));
+    let Some(def_id) = func_def_id else {
+        // Unresolved — still check arg values for errors
+        for arg in args {
+            let _ = check_expr(
+                &arg.value, table, builtins, definitions,
+                resolutions, diagnostics, current_fn_ret,
+            );
+        }
+        return TypeId::ERROR;
+    };
+    let Some(func_ty_id) = table.get_def_type(def_id) else {
+        return TypeId::ERROR;
+    };
+    let func_ty = table.resolve(func_ty_id).clone();
+    let Ty::Function { params, ret, .. } = func_ty else {
+        diagnostics.push(
+            Diagnostic::error("`via` target must be a function")
+                .with_label(Label::primary(operation.span, "not a function")),
+        );
+        return TypeId::ERROR;
+    };
+
+    // Build full arg list: [inner_ty, partial_arg_types...]
+    let mut all_arg_types = vec![inner_ty];
+    for arg in args {
+        all_arg_types.push(check_expr(
+            &arg.value, table, builtins, definitions,
+            resolutions, diagnostics, current_fn_ret,
+        ));
+    }
+
+    // Arity check
+    if all_arg_types.len() != params.len() {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`via {}` expected {} argument{}, found {}",
+                operation.name,
+                params.len(),
+                if params.len() == 1 { "" } else { "s" },
+                all_arg_types.len()
+            ))
+            .with_label(Label::primary(span, "wrong number of arguments")),
+        );
+        return TypeId::ERROR;
+    }
+
+    // Type-check each argument against function params
+    for (i, (&arg_ty, &param_ty)) in
+        all_arg_types.iter().zip(params.iter()).enumerate()
+    {
+        if !is_compatible(arg_ty, param_ty, table) {
+            let expected_name = type_name(param_ty, table, definitions);
+            let found_name = type_name(arg_ty, table, definitions);
+            if i == 0 {
                 diagnostics.push(
                     Diagnostic::error(format!(
-                        "`via {}` expected {} argument{}, found {}",
-                        operation.name,
-                        params.len(),
-                        if params.len() == 1 { "" } else { "s" },
-                        all_arg_types.len()
+                        "`via {}` first argument type mismatch: expected `{expected_name}`, found `{found_name}`",
+                        operation.name
                     ))
-                    .with_label(Label::primary(span, "wrong number of arguments")),
+                    .with_label(Label::primary(span, format!("expected `{expected_name}`"))),
                 );
-                return TypeId::ERROR;
+            } else {
+                let arg_span = args[i - 1].value.span;
+                diagnostics.push(
+                    Diagnostic::error(format!(
+                        "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
+                    ))
+                    .with_label(Label::primary(arg_span, format!("expected `{expected_name}`"))),
+                );
             }
-
-            // Type-check each argument against function params
-            for (i, (&arg_ty, &param_ty)) in
-                all_arg_types.iter().zip(params.iter()).enumerate()
-            {
-                if !is_compatible(arg_ty, param_ty, table) {
-                    let expected_name = type_name(param_ty, table, definitions);
-                    let found_name = type_name(arg_ty, table, definitions);
-                    if i == 0 {
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "`via {}` first argument type mismatch: expected `{expected_name}`, found `{found_name}`",
-                                operation.name
-                            ))
-                            .with_label(Label::primary(span, format!("expected `{expected_name}`"))),
-                        );
-                    } else {
-                        let arg_span = args[i - 1].value.span;
-                        diagnostics.push(
-                            Diagnostic::error(format!(
-                                "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
-                            ))
-                            .with_label(Label::primary(arg_span, format!("expected `{expected_name}`"))),
-                        );
-                    }
-                }
-            }
-
-            ret
         }
     }
+
+    ret
 }
 
 /// Reports an error when calling a mutating method on an immutable receiver.

@@ -261,6 +261,22 @@ fn emit_call<M: Module>(
                 return;
             }
             if matches!(info.kind, DefinitionKind::BuiltinFunction)
+                && info.name == kw::PARALLEL_MAP_REDUCE
+            {
+                emit_parallel_map_reduce_call(
+                    ctx,
+                    args,
+                    destination,
+                    target,
+                    table,
+                    definitions,
+                    func_ids,
+                    thunk_ids,
+                    module,
+                );
+                return;
+            }
+            if matches!(info.kind, DefinitionKind::BuiltinFunction)
                 && info.name == kw::SPARK_SPAWN
             {
                 emit_spawn_call(
@@ -679,6 +695,143 @@ fn emit_parallel_call<M: Module>(
             func_ref,
             &[list_ptr, fn_ptr, env_ptr, elem_size_val, cb_kind_val],
         );
+    }
+
+    let target_block = ctx.clif_block(target);
+    ctx.builder.ins().jump(target_block, &[]);
+}
+
+/// Emits a fused `parallel_map_reduce` call.
+///
+/// Arguments: [list, mapper_fat_ptr, combiner_fat_ptr, initial_value]
+/// Runtime: `__spark_parallel_map_reduce(list, map_fn, map_env, reduce_fn, reduce_env, initial, elem_size, map_cb_kind, reduce_cb_kind) -> i64`
+#[allow(clippy::too_many_arguments)]
+fn emit_parallel_map_reduce_call<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    args: &[Operand],
+    destination: &Place,
+    target: BlockId,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    module: &mut M,
+) {
+    // Evaluate list (args[0])
+    let list_val = args.first().and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
+    let Some(list_ptr) = list_val else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    // Evaluate mapper fat pointer (args[1])
+    let mapper_val = args.get(1).and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
+    let Some(mapper_fat_ptr) = mapper_val else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    // Evaluate combiner fat pointer (args[2])
+    let combiner_val = args.get(2).and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
+    let Some(combiner_fat_ptr) = combiner_val else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    // Evaluate initial value (args[3])
+    let initial_val = args.get(3).and_then(|arg| {
+        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
+    });
+    let Some(initial) = initial_val else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
+
+    // Load fn_ptr and env_ptr from mapper fat pointer
+    let map_fn = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), mapper_fat_ptr, 0);
+    let map_env = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), mapper_fat_ptr, ctx.ptr_type.bytes() as i32);
+
+    // Load fn_ptr and env_ptr from combiner fat pointer
+    let reduce_fn = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), combiner_fat_ptr, 0);
+    let reduce_env = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), combiner_fat_ptr, ctx.ptr_type.bytes() as i32);
+
+    // Determine elem_size from list element type
+    let list_ty_id = if let Some(Operand::Copy(place)) = args.first() {
+        ctx.local_type_id(place.local)
+    } else {
+        spark_types::TypeId::ERROR
+    };
+    let elem_ty = match table.resolve(list_ty_id).clone() {
+        Ty::List(elem) => elem,
+        _ => spark_types::TypeId::ERROR,
+    };
+    let elem_layout = ctx.layouts.layout_of(elem_ty, table);
+    let elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(elem_layout.size));
+
+    // Compute map_cb_kind from mapper type
+    let map_cb_ty_id = if let Some(Operand::Copy(place)) = args.get(1) {
+        ctx.local_type_id(place.local)
+    } else {
+        spark_types::TypeId::ERROR
+    };
+    let (map_param_ty, map_ret_ty) = match table.resolve(map_cb_ty_id).clone() {
+        Ty::Function { params, ret, .. } => {
+            let p = params.first().copied().unwrap_or(spark_types::TypeId::ERROR);
+            (p, ret)
+        }
+        _ => (spark_types::TypeId::ERROR, spark_types::TypeId::ERROR),
+    };
+    let map_input_kind: u8 = if matches!(table.resolve(map_param_ty), Ty::Float(_)) { 1 } else { 0 };
+    let map_output_kind: u8 = if matches!(table.resolve(map_ret_ty), Ty::Float(_)) { 1 } else { 0 };
+    let map_cb_kind: u8 = map_input_kind | (map_output_kind << 2);
+    let map_cb_kind_val = ctx.builder.ins().iconst(types::I8, i64::from(map_cb_kind));
+
+    // Compute reduce_cb_kind from combiner type
+    let reduce_cb_ty_id = if let Some(Operand::Copy(place)) = args.get(2) {
+        ctx.local_type_id(place.local)
+    } else {
+        spark_types::TypeId::ERROR
+    };
+    let (reduce_param_ty, reduce_ret_ty) = match table.resolve(reduce_cb_ty_id).clone() {
+        Ty::Function { params, ret, .. } => {
+            let p = params.first().copied().unwrap_or(spark_types::TypeId::ERROR);
+            (p, ret)
+        }
+        _ => (spark_types::TypeId::ERROR, spark_types::TypeId::ERROR),
+    };
+    let reduce_input_kind: u8 = if matches!(table.resolve(reduce_param_ty), Ty::Float(_)) { 1 } else { 0 };
+    let reduce_output_kind: u8 = if matches!(table.resolve(reduce_ret_ty), Ty::Float(_)) { 1 } else { 0 };
+    let reduce_cb_kind: u8 = reduce_input_kind | (reduce_output_kind << 2);
+    let reduce_cb_kind_val = ctx.builder.ins().iconst(types::I8, i64::from(reduce_cb_kind));
+
+    let func_ref = module.declare_func_in_func(ctx.stubs.parallel_map_reduce, ctx.builder.func);
+    let call = ctx.builder.ins().call(
+        func_ref,
+        &[
+            list_ptr,
+            map_fn,
+            map_env,
+            reduce_fn,
+            reduce_env,
+            initial,
+            elem_size_val,
+            map_cb_kind_val,
+            reduce_cb_kind_val,
+        ],
+    );
+    let result = ctx.builder.inst_results(call)[0];
+    if destination.projections.is_empty() {
+        ctx.write_local(destination.local, result);
     }
 
     let target_block = ctx.clif_block(target);

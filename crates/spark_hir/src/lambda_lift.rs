@@ -243,6 +243,13 @@ fn walk_expr(
             walk_expr(callback, lifted, definitions, table, counter, diagnostics);
             check_parallel_ref_captures(callback, table, diagnostics);
         }
+        HirExprKind::ParallelMapReduce { list, mapper, combiner, initial, .. } => {
+            walk_expr(list, lifted, definitions, table, counter, diagnostics);
+            walk_expr(mapper, lifted, definitions, table, counter, diagnostics);
+            check_parallel_ref_captures(mapper, table, diagnostics);
+            walk_expr(combiner, lifted, definitions, table, counter, diagnostics);
+            walk_expr(initial, lifted, definitions, table, counter, diagnostics);
+        }
     }
 }
 
@@ -598,6 +605,12 @@ fn collect_captures_walk(
         HirExprKind::ParallelMap { list, callback, .. } => {
             collect_captures_walk(list, param_defs, definitions, captures, seen);
             collect_captures_walk(callback, param_defs, definitions, captures, seen);
+        }
+        HirExprKind::ParallelMapReduce { list, mapper, combiner, initial, .. } => {
+            collect_captures_walk(list, param_defs, definitions, captures, seen);
+            collect_captures_walk(mapper, param_defs, definitions, captures, seen);
+            collect_captures_walk(combiner, param_defs, definitions, captures, seen);
+            collect_captures_walk(initial, param_defs, definitions, captures, seen);
         }
         // Lambda nodes inside a lambda body are already lifted by depth-first walk.
         HirExprKind::Lambda { .. } => {}
