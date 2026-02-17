@@ -399,6 +399,9 @@ fn add_rvalue_uses(rvalue: &Rvalue, gen: &mut FxHashSet<Local>) {
         }
         Rvalue::ListRange {
             start, end, step, ..
+        }
+        | Rvalue::RangeLen {
+            start, end, step, ..
         } => {
             add_operand_uses(start, gen);
             add_operand_uses(end, gen);
@@ -1203,6 +1206,17 @@ fn remap_rvalue(rvalue: &Rvalue, local_remap: &FxHashMap<Local, Local>) -> Rvalu
             step,
             inclusive,
         } => Rvalue::ListRange {
+            start: remap_operand(start, local_remap),
+            end: remap_operand(end, local_remap),
+            step: remap_operand(step, local_remap),
+            inclusive: *inclusive,
+        },
+        Rvalue::RangeLen {
+            start,
+            end,
+            step,
+            inclusive,
+        } => Rvalue::RangeLen {
             start: remap_operand(start, local_remap),
             end: remap_operand(end, local_remap),
             step: remap_operand(step, local_remap),

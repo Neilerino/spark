@@ -31,7 +31,7 @@ use spark_resolve::DefId;
 use spark_span::Span;
 
 /// Maximum inlining cost score. Functions with a higher score are not inlined.
-const INLINE_THRESHOLD: usize = 60;
+const INLINE_THRESHOLD: usize = 100;
 
 /// Inlines eligible function calls within each function of the MIR.
 ///
@@ -503,6 +503,17 @@ fn remap_rvalue(rvalue: &Rvalue, local_off: u32, block_off: u32) -> Rvalue {
             inclusive,
             step,
         } => Rvalue::ListRange {
+            start: remap_operand(start, local_off, block_off),
+            end: remap_operand(end, local_off, block_off),
+            inclusive: *inclusive,
+            step: remap_operand(step, local_off, block_off),
+        },
+        Rvalue::RangeLen {
+            start,
+            end,
+            inclusive,
+            step,
+        } => Rvalue::RangeLen {
             start: remap_operand(start, local_off, block_off),
             end: remap_operand(end, local_off, block_off),
             inclusive: *inclusive,

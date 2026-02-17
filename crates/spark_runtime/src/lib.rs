@@ -2231,3 +2231,232 @@ pub extern "C" fn __spark_wake_current() {
         }
     });
 }
+
+// ── Range-aware functions (deforestation pass) ──────────────────────────
+
+/// Computes the length of a range without allocating a list.
+///
+/// `[start..end]` exclusive: `max(0, ceil((end - start) / step))`
+/// `[start..=end]` inclusive: `max(0, ceil((end - start + 1) / step))`
+///
+/// Handles negative step (counting down).
+///
+/// # Safety
+///
+/// No pointer arguments — always safe.
+#[no_mangle]
+pub extern "C" fn __spark_range_len(start: i64, end: i64, inclusive: i8, step: i64) -> i64 {
+    if step == 0 {
+        return 0;
+    }
+
+    let diff = if inclusive != 0 {
+        // inclusive: include the end value
+        if step > 0 {
+            end - start + 1
+        } else {
+            start - end + 1
+        }
+    } else {
+        // exclusive
+        if step > 0 {
+            end - start
+        } else {
+            start - end
+        }
+    };
+
+    if diff <= 0 {
+        return 0;
+    }
+
+    let abs_step = step.unsigned_abs() as i64;
+    // ceil division: (diff + abs_step - 1) / abs_step
+    (diff + abs_step - 1) / abs_step
+}
+
+/// Calls a map callback with an integer value directly (no pointer indirection).
+///
+/// # Safety
+///
+/// The caller must ensure `fn_addr` and `env_addr` are valid.
+unsafe fn call_range_map_cb(fn_addr: usize, env_addr: usize, val: i64, cb_kind: u8) -> u64 {
+    let env = env_addr as *mut u8;
+    let output_float = (cb_kind & CB_OUTPUT_FLOAT) != 0;
+    // Input for range callbacks is always Int (the range element).
+
+    if output_float {
+        let f: unsafe extern "C" fn(*mut u8, i64) -> f64 =
+            unsafe { std::mem::transmute(fn_addr) };
+        let result = unsafe { f(env, val) };
+        result.to_bits()
+    } else {
+        let f: unsafe extern "C" fn(*mut u8, i64) -> i64 =
+            unsafe { std::mem::transmute(fn_addr) };
+        let result = unsafe { f(env, val) };
+        result as u64
+    }
+}
+
+/// Parallel foreach over a range — no list allocation.
+///
+/// Iterates `[start..end]` (or `[start..=end]`) with the given step,
+/// calling the callback for each element in parallel.
+///
+/// # Safety
+///
+/// The caller must ensure `fn_ptr` and `env_ptr` are valid function/env pointers.
+#[no_mangle]
+pub unsafe extern "C" fn __spark_parallel_range_foreach(
+    start: i64,
+    end: i64,
+    inclusive: i8,
+    step: i64,
+    fn_ptr: *mut u8,
+    env_ptr: *mut u8,
+    cb_kind: u8,
+) {
+    use rayon::prelude::*;
+
+    let len = __spark_range_len(start, end, inclusive, step);
+    if len <= 0 {
+        return;
+    }
+
+    let fn_addr = fn_ptr as usize;
+    let env_addr = env_ptr as usize;
+
+    (0..len).into_par_iter().for_each(|i| {
+        let val = start + i * step;
+        unsafe {
+            call_range_map_cb(fn_addr, env_addr, val, cb_kind);
+        }
+    });
+}
+
+/// Parallel map over a range — no input list allocation.
+///
+/// Returns a new list where each element is `callback(start + i * step)`.
+///
+/// # Safety
+///
+/// The caller must ensure `fn_ptr` and `env_ptr` are valid.
+#[no_mangle]
+pub unsafe extern "C" fn __spark_parallel_range_map(
+    start: i64,
+    end: i64,
+    inclusive: i8,
+    step: i64,
+    fn_ptr: *mut u8,
+    env_ptr: *mut u8,
+    result_elem_size: i64,
+    cb_kind: u8,
+) -> *mut u8 {
+    use rayon::prelude::*;
+
+    let len = __spark_range_len(start, end, inclusive, step);
+    if len <= 0 {
+        return __spark_list_new(result_elem_size);
+    }
+
+    let fn_addr = fn_ptr as usize;
+    let env_addr = env_ptr as usize;
+    let output_float = (cb_kind & CB_OUTPUT_FLOAT) != 0;
+
+    // Collect mapped results.
+    let results: Vec<u64> = (0..len)
+        .into_par_iter()
+        .map(|i| {
+            let val = start + i * step;
+            unsafe { call_range_map_cb(fn_addr, env_addr, val, cb_kind) }
+        })
+        .collect();
+
+    // Build a list from the results.
+    let list = __spark_list_new(result_elem_size);
+    let spark_list = unsafe { &mut *(list.cast::<SparkList>()) };
+
+    for result in &results {
+        let bytes = if output_float {
+            f64::from_bits(*result).to_ne_bytes()
+        } else {
+            (*result as i64).to_ne_bytes()
+        };
+        let elem_size = result_elem_size as usize;
+        let src = bytes.as_ptr();
+        // Push each result as raw bytes.
+        let offset = spark_list.len * spark_list.elem_size;
+        if offset + elem_size > spark_list.cap * spark_list.elem_size {
+            // Grow.
+            let new_cap = (spark_list.cap * 2).max(8);
+            let new_data = unsafe {
+                std::alloc::realloc(
+                    spark_list.data,
+                    std::alloc::Layout::from_size_align_unchecked(
+                        spark_list.cap * spark_list.elem_size,
+                        8,
+                    ),
+                    new_cap * spark_list.elem_size,
+                )
+            };
+            spark_list.data = new_data;
+            spark_list.cap = new_cap;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(src, spark_list.data.add(offset), elem_size);
+        }
+        spark_list.len += 1;
+    }
+
+    list
+}
+
+/// Fused parallel map+reduce over a range — zero allocation.
+///
+/// Divides the range into chunks (one per CPU core), locally fuses map+reduce
+/// in a tight loop per chunk, then cross-thread reduces.
+///
+/// # Safety
+///
+/// The caller must ensure all function/env pointers are valid.
+#[no_mangle]
+pub unsafe extern "C" fn __spark_parallel_range_map_reduce(
+    start: i64,
+    end: i64,
+    inclusive: i8,
+    step: i64,
+    map_fn: *mut u8,
+    map_env: *mut u8,
+    reduce_fn: *mut u8,
+    reduce_env: *mut u8,
+    initial: i64,
+    map_cb_kind: u8,
+    reduce_cb_kind: u8,
+) -> i64 {
+    use rayon::prelude::*;
+
+    let len = __spark_range_len(start, end, inclusive, step);
+    if len <= 0 {
+        return initial;
+    }
+
+    let map_fn_addr = map_fn as usize;
+    let map_env_addr = map_env as usize;
+    let reduce_fn_addr = reduce_fn as usize;
+    let reduce_env_addr = reduce_env as usize;
+
+    let result = (0..len)
+        .into_par_iter()
+        .map(|i| {
+            let val = start + i * step;
+            unsafe { call_range_map_cb(map_fn_addr, map_env_addr, val, map_cb_kind) }
+        })
+        .reduce(
+            || initial as u64,
+            |acc, val| unsafe {
+                call_reduce_cb(reduce_fn_addr, reduce_env_addr, acc, val, reduce_cb_kind)
+            },
+        );
+
+    result as i64
+}

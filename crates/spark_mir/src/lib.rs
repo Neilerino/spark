@@ -47,8 +47,8 @@ use spark_resolve::DefinitionTable;
 use spark_types::TypeTable;
 
 pub use mir::{
-    AggregateKind, BasicBlock, BlockId, Constant, Local, LocalDecl, Mir, MirFunction, Operand,
-    Place, Projection, Rvalue, Statement, Terminator,
+    AggregateKind, BasicBlock, BlockId, Constant, Intrinsic, Local, LocalDecl, Mir, MirFunction,
+    Operand, Place, Projection, Rvalue, Statement, Terminator,
 };
 pub use pretty::pretty_function;
 
