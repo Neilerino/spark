@@ -26,6 +26,7 @@ pub fn emit_terminator<M: Module>(
     definitions: &DefinitionTable,
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    _dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
     poll_fn_map: &FxHashMap<spark_resolve::DefId, spark_mir::async_transform::PollFnInfo>,
     lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,

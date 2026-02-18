@@ -2,13 +2,9 @@
 
 ## Closures / Lambda
 
-### Captured RC values not decremented when env is freed (Phase 2)
+### ~~Captured RC values not decremented when env is freed~~ (FIXED)
 
-Closure environments are now reference-counted (16-byte header with `rc` and `alloc_size`). When the last reference to an env is dropped, `__spark_env_rc_dec` frees the env memory. However, captured values inside the env that are themselves RC'd (e.g., captured Strings, Lists) are **not** recursively decremented. This means if a closure captures a String, the String will leak when the env is freed.
-
-**Impact**: Programs that capture RC'd values in closures will leak those captured values (but no longer leak the env itself).
-
-**Future fix**: `__spark_env_rc_dec` needs a type-dispatch mechanism to know which captures are RC'd and call the appropriate `_rc_dec` on them before freeing the env. This likely requires passing capture metadata (offsets + type flags) to the runtime, or generating per-closure-type destructor functions at codegen time.
+**Resolved.** Env header expanded from 16 to 24 bytes: `[rc (8), alloc_size (8), dtor (8), ...payload]`. Codegen generates per-closure destructor functions (`__spark_env_dtor_{id}`) that decrement RC for each captured value (String, List, Map, Set, Function, Future, Channel). `__spark_env_rc_dec` calls the destructor via the function pointer at offset 16 before freeing when RC reaches zero. Closures with no RC captures have a null dtor slot (no overhead).
 
 ### Capture-by-value only
 
@@ -16,9 +12,9 @@ Closures capture variables by value (copy). Mutations to the original variable a
 
 This is a deliberate design choice, not a bug — but worth noting as it differs from languages like Python or JavaScript where closures capture by reference.
 
-### Nested closures are untested
+### Nested closures
 
-A closure that captures another closure (i.e., captures a variable of type `Ty::Function`) should work in theory — the inner closure stores the entire 16-byte fat pointer in its environment. However, there are no E2E tests for this case. Edge cases around aggregate capture layout could surface.
+A closure that captures another closure (i.e., captures a variable of type `Ty::Function`) works correctly — the inner closure's fat pointer is stored in the outer's environment, and the destructor recursively calls `__spark_env_rc_dec` on the inner's env_ptr. Covered by the `closure_capture_closure` E2E test.
 
 ### No recursive closures
 

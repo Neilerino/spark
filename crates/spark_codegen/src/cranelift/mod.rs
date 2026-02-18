@@ -40,6 +40,9 @@ pub struct CraneliftBackend {
     /// A thunk is a thin wrapper that accepts+ignores an env pointer and
     /// forwards to the real function, enabling the fat-pointer calling convention.
     thunk_ids: FxHashMap<DefId, FuncId>,
+    /// Cache of env destructor FuncIds for closures with RC captures.
+    /// Each destructor decrements RC for captured values when the env is freed.
+    dtor_ids: FxHashMap<DefId, FuncId>,
 }
 
 impl CraneliftBackend {
@@ -87,6 +90,7 @@ impl CraneliftBackend {
         Ok(Self {
             module,
             thunk_ids: FxHashMap::default(),
+            dtor_ids: FxHashMap::default(),
         })
     }
 
@@ -282,6 +286,157 @@ impl CraneliftBackend {
         }
     }
 
+    /// Generates destructor functions for closure environments that capture
+    /// RC values (String, List, Map, Set, Function, Future, Channel).
+    ///
+    /// Each destructor has signature `(env_ptr: ptr) -> void` and decrements
+    /// the RC of every captured value that [`spark_drop::needs_drop`] returns
+    /// true for. The destructor is called by `__spark_env_rc_dec` when the
+    /// env's reference count reaches zero, before the allocation is freed.
+    #[allow(clippy::too_many_arguments)]
+    fn generate_env_destructors(
+        &mut self,
+        mir: &Mir,
+        table: &TypeTable,
+        definitions: &DefinitionTable,
+        stubs: &runtime::RuntimeStubs,
+        diagnostics: &mut Diagnostics,
+    ) {
+        let ptr_type = self.module.target_config().pointer_type();
+        let call_conv = self.module.isa().default_call_conv();
+
+        // Collect lambdas that have at least one RC/droppable capture.
+        let targets: Vec<_> = mir.functions.iter()
+            .filter(|(def_id, mir_func)| {
+                let is_lambda = definitions.get(**def_id)
+                    .map_or(false, |info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
+                is_lambda && !mir_func.captures.is_empty()
+                    && mir_func.captures.iter().any(|(_, cap_ty)| {
+                        let (_, unwrapped) = clif_types::unwrap_mutable(*cap_ty, table);
+                        spark_drop::needs_drop(*cap_ty, table) || matches!(unwrapped, spark_types::Ty::Function { .. })
+                    })
+            })
+            .map(|(def_id, mir_func)| (*def_id, mir_func.clone()))
+            .collect();
+
+        for (def_id, mir_func) in &targets {
+            let dtor_name = format!("__spark_env_dtor_{}", def_id.as_u32());
+
+            // Signature: (env_ptr: ptr) -> void
+            let mut dtor_sig = cranelift_codegen::ir::Signature::new(call_conv);
+            dtor_sig.params.push(cranelift_codegen::ir::AbiParam::new(ptr_type));
+
+            let dtor_func_id = match self.module.declare_function(&dtor_name, Linkage::Local, &dtor_sig) {
+                Ok(fid) => fid,
+                Err(e) => {
+                    diagnostics.error(format!("failed to declare env destructor '{dtor_name}': {e}"));
+                    continue;
+                }
+            };
+
+            // Build the destructor body.
+            let mut func = Function::with_name_signature(
+                cranelift_codegen::ir::UserFuncName::user(0, dtor_func_id.as_u32()),
+                dtor_sig.clone(),
+            );
+
+            let mut fbc = FunctionBuilderContext::new();
+            {
+                let mut builder = FunctionBuilder::new(&mut func, &mut fbc);
+                let block = builder.create_block();
+                builder.append_block_params_for_function_params(block);
+                builder.switch_to_block(block);
+
+                let env_ptr = builder.block_params(block)[0];
+
+                // Compute capture offsets (same logic as emit_closure_construction).
+                let mut layouts = crate::layout::LayoutCache::new(ptr_type.bytes());
+                let mut offset: u32 = 24; // skip header
+
+                for (_cap_def_id, cap_ty) in &mir_func.captures {
+                    let cap_layout = layouts.layout_of(*cap_ty, table);
+                    offset = align_to_u32(offset, cap_layout.align);
+
+                    let (_, unwrapped_ty) = clif_types::unwrap_mutable(*cap_ty, table);
+
+                    if spark_drop::needs_drop(*cap_ty, table) || matches!(unwrapped_ty, spark_types::Ty::Function { .. }) {
+                        match unwrapped_ty {
+                            spark_types::Ty::String => {
+                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
+                                let func_ref = self.module.declare_func_in_func(stubs.string_rc_dec, &mut builder.func);
+                                builder.ins().call(func_ref, &[val]);
+                            }
+                            spark_types::Ty::List(elem) => {
+                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
+                                let elem_rc_flag = i64::from(spark_drop::needs_rc(*elem, table));
+                                let elem_rc_val = builder.ins().iconst(cranelift_codegen::ir::types::I8, elem_rc_flag);
+                                let func_ref = self.module.declare_func_in_func(stubs.list_rc_dec, &mut builder.func);
+                                builder.ins().call(func_ref, &[val, elem_rc_val]);
+                            }
+                            spark_types::Ty::Map(k, v) => {
+                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
+                                let key_rc_flag = i64::from(spark_drop::needs_rc(*k, table));
+                                let val_rc_flag = i64::from(spark_drop::needs_rc(*v, table));
+                                let key_rc_val = builder.ins().iconst(cranelift_codegen::ir::types::I8, key_rc_flag);
+                                let val_rc_val = builder.ins().iconst(cranelift_codegen::ir::types::I8, val_rc_flag);
+                                let func_ref = self.module.declare_func_in_func(stubs.map_rc_dec, &mut builder.func);
+                                builder.ins().call(func_ref, &[val, key_rc_val, val_rc_val]);
+                            }
+                            spark_types::Ty::Set(elem) => {
+                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
+                                let elem_rc_flag = i64::from(spark_drop::needs_rc(*elem, table));
+                                let elem_rc_val = builder.ins().iconst(cranelift_codegen::ir::types::I8, elem_rc_flag);
+                                let func_ref = self.module.declare_func_in_func(stubs.set_rc_dec, &mut builder.func);
+                                builder.ins().call(func_ref, &[val, elem_rc_val]);
+                            }
+                            spark_types::Ty::Function { .. } => {
+                                // Function fat pointer: load env_ptr from second slot and call __spark_env_rc_dec.
+                                let fn_env_ptr = builder.ins().load(
+                                    ptr_type,
+                                    MemFlags::new(),
+                                    env_ptr,
+                                    i32::try_from(offset).unwrap_or(0) + ptr_type.bytes() as i32,
+                                );
+                                let func_ref = self.module.declare_func_in_func(stubs.env_rc_dec, &mut builder.func);
+                                builder.ins().call(func_ref, &[fn_env_ptr]);
+                            }
+                            spark_types::Ty::Future { .. } => {
+                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
+                                let func_ref = self.module.declare_func_in_func(stubs.future_rc_dec, &mut builder.func);
+                                builder.ins().call(func_ref, &[val]);
+                            }
+                            spark_types::Ty::Channel { .. } => {
+                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
+                                let func_ref = self.module.declare_func_in_func(stubs.channel_rc_dec, &mut builder.func);
+                                builder.ins().call(func_ref, &[val]);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    offset += cap_layout.size;
+                }
+
+                builder.ins().return_(&[]);
+                builder.seal_all_blocks();
+                builder.finalize();
+            }
+
+            let mut clif_ctx = ClifContext::for_function(func);
+            #[allow(clippy::default_trait_access)]
+            if let Err(e) = clif_ctx.compile(self.module.isa(), &mut Default::default()) {
+                diagnostics.error(format!("codegen error in env destructor '{dtor_name}': {e:?}"));
+                continue;
+            }
+            if let Err(e) = self.module.define_function(dtor_func_id, &mut clif_ctx) {
+                diagnostics.error(format!("failed to define env destructor '{dtor_name}': {e}"));
+                continue;
+            }
+
+            self.dtor_ids.insert(*def_id, dtor_func_id);
+        }
+    }
+
     /// Compiles a single MIR function.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn compile_function(
@@ -292,6 +447,7 @@ impl CraneliftBackend {
         definitions: &DefinitionTable,
         func_ids: &FxHashMap<DefId, FuncId>,
         thunk_ids: &FxHashMap<DefId, FuncId>,
+        dtor_ids: &FxHashMap<DefId, FuncId>,
         stubs: &runtime::RuntimeStubs,
         poll_fn_map: &FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
         lambda_to_async: &FxHashMap<DefId, DefId>,
@@ -401,7 +557,7 @@ impl CraneliftBackend {
         if is_lambda && !mir_func.captures.is_empty() {
             if let Some(env_ptr_val) = fctx.env_ptr {
                 let mut capture_layouts = crate::layout::LayoutCache::new(ptr_type.bytes());
-                let mut offset: u32 = 16; // skip RC header (rc: usize, alloc_size: usize)
+                let mut offset: u32 = 24; // skip header (rc: usize, alloc_size: usize, dtor: fn_ptr)
                 let capture_start = 1 + mir_func.param_count;
 
                 for (i, (_cap_def_id, cap_ty)) in mir_func.captures.iter().enumerate() {
@@ -471,6 +627,7 @@ impl CraneliftBackend {
                     definitions,
                     func_ids,
                     thunk_ids,
+                    dtor_ids,
                     &mut self.module,
                     diagnostics,
                 );
@@ -484,6 +641,7 @@ impl CraneliftBackend {
                 definitions,
                 func_ids,
                 thunk_ids,
+                dtor_ids,
                 &mut self.module,
                 poll_fn_map,
                 lambda_to_async,
@@ -527,7 +685,10 @@ impl CodegenBackend for CraneliftBackend {
         // Phase 1: Declare all functions.
         let func_ids = self.declare_all_functions(mir, table, definitions, diagnostics);
 
-        // Phase 2: Precompute lambda → async function mapping for spawn_coop.
+        // Phase 2a: Generate env destructors for closures with RC captures.
+        self.generate_env_destructors(mir, table, definitions, &stubs, diagnostics);
+
+        // Phase 2b: Precompute lambda → async function mapping for spawn_coop.
         // For each lambda that calls an async function with a poll entry,
         // record the mapping so emit_spawn_call can use the cooperative path.
         let mut lambda_to_async: FxHashMap<DefId, DefId> = FxHashMap::default();
@@ -545,6 +706,7 @@ impl CodegenBackend for CraneliftBackend {
 
         // Phase 3: Compile each function.
         let thunk_ids = self.thunk_ids.clone();
+        let dtor_ids = self.dtor_ids.clone();
         for (def_id, mir_func) in &mir.functions {
             if let Some(&func_id) = func_ids.get(def_id) {
                 self.compile_function(
@@ -554,6 +716,7 @@ impl CodegenBackend for CraneliftBackend {
                     definitions,
                     &func_ids,
                     &thunk_ids,
+                    &dtor_ids,
                     &stubs,
                     poll_fn_map,
                     &lambda_to_async,
