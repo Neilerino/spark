@@ -47,6 +47,14 @@ pub fn stdlib_sources() -> Vec<StdlibSource> {
             path: "spark/time.spark",
             source: include_str!("../spark/time.spark"),
         },
+        StdlibSource {
+            path: "spark/net.spark",
+            source: include_str!("../spark/net.spark"),
+        },
+        StdlibSource {
+            path: "spark/http.spark",
+            source: include_str!("../spark/http.spark"),
+        },
     ]
 }
 
@@ -57,7 +65,7 @@ mod tests {
     #[test]
     fn has_math_source() {
         let sources = stdlib_sources();
-        assert_eq!(sources.len(), 4);
+        assert_eq!(sources.len(), 6);
         assert_eq!(sources[0].path, "spark/math.spark");
     }
 
@@ -173,5 +181,77 @@ mod tests {
     fn time_source_contains_extern_fns() {
         let sources = stdlib_sources();
         assert!(sources[3].source.contains("extern fn __spark_time_sleep"));
+    }
+
+    #[test]
+    fn has_net_source() {
+        let sources = stdlib_sources();
+        assert_eq!(sources[4].path, "spark/net.spark");
+    }
+
+    #[test]
+    fn net_source_contains_module_decl() {
+        let sources = stdlib_sources();
+        assert!(sources[4].source.contains("module net"));
+    }
+
+    #[test]
+    fn net_source_contains_tcp_listen() {
+        let sources = stdlib_sources();
+        assert!(sources[4].source.contains("pub fn tcpListen"));
+    }
+
+    #[test]
+    fn net_source_contains_extern_fns() {
+        let sources = stdlib_sources();
+        assert!(sources[4].source.contains("extern fn __spark_net_tcp_listen"));
+    }
+
+    #[test]
+    fn net_source_contains_failed() {
+        let sources = stdlib_sources();
+        assert!(sources[4].source.contains("pub fn failed"));
+    }
+
+    #[test]
+    fn net_source_contains_resolve() {
+        let sources = stdlib_sources();
+        assert!(sources[4].source.contains("pub fn resolve"));
+    }
+
+    #[test]
+    fn has_http_source() {
+        let sources = stdlib_sources();
+        assert_eq!(sources[5].path, "spark/http.spark");
+    }
+
+    #[test]
+    fn http_source_contains_module_decl() {
+        let sources = stdlib_sources();
+        assert!(sources[5].source.contains("module http"));
+    }
+
+    #[test]
+    fn http_source_contains_get() {
+        let sources = stdlib_sources();
+        assert!(sources[5].source.contains("pub fn get"));
+    }
+
+    #[test]
+    fn http_source_contains_serve() {
+        let sources = stdlib_sources();
+        assert!(sources[5].source.contains("pub fn serve"));
+    }
+
+    #[test]
+    fn http_source_contains_extern_fns() {
+        let sources = stdlib_sources();
+        assert!(sources[5].source.contains("extern fn __spark_http_get"));
+    }
+
+    #[test]
+    fn http_source_contains_respond() {
+        let sources = stdlib_sources();
+        assert!(sources[5].source.contains("pub fn respond"));
     }
 }

@@ -1,0 +1,208 @@
+module http
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/// An HTTP response from a client request.
+pub struct Response {
+    status: Int,
+    body: String,
+    headers: String
+}
+
+/// An opaque handle to an incoming HTTP request (server-side).
+pub struct Request {
+    handle: Int
+}
+
+/// An opaque handle to an HTTP server.
+pub struct Server {
+    handle: Int
+}
+
+/// An error from an HTTP operation. Code 0 means no error.
+pub struct HttpError {
+    code: Int
+}
+
+// =============================================================================
+// Extern FFI declarations (private)
+// =============================================================================
+
+extern fn __spark_http_get(url: String, headers: String): Int
+extern fn __spark_http_post(url: String, body: String, headers: String): Int
+extern fn __spark_http_put(url: String, body: String, headers: String): Int
+extern fn __spark_http_delete(url: String, headers: String): Int
+extern fn __spark_http_response_body(): String
+extern fn __spark_http_response_headers(): String
+extern fn __spark_http_error(): String
+
+extern fn __spark_http_serve(addr: String, port: Int): Int
+extern fn __spark_http_server_addr(server_handle: Int): String
+extern fn __spark_http_recv(server_handle: Int): Int
+extern fn __spark_http_request_method(req_handle: Int): String
+extern fn __spark_http_request_url(req_handle: Int): String
+extern fn __spark_http_request_body(req_handle: Int): String
+extern fn __spark_http_request_header(req_handle: Int, name: String): String
+extern fn __spark_http_respond(req_handle: Int, status: Int, body: String, headers: String): Int
+extern fn __spark_http_close_server(server_handle: Int): Void
+extern fn __spark_http_close_request(req_handle: Int): Void
+
+// =============================================================================
+// Error handling
+// =============================================================================
+
+/// Returns true if an HttpError represents a failure (code != 0).
+pub fn failed(err: HttpError): Bool {
+    return err.code != 0
+}
+
+/// Returns the last HTTP error message.
+pub fn lastError(): String {
+    return __spark_http_error()
+}
+
+// =============================================================================
+// HTTP Client
+// =============================================================================
+
+/// Performs an HTTP GET request.
+/// Returns a Response with status -1 on error; check lastError().
+pub fn get(url: String): Response {
+    status: Int = __spark_http_get(url, "")
+    return Response {
+        status: status,
+        body: __spark_http_response_body(),
+        headers: __spark_http_response_headers()
+    }
+}
+
+/// Performs an HTTP GET request with custom headers.
+/// Headers are newline-separated "Key: Value" pairs.
+pub fn getWithHeaders(url: String, headers: String): Response {
+    status: Int = __spark_http_get(url, headers)
+    return Response {
+        status: status,
+        body: __spark_http_response_body(),
+        headers: __spark_http_response_headers()
+    }
+}
+
+/// Performs an HTTP POST request.
+pub fn post(url: String, body: String): Response {
+    status: Int = __spark_http_post(url, body, "")
+    return Response {
+        status: status,
+        body: __spark_http_response_body(),
+        headers: __spark_http_response_headers()
+    }
+}
+
+/// Performs an HTTP POST request with custom headers.
+pub fn postWithHeaders(url: String, body: String, headers: String): Response {
+    status: Int = __spark_http_post(url, body, headers)
+    return Response {
+        status: status,
+        body: __spark_http_response_body(),
+        headers: __spark_http_response_headers()
+    }
+}
+
+/// Performs an HTTP PUT request.
+pub fn put(url: String, body: String): Response {
+    status: Int = __spark_http_put(url, body, "")
+    return Response {
+        status: status,
+        body: __spark_http_response_body(),
+        headers: __spark_http_response_headers()
+    }
+}
+
+/// Performs an HTTP PUT request with custom headers.
+pub fn putWithHeaders(url: String, body: String, headers: String): Response {
+    status: Int = __spark_http_put(url, body, headers)
+    return Response {
+        status: status,
+        body: __spark_http_response_body(),
+        headers: __spark_http_response_headers()
+    }
+}
+
+/// Performs an HTTP DELETE request.
+pub fn delete(url: String): Response {
+    status: Int = __spark_http_delete(url, "")
+    return Response {
+        status: status,
+        body: __spark_http_response_body(),
+        headers: __spark_http_response_headers()
+    }
+}
+
+/// Performs an HTTP DELETE request with custom headers.
+pub fn deleteWithHeaders(url: String, headers: String): Response {
+    status: Int = __spark_http_delete(url, headers)
+    return Response {
+        status: status,
+        body: __spark_http_response_body(),
+        headers: __spark_http_response_headers()
+    }
+}
+
+// =============================================================================
+// HTTP Server
+// =============================================================================
+
+/// Creates an HTTP server listening on the given address and port.
+/// Returns a Server with handle -1 on error; check lastError().
+pub fn serve(addr: String, port: Int): Server {
+    return Server { handle: __spark_http_serve(addr, port) }
+}
+
+/// Returns the local address that the server is bound to.
+pub fn serverAddr(server: Server): String {
+    return __spark_http_server_addr(server.handle)
+}
+
+/// Waits for and accepts the next HTTP request.
+/// Returns a Request with handle -1 on error; check lastError().
+pub fn recv(server: Server): Request {
+    return Request { handle: __spark_http_recv(server.handle) }
+}
+
+/// Returns the HTTP method of a request (e.g. "GET", "POST").
+pub fn method(req: Request): String {
+    return __spark_http_request_method(req.handle)
+}
+
+/// Returns the URL path of a request (e.g. "/api/users").
+pub fn url(req: Request): String {
+    return __spark_http_request_url(req.handle)
+}
+
+/// Returns the body of a request.
+pub fn body(req: Request): String {
+    return __spark_http_request_body(req.handle)
+}
+
+/// Returns a specific header value from a request.
+/// Header name matching is case-insensitive.
+pub fn header(req: Request, name: String): String {
+    return __spark_http_request_header(req.handle, name)
+}
+
+/// Sends an HTTP response for a pending request.
+/// Headers are newline-separated "Key: Value" pairs.
+pub fn respond(req: Request, status: Int, body: String, headers: String): HttpError {
+    return HttpError { code: __spark_http_respond(req.handle, status, body, headers) }
+}
+
+/// Closes an HTTP server, stopping it from accepting new connections.
+pub fn closeServer(server: Server): Void {
+    __spark_http_close_server(server.handle)
+}
+
+/// Closes a pending HTTP request without responding.
+pub fn closeRequest(req: Request): Void {
+    __spark_http_close_request(req.handle)
+}

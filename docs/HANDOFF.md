@@ -29,11 +29,11 @@ Spark is a statically-typed programming language ("lower-level Python") with:
 | `spark_borrow`      | Borrow checking: NLL-style region inference over MIR CFG       | 27    | Complete |
 | `spark_codegen`     | Native code generation via Cranelift                           | 35    | Complete |
 | `spark_drop`        | Type queries for RC/drop decisions (`needs_rc`, `needs_drop`)  | 14    | Complete |
-| `spark_runtime`     | `extern "C"` runtime library (print, strings, collections, RC) | 10    | Complete |
+| `spark_runtime`     | `extern "C"` runtime library (print, strings, collections, RC, net, http) | 98    | Complete |
 | `spark_opt`         | MIR optimization passes (5 passes, 2 iterations)               | 75    | Complete |
 | `spark_driver`      | CLI driver (`spark build` / `spark run`)                       | —     | Complete |
 
-**Total: 900+ tests passing across workspace.**
+**Total: 950+ tests passing across workspace.**
 
 All crates pass `cargo test` and `cargo clippy` (pedantic + nursery).
 

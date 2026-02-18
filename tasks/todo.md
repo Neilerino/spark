@@ -370,13 +370,18 @@ these tags automatically — open the tree view to jump between tasks and their 
 - **Type**: feature
 - **Effort**: high
 - **Category**: DX
-- **Status**: open
+- **Status**: in-progress
 - **Crates**: spark_stdlib, spark_resolve, spark_types, spark_codegen, spark_runtime
 - **Files**:
   - See `docs/design-notes/standard-library.md` for full architecture
 - **Description**: Namespaced, opt-in modules backed by native runtime functions. Start with
   `spark.math` and `spark.io` to validate the pipeline, then `spark.json`, `spark.net`, `spark.http`.
   Manifest-based architecture — function signatures + FFI symbol mappings.
+  **Completed**: `spark.math`, `spark.io`, `spark.json`, `spark.time`, `spark.net`, `spark.http`.
+  - `spark.net`: TCP (listen/accept/connect/read/write/shutdown), UDP (bind/send/recv), DNS resolve.
+    Backed by `tokio::net` via `block_on`. Handle-table architecture with `Arc`-wrapped resources.
+  - `spark.http`: Client (GET/POST/PUT/DELETE via `reqwest`), Server (HTTP/1.1 via `tokio::net` TCP
+    with manual parsing). Handle-table for servers and pending requests.
 
 ### `TODO` [SPARK-021] — Async Phase 3 v2 (segmented suspension)
 
