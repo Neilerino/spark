@@ -395,7 +395,6 @@ mod tests {
             graph
         }
 
-        // Pass 1: resolve + type-check
         let tokens = Lexer::new(file_id, source).tokenize();
         let (ast, _) = parse(tokens, file_id);
         let graph = make_graph(file_id, &ast);
@@ -403,27 +402,21 @@ mod tests {
         asts.insert(file_id, ast);
 
         let resolver_output = resolve(ResolverInput { graph, asts });
+
+        // Clone resolved ASTs before type-checking so HIR lowering reuses
+        // the same AST nodes (with matching ExprIds).
+        let resolved_for_hir = resolver_output.resolved.clone();
+        let definitions_for_hir = resolver_output.definitions.clone();
+
         let type_output = check(TypeCheckerInput {
             resolved: resolver_output.resolved,
             definitions: resolver_output.definitions,
             graph: ModuleGraph::default(),
         });
 
-        // Pass 2: re-resolve for HIR
-        let tokens2 = Lexer::new(file_id, source).tokenize();
-        let (ast2, _) = parse(tokens2, file_id);
-        let graph2 = make_graph(file_id, &ast2);
-        let mut asts2 = HashMap::new();
-        asts2.insert(file_id, ast2);
-
-        let resolver_output2 = resolve(ResolverInput {
-            graph: graph2,
-            asts: asts2,
-        });
-
         let hir_output = spark_hir::lower(spark_hir::HirInput {
-            resolved: resolver_output2.resolved,
-            definitions: resolver_output2.definitions.clone(),
+            resolved: resolved_for_hir,
+            definitions: definitions_for_hir,
             table: type_output.table,
         });
 

@@ -1,5 +1,7 @@
 //! Expression nodes.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use spark_span::Span;
 
 use crate::{Block, Ident, Literal, Path, Pattern, TypeExpr};
@@ -7,30 +9,60 @@ use crate::{Block, Ident, Literal, Path, Pattern, TypeExpr};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+static EXPR_ID_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Unique identifier for expression nodes (`Expr`, `TypeExpr`, `Block`).
+///
+/// Each expression node is assigned a globally unique `ExprId` at construction
+/// time. This is used as a collision-free key in the type table instead of
+/// source spans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct ExprId(pub u32);
+
+impl ExprId {
+    /// A dummy `ExprId` for error recovery.
+    pub const DUMMY: Self = Self(u32::MAX);
+
+    /// Allocates the next unique `ExprId`.
+    #[must_use]
+    pub fn next() -> Self {
+        Self(EXPR_ID_COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// An expression node.
 ///
 /// Expressions are the primary building blocks of Spark programs.
 /// Unlike statements, expressions always produce a value.
 #[allow(clippy::derive_partial_eq_without_eq)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Expr {
+    /// Unique node identifier for type-table lookups.
+    pub id: ExprId,
     /// The kind of expression.
     pub kind: ExprKind,
     /// The source span.
     pub span: Span,
 }
 
+impl PartialEq for Expr {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.span == other.span
+    }
+}
+
 impl Expr {
     /// Creates a new expression.
     #[must_use]
-    pub const fn new(kind: ExprKind, span: Span) -> Self {
-        Self { kind, span }
+    pub fn new(kind: ExprKind, span: Span) -> Self {
+        Self { id: ExprId::next(), kind, span }
     }
 
     /// Creates an error expression for recovery.
     #[must_use]
-    pub const fn error(span: Span) -> Self {
+    pub fn error(span: Span) -> Self {
         Self::new(ExprKind::Error, span)
     }
 }

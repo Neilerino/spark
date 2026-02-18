@@ -2,7 +2,7 @@
 
 use spark_span::Span;
 
-use crate::{Expr, Ident, TypeExpr};
+use crate::{Expr, ExprId, Ident, TypeExpr};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -25,9 +25,11 @@ use serde::{Deserialize, Serialize};
 ///     print("hello")     // statement (Void return)
 /// }                      // block evaluates to Void
 /// ```
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Block {
+    /// Unique node identifier for type-table lookups.
+    pub id: ExprId,
     /// The statements in the block.
     pub stmts: Vec<Stmt>,
     /// Optional trailing expression (the block's value).
@@ -36,17 +38,24 @@ pub struct Block {
     pub span: Span,
 }
 
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        self.stmts == other.stmts && self.expr == other.expr && self.span == other.span
+    }
+}
+
 impl Block {
     /// Creates a new block.
     #[must_use]
-    pub const fn new(stmts: Vec<Stmt>, expr: Option<Box<Expr>>, span: Span) -> Self {
-        Self { stmts, expr, span }
+    pub fn new(stmts: Vec<Stmt>, expr: Option<Box<Expr>>, span: Span) -> Self {
+        Self { id: ExprId::next(), stmts, expr, span }
     }
 
     /// Creates an empty block.
     #[must_use]
-    pub const fn empty(span: Span) -> Self {
+    pub fn empty(span: Span) -> Self {
         Self {
+            id: ExprId::next(),
             stmts: Vec::new(),
             expr: None,
             span,
@@ -57,6 +66,7 @@ impl Block {
     #[must_use]
     pub fn expr_only(expr: Expr, span: Span) -> Self {
         Self {
+            id: ExprId::next(),
             stmts: Vec::new(),
             expr: Some(Box::new(expr)),
             span,

@@ -124,10 +124,17 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     emit_warnings(&resolve1.diagnostics, &source_map);
 
     // -- Phase 5: Type checking -----------------------------------------------
+    // Clone the resolved ASTs before type checking so that HIR lowering can
+    // reuse the same AST nodes (and their ExprIds) that the type checker
+    // recorded types against. This avoids re-parsing which would create new
+    // nodes with different ExprIds.
+    let resolved_for_hir = resolve1.resolved.clone();
+    let definitions_for_hir = resolve1.definitions.clone();
+
     let type_output = spark_types::check(TypeCheckerInput {
         resolved: resolve1.resolved,
         definitions: resolve1.definitions,
-        graph: graph.clone(),
+        graph,
     });
     if type_output.diagnostics.has_errors() {
         type_output.diagnostics.emit_all(&source_map);
@@ -136,29 +143,10 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     emit_warnings(&type_output.diagnostics, &source_map);
     let table = type_output.table;
 
-    // -- Phase 6-7: Re-lex, re-parse, name resolution (pass 2) ---------------
-    // The type checker consumed the first ASTs. Re-parse all files to get
-    // fresh ASTs for HIR lowering.
-    let mut reparsed_asts: HashMap<FileId, Ast> = HashMap::with_capacity(file_entries.len());
-    for &(file_id, _, ref source) in &file_entries {
-        let tokens = Lexer::new(file_id, source).tokenize();
-        let (reparsed, _) = parse(tokens, file_id);
-        reparsed_asts.insert(file_id, reparsed);
-    }
-
-    let resolve2 = spark_resolve::resolve(ResolverInput {
-        graph,
-        asts: reparsed_asts,
-    });
-    if resolve2.diagnostics.has_errors() {
-        resolve2.diagnostics.emit_all(&source_map);
-        return Err(());
-    }
-
-    // -- Phase 8: HIR lowering ------------------------------------------------
+    // -- Phase 6: HIR lowering ------------------------------------------------
     let hir_output = spark_hir::lower(HirInput {
-        resolved: resolve2.resolved,
-        definitions: resolve2.definitions,
+        resolved: resolved_for_hir,
+        definitions: definitions_for_hir,
         table,
     });
     if hir_output.diagnostics.has_errors() {

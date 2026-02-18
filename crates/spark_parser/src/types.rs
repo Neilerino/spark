@@ -152,7 +152,7 @@ impl Parser {
     fn extract_lifetime_from_type(ty: Option<&TypeExpr>) -> Ident {
         if let Some(TypeExpr {
             kind: TypeExprKind::Named { path, type_args },
-            span: _,
+            ..
         }) = ty
         {
             if path.is_simple() && type_args.is_empty() {

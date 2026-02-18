@@ -48,7 +48,7 @@ pub fn check_expr_expected(
     expected_ty: Option<TypeId>,
 ) -> TypeId {
     let ty = check_expr_inner(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret, expected_ty);
-    table.set_expr_type(expr.span, ty);
+    table.set_expr_type(expr.id, ty);
     ty
 }
 
@@ -550,9 +550,11 @@ pub fn check_block(
         check_stmt(stmt, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
     }
 
-    block.expr.as_ref().map_or(builtins.void, |expr| {
+    let ty = block.expr.as_ref().map_or(builtins.void, |expr| {
         check_expr(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
-    })
+    });
+    table.set_expr_type(block.id, ty);
+    ty
 }
 
 // === Binary operator checking ===
