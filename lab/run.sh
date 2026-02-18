@@ -287,9 +287,10 @@ run_benchmark() {
         return 0
     fi
 
-    hyperfine --warmup 3 \
+    hyperfine --warmup 3 --runs 20 \
         "${cmds[@]}" \
-        --export-markdown "$RESULTS_DIR/${name}.md"
+        --export-markdown "$RESULTS_DIR/${name}.md" \
+        --export-json "$RESULTS_DIR/${name}.json"
 
     log_ok "Results saved to results/${name}.md"
 }
@@ -413,6 +414,24 @@ main() {
         run_benchmark "$dir"
     done
 
+    # Generate report
+    log_header "Report"
+    REPORT_DATE="$(date +%Y-%m-%d)"
+    REPORT_DIR="$SCRIPT_DIR/reports/$REPORT_DATE"
+    # If directory exists, append a counter
+    if [[ -d "$REPORT_DIR" ]]; then
+        counter=2
+        while [[ -d "${REPORT_DIR}-${counter}" ]]; do
+            ((counter++))
+        done
+        REPORT_DIR="${REPORT_DIR}-${counter}"
+    fi
+    if python3 "$SCRIPT_DIR/report.py" "$REPORT_DIR" "$RESULTS_DIR"/*.json 2>&1; then
+        log_ok "Report generated: $REPORT_DIR/report.md"
+    else
+        log_warn "Report generation failed (results still saved as markdown)"
+    fi
+
     # Cleanup
     log_header "Cleanup"
     for dir in "${benchmarks[@]}"; do
@@ -422,6 +441,7 @@ main() {
 
     log_header "Done"
     log_ok "All results saved to lab/results/"
+    log_ok "Report: $REPORT_DIR/report.md"
 }
 
 main "$@"
