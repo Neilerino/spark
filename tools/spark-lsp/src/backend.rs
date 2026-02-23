@@ -283,29 +283,26 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
             let resolve_output = resolve_names(graph.clone(), file_id, ast);
             all_diagnostics.extend(resolve_output.diagnostics);
 
-            // Cache resolver output for on-demand queries (go-to-definition, hover, etc.)
-            // Clone before type checking consumes ownership.
-            analysis = Some(AnalysisResult {
-                file_id,
-                resolved: Arc::new(resolve_output.resolved.clone()),
-                definitions: Arc::new(resolve_output.definitions.clone()),
-                type_table: None,
-            });
-
-            if !all_diagnostics.has_errors() {
-                // Phase 5: Type checking
+            // Phase 5: Type checking (borrows resolver output)
+            let type_table = if !all_diagnostics.has_errors() {
                 let type_output = spark_types::check(TypeCheckerInput {
-                    resolved: resolve_output.resolved,
-                    definitions: resolve_output.definitions,
+                    resolved: &resolve_output.resolved,
+                    definitions: &resolve_output.definitions,
                     graph,
                 });
                 all_diagnostics.extend(type_output.diagnostics);
+                Some(Arc::new(type_output.table))
+            } else {
+                None
+            };
 
-                // Cache the type table for hover information
-                if let Some(ref mut a) = analysis {
-                    a.type_table = Some(Arc::new(type_output.table));
-                }
-            }
+            // Cache resolver output for on-demand queries (go-to-definition, hover, etc.)
+            analysis = Some(AnalysisResult {
+                file_id,
+                resolved: Arc::new(resolve_output.resolved),
+                definitions: Arc::new(resolve_output.definitions),
+                type_table,
+            });
         }
     }
 

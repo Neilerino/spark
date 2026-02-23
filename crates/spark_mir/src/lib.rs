@@ -165,7 +165,6 @@ mod tests {
 
         let file_id = FileId::new(0);
 
-        // Pass 1: resolve + type-check
         let tokens = Lexer::new(file_id, source).tokenize();
         let (ast, _) = parse(tokens, file_id);
         let graph = make_graph(file_id, &ast);
@@ -173,27 +172,16 @@ mod tests {
         asts.insert(file_id, ast);
 
         let resolver_output = resolve(ResolverInput { graph, asts });
+
         let type_output = check(TypeCheckerInput {
-            resolved: resolver_output.resolved,
-            definitions: resolver_output.definitions,
+            resolved: &resolver_output.resolved,
+            definitions: &resolver_output.definitions,
             graph: ModuleGraph::default(),
         });
 
-        // Pass 2: re-resolve for HIR (type checker consumed ASTs)
-        let tokens2 = Lexer::new(file_id, source).tokenize();
-        let (ast2, _) = parse(tokens2, file_id);
-        let graph2 = make_graph(file_id, &ast2);
-        let mut asts2 = HashMap::new();
-        asts2.insert(file_id, ast2);
-
-        let resolver_output2 = resolve(ResolverInput {
-            graph: graph2,
-            asts: asts2,
-        });
-
         let hir_output = spark_hir::lower(spark_hir::HirInput {
-            resolved: resolver_output2.resolved,
-            definitions: resolver_output2.definitions,
+            resolved: resolver_output.resolved,
+            definitions: resolver_output.definitions,
             table: type_output.table,
         });
 

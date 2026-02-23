@@ -725,7 +725,6 @@ mod tests {
     fn optional_value_and_null_exhaustive() {
         use spark_ast::TypeExpr;
         use spark_ast::TypeExprKind;
-        use spark_span::FileId;
 
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
@@ -734,17 +733,16 @@ mod tests {
 
         let optional_ty = table.intern(Ty::Optional(builtins.int));
 
-        // Arm 1: typed binding `n: Int` — use a unique span so lower_type_expr
-        // can look up the type. We pre-record it in the table.
-        let int_span = Span::new(FileId::new(99), 0, 3);
-        table.set_expr_type(int_span, builtins.int);
+        // Arm 1: typed binding `n: Int` — pre-record the type in the table
+        // using the TypeExpr's auto-assigned ExprId.
         let int_type_expr = TypeExpr::new(
             TypeExprKind::Named {
-                path: spark_ast::Path::from_ident(Ident::new(sym("Int"), int_span)),
+                path: spark_ast::Path::from_ident(Ident::dummy(sym("Int"))),
                 type_args: vec![],
             },
-            int_span,
+            Span::DUMMY,
         );
+        table.set_expr_type(int_type_expr.id, builtins.int);
         let value_arm = make_arm(Pattern::ident_typed(
             Ident::dummy(sym("n")),
             int_type_expr,
@@ -770,7 +768,6 @@ mod tests {
     fn union_all_members_exhaustive() {
         use spark_ast::TypeExpr;
         use spark_ast::TypeExprKind;
-        use spark_span::FileId;
 
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
@@ -780,15 +777,14 @@ mod tests {
         let union_ty = table.intern(Ty::Union(vec![builtins.int, builtins.string]));
 
         // Arm 1: typed binding `n: Int`
-        let int_span = Span::new(FileId::new(99), 0, 3);
-        table.set_expr_type(int_span, builtins.int);
         let int_type_expr = TypeExpr::new(
             TypeExprKind::Named {
-                path: spark_ast::Path::from_ident(Ident::new(sym("Int"), int_span)),
+                path: spark_ast::Path::from_ident(Ident::dummy(sym("Int"))),
                 type_args: vec![],
             },
-            int_span,
+            Span::DUMMY,
         );
+        table.set_expr_type(int_type_expr.id, builtins.int);
         let int_arm = make_arm(Pattern::ident_typed(
             Ident::dummy(sym("n")),
             int_type_expr,
@@ -796,15 +792,14 @@ mod tests {
         ));
 
         // Arm 2: typed binding `s: String`
-        let str_span = Span::new(FileId::new(99), 10, 16);
-        table.set_expr_type(str_span, builtins.string);
         let str_type_expr = TypeExpr::new(
             TypeExprKind::Named {
-                path: spark_ast::Path::from_ident(Ident::new(sym("String"), str_span)),
+                path: spark_ast::Path::from_ident(Ident::dummy(sym("String"))),
                 type_args: vec![],
             },
-            str_span,
+            Span::DUMMY,
         );
+        table.set_expr_type(str_type_expr.id, builtins.string);
         let str_arm = make_arm(Pattern::ident_typed(
             Ident::dummy(sym("s")),
             str_type_expr,

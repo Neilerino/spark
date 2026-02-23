@@ -26,7 +26,7 @@ pub fn lower_expr(
     diagnostics: &mut Diagnostics,
     current_fn_ret: Option<TypeId>,
 ) -> HirExpr {
-    let ty = expr_type(expr.span, table);
+    let ty = expr_type(expr.id, table);
     let kind = lower_expr_kind(expr, table, definitions, resolutions, diagnostics, current_fn_ret);
     HirExpr::new(kind, ty, expr.span)
 }
@@ -52,7 +52,7 @@ pub fn lower_block(
 
     let ty = trailing
         .as_ref()
-        .map_or_else(|| expr_type(block.span, table), |e| e.ty);
+        .map_or_else(|| expr_type(block.id, table), |e| e.ty);
 
     HirExpr::new(
         HirExprKind::Block { stmts, expr: trailing },
@@ -332,14 +332,14 @@ fn lower_expr_kind(
         ExprKind::Coalesce { lhs, rhs } => {
             let lhs_hir = lower_expr(lhs, table, definitions, resolutions, diagnostics, current_fn_ret);
             let rhs_hir = lower_expr(rhs, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let ty = expr_type(expr.span, table);
+            let ty = expr_type(expr.id, table);
             desugar::desugar_coalesce(lhs_hir, rhs_hir, expr.span, ty, definitions).kind
         }
 
         // === Desugared: OptionalField (?.) ===
         ExprKind::OptionalField { base, field } => {
             let base_hir = lower_expr(base, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let ty = expr_type(expr.span, table);
+            let ty = expr_type(expr.id, table);
             let inner_ty = spark_types::union::strip_null(base_hir.ty, table);
             desugar::desugar_optional_field(base_hir, field.name, expr.span, ty, inner_ty, definitions).kind
         }
@@ -347,7 +347,7 @@ fn lower_expr_kind(
         // === Desugared: Propagate (!) ===
         ExprKind::Propagate(inner) => {
             let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let ty = expr_type(expr.span, table);
+            let ty = expr_type(expr.id, table);
             let inner_ty = inner_hir.ty;
             desugar_propagate_expr(inner_hir, inner_ty, ty, current_fn_ret, expr.span, table, definitions)
         }
@@ -359,7 +359,7 @@ fn lower_expr_kind(
 
         ExprKind::To { expr: inner, arms } => {
             let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let ty = expr_type(expr.span, table);
+            let ty = expr_type(expr.id, table);
             lower_to_narrowing(inner_hir, arms, ty, table, definitions, resolutions, diagnostics, current_fn_ret, expr.span)
         }
 
@@ -516,7 +516,7 @@ fn lower_pipeline(
         } else {
             // Last stage: produce the final expression
             let final_kind = lower_single_pipeline_stage(stage, current_hir, span, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let result_ty = expr_type(span, table);
+            let result_ty = expr_type(pipeline_expr.id, table);
             let trailing = HirExpr::new(final_kind, result_ty, span);
             return HirExprKind::Block {
                 stmts,
@@ -538,15 +538,15 @@ fn infer_stage_output_ty(
     match &stage.kind {
         PipelineStageKind::ForEach { .. } => find_void_type(table),
         PipelineStageKind::Map { callback } => {
-            // Output is List[cb_ret_ty] — we look it up from the type table using the callback span
-            let cb_ty = table.get_expr_type(callback.span).unwrap_or(TypeId::ERROR);
+            // Output is List[cb_ret_ty] — we look it up from the type table using the callback id
+            let cb_ty = table.get_expr_type(callback.id).unwrap_or(TypeId::ERROR);
             let void_ty = find_void_type(table);
             let ret_ty = extract_fn_ret_ty(cb_ty, table, void_ty);
             table.lookup(&Ty::List(ret_ty)).unwrap_or(TypeId::ERROR)
         }
         PipelineStageKind::Reduce { callback, .. } => {
             // Output is the return type of the callback
-            let cb_ty = table.get_expr_type(callback.span).unwrap_or(TypeId::ERROR);
+            let cb_ty = table.get_expr_type(callback.id).unwrap_or(TypeId::ERROR);
             let void_ty = find_void_type(table);
             extract_fn_ret_ty(cb_ty, table, void_ty)
         }
@@ -712,7 +712,7 @@ fn lower_to_pattern(
             let def_id = resolutions
                 .and_then(|res| res.get_binding(name.span))
                 .unwrap_or_else(|| definitions.next_synthetic_id(pattern.span));
-            let narrowed_ty = table.get_expr_type(ty.span).unwrap_or(TypeId::ERROR);
+            let narrowed_ty = table.get_expr_type(ty.id).unwrap_or(TypeId::ERROR);
             HirPattern::TypeNarrow { def_id, ty: narrowed_ty }
         }
         spark_ast::PatternKind::Variant { path, fields } => {
@@ -750,7 +750,7 @@ fn lower_literal_expr(
     match kind {
         LiteralKind::String(s) if !s.is_simple() => {
             // Interpolated string: produce StringInterp with parts.
-            let string_ty = expr_type(expr.span, table);
+            let string_ty = expr_type(expr.id, table);
             let parts = s
                 .parts
                 .iter()
@@ -792,9 +792,9 @@ fn lower_literal(kind: &LiteralKind) -> HirLiteral {
     }
 }
 
-/// Looks up the type for an expression by its span.
-fn expr_type(span: Span, table: &TypeTable) -> TypeId {
-    table.get_expr_type(span).unwrap_or(TypeId::ERROR)
+/// Looks up the type for an expression by its `ExprId`.
+fn expr_type(id: spark_ast::ExprId, table: &TypeTable) -> TypeId {
+    table.get_expr_type(id).unwrap_or(TypeId::ERROR)
 }
 
 /// If the expression has type `Ref[T]`, wraps it in a `Deref` to produce `T`.

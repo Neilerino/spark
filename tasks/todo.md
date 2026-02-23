@@ -87,15 +87,34 @@ these tags automatically — open the tree view to jump between tasks and their 
 - **Type**: bug
 - **Effort**: medium-high
 - **Category**: performance
-- **Status**: open
+- **Status**: done
 - **Crates**: spark_codegen, spark_runtime
 - **Files**:
-  - `crates/spark_codegen/src/cranelift/emit_stmt.rs` — Drop emission for closure envs
-  - `crates/spark_runtime/src/lib.rs` — `__spark_env_rc_dec`
-- **Description**: When the last reference to a closure env is dropped, `__spark_env_rc_dec` frees
-  the env but does **not** recursively decrement RC'd values captured inside it (e.g. Strings,
-  Lists). This is a memory leak. Fix requires either per-closure-type destructor codegen or passing
-  capture metadata (offsets + type flags) to the runtime. See `docs/KNOWN_ISSUES.md`.
+  - `crates/spark_codegen/src/cranelift/mod.rs` — `generate_env_destructors()`
+  - `crates/spark_codegen/src/cranelift/emit_rvalue.rs` — Stores dtor ptr in env header
+  - `crates/spark_runtime/src/lib.rs` — `__spark_env_alloc`, `__spark_env_rc_dec`
+- **Description**: Fixed. Env header expanded from 16 to 24 bytes to include a destructor function
+  pointer at offset 16. Codegen generates per-closure destructor functions that decrement RC for
+  each captured value. `__spark_env_rc_dec` calls the destructor before freeing when RC hits zero.
+
+### `BUG` [SPARK-028] — Closure captures don't RC-inc copied RC values
+
+- **Type**: bug
+- **Effort**: medium
+- **Category**: correctness
+- **Status**: done
+- **Crates**: spark_codegen
+- **Files**:
+  - `crates/spark_codegen/src/cranelift/emit_rvalue.rs` — `emit_closure_construction`
+- **Description**: When a closure captures an RC value (String, List, Map, Set, etc.) via
+  `Operand::Copy`, the reference count is **not** incremented. `emit_closure_construction` uses
+  `emit_place_read` directly instead of going through `emit_operand` (which handles RC inc for
+  copies). This means if the original variable is dropped before the closure, the captured value
+  becomes a dangling pointer. Currently masked when the captured variable outlives the closure
+  (e.g. both live in `main`), but triggers use-after-free when a closure escapes a function that
+  owns the captured value (e.g. `fn make(s: String): (): Void { return fn() { print(s) } }`).
+  Fix: call `emit_operand` for each capture, or manually emit RC inc for `Copy` operands of RC
+  types inside `emit_closure_construction`.
 
 ---
 

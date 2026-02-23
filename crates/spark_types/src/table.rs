@@ -4,6 +4,7 @@
 //! definitions to their types and expressions to their inferred types.
 
 use rustc_hash::FxHashMap;
+use spark_ast::ExprId;
 use spark_intern::Symbol;
 use spark_resolve::DefId;
 use spark_span::Span;
@@ -16,7 +17,7 @@ use crate::ty::{LifetimeId, Ty, TypeId};
 /// Contains all type information gathered during type checking:
 /// - The type interner (maps `TypeId` → `Ty`)
 /// - Definition types (maps `DefId` → `TypeId`)
-/// - Expression types (maps `Span` → `TypeId`)
+/// - Expression types (maps `ExprId` → `TypeId`)
 /// - Struct field information
 /// - Enum variant information
 #[derive(Debug, Clone)]
@@ -25,8 +26,8 @@ pub struct TypeTable {
     pub(crate) interner: TypeInterner,
     /// Maps each definition to its type.
     pub(crate) def_types: FxHashMap<DefId, TypeId>,
-    /// Maps each expression (by span) to its type.
-    pub(crate) expr_types: FxHashMap<Span, TypeId>,
+    /// Maps each expression (by `ExprId`) to its type.
+    pub(crate) expr_types: FxHashMap<ExprId, TypeId>,
     /// Struct fields: struct `DefId` → `[(field_name, field_type)]`.
     pub(crate) struct_fields: FxHashMap<DefId, Vec<(Symbol, TypeId)>>,
     /// Enum variants: enum `DefId` → `[(variant_name, variant_def_id)]`.
@@ -111,15 +112,15 @@ impl TypeTable {
         self.def_types.get(&def_id).copied()
     }
 
-    /// Records the type of an expression (by its span).
-    pub fn set_expr_type(&mut self, span: Span, type_id: TypeId) {
-        self.expr_types.insert(span, type_id);
+    /// Records the type of an expression (by its `ExprId`).
+    pub fn set_expr_type(&mut self, id: ExprId, type_id: TypeId) {
+        self.expr_types.insert(id, type_id);
     }
 
     /// Returns the type of an expression, if known.
     #[must_use]
-    pub fn get_expr_type(&self, span: Span) -> Option<TypeId> {
-        self.expr_types.get(&span).copied()
+    pub fn get_expr_type(&self, id: ExprId) -> Option<TypeId> {
+        self.expr_types.get(&id).copied()
     }
 
     /// Records the fields of a struct.
@@ -270,14 +271,12 @@ mod tests {
 
     #[test]
     fn table_expr_type() {
-        use spark_span::{FileId, Span};
-
         let mut table = TypeTable::new();
         let type_id = table.intern(Ty::String);
-        let span = Span::new(FileId::new(0), 10, 20);
+        let id = ExprId::next();
 
-        table.set_expr_type(span, type_id);
-        assert_eq!(table.get_expr_type(span), Some(type_id));
+        table.set_expr_type(id, type_id);
+        assert_eq!(table.get_expr_type(id), Some(type_id));
     }
 
     #[test]

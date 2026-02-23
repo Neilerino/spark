@@ -33,6 +33,7 @@ pub fn emit_rvalue<M: Module>(
     definitions: &DefinitionTable,
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
@@ -58,7 +59,7 @@ pub fn emit_rvalue<M: Module>(
         }
 
         Rvalue::Aggregate(kind, operands) => {
-            emit_aggregate(ctx, kind, operands, dest_local, table, definitions, func_ids, thunk_ids, module, diagnostics)
+            emit_aggregate(ctx, kind, operands, dest_local, table, definitions, func_ids, thunk_ids, dtor_ids, module, diagnostics)
         }
 
         Rvalue::Discriminant(place) => {
@@ -686,6 +687,7 @@ fn emit_aggregate<M: Module>(
     definitions: &DefinitionTable,
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
@@ -801,7 +803,7 @@ fn emit_aggregate<M: Module>(
         AggregateKind::Closure { func_def_id } => {
             emit_closure_construction(
                 ctx, *func_def_id, operands, dest_local, table, definitions,
-                func_ids, module,
+                func_ids, dtor_ids, module,
             )
         }
 
@@ -977,6 +979,7 @@ fn emit_closure_construction<M: Module>(
     table: &TypeTable,
     _definitions: &DefinitionTable,
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
 ) -> Option<Value> {
     let dest_addr = ctx.local_stack_addr(dest_local)?;
@@ -1005,6 +1008,13 @@ fn emit_closure_construction<M: Module>(
     let alloc_call = ctx.builder.ins().call(env_alloc_ref, &[env_size_val]);
     let env_ptr = ctx.builder.inst_results(alloc_call)[0];
 
+    // Store destructor pointer at offset 16 in the env header (if one was generated).
+    if let Some(&dtor_func_id) = dtor_ids.get(&func_def_id) {
+        let dtor_ref = module.declare_func_in_func(dtor_func_id, ctx.builder.func);
+        let dtor_addr = ctx.builder.ins().func_addr(ctx.ptr_type, dtor_ref);
+        ctx.builder.ins().store(MemFlags::new(), dtor_addr, env_ptr, 16);
+    }
+
     // Store each captured value into the environment.
     for (i, operand) in operands.iter().enumerate() {
         let cap_ty = match operand {
@@ -1017,8 +1027,25 @@ fn emit_closure_construction<M: Module>(
             }
             Operand::Constant(_) => continue,
         };
-        // Add 16 bytes for the RC header (rc + alloc_size) prepended by __spark_env_alloc.
-        let offset = capture_offsets[i] + 16;
+        // RC inc for Copy captures: the closure env keeps its own reference.
+        if matches!(operand, Operand::Copy(_)) {
+            if spark_drop::needs_rc(cap_ty, table) {
+                let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
+                ctx.builder.ins().call(func_ref, &[val]);
+            } else if matches!(table.resolve(cap_ty), Ty::Function { .. }) {
+                // Function capture: RC inc the env_ptr (second slot of the fat pointer).
+                let inner_env = ctx.builder.ins().load(
+                    ctx.ptr_type,
+                    MemFlags::new(),
+                    val,
+                    ctx.ptr_type.bytes() as i32,
+                );
+                let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
+                ctx.builder.ins().call(func_ref, &[inner_env]);
+            }
+        }
+        // Add 24 bytes for the header (rc + alloc_size + dtor) prepended by __spark_env_alloc.
+        let offset = capture_offsets[i] + 24;
         if abi::is_scalar(cap_ty, table) {
             ctx.builder.ins().store(
                 MemFlags::new(),

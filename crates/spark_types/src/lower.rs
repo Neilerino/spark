@@ -26,8 +26,8 @@ pub fn lower_type_expr(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) -> TypeId {
     let ty = lower_type_expr_inner(type_expr, table, builtins, definitions, resolutions, diagnostics);
-    // Record the lowered type at this span so HIR lowering can look it up.
-    table.set_expr_type(type_expr.span, ty);
+    // Record the lowered type at this ExprId so HIR lowering can look it up.
+    table.set_expr_type(type_expr.id, ty);
     ty
 }
 

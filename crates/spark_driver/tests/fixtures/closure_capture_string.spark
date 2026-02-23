@@ -1,0 +1,9 @@
+fn make_greeter(name: String): (): Void {
+    return fn(): Void { print(name) }
+}
+
+fn main(): Int {
+    greet: (): Void = make_greeter("hello")
+    greet()
+    return 0
+}

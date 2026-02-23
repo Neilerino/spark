@@ -344,6 +344,21 @@ fn closure_snapshot() {
     assert_output("closure_snapshot.spark", "10\n42");
 }
 
+#[test]
+fn closure_capture_string() {
+    assert_output("closure_capture_string.spark", "hello");
+}
+
+#[test]
+fn closure_capture_list() {
+    assert_output("closure_capture_list.spark", "3");
+}
+
+#[test]
+fn closure_capture_closure() {
+    assert_output("closure_capture_closure.spark", "42");
+}
+
 // ============================================================================
 // Each / Each Via
 // ============================================================================

@@ -1,0 +1,14 @@
+fn make_inner(x: Int): (): Int {
+    return fn(): Int { return x }
+}
+
+fn make_outer(x: Int): (): Int {
+    inner: (): Int = make_inner(x)
+    return fn(): Int { return inner() }
+}
+
+fn main(): Int {
+    f: (): Int = make_outer(42)
+    print(f())
+    return 0
+}

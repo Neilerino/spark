@@ -1256,14 +1256,18 @@ pub extern "C" fn __spark_rc_release(_ptr: *mut u8) {
 // Closure environment allocation
 // =============================================================================
 
-/// Allocates a closure environment with a 16-byte RC header.
+/// Allocates a closure environment with a 24-byte header.
 ///
-/// Layout: `[rc: usize (8 bytes), alloc_size: usize (8 bytes), ...payload...]`
+/// Layout: `[rc: usize (8), alloc_size: usize (8), dtor: fn_ptr (8), ...payload]`
 ///
 /// The `size` parameter is the payload size (captures only). The runtime
-/// prepends the 16-byte header internally. The returned pointer points to
+/// prepends the 24-byte header internally. The returned pointer points to
 /// the start of the allocation (i.e., to the `rc` field at offset 0).
-/// Captures are stored at offset 16 by codegen.
+/// Captures are stored at offset 24 by codegen.
+///
+/// The `dtor` slot at offset 16 is zero-initialized (null = no destructor).
+/// When set by codegen, it points to a generated function that decrements
+/// RC for each captured value before the env is freed.
 ///
 /// Returns null if `size` is 0 (zero captures → no env needed).
 /// The initial reference count is 1.
@@ -1274,7 +1278,7 @@ pub extern "C" fn __spark_env_alloc(size: i64) -> *mut u8 {
     if payload_size == 0 {
         return std::ptr::null_mut();
     }
-    let total_size = 16 + payload_size;
+    let total_size = 24 + payload_size;
     let align = std::mem::align_of::<u64>();
     let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(total_size, align) };
     let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
@@ -1286,18 +1290,22 @@ pub extern "C" fn __spark_env_alloc(size: i64) -> *mut u8 {
     unsafe { *(ptr.cast::<usize>()) = 1 };
     // Store total_alloc_size at offset 8.
     unsafe { *(ptr.add(8).cast::<usize>()) = total_size };
+    // dtor at offset 16 is zero-initialized by alloc_zeroed (null = no destructor).
     ptr
 }
 
 /// Decrements the reference count of a closure environment.
 /// Frees the allocation when the count reaches zero.
 ///
-/// The environment layout is: `[rc: usize, alloc_size: usize, ...payload...]`.
+/// The environment layout is:
+/// `[rc: usize (8), alloc_size: usize (8), dtor: fn_ptr (8), ...payload]`.
+///
 /// The `alloc_size` at offset 8 stores the total allocation size so we can
 /// dealloc without needing size info from codegen.
 ///
-/// **Note**: This does NOT recursively decrement RC of captured values inside
-/// the environment. Nested RC cleanup is a Phase 2 follow-up.
+/// The `dtor` at offset 16 is an optional destructor function pointer. When
+/// non-null, it is called with the env pointer before deallocation, allowing
+/// codegen-generated code to decrement RC for each captured value.
 ///
 /// # Safety
 ///
@@ -1312,6 +1320,12 @@ pub unsafe extern "C" fn __spark_env_rc_dec(ptr: *mut u8) {
     let rc = unsafe { &mut *rc_ptr };
     *rc -= 1;
     if *rc == 0 {
+        // Call destructor if one was registered by codegen.
+        let dtor = unsafe { *(ptr.add(16).cast::<usize>()) };
+        if dtor != 0 {
+            let dtor_fn: unsafe extern "C" fn(*mut u8) = unsafe { std::mem::transmute(dtor) };
+            unsafe { dtor_fn(ptr) };
+        }
         let alloc_size = unsafe { *(ptr.add(8).cast::<usize>()) };
         let align = std::mem::align_of::<u64>();
         let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(alloc_size, align) };
@@ -1426,9 +1440,12 @@ mod tests {
             // rc should be 1
             let rc = *(ptr.cast::<usize>());
             assert_eq!(rc, 1);
-            // alloc_size should be 16 + 24 = 40
+            // alloc_size should be 24 (header) + 24 (payload) = 48
             let alloc_size = *(ptr.add(8).cast::<usize>());
-            assert_eq!(alloc_size, 40);
+            assert_eq!(alloc_size, 48);
+            // dtor slot at offset 16 should be null (zero-initialized)
+            let dtor = *(ptr.add(16).cast::<usize>());
+            assert_eq!(dtor, 0);
             // Free it
             __spark_env_rc_dec(ptr);
         }
@@ -1457,6 +1474,28 @@ mod tests {
     fn env_rc_dec_null_is_noop() {
         unsafe {
             __spark_env_rc_dec(std::ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn env_dtor_called_on_free() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static DTOR_CALLED: AtomicBool = AtomicBool::new(false);
+
+        unsafe extern "C" fn test_dtor(_env: *mut u8) {
+            DTOR_CALLED.store(true, Ordering::SeqCst);
+        }
+
+        unsafe {
+            DTOR_CALLED.store(false, Ordering::SeqCst);
+            let ptr = __spark_env_alloc(8);
+            // Set dtor fn ptr at offset 16.
+            *(ptr.add(16).cast::<usize>()) = test_dtor as usize;
+            assert!(!DTOR_CALLED.load(Ordering::SeqCst));
+            // Dropping to zero should call the destructor.
+            __spark_env_rc_dec(ptr);
+            assert!(DTOR_CALLED.load(Ordering::SeqCst));
         }
     }
 

@@ -23,6 +23,7 @@ pub fn emit_statement<M: Module>(
     definitions: &DefinitionTable,
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) {
@@ -41,6 +42,7 @@ pub fn emit_statement<M: Module>(
                 definitions,
                 func_ids,
                 thunk_ids,
+                dtor_ids,
                 module,
                 diagnostics,
             ) {

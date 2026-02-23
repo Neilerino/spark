@@ -1,0 +1,9 @@
+fn make_counter(nums: List[Int]): (): Void {
+    return fn(): Void { print(nums.len()) }
+}
+
+fn main(): Int {
+    f: (): Void = make_counter([10, 20, 30])
+    f()
+    return 0
+}

@@ -2,7 +2,7 @@
 
 use spark_span::Span;
 
-use crate::{Ident, Path};
+use crate::{ExprId, Ident, Path};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -11,31 +11,39 @@ use serde::{Deserialize, Serialize};
 ///
 /// Type expressions appear in variable declarations, function signatures,
 /// struct fields, and other contexts where types are specified.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TypeExpr {
+    /// Unique node identifier for type-table lookups.
+    pub id: ExprId,
     /// The kind of type expression.
     pub kind: TypeExprKind,
     /// The source span.
     pub span: Span,
 }
 
+impl PartialEq for TypeExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.span == other.span
+    }
+}
+
 impl TypeExpr {
     /// Creates a new type expression.
     #[must_use]
-    pub const fn new(kind: TypeExprKind, span: Span) -> Self {
-        Self { kind, span }
+    pub fn new(kind: TypeExprKind, span: Span) -> Self {
+        Self { id: ExprId::next(), kind, span }
     }
 
     /// Creates an error type for recovery.
     #[must_use]
-    pub const fn error(span: Span) -> Self {
+    pub fn error(span: Span) -> Self {
         Self::new(TypeExprKind::Error, span)
     }
 
     /// Creates an inferred type placeholder.
     #[must_use]
-    pub const fn infer(span: Span) -> Self {
+    pub fn infer(span: Span) -> Self {
         Self::new(TypeExprKind::Infer, span)
     }
 }
