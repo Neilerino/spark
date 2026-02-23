@@ -183,20 +183,15 @@ mod tests {
 
         let resolver_output = resolve(ResolverInput { graph: graph.clone(), asts });
 
-        // Clone resolved ASTs before type-checking so HIR lowering reuses
-        // the same AST nodes (with matching ExprIds).
-        let resolved_for_hir = resolver_output.resolved.clone();
-        let definitions_for_hir = resolver_output.definitions.clone();
-
         let type_output = check(TypeCheckerInput {
-            resolved: resolver_output.resolved,
-            definitions: resolver_output.definitions,
+            resolved: &resolver_output.resolved,
+            definitions: &resolver_output.definitions,
             graph: ModuleGraph::default(),
         });
 
         lower(HirInput {
-            resolved: resolved_for_hir,
-            definitions: definitions_for_hir,
+            resolved: resolver_output.resolved,
+            definitions: resolver_output.definitions,
             table: type_output.table,
         })
     }

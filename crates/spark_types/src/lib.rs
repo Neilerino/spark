@@ -12,8 +12,8 @@
 //! use spark_types::{check, TypeCheckerInput};
 //!
 //! let input = TypeCheckerInput {
-//!     resolved: resolver_output.resolved,
-//!     definitions: resolver_output.definitions,
+//!     resolved: &resolver_output.resolved,
+//!     definitions: &resolver_output.definitions,
 //!     graph: module_graph,
 //! };
 //!
@@ -74,19 +74,22 @@ pub use table::TypeTable;
 pub use ty::{FloatWidth, IntWidth, LifetimeId, Ty, TypeId};
 
 /// Input to the type checker.
+///
+/// The resolved AST and definition table are borrowed — the checker only reads
+/// them, so callers no longer need to clone before type checking.
 #[derive(Debug)]
-pub struct TypeCheckerInput {
-    /// The resolved AST with `DefId` mappings.
-    pub resolved: ResolvedAst,
-    /// Table of all definitions.
-    pub definitions: DefinitionTable,
-    /// The module dependency graph.
+pub struct TypeCheckerInput<'a> {
+    /// The resolved AST with `DefId` mappings (borrowed).
+    pub resolved: &'a ResolvedAst,
+    /// Table of all definitions (borrowed).
+    pub definitions: &'a DefinitionTable,
+    /// The module dependency graph (owned — lightweight and consumed by checker).
     pub graph: ModuleGraph,
 }
 
 /// Runs type checking on the resolved AST.
 ///
-/// This is the main entry point for the type checker. It takes the resolver's
+/// This is the main entry point for the type checker. It borrows the resolver's
 /// output and produces a [`TypeTable`] mapping definitions and expressions
 /// to their types.
 ///
@@ -96,8 +99,8 @@ pub struct TypeCheckerInput {
 /// use spark_types::{check, TypeCheckerInput};
 ///
 /// let input = TypeCheckerInput {
-///     resolved: resolver_output.resolved,
-///     definitions: resolver_output.definitions,
+///     resolved: &resolver_output.resolved,
+///     definitions: &resolver_output.definitions,
 ///     graph: module_graph,
 /// };
 ///
@@ -105,7 +108,7 @@ pub struct TypeCheckerInput {
 /// assert!(!output.diagnostics.has_errors());
 /// ```
 #[must_use]
-pub fn check(input: TypeCheckerInput) -> TypeCheckerOutput {
+pub fn check(input: TypeCheckerInput<'_>) -> TypeCheckerOutput {
     let checker = checker::TypeChecker::new(
         input.resolved,
         input.definitions,
@@ -122,9 +125,11 @@ mod tests {
 
     #[test]
     fn empty_input() {
+        let resolved = ResolvedAst::new(HashMap::new());
+        let definitions = DefinitionTable::new();
         let input = TypeCheckerInput {
-            resolved: ResolvedAst::new(HashMap::new()),
-            definitions: DefinitionTable::new(),
+            resolved: &resolved,
+            definitions: &definitions,
             graph: ModuleGraph::default(),
         };
 
@@ -177,8 +182,8 @@ mod tests {
         let resolver_output = resolve(resolver_input);
 
         let type_input = TypeCheckerInput {
-            resolved: resolver_output.resolved,
-            definitions: resolver_output.definitions,
+            resolved: &resolver_output.resolved,
+            definitions: &resolver_output.definitions,
             graph: ModuleGraph::default(),
         };
 

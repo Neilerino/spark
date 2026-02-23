@@ -124,16 +124,9 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     emit_warnings(&resolve1.diagnostics, &source_map);
 
     // -- Phase 5: Type checking -----------------------------------------------
-    // Clone the resolved ASTs before type checking so that HIR lowering can
-    // reuse the same AST nodes (and their ExprIds) that the type checker
-    // recorded types against. This avoids re-parsing which would create new
-    // nodes with different ExprIds.
-    let resolved_for_hir = resolve1.resolved.clone();
-    let definitions_for_hir = resolve1.definitions.clone();
-
     let type_output = spark_types::check(TypeCheckerInput {
-        resolved: resolve1.resolved,
-        definitions: resolve1.definitions,
+        resolved: &resolve1.resolved,
+        definitions: &resolve1.definitions,
         graph,
     });
     if type_output.diagnostics.has_errors() {
@@ -145,8 +138,8 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
 
     // -- Phase 6: HIR lowering ------------------------------------------------
     let hir_output = spark_hir::lower(HirInput {
-        resolved: resolved_for_hir,
-        definitions: definitions_for_hir,
+        resolved: resolve1.resolved,
+        definitions: resolve1.definitions,
         table,
     });
     if hir_output.diagnostics.has_errors() {

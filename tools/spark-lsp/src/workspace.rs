@@ -275,19 +275,17 @@ pub fn analyze_workspace(
     });
     all_diagnostics.extend(resolve_output.diagnostics);
 
-    let resolved = resolve_output.resolved.clone();
-    let definitions = resolve_output.definitions.clone();
-
     // Phase 5: Type checking
-    let type_table = {
-        let type_output = spark_types::check(TypeCheckerInput {
-            resolved: resolve_output.resolved,
-            definitions: resolve_output.definitions,
-            graph,
-        });
-        all_diagnostics.extend(type_output.diagnostics);
-        Some(type_output.table)
-    };
+    let type_output = spark_types::check(TypeCheckerInput {
+        resolved: &resolve_output.resolved,
+        definitions: &resolve_output.definitions,
+        graph,
+    });
+    all_diagnostics.extend(type_output.diagnostics);
+    let type_table = Some(type_output.table);
+
+    let resolved = resolve_output.resolved;
+    let definitions = resolve_output.definitions;
 
     // Distribute diagnostics by file
     let diagnostics_by_uri = distribute_diagnostics(
