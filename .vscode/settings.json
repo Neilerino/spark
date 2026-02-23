@@ -1,0 +1,76 @@
+{
+    "[rust]":{
+        "editor.defaultFormatter": "rust-lang.rust-analyzer",
+        "editor.formatOnSave": true
+    },
+    "rust-analyzer.cargo.features": "all",
+    "rust-analyzer.checkOnSave": true,
+    "rust-analyzer.check.command": "clippy",
+    "spark.server.path": "./target/debug/spark-lsp",
+
+    "todo-tree.general.tags": [
+        "TODO",
+        "FIXME",
+        "BUG",
+        "PERF",
+        "HACK",
+        "NOTE"
+    ],
+    "todo-tree.highlights.defaultHighlight": {
+        "gutterIcon": true,
+        "foreground": "#FFFFFF",
+        "type": "tag"
+    },
+    "todo-tree.highlights.customHighlight": {
+        "TODO": {
+            "icon": "checklist",
+            "iconColour": "#38BDF8",
+            "foreground": "#38BDF8",
+            "type": "tag"
+        },
+        "FIXME": {
+            "icon": "tools",
+            "iconColour": "#FBBF24",
+            "foreground": "#FBBF24",
+            "type": "tag"
+        },
+        "BUG": {
+            "icon": "bug",
+            "iconColour": "#EF4444",
+            "foreground": "#EF4444",
+            "type": "tag"
+        },
+        "PERF": {
+            "icon": "flame",
+            "iconColour": "#F97316",
+            "foreground": "#F97316",
+            "type": "tag"
+        },
+        "HACK": {
+            "icon": "alert",
+            "iconColour": "#A855F7",
+            "foreground": "#A855F7",
+            "type": "tag"
+        },
+        "NOTE": {
+            "icon": "info",
+            "iconColour": "#6B7280",
+            "foreground": "#6B7280",
+            "type": "tag"
+        }
+    },
+    "todo-tree.general.statusBar": "tags",
+    "todo-tree.tree.showCountsInTree": true,
+    "todo-tree.tree.groupedByTag": true,
+    "todo-tree.filtering.includeGlobs": [
+        "**/*.rs",
+        "**/*.spark",
+        "**/*.md",
+        "**/*.toml"
+    ],
+    "todo-tree.filtering.excludeGlobs": [
+        "**/target/**",
+        "**/node_modules/**"
+    ],
+    "todo-tree.regex.regex": "(TODO|FIXME|BUG|PERF|HACK|NOTE)\\s*\\[?[A-Z]{0,5}-?\\d{0,5}\\]?"
+}
