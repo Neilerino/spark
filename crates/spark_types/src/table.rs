@@ -194,6 +194,11 @@ impl TypeTable {
         self.field_resolutions.iter()
     }
 
+    /// Returns an iterator over all method resolution entries.
+    pub fn method_resolutions(&self) -> impl Iterator<Item = (&Span, &DefId)> {
+        self.method_resolutions.iter()
+    }
+
     /// Records the generic parameter `DefId`s for a generic definition.
     pub fn set_generic_params(&mut self, def_id: DefId, params: Vec<DefId>) {
         self.generic_params.insert(def_id, params);

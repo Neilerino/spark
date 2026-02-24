@@ -332,6 +332,23 @@ fn find_field_at_offset(
         .map(|(span, def_id)| (*span, *def_id))
 }
 
+/// Searches method resolutions from the type table for a method call at the given offset.
+///
+/// Used as a fallback when both the resolver and field resolution return `None`,
+/// which happens for method call expressions (e.g., `user.serialize()`) because
+/// method name resolution is deferred to the type checker.
+fn find_method_at_offset(
+    table: &spark_types::TypeTable,
+    offset: u32,
+    file_id: spark_span::FileId,
+) -> Option<(spark_span::Span, spark_resolve::DefId)> {
+    table
+        .method_resolutions()
+        .filter(|(span, _)| span.file == file_id && span.contains(offset))
+        .min_by_key(|(span, _)| span.end - span.start)
+        .map(|(span, def_id)| (*span, *def_id))
+}
+
 /// Returns the type name for a definition, if type info is available.
 fn def_type_str(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Option<String> {
     let table = analysis.type_table.as_ref()?;
@@ -754,14 +771,17 @@ impl LanguageServer for Backend {
             let offset = document::position_to_offset(&doc.rope, position)?;
             let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
 
-            // Try normal resolution first, then fall back to field resolutions.
+            // Try normal resolution first, then fall back to field/method resolutions.
             let def_id = if let Some((_span, def_id)) = resolutions.find_at_offset(offset) {
                 def_id
             } else {
                 let table = analysis.type_table.as_ref()?;
-                let (_field_span, field_def_id) =
-                    find_field_at_offset(table, offset, analysis.file_id)?;
-                field_def_id
+                if let Some((_span, def_id)) = find_field_at_offset(table, offset, analysis.file_id) {
+                    def_id
+                } else {
+                    let (_span, def_id) = find_method_at_offset(table, offset, analysis.file_id)?;
+                    def_id
+                }
             };
 
             let def_info = analysis.definitions.get(def_id)?;
@@ -786,14 +806,18 @@ impl LanguageServer for Backend {
             let offset = document::position_to_offset(&doc.rope, position)?;
             let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
 
-            // Try normal resolution first, then fall back to field resolutions
-            // from the type checker (field access names like `point.x` are not
-            // recorded in the resolver's maps).
+            // Try normal resolution first, then fall back to field/method resolutions
+            // from the type checker (field access names like `point.x` and method
+            // calls like `user.serialize()` are not recorded in the resolver's maps).
             let (span, def_id) = if let Some(result) = resolutions.find_at_offset(offset) {
                 result
             } else {
                 let table = analysis.type_table.as_ref()?;
-                find_field_at_offset(table, offset, analysis.file_id)?
+                if let Some(result) = find_field_at_offset(table, offset, analysis.file_id) {
+                    result
+                } else {
+                    find_method_at_offset(table, offset, analysis.file_id)?
+                }
             };
 
             let content = format_hover(analysis, def_id)?;
