@@ -25,6 +25,10 @@
         "extensions": [
           ".spark"
         ],
+        "icon": {
+          "light": "./logo.svg",
+          "dark": "./logo-dark.svg"
+        },
         "configuration": "./language-configuration.json"
       }
     ],

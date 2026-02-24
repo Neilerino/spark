@@ -1,0 +1,41 @@
+<ns0:svg xmlns:ns0="http://www.w3.org/2000/svg" viewBox="170 110 172 275" width="172" height="275">
+  <ns0:defs>
+    <ns0:linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
+      <ns0:stop offset="0%" stop-color="#F76707" />
+      <ns0:stop offset="100%" stop-color="#FFD43B" />
+    </ns0:linearGradient>
+  </ns0:defs>
+
+  
+  <ns0:path d="M 256,120             C 282,168  325,218  325,278            C 325,316  294,348  256,348            C 218,348  187,316  187,278            C 187,218  230,168  256,120 Z" fill="url(#flame)" />
+
+  
+  <ns0:ellipse cx="256" cy="310" rx="34" ry="38" fill="#FF922B" opacity="0.6" />
+
+  
+  <ns0:ellipse cx="236" cy="272" rx="10" ry="12" fill="#2B2B2B" />
+  <ns0:ellipse cx="276" cy="272" rx="10" ry="12" fill="#2B2B2B" />
+  
+  <ns0:circle cx="232" cy="268" r="3.5" fill="white" opacity="0.9" />
+  <ns0:circle cx="272" cy="268" r="3.5" fill="white" opacity="0.9" />
+  
+  <ns0:path d="M 246,292 Q 256,303 266,292" fill="none" stroke="#2B2B2B" stroke-width="4.5" stroke-linecap="round" />
+
+  
+  <ns0:line x1="186" y1="370" x2="326" y2="350" stroke="#5C3A1E" stroke-width="16" stroke-linecap="round" />
+  <ns0:line x1="186" y1="350" x2="326" y2="370" stroke="#5C3A1E" stroke-width="16" stroke-linecap="round" />
+  
+  <ns0:line x1="200" y1="368" x2="312" y2="352" stroke="#4A2E17" stroke-width="1.5" stroke-linecap="round" opacity="0.5" />
+  <ns0:line x1="195" y1="372" x2="318" y2="355" stroke="#4A2E17" stroke-width="1" stroke-linecap="round" opacity="0.4" />
+  <ns0:line x1="210" y1="365" x2="300" y2="352" stroke="#7A4E2D" stroke-width="1" stroke-linecap="round" opacity="0.4" />
+  
+  <ns0:line x1="200" y1="352" x2="312" y2="368" stroke="#4A2E17" stroke-width="1.5" stroke-linecap="round" opacity="0.5" />
+  <ns0:line x1="195" y1="348" x2="318" y2="365" stroke="#4A2E17" stroke-width="1" stroke-linecap="round" opacity="0.4" />
+  <ns0:line x1="210" y1="355" x2="300" y2="368" stroke="#7A4E2D" stroke-width="1" stroke-linecap="round" opacity="0.4" />
+  
+  <ns0:circle cx="240" cy="363" r="3.5" fill="none" stroke="#4A2E17" stroke-width="1" opacity="0.45" />
+  <ns0:circle cx="285" cy="358" r="2.5" fill="none" stroke="#4A2E17" stroke-width="1" opacity="0.4" />
+
+  
+  <ns0:circle cx="228" cy="155" r="5" fill="#FFD43B" opacity="0.7" />
+</ns0:svg>
