@@ -1,14 +1,14 @@
-import spark.json { parse, isError, at, getNumber, len, JsonValue }
+import spark.json { parse, JsonValue }
 
 fn main(): Int {
     data: JsonValue = parse("[10, 20, 30]")
-    if isError(data) {
+    if data.isError() {
         return 1
     }
-    print(len(data))
-    first: JsonValue = at(data, 0)
-    print(getNumber(first))
-    last: JsonValue = at(data, 2)
-    print(getNumber(last))
+    print(data.len())
+    first: JsonValue = data.at(0)
+    print(first.getNumber())
+    last: JsonValue = data.at(2)
+    print(last.getNumber())
     return 0
 }

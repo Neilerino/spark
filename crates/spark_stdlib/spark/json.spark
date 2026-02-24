@@ -44,115 +44,19 @@ extern fn __spark_json_stringify(handle: Int): String
 extern fn __spark_json_stringify_pretty(handle: Int, indent: Int): String
 
 // =============================================================================
-// Parsing & Serialization
+// Module-level functions (parsing & construction)
 // =============================================================================
 
 /// Parses a JSON string, returning a JsonValue.
-/// If parsing fails, the handle will be -1; use isError() and error() to check.
+/// If parsing fails, the handle will be -1; use .isError() to check.
 pub fn parse(text: String): JsonValue {
     return JsonValue { handle: __spark_json_parse(text) }
-}
-
-/// Returns true if a JsonValue represents a parse error.
-pub fn isError(value: JsonValue): Bool {
-    return value.handle == -1
 }
 
 /// Returns the last parse error message.
 pub fn error(): String {
     return __spark_json_error()
 }
-
-/// Stringifies a JsonValue to compact JSON.
-pub fn stringify(value: JsonValue): String {
-    return __spark_json_stringify(value.handle)
-}
-
-/// Stringifies a JsonValue to pretty-printed JSON with the given indent.
-pub fn stringifyPretty(value: JsonValue, indent: Int): String {
-    return __spark_json_stringify_pretty(value.handle, indent)
-}
-
-// =============================================================================
-// Type checking
-// =============================================================================
-
-/// Returns the type of a JSON value as an integer discriminant.
-/// 0=null, 1=bool, 2=number, 3=string, 4=array, 5=object, -1=error
-pub fn typeOf(value: JsonValue): Int {
-    return __spark_json_type(value.handle)
-}
-
-/// Returns true if the value is a JSON null.
-pub fn isNull(value: JsonValue): Bool { return __spark_json_type(value.handle) == 0 }
-
-/// Returns true if the value is a JSON boolean.
-pub fn isBool(value: JsonValue): Bool { return __spark_json_type(value.handle) == 1 }
-
-/// Returns true if the value is a JSON number.
-pub fn isNumber(value: JsonValue): Bool { return __spark_json_type(value.handle) == 2 }
-
-/// Returns true if the value is a JSON string.
-pub fn isString(value: JsonValue): Bool { return __spark_json_type(value.handle) == 3 }
-
-/// Returns true if the value is a JSON array.
-pub fn isArray(value: JsonValue): Bool { return __spark_json_type(value.handle) == 4 }
-
-/// Returns true if the value is a JSON object.
-pub fn isObject(value: JsonValue): Bool { return __spark_json_type(value.handle) == 5 }
-
-// =============================================================================
-// Value access
-// =============================================================================
-
-/// Returns the boolean value. Returns false if not a boolean.
-pub fn getBool(value: JsonValue): Bool {
-    return __spark_json_bool(value.handle) != 0
-}
-
-/// Returns the number value. Returns 0.0 if not a number.
-pub fn getNumber(value: JsonValue): Float {
-    return __spark_json_number(value.handle)
-}
-
-/// Returns the string value. Returns "" if not a string.
-pub fn getString(value: JsonValue): String {
-    return __spark_json_string(value.handle)
-}
-
-// =============================================================================
-// Object access
-// =============================================================================
-
-/// Gets a value from a JSON object by key.
-/// Returns a JsonValue with handle -1 if not found.
-pub fn get(obj: JsonValue, key: String): JsonValue {
-    return JsonValue { handle: __spark_json_object_get(obj.handle, key) }
-}
-
-/// Returns true if a JSON object contains the given key.
-pub fn has(obj: JsonValue, key: String): Bool {
-    return __spark_json_object_has(obj.handle, key) != 0
-}
-
-// =============================================================================
-// Array access
-// =============================================================================
-
-/// Gets an element from a JSON array by index.
-/// Returns a JsonValue with handle -1 if out of bounds.
-pub fn at(arr: JsonValue, index: Int): JsonValue {
-    return JsonValue { handle: __spark_json_array_get(arr.handle, index) }
-}
-
-/// Returns the number of elements in a JSON array. Returns -1 if not an array.
-pub fn len(value: JsonValue): Int {
-    return __spark_json_array_len(value.handle)
-}
-
-// =============================================================================
-// Construction
-// =============================================================================
 
 /// Creates a JSON null value.
 pub fn null(): JsonValue { return JsonValue { handle: __spark_json_new_null() } }
@@ -179,15 +83,99 @@ pub fn array(): JsonValue { return JsonValue { handle: __spark_json_new_array() 
 pub fn object(): JsonValue { return JsonValue { handle: __spark_json_new_object() } }
 
 // =============================================================================
-// Building (mutation)
+// Interface binding — method-style API
 // =============================================================================
 
-/// Appends an item to a JSON array. Mutates the underlying arena node.
-pub fn push(arr: JsonValue, item: JsonValue): Void {
-    __spark_json_array_push(arr.handle, item.handle)
+/// Methods available on a JSON value.
+pub interface IJsonValue {
+    // Type checking
+    fn isError(): Bool
+    fn isNull(): Bool
+    fn isBool(): Bool
+    fn isNumber(): Bool
+    fn isString(): Bool
+    fn isArray(): Bool
+    fn isObject(): Bool
+    fn typeOf(): Int
+
+    // Value access
+    fn getBool(): Bool
+    fn getNumber(): Float
+    fn getString(): String
+
+    // Object access
+    fn get(key: String): JsonValue
+    fn has(key: String): Bool
+
+    // Array access
+    fn at(index: Int): JsonValue
+    fn len(): Int
+
+    // Mutation
+    fn push(item: JsonValue): Void
+    fn set(key: String, value: JsonValue): Void
+
+    // Serialization
+    fn stringify(): String
+    fn stringifyPretty(indent: Int): String
 }
 
-/// Sets a key-value pair on a JSON object. Mutates the underlying arena node.
-pub fn set(obj: JsonValue, key: String, value: JsonValue): Void {
-    __spark_json_object_set(obj.handle, key, value.handle)
+JsonValue binds IJsonValue {
+    fn isError(value: JsonValue): Bool {
+        return value.handle == -1
+    }
+    fn isNull(value: JsonValue): Bool {
+        return __spark_json_type(value.handle) == 0
+    }
+    fn isBool(value: JsonValue): Bool {
+        return __spark_json_type(value.handle) == 1
+    }
+    fn isNumber(value: JsonValue): Bool {
+        return __spark_json_type(value.handle) == 2
+    }
+    fn isString(value: JsonValue): Bool {
+        return __spark_json_type(value.handle) == 3
+    }
+    fn isArray(value: JsonValue): Bool {
+        return __spark_json_type(value.handle) == 4
+    }
+    fn isObject(value: JsonValue): Bool {
+        return __spark_json_type(value.handle) == 5
+    }
+    fn typeOf(value: JsonValue): Int {
+        return __spark_json_type(value.handle)
+    }
+    fn getBool(value: JsonValue): Bool {
+        return __spark_json_bool(value.handle) != 0
+    }
+    fn getNumber(value: JsonValue): Float {
+        return __spark_json_number(value.handle)
+    }
+    fn getString(value: JsonValue): String {
+        return __spark_json_string(value.handle)
+    }
+    fn get(obj: JsonValue, key: String): JsonValue {
+        return JsonValue { handle: __spark_json_object_get(obj.handle, key) }
+    }
+    fn has(obj: JsonValue, key: String): Bool {
+        return __spark_json_object_has(obj.handle, key) != 0
+    }
+    fn at(arr: JsonValue, index: Int): JsonValue {
+        return JsonValue { handle: __spark_json_array_get(arr.handle, index) }
+    }
+    fn len(value: JsonValue): Int {
+        return __spark_json_array_len(value.handle)
+    }
+    fn push(arr: JsonValue, item: JsonValue): Void {
+        __spark_json_array_push(arr.handle, item.handle)
+    }
+    fn set(obj: JsonValue, key: String, value: JsonValue): Void {
+        __spark_json_object_set(obj.handle, key, value.handle)
+    }
+    fn stringify(value: JsonValue): String {
+        return __spark_json_stringify(value.handle)
+    }
+    fn stringifyPretty(value: JsonValue, indent: Int): String {
+        return __spark_json_stringify_pretty(value.handle, indent)
+    }
 }

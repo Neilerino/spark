@@ -582,9 +582,11 @@ fn lower_method_call(
         all_args.push(Operand::Copy(Place::from_local(local)));
     }
 
-    // Look up the method DefId: first try builtins, then user-defined methods.
-    let method_def_id = find_builtin_method(defs, method)
-        .or_else(|| type_table.get_method_resolution(expr.span))
+    // Look up the method DefId: prefer user-defined (binding) methods from the
+    // type checker, then fall back to builtins.  The type checker resolves based
+    // on receiver type, so its answer is more precise than a name-only lookup.
+    let method_def_id = type_table.get_method_resolution(expr.span)
+        .or_else(|| find_builtin_method(defs, method))
         .unwrap_or(spark_resolve::DefId::DUMMY);
 
     let dest = fb.fresh_temp(expr.ty, expr.span);

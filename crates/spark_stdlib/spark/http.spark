@@ -50,22 +50,13 @@ extern fn __spark_http_close_server(server_handle: Int): Void
 extern fn __spark_http_close_request(req_handle: Int): Void
 
 // =============================================================================
-// Error handling
+// Module-level functions
 // =============================================================================
-
-/// Returns true if an HttpError represents a failure (code != 0).
-pub fn failed(err: HttpError): Bool {
-    return err.code != 0
-}
 
 /// Returns the last HTTP error message.
 pub fn lastError(): String {
     return __spark_http_error()
 }
-
-// =============================================================================
-// HTTP Client
-// =============================================================================
 
 /// Performs an HTTP GET request.
 /// Returns a Response with status -1 on error; check lastError().
@@ -149,60 +140,73 @@ pub fn deleteWithHeaders(url: String, headers: String): Response {
     }
 }
 
-// =============================================================================
-// HTTP Server
-// =============================================================================
-
 /// Creates an HTTP server listening on the given address and port.
 /// Returns a Server with handle -1 on error; check lastError().
 pub fn serve(addr: String, port: Int): Server {
     return Server { handle: __spark_http_serve(addr, port) }
 }
 
-/// Returns the local address that the server is bound to.
-pub fn serverAddr(server: Server): String {
-    return __spark_http_server_addr(server.handle)
+// =============================================================================
+// Interface bindings — method-style API
+// =============================================================================
+
+/// Methods available on an HTTP server.
+pub interface IServer {
+    fn recv(): Request
+    fn addr(): String
+    fn close(): Void
 }
 
-/// Waits for and accepts the next HTTP request.
-/// Returns a Request with handle -1 on error; check lastError().
-pub fn recv(server: Server): Request {
-    return Request { handle: __spark_http_recv(server.handle) }
+Server binds IServer {
+    fn recv(server: Server): Request {
+        return Request { handle: __spark_http_recv(server.handle) }
+    }
+    fn addr(server: Server): String {
+        return __spark_http_server_addr(server.handle)
+    }
+    fn close(server: Server): Void {
+        __spark_http_close_server(server.handle)
+    }
 }
 
-/// Returns the HTTP method of a request (e.g. "GET", "POST").
-pub fn method(req: Request): String {
-    return __spark_http_request_method(req.handle)
+/// Methods available on an HTTP request.
+pub interface IRequest {
+    fn method(): String
+    fn url(): String
+    fn body(): String
+    fn header(name: String): String
+    fn respond(status: Int, body: String, headers: String): HttpError
+    fn close(): Void
 }
 
-/// Returns the URL path of a request (e.g. "/api/users").
-pub fn url(req: Request): String {
-    return __spark_http_request_url(req.handle)
+Request binds IRequest {
+    fn method(req: Request): String {
+        return __spark_http_request_method(req.handle)
+    }
+    fn url(req: Request): String {
+        return __spark_http_request_url(req.handle)
+    }
+    fn body(req: Request): String {
+        return __spark_http_request_body(req.handle)
+    }
+    fn header(req: Request, name: String): String {
+        return __spark_http_request_header(req.handle, name)
+    }
+    fn respond(req: Request, status: Int, body: String, headers: String): HttpError {
+        return HttpError { code: __spark_http_respond(req.handle, status, body, headers) }
+    }
+    fn close(req: Request): Void {
+        __spark_http_close_request(req.handle)
+    }
 }
 
-/// Returns the body of a request.
-pub fn body(req: Request): String {
-    return __spark_http_request_body(req.handle)
+/// Error checking method for HTTP errors.
+pub interface IHttpError {
+    fn failed(): Bool
 }
 
-/// Returns a specific header value from a request.
-/// Header name matching is case-insensitive.
-pub fn header(req: Request, name: String): String {
-    return __spark_http_request_header(req.handle, name)
-}
-
-/// Sends an HTTP response for a pending request.
-/// Headers are newline-separated "Key: Value" pairs.
-pub fn respond(req: Request, status: Int, body: String, headers: String): HttpError {
-    return HttpError { code: __spark_http_respond(req.handle, status, body, headers) }
-}
-
-/// Closes an HTTP server, stopping it from accepting new connections.
-pub fn closeServer(server: Server): Void {
-    __spark_http_close_server(server.handle)
-}
-
-/// Closes a pending HTTP request without responding.
-pub fn closeRequest(req: Request): Void {
-    __spark_http_close_request(req.handle)
+HttpError binds IHttpError {
+    fn failed(err: HttpError): Bool {
+        return err.code != 0
+    }
 }
