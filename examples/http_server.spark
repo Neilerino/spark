@@ -1,5 +1,4 @@
-import spark.http { serve, serverAddr, recv, respond, method, url,
-                     closeServer, Server, Request, HttpError }
+import spark.http { serve, Server, Request }
 
 fn main(): Int {
     server: Server = serve("127.0.0.1", 8080)
@@ -9,18 +8,18 @@ fn main(): Int {
 
     count: Int! = 0
     loop {
-        req: Request = recv(server)
-        m: String = method(req)
-        p: String = url(req)
+        req: Request = server.recv()
+        m: String = req.method()
+        p: String = req.url()
         count = count + 1
 
         print(m)
         print(p)
         print(count)
 
-        respond(req, 200, "Hello from Spark!\n", "Content-Type: text/plain\nX-Request-Number: 1")
+        req.respond(200, "Hello from Spark!\n", "Content-Type: text/plain\nX-Request-Number: 1")
     }
 
-    closeServer(server)
+    server.close()
     return 0
 }
