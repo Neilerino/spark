@@ -24,7 +24,7 @@ fn main(): Int {
 }
 ```
 
-**What's missing**: Generic constraint validation (`T: Comparable`). Concurrency (`async`/`await`/`spawn`, `parallel each`). Standard library modules (`spark.math`, `spark.io`, etc.). See design notes for plans: `docs/design-notes/concurrency-model.md`, `docs/design-notes/standard-library.md`.
+**What's missing**: Generic constraint validation (`T: Comparable`). `parallel each` (Rayon). Async Phase 3 v2 (segmented suspension). Standard library expansion. See design notes: `docs/design-notes/concurrency-model.md`, `docs/design-notes/standard-library.md`.
 
 ---
 
@@ -156,14 +156,9 @@ Generic structs and functions work end-to-end via monomorphization:
 
 75 unit tests + full-pipeline integration tests. Zero regressions across workspace tests.
 
-### 4.2 Reborrowing and Two-Phase Borrows
+### ~~4.2 Reborrowing and Two-Phase Borrows~~ — Complete
 
-**Status**: Borrow checker rejects these cases
-**Location**: `spark_borrow`
-**Impact**: Ergonomics only — workarounds exist
-
-- **Reborrowing**: Allow re-borrowing a reference (shortens region automatically)
-- **Two-phase borrows**: Allow `x.method(&x)` by splitting borrow into issue/use phases
+Reborrowing works naturally (different root locals in `places_overlap`). Two-phase borrows implemented via pre-computed exempt pairs — when both loans are arguments to the same `Terminator::Call`, the conflict is suppressed. See `spark_borrow/src/check.rs`.
 
 ---
 
@@ -185,13 +180,9 @@ Desugared in HIR to index loops that call the callback via fat pointer. Supports
 
 `data via sort`, `data via take{count: 5}` — applies a named function (or partial) to the whole value. When implemented, the AST will need a new `ExprKind::Via` node (split from `ToHandler::Pipeline`).
 
-### 5.2 Async/Await, Spawn, and Parallel Iteration
+### ~~5.2 Async/Await and Spawn~~ — Mostly Complete
 
-**Status**: Warning stubs in MIR lowering
-**Location**: `spark_mir/src/lower_expr.rs` (await, spawn stubs)
-**Design note**: `docs/design-notes/concurrency-model.md`
-
-Dual-runtime architecture: Rayon for CPU parallelism (`parallel each`, `parallel each via`), Tokio for async I/O (`async fn`, `await`, `spawn`). Phased implementation — see design note for details.
+`async fn`, `await`, `spawn` work end-to-end with real Tokio-backed concurrency. Phase 1 (sync shim), Phase 2 (spawn+join blocking), and Phase 3 v1 (cooperative async infrastructure with state machine transform) are all complete. 15 E2E tests. Phase 3 v2 (segmented suspension at await points, SPARK-021) and `parallel each` (Rayon, SPARK-020) remain open. See `docs/design-notes/concurrency-model.md`.
 
 ### 5.7 Standard Library (`spark.*`)
 
@@ -232,12 +223,13 @@ These are deliberate design decisions per the language spec — Spark requires e
 | ~~P3~~ | ~~Method resolution~~ | ~~Medium-High~~ | ~~User-defined methods + interfaces~~ | Done |
 | ~~P3~~ | ~~Generics~~ | ~~High~~ | ~~Enables parameterized types~~ | Done |
 | ~~P4~~ | ~~`spark_opt` passes~~ | ~~High~~ | ~~Performance optimization~~ | Done |
-| **P4** | Reborrowing | Low | Borrow checker ergonomics | Not started |
+| ~~P4~~ | ~~Reborrowing~~ | ~~Low~~ | ~~Borrow checker ergonomics~~ | Done |
 | ~~P5~~ | ~~Lambdas/closures~~ | ~~High~~ | ~~First-class functions~~ | Done |
 | ~~P5~~ | ~~`each`/`each via`~~ | ~~Medium~~ | ~~Collection iteration~~ | Done |
 | **P5** | `via` pipeline | Medium | Whole-value function application | Not started |
-| **P5** | Concurrency (async + parallel) | Very High | Async I/O + CPU parallelism | Design ready |
-| **P5** | Standard library (`spark.*`) | High | Stdlib modules | Design ready |
+| ~~P5~~ | ~~Async/await/spawn~~ | ~~Very High~~ | ~~Async I/O~~ | Mostly done (v2 remaining) |
+| **P5** | `parallel each` (Rayon) | Medium | CPU parallelism | Not started |
+| ~~P5~~ | ~~Standard library (`spark.*`)~~ | ~~High~~ | ~~Stdlib modules~~ | Mostly done (6 modules) |
 | ~~P5~~ | ~~String interpolation~~ | ~~Medium~~ | ~~Syntax convenience~~ | Done |
 
 ### Infrastructure
@@ -262,9 +254,9 @@ All items complete (`??`, `?.`, `!`, `to`). Infrastructure: `spark_types::union`
 
 All items complete (`is` type test, match exhaustiveness, lifetime elision). Also fixed resolver enum variant path resolution.
 
-### ~~Stream E: Optimization~~ — Mostly Complete
+### ~~Stream E: Optimization~~ — Complete
 
-`spark_opt` crate complete (5 passes, 2 iterations, 75 tests). Reborrowing/two-phase borrows (4.2) still TODO — low priority ergonomics.
+`spark_opt` crate complete (5 passes, 2 iterations, 75 tests). Reborrowing and two-phase borrows (4.2) also complete.
 
 ### ~~Stream B: Type System Foundations~~ — Complete
 > ~~Method resolution~~ → ~~Generics (monomorphization)~~
@@ -284,68 +276,66 @@ Lambdas, closures, and `each`/`each via` all complete. Fat pointer ABI `(fn_ptr,
 
 String interpolation implemented end-to-end (lexer, parser, HIR, codegen).
 
-### Stream G: Concurrency
+### Stream G: Concurrency — Mostly Complete
 > Design: `docs/design-notes/concurrency-model.md`
 
-Dual-runtime architecture — Rayon for CPU parallelism, Tokio for async I/O. No longer blocked on Stream C.
+Dual-runtime architecture — Rayon for CPU parallelism, Tokio for async I/O.
 
-| Item | Effort | Dependencies |
-|------|--------|-------------|
-| `parallel each` / `parallel each via` (Rayon) | Medium | None (reuses existing callback ABI) |
-| Phase 1: Synchronous async shim (`Ty::Future`) | Medium | None |
-| Phase 2: `spawn` + `join` blocking (Tokio) | Medium-High | Phase 1 |
-| Phase 3: Cooperative async (state machine) | Very High | Phase 2 |
-| Phase 4: I/O primitives | Medium | Phase 3, Stream H (stdlib) |
+| Item | Effort | Dependencies | Status |
+|------|--------|-------------|--------|
+| `parallel each` / `parallel each via` (Rayon) | Medium | None (reuses existing callback ABI) | Open (SPARK-020) |
+| ~~Phase 1: Synchronous async shim (`Ty::Future`)~~ | ~~Medium~~ | ~~None~~ | Done |
+| ~~Phase 2: `spawn` + `join` blocking (Tokio)~~ | ~~Medium-High~~ | ~~Phase 1~~ | Done |
+| ~~Phase 3 v1: Cooperative async infrastructure~~ | ~~Very High~~ | ~~Phase 2~~ | Done |
+| Phase 3 v2: Segmented suspension | Very High | Phase 3 v1 | Open (SPARK-021) |
+| ~~Phase 4: I/O primitives~~ | ~~Medium~~ | ~~Phase 2, Stream H (stdlib)~~ | Done |
 
-### Stream H: Standard Library (`spark.*`)
+### Stream H: Standard Library (`spark.*`) — Mostly Complete
 > Design: `docs/design-notes/standard-library.md`
 
 Namespaced, opt-in modules backed by native runtime functions. Manifest-based architecture.
 
-| Item | Effort | Dependencies |
-|------|--------|-------------|
-| `spark.math` | Low | None (validates stdlib pipeline) |
-| `spark.io` | Low-Medium | None |
-| `spark.json` | Medium | None |
-| `spark.net` | Medium | Stream G Phase 2+ (async) |
-| `spark.http` | Medium-High | `spark.net`, Stream G Phase 2+ |
-| `spark.sync` | Medium | Stream G Phase 2+ |
+| Item | Effort | Dependencies | Status |
+|------|--------|-------------|--------|
+| ~~`spark.math`~~ | ~~Low~~ | ~~None~~ | Done |
+| ~~`spark.io`~~ | ~~Low-Medium~~ | ~~None~~ | Done |
+| ~~`spark.json`~~ | ~~Medium~~ | ~~None~~ | Done |
+| ~~`spark.time`~~ | ~~Low~~ | ~~None~~ | Done |
+| ~~`spark.net`~~ | ~~Medium~~ | ~~Stream G Phase 2+~~ | Done |
+| ~~`spark.http`~~ | ~~Medium-High~~ | ~~`spark.net`, Stream G Phase 2+~~ | Done |
+| `spark.sync` | Medium | Stream G Phase 2+ | Not started |
 
 ---
 
 ### Parallelism Summary
 
 ```
-Parallel tracks (can run simultaneously):
-  Stream G (Concurrency)   ─── parallel each (Rayon) │ async phases 1-3 (Tokio)
-  Stream H (Stdlib)        ─── spark.math, spark.io   │ spark.net, spark.http (needs async)
-                                     ↑                          ↑
-                                 independent              depends on Stream G Phase 2+
+Remaining work:
+  Stream G (Concurrency)   ─── parallel each (Rayon, SPARK-020) │ async v2 (SPARK-021)
+  Stream H (Stdlib)        ─── spark.sync                       │ expansion
 
 Completed:
   Stream A (Union types)   ─── DONE
   Stream B (Type system)   ─── DONE
   Stream C (Lambdas)       ─── DONE
   Stream D (Safety)        ─── DONE
-  Stream E (Optimization)  ─── DONE (reborrowing deferred)
+  Stream E (Optimization)  ─── DONE
   Stream F (Interpolation) ─── DONE
+  Stream G (Async)         ─── Phases 1-3v1 + Phase 4 DONE
+  Stream H (Stdlib)        ─── spark.math, spark.io, spark.json, spark.time, spark.net, spark.http DONE
 ```
 
 ---
 
-## Recommended Implementation Order
+## Recommended Next Steps
 
-The **critical path** — features that unlock the most downstream work:
+1. **`parallel each via` (Stream G, Rayon — SPARK-020)** — Lowest risk concurrency feature. Reuses existing callback ABI. Validates `parallel` keyword plumbing.
 
-1. **`parallel each via` (Stream G, Rayon)** — Lowest risk, reuses existing callback ABI. Validates `parallel` keyword plumbing.
+2. **`via` pipeline operator (5.6)** — Parsed but HIR lowering emits Error. Needs `ExprKind::Via` split from `ToHandler::Pipeline`.
 
-2. **`spark.math` + `spark.io` (Stream H)** — Validates the entire stdlib pipeline (resolver → type check → codegen → FFI). No external deps.
+3. **Generic constraint validation** (`T: Comparable`) — Type params work but constraints not validated.
 
-3. **Async Phase 1-2 (Stream G, Tokio)** — Adds `Ty::Future`, enables real concurrency with blocking `await`. Unblocks `spark.net`/`spark.http`.
-
-4. **`spark.net` + `spark.http` (Stream H)** — The "hello world" web server. Depends on async Phase 2.
-
-5. **Async Phase 3 (Stream G, cooperative)** — State machine codegen. Hardest remaining infrastructure piece. Enables 1M+ concurrent tasks.
+4. **Async Phase 3 v2 (SPARK-021)** — Segmented suspension at await points. Hardest remaining infrastructure piece. Enables true cooperative scheduling for 1M+ concurrent tasks.
 
 See design notes for detailed plans:
 - `docs/design-notes/concurrency-model.md`

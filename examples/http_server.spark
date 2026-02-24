@@ -6,7 +6,7 @@ fn main(): Int {
     print("Hit it with: curl http://127.0.0.1:8080/anything")
     print("Press Ctrl-C to stop")
 
-    count: Int! = 0
+    count: Ref[Int]! = 0
     loop {
         req: Request = server.recv()
         m: String = req.method()

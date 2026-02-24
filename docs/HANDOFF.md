@@ -151,7 +151,6 @@ String literals work end-to-end. `print("hello world")` produces output.
 
 ### Deferred Design Decisions
 
-- Reborrowing / two-phase borrows (borrow checker rejects; workarounds exist)
 - Explicit lifetime parameter syntax (`fn foo[A](...)`)
 
 ### Full Pipeline

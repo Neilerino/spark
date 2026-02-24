@@ -1136,14 +1136,17 @@ pub extern "C" fn __spark_rc_release(ptr: *mut RcHeader, drop_fn: unsafe fn(*mut
 }
 ```
 
-### Async Runtime
+### Async Runtime (Implemented)
 
-For async/await support, the runtime provides:
+The runtime provides Tokio-backed async support:
 
-- Task scheduler (work-stealing)
-- Future state machines
-- Channel implementation
-- Spawn/join primitives
+- `__spark_spawn` — spawns a closure on Tokio's blocking thread pool, returns `SparkFuture*`
+- `__spark_await` — joins a future handle, returns the inner value
+- `__spark_spawn_coop` — cooperative task spawn via poll function + state pointer
+- `__spark_try_poll` — polls a cooperative task, returns Ready/Pending
+- `__spark_alloc_state` — allocates async state machine struct
+- `__spark_future_rc_dec` — RC decrement for futures
+- `SparkTask` — Rust Future adapter with thread-local waker bridge
 
 ### Standard Library Runtime
 
@@ -1353,11 +1356,13 @@ enum Commands {
 - [ ] Complete pattern matching
 - [ ] Standard library basics
 
-### Phase 6: Concurrency
+### ~~Phase 6: Concurrency~~ — Mostly Complete
 
-- [ ] Async/await runtime
-- [ ] Spawn and channels
-- [ ] Mutex implementation
+- [x] Async/await/spawn runtime (Tokio — Phases 1, 2, 3v1)
+- [x] Cooperative async infrastructure (state machine transform)
+- [ ] Async Phase 3 v2 (segmented suspension — SPARK-021)
+- [ ] `parallel each` (Rayon — SPARK-020)
+- [ ] Channels and `select`
 
 ### Phase 7: Polish
 
