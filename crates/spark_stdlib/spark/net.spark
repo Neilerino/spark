@@ -45,22 +45,13 @@ extern fn __spark_net_resolve(hostname: String): String
 extern fn __spark_net_error(): String
 
 // =============================================================================
-// Error handling
+// Module-level functions
 // =============================================================================
-
-/// Returns true if a NetError represents a failure (code != 0).
-pub fn failed(err: NetError): Bool {
-    return err.code != 0
-}
 
 /// Returns the last network error message.
 pub fn lastError(): String {
     return __spark_net_error()
 }
-
-// =============================================================================
-// TCP — Listener
-// =============================================================================
 
 /// Binds a TCP listener on the given address and port.
 /// Returns a TcpListener with handle -1 on error; check lastError().
@@ -68,77 +59,17 @@ pub fn tcpListen(addr: String, port: Int): TcpListener {
     return TcpListener { handle: __spark_net_tcp_listen(addr, port) }
 }
 
-/// Accepts the next incoming TCP connection.
-/// Returns a TcpStream with handle -1 on error; check lastError().
-pub fn accept(listener: TcpListener): TcpStream {
-    return TcpStream { handle: __spark_net_tcp_accept(listener.handle) }
-}
-
-/// Returns the local address that this listener is bound to.
-pub fn listenerAddr(listener: TcpListener): String {
-    return __spark_net_listener_addr(listener.handle)
-}
-
-// =============================================================================
-// TCP — Stream
-// =============================================================================
-
 /// Connects to a remote TCP address.
 /// Returns a TcpStream with handle -1 on error; check lastError().
 pub fn tcpConnect(addr: String, port: Int): TcpStream {
     return TcpStream { handle: __spark_net_tcp_connect(addr, port) }
 }
 
-/// Reads up to maxBytes from the stream. Returns the data as a string.
-/// Returns empty string on error; check lastError().
-pub fn tcpRead(stream: TcpStream, maxBytes: Int): String {
-    return __spark_net_tcp_read(stream.handle, maxBytes)
-}
-
-/// Writes data to the stream.
-pub fn tcpWrite(stream: TcpStream, data: String): NetError {
-    return NetError { code: __spark_net_tcp_write(stream.handle, data) }
-}
-
-/// Returns the peer (remote) address of the stream.
-pub fn peerAddr(stream: TcpStream): String {
-    return __spark_net_tcp_peer_addr(stream.handle)
-}
-
-/// Returns the local address of the stream.
-pub fn localAddr(stream: TcpStream): String {
-    return __spark_net_tcp_local_addr(stream.handle)
-}
-
-/// Shuts down the stream (closes the write side).
-pub fn shutdown(stream: TcpStream): NetError {
-    return NetError { code: __spark_net_tcp_shutdown(stream.handle) }
-}
-
-// =============================================================================
-// UDP
-// =============================================================================
-
 /// Binds a UDP socket on the given address and port.
 /// Returns a UdpSocket with handle -1 on error; check lastError().
 pub fn udpBind(addr: String, port: Int): UdpSocket {
     return UdpSocket { handle: __spark_net_udp_bind(addr, port) }
 }
-
-/// Sends data via UDP to the specified address and port.
-pub fn udpSendTo(sock: UdpSocket, data: String, addr: String, port: Int): NetError {
-    return NetError { code: __spark_net_udp_send_to(sock.handle, data, addr, port) }
-}
-
-/// Receives data from a UDP socket (up to maxBytes).
-/// Returns empty string on error; check lastError().
-pub fn udpRecv(sock: UdpSocket, maxBytes: Int): String {
-    return __spark_net_udp_recv(sock.handle, maxBytes)
-}
-
-// =============================================================================
-// DNS
-// =============================================================================
 
 /// Resolves a hostname to a comma-separated list of IP addresses.
 /// Returns empty string on error; check lastError().
@@ -147,20 +78,85 @@ pub fn resolve(hostname: String): String {
 }
 
 // =============================================================================
-// Resource management
+// Interface bindings — method-style API
 // =============================================================================
 
-/// Closes a TCP listener.
-pub fn closeListener(listener: TcpListener): Void {
-    __spark_net_close(listener.handle)
+/// Methods available on a TCP listener.
+pub interface ITcpListener {
+    fn accept(): TcpStream
+    fn addr(): String
+    fn close(): Void
 }
 
-/// Closes a TCP stream.
-pub fn closeStream(stream: TcpStream): Void {
-    __spark_net_close(stream.handle)
+TcpListener binds ITcpListener {
+    fn accept(listener: TcpListener): TcpStream {
+        return TcpStream { handle: __spark_net_tcp_accept(listener.handle) }
+    }
+    fn addr(listener: TcpListener): String {
+        return __spark_net_listener_addr(listener.handle)
+    }
+    fn close(listener: TcpListener): Void {
+        __spark_net_close(listener.handle)
+    }
 }
 
-/// Closes a UDP socket.
-pub fn closeSocket(sock: UdpSocket): Void {
-    __spark_net_close(sock.handle)
+/// Methods available on a TCP stream.
+pub interface ITcpStream {
+    fn read(maxBytes: Int): String
+    fn write(data: String): NetError
+    fn peerAddr(): String
+    fn localAddr(): String
+    fn shutdown(): NetError
+    fn close(): Void
+}
+
+TcpStream binds ITcpStream {
+    fn read(stream: TcpStream, maxBytes: Int): String {
+        return __spark_net_tcp_read(stream.handle, maxBytes)
+    }
+    fn write(stream: TcpStream, data: String): NetError {
+        return NetError { code: __spark_net_tcp_write(stream.handle, data) }
+    }
+    fn peerAddr(stream: TcpStream): String {
+        return __spark_net_tcp_peer_addr(stream.handle)
+    }
+    fn localAddr(stream: TcpStream): String {
+        return __spark_net_tcp_local_addr(stream.handle)
+    }
+    fn shutdown(stream: TcpStream): NetError {
+        return NetError { code: __spark_net_tcp_shutdown(stream.handle) }
+    }
+    fn close(stream: TcpStream): Void {
+        __spark_net_close(stream.handle)
+    }
+}
+
+/// Methods available on a UDP socket.
+pub interface IUdpSocket {
+    fn sendTo(data: String, addr: String, port: Int): NetError
+    fn recv(maxBytes: Int): String
+    fn close(): Void
+}
+
+UdpSocket binds IUdpSocket {
+    fn sendTo(sock: UdpSocket, data: String, addr: String, port: Int): NetError {
+        return NetError { code: __spark_net_udp_send_to(sock.handle, data, addr, port) }
+    }
+    fn recv(sock: UdpSocket, maxBytes: Int): String {
+        return __spark_net_udp_recv(sock.handle, maxBytes)
+    }
+    fn close(sock: UdpSocket): Void {
+        __spark_net_close(sock.handle)
+    }
+}
+
+/// Error checking method for network errors.
+pub interface INetError {
+    fn failed(): Bool
+}
+
+NetError binds INetError {
+    fn failed(err: NetError): Bool {
+        return err.code != 0
+    }
 }

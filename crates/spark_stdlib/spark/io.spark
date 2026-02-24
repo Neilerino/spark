@@ -27,32 +27,19 @@ extern fn __spark_io_write_stderr(text: String): Void
 extern fn __spark_io_error(): String
 
 // =============================================================================
-// Error handling
+// Module-level functions
 // =============================================================================
-
-/// Returns true if an IoError represents a failure (code != 0).
-pub fn failed(err: IoError): Bool {
-    return err.code != 0
-}
 
 /// Returns the last IO error message.
 pub fn lastError(): String {
     return __spark_io_error()
 }
 
-// =============================================================================
-// File reading
-// =============================================================================
-
 /// Reads the entire contents of a file as a string.
-/// Returns empty string on error; check error() for details.
+/// Returns empty string on error; check lastError() for details.
 pub fn readFile(path: String): String {
     return __spark_io_read_file(path)
 }
-
-// =============================================================================
-// File writing
-// =============================================================================
 
 /// Writes content to a file, creating it if it doesn't exist, overwriting if it does.
 /// Returns IoError with code 0 on success.
@@ -66,10 +53,6 @@ pub fn appendFile(path: String, content: String): IoError {
     return IoError { code: __spark_io_append_file(path, content) }
 }
 
-// =============================================================================
-// File system queries
-// =============================================================================
-
 /// Returns true if a file or directory exists at the given path.
 pub fn fileExists(path: String): Bool {
     return __spark_io_file_exists(path) != 0
@@ -79,10 +62,6 @@ pub fn fileExists(path: String): Bool {
 pub fn deleteFile(path: String): IoError {
     return IoError { code: __spark_io_delete_file(path) }
 }
-
-// =============================================================================
-// Directory operations
-// =============================================================================
 
 /// Creates a directory. Returns IoError if it already exists or parent doesn't exist.
 pub fn createDir(path: String): IoError {
@@ -95,14 +74,10 @@ pub fn createDirAll(path: String): IoError {
 }
 
 /// Lists directory entries as a newline-separated string.
-/// Returns empty string on error; check error() for details.
+/// Returns empty string on error; check lastError() for details.
 pub fn listDir(path: String): String {
     return __spark_io_list_dir(path)
 }
-
-// =============================================================================
-// Standard I/O
-// =============================================================================
 
 /// Reads a single line from standard input (blocking).
 /// Returns the line with trailing newline stripped.
@@ -114,4 +89,19 @@ pub fn readLine(): String {
 /// Writes a line of text to standard error.
 pub fn writeStderr(text: String): Void {
     __spark_io_write_stderr(text)
+}
+
+// =============================================================================
+// Interface binding — method-style API
+// =============================================================================
+
+/// Error checking method for IO errors.
+pub interface IIoError {
+    fn failed(): Bool
+}
+
+IoError binds IIoError {
+    fn failed(err: IoError): Bool {
+        return err.code != 0
+    }
 }

@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn io_source_contains_failed() {
         let sources = stdlib_sources();
-        assert!(sources[2].source.contains("pub fn failed"));
+        assert!(sources[2].source.contains("IoError binds IIoError"));
     }
 
     #[test]
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn net_source_contains_failed() {
         let sources = stdlib_sources();
-        assert!(sources[4].source.contains("pub fn failed"));
+        assert!(sources[4].source.contains("NetError binds INetError"));
     }
 
     #[test]
@@ -252,6 +252,6 @@ mod tests {
     #[test]
     fn http_source_contains_respond() {
         let sources = stdlib_sources();
-        assert!(sources[5].source.contains("pub fn respond"));
+        assert!(sources[5].source.contains("Request binds IRequest"));
     }
 }

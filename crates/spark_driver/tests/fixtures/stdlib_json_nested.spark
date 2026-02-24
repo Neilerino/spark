@@ -1,17 +1,17 @@
-import spark.json { parse, isError, get, at, getString, len, JsonValue }
+import spark.json { parse, JsonValue }
 
 fn main(): Int {
     data: JsonValue = parse("\{\"items\": [\{\"v\": \"first\"}, \{\"v\": \"second\"}]}")
-    if isError(data) {
+    if data.isError() {
         return 1
     }
-    items: JsonValue = get(data, "items")
-    print(len(items))
-    a: JsonValue = at(items, 0)
-    av: JsonValue = get(a, "v")
-    print(getString(av))
-    b: JsonValue = at(items, 1)
-    bv: JsonValue = get(b, "v")
-    print(getString(bv))
+    items: JsonValue = data.get("items")
+    print(items.len())
+    a: JsonValue = items.at(0)
+    av: JsonValue = a.get("v")
+    print(av.getString())
+    b: JsonValue = items.at(1)
+    bv: JsonValue = b.get("v")
+    print(bv.getString())
     return 0
 }
