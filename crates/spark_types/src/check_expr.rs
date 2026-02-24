@@ -1224,7 +1224,7 @@ fn unify_branches(a: TypeId, b: TypeId, table: &mut TypeTable, _builtins: &Built
 }
 
 /// Strips the `Mutable` wrapper if present.
-fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
+pub(crate) fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
     if let Ty::Mutable(inner) = table.resolve(ty) {
         *inner
     } else {
@@ -1295,7 +1295,7 @@ fn validate_each_callback(
 }
 
 /// Strips the `Ref` wrapper if present.
-fn strip_ref(ty: TypeId, table: &TypeTable) -> TypeId {
+pub(crate) fn strip_ref(ty: TypeId, table: &TypeTable) -> TypeId {
     if let Ty::Ref { inner, .. } = table.resolve(ty) {
         *inner
     } else {

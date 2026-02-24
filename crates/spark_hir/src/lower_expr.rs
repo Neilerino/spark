@@ -798,7 +798,7 @@ fn expr_type(id: spark_ast::ExprId, table: &TypeTable) -> TypeId {
 }
 
 /// If the expression has type `Ref[T]`, wraps it in a `Deref` to produce `T`.
-fn auto_deref_ref(expr: HirExpr, table: &TypeTable) -> HirExpr {
+pub(crate) fn auto_deref_ref(expr: HirExpr, table: &TypeTable) -> HirExpr {
     let stripped = strip_mutable_ty(expr.ty, table);
     if let Ty::Ref { inner, .. } = table.resolve(stripped) {
         let inner_ty = *inner;

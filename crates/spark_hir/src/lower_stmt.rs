@@ -10,7 +10,7 @@ use spark_types::ty::Ty;
 use spark_types::{TypeId, TypeTable};
 
 use crate::hir::{HirExpr, HirExprKind, HirStmt};
-use crate::lower_expr::lower_expr;
+use crate::lower_expr::{auto_deref_ref, lower_expr};
 
 /// Lowers a statement from the AST to HIR.
 #[allow(clippy::too_many_arguments)]
@@ -113,19 +113,35 @@ pub fn lower_stmt(
             // Re-lower target for the RHS (we need two copies)
             let target_for_rhs = lower_expr(target, table, definitions, resolutions, diagnostics, current_fn_ret);
 
+            // Auto-deref operands for the binary op (so Ref[Int] + Int works)
+            let target_rhs_deref = auto_deref_ref(target_for_rhs, table);
+            let value_deref = auto_deref_ref(value_hir, table);
+
+            // Result type is the deref'd type (e.g. Int, not Ref[Int])
+            let result_ty = strip_ref(strip_mutable(target_hir.ty, table), table);
+
             let binary_op = compound_to_binary(*op);
             let rhs = HirExpr::new(
                 HirExprKind::BinaryOp {
                     op: binary_op,
-                    lhs: Box::new(target_for_rhs),
-                    rhs: Box::new(value_hir),
+                    lhs: Box::new(target_rhs_deref),
+                    rhs: Box::new(value_deref),
                 },
-                target_hir.ty,
+                result_ty,
                 stmt.span,
             );
 
+            // If target is Ref[T], deref for the store (write through the reference)
+            let target_inner = strip_mutable(target_hir.ty, table);
+            let store_target = if let Ty::Ref { inner, .. } = table.resolve(target_inner) {
+                let inner_ty = *inner;
+                HirExpr::new(HirExprKind::Deref(Box::new(target_hir)), inner_ty, stmt.span)
+            } else {
+                target_hir
+            };
+
             HirStmt::Assign {
-                target: target_hir,
+                target: store_target,
                 value: rhs,
             }
         }
@@ -145,6 +161,15 @@ fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
     }
 }
 
+/// Strips the `Ref` wrapper from a type if present.
+fn strip_ref(ty: TypeId, table: &TypeTable) -> TypeId {
+    if let Ty::Ref { inner, .. } = table.resolve(ty) {
+        *inner
+    } else {
+        ty
+    }
+}
+
 /// Converts a `CompoundOp` to its corresponding `BinaryOp`.
 const fn compound_to_binary(op: CompoundOp) -> BinaryOp {
     match op {
@@ -158,6 +183,12 @@ const fn compound_to_binary(op: CompoundOp) -> BinaryOp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spark_ast::{Expr, ExprKind, Ident, Literal};
+    use spark_diagnostics::Diagnostics;
+    use spark_intern::sym;
+    use spark_resolve::{DefId, ResolutionMap};
+    use spark_span::Span;
+    use spark_types::ty::{LifetimeId, Ty};
 
     #[test]
     fn compound_to_binary_all() {
@@ -165,5 +196,115 @@ mod tests {
         assert!(matches!(compound_to_binary(CompoundOp::Sub), BinaryOp::Sub));
         assert!(matches!(compound_to_binary(CompoundOp::Mul), BinaryOp::Mul));
         assert!(matches!(compound_to_binary(CompoundOp::Div), BinaryOp::Div));
+    }
+
+    #[test]
+    fn compound_assign_ref_desugars_with_deref() {
+        let mut table = spark_types::TypeTable::new();
+        let builtins = spark_types::builtins::register_builtins(&mut table);
+        let mut defs = spark_resolve::DefinitionTable::new();
+        let mut diags = Diagnostics::new();
+
+        // Create types: Mutable(Ref[Int, mutable=true])
+        let int_id = builtins.int;
+        let ref_ty = table.intern(Ty::Ref {
+            inner: int_id,
+            mutable: true,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
+        let mut_ref_ty = table.intern(Ty::Mutable(ref_ty));
+
+        // Set up def for the target variable
+        let def_id = DefId::new(50);
+        table.set_def_type(def_id, mut_ref_ty);
+
+        // Create target ident expression
+        let target_span = Span::new(spark_span::FileId::new(0), 0, 1);
+        let target = Expr::new(ExprKind::Ident(Ident::new(sym("x"), target_span)), target_span);
+        // Set expression type in the table (as the type checker would)
+        table.set_expr_type(target.id, mut_ref_ty);
+
+        // Create value literal
+        let value = Expr::new(ExprKind::Literal(Literal::int(1, Span::DUMMY)), Span::DUMMY);
+        table.set_expr_type(value.id, int_id);
+
+        let mut res = ResolutionMap::new();
+        res.record_ident(target_span, def_id);
+
+        let stmt = Stmt::new(
+            StmtKind::CompoundAssign {
+                target,
+                op: CompoundOp::Add,
+                value,
+            },
+            Span::DUMMY,
+        );
+
+        let hir = lower_stmt(&stmt, &table, &mut defs, Some(&res), &mut diags, None);
+
+        // The result should be an Assign with a Deref target (write through ref)
+        match &hir {
+            HirStmt::Assign { target, value } => {
+                // Target should be Deref (writing through the reference)
+                assert!(
+                    matches!(target.kind, HirExprKind::Deref(_)),
+                    "Expected Deref target for Ref[T], got {:?}",
+                    target.kind
+                );
+                // Value should be a BinaryOp
+                assert!(
+                    matches!(value.kind, HirExprKind::BinaryOp { .. }),
+                    "Expected BinaryOp value, got {:?}",
+                    value.kind
+                );
+            }
+            other => panic!("Expected Assign, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn compound_assign_bare_value_unchanged() {
+        let mut table = spark_types::TypeTable::new();
+        let builtins = spark_types::builtins::register_builtins(&mut table);
+        let mut defs = spark_resolve::DefinitionTable::new();
+        let mut diags = Diagnostics::new();
+
+        let int_id = builtins.int;
+        let mut_int = table.intern(Ty::Mutable(int_id));
+
+        let def_id = DefId::new(51);
+        table.set_def_type(def_id, mut_int);
+
+        let target_span = Span::new(spark_span::FileId::new(0), 5, 6);
+        let target = Expr::new(ExprKind::Ident(Ident::new(sym("y"), target_span)), target_span);
+        table.set_expr_type(target.id, mut_int);
+
+        let value = Expr::new(ExprKind::Literal(Literal::int(2, Span::DUMMY)), Span::DUMMY);
+        table.set_expr_type(value.id, int_id);
+
+        let mut res = ResolutionMap::new();
+        res.record_ident(target_span, def_id);
+
+        let stmt = Stmt::new(
+            StmtKind::CompoundAssign {
+                target,
+                op: CompoundOp::Add,
+                value,
+            },
+            Span::DUMMY,
+        );
+
+        let hir = lower_stmt(&stmt, &table, &mut defs, Some(&res), &mut diags, None);
+
+        // Target should NOT be wrapped in Deref (it's a plain Mutable(Int))
+        match &hir {
+            HirStmt::Assign { target, .. } => {
+                assert!(
+                    !matches!(target.kind, HirExprKind::Deref(_)),
+                    "Plain Int target should not be wrapped in Deref"
+                );
+            }
+            other => panic!("Expected Assign, got {:?}", other),
+        }
     }
 }

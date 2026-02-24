@@ -177,13 +177,13 @@ _No open bugs._
   run sequentially behind a mutex. Use `tempfile::NamedTempFile` or a per-test temp directory to
   allow parallel execution.
 
-### `TODO` [SPARK-027] — Operators on `Ref[T]` should auto-deref to the enclosed type
+### `DONE` [SPARK-027] — Operators on `Ref[T]` should auto-deref to the enclosed type
 
 - **Type**: feature
 - **Effort**: medium
 - **Category**: DX
-- **Status**: open
-- **Crates**: spark_resolve, spark_types, spark_codegen
+- **Status**: done
+- **Crates**: spark_types, spark_hir
 - **Files**:
   - `crates/spark_resolve/src/lib.rs` — operator resolution should unwrap Ref types
   - `crates/spark_types/src/lib.rs` — type-checking for binary/compound-assign through refs
@@ -326,24 +326,24 @@ _No open bugs._
   never used as values. Only generate thunks for functions actually referenced in non-call positions
   (detectable from MIR `Constant::FunctionRef` usage). Reduces object file bloat.
 
-### `TODO` [SPARK-023] — Reborrowing and two-phase borrows
+### `DONE` [SPARK-023] — Reborrowing and two-phase borrows
 
 - **Type**: feature
 - **Effort**: low-medium
 - **Category**: DX
-- **Status**: open
+- **Status**: done
 - **Crates**: spark_borrow
 - **Files**:
   - `crates/spark_borrow/src/check.rs` — conflict detection
 - **Description**: Borrow checker currently rejects re-borrowing a reference (shortening region)
   and `x.method(&x)` patterns. Workarounds exist. Ergonomics improvement only.
 
-### `PERF` [SPARK-024] — O(n²) borrow conflict detection
+### `DONE` [SPARK-024] — O(n²) borrow conflict detection
 
 - **Type**: performance
 - **Effort**: low-medium
 - **Category**: performance
-- **Status**: open
+- **Status**: done
 - **Crates**: spark_borrow
 - **Files**:
   - `crates/spark_borrow/src/check.rs` — active loan iteration per program point

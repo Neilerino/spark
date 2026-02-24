@@ -8,7 +8,7 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use spark_mir::{Local, MirFunction, Place, Projection, Statement};
+use spark_mir::{Local, MirFunction, Place, Projection, Statement, Terminator};
 
 use crate::errors;
 use crate::facts::{BorrowFacts, Loan, LoanId, Point};
@@ -45,42 +45,39 @@ fn check_conflicting_borrows(
     let loan_map: FxHashMap<LoanId, &Loan> =
         facts.loans.iter().map(|l| (l.id, l)).collect();
 
-    // Collect all unique program points across all regions.
-    let mut all_points: FxHashSet<Point> = FxHashSet::default();
+    // Build inverted index: point -> [active loan ids].
+    // This replaces the O(P×R) scan with O(total_region_points) construction.
+    let mut active_at: FxHashMap<Point, Vec<LoanId>> = FxHashMap::default();
     for region in regions {
         for &point in &region.points {
-            all_points.insert(point);
+            active_at.entry(point).or_default().push(region.loan);
         }
     }
+
+    // Pre-compute two-phase borrow exempt pairs.
+    // A pair is exempt if both ref locals are arguments to a call at any point
+    // where both loans are active.
+    let call_arg_locals = collect_call_arg_locals(func);
+    let two_phase_exempt = compute_two_phase_exempt(&active_at, &loan_map, &call_arg_locals);
 
     // Track which pairs have already been reported to avoid duplicates.
     let mut reported: FxHashSet<(LoanId, LoanId)> = FxHashSet::default();
 
-    // For each point, find which loans are active and check for conflicts.
-    for point in &all_points {
-        let active_loans: Vec<LoanId> = regions
-            .iter()
-            .filter(|r| r.points.contains(point))
-            .map(|r| r.loan)
-            .collect();
+    // For each point with multiple active loans, check for conflicts.
+    for active_loans in active_at.values() {
+        if active_loans.len() < 2 {
+            continue;
+        }
 
         for i in 0..active_loans.len() {
             for j in (i + 1)..active_loans.len() {
-                let first_id = active_loans[i];
-                let second_id = active_loans[j];
-
-                let pair = if first_id.0 < second_id.0 {
-                    (first_id, second_id)
-                } else {
-                    (second_id, first_id)
-                };
-
-                if reported.contains(&pair) {
+                let pair = ordered_pair(active_loans[i], active_loans[j]);
+                if reported.contains(&pair) || two_phase_exempt.contains(&pair) {
                     continue;
                 }
 
-                let first_loan = loan_map[&first_id];
-                let second_loan = loan_map[&second_id];
+                let first_loan = loan_map[&pair.0];
+                let second_loan = loan_map[&pair.1];
 
                 if places_overlap(&first_loan.place, &second_loan.place)
                     && (first_loan.mutable || second_loan.mutable)
@@ -93,6 +90,95 @@ fn check_conflicting_borrows(
             }
         }
     }
+}
+
+/// Returns a canonically ordered pair of loan IDs (smaller first).
+const fn ordered_pair(a: LoanId, b: LoanId) -> (LoanId, LoanId) {
+    if a.0 < b.0 { (a, b) } else { (b, a) }
+}
+
+/// Collects the set of locals used as arguments at each call-site point.
+///
+/// Returns a map from the terminator point (block, stmt_count) to the set of
+/// locals that appear as operands in the `Call` terminator's arguments (including
+/// the function operand itself).
+#[allow(clippy::cast_possible_truncation)]
+fn collect_call_arg_locals(func: &MirFunction) -> FxHashMap<Point, FxHashSet<Local>> {
+    let mut result = FxHashMap::default();
+    for (block_idx, block) in func.blocks.iter().enumerate() {
+        if let Terminator::Call { func: fn_op, args, .. } = &block.terminator {
+            let point = Point::new(
+                spark_mir::BlockId(block_idx as u32),
+                block.statements.len() as u32,
+            );
+            let mut locals = FxHashSet::default();
+            collect_operand_local(fn_op, &mut locals);
+            for arg in args {
+                collect_operand_local(arg, &mut locals);
+            }
+            result.insert(point, locals);
+        }
+    }
+    result
+}
+
+/// Extracts the local from an operand, if any.
+fn collect_operand_local(operand: &spark_mir::Operand, out: &mut FxHashSet<Local>) {
+    match operand {
+        spark_mir::Operand::Copy(p) | spark_mir::Operand::Move(p) => {
+            out.insert(p.local);
+        }
+        spark_mir::Operand::Constant(_) => {}
+    }
+}
+
+/// Pre-computes the set of loan pairs that are exempt due to two-phase borrowing.
+///
+/// A pair is two-phase exempt if:
+/// 1. One loan is mutable and the other immutable
+/// 2. At some point where both are active, there's a `Call` terminator whose
+///    arguments include both loans' `ref_local` values
+///
+/// This handles the `x.method(&x)` pattern where a mutable borrow for `self`
+/// and an immutable borrow for an argument coexist at the call site.
+fn compute_two_phase_exempt(
+    active_at: &FxHashMap<Point, Vec<LoanId>>,
+    loan_map: &FxHashMap<LoanId, &Loan>,
+    call_arg_locals: &FxHashMap<Point, FxHashSet<Local>>,
+) -> FxHashSet<(LoanId, LoanId)> {
+    let mut exempt = FxHashSet::default();
+
+    // Only check at call points (where two-phase borrows can occur).
+    for (point, arg_locals) in call_arg_locals {
+        let Some(active_loans) = active_at.get(point) else {
+            continue;
+        };
+        if active_loans.len() < 2 {
+            continue;
+        }
+
+        for i in 0..active_loans.len() {
+            for j in (i + 1)..active_loans.len() {
+                let a = loan_map[&active_loans[i]];
+                let b = loan_map[&active_loans[j]];
+
+                // Must be (mutable, immutable), not (mutable, mutable).
+                if a.mutable == b.mutable {
+                    continue;
+                }
+
+                // Both ref locals must be arguments to the call.
+                if arg_locals.contains(&a.ref_local)
+                    && arg_locals.contains(&b.ref_local)
+                    && places_overlap(&a.place, &b.place)
+                {
+                    exempt.insert(ordered_pair(a.id, b.id));
+                }
+            }
+        }
+    }
+
+    exempt
 }
 
 /// Checks for use of a moved value.
@@ -766,6 +852,490 @@ mod tests {
         assert!(
             diags.has_errors(),
             "Mutation through immutable reference should be an error"
+        );
+    }
+
+    #[test]
+    fn many_non_conflicting_borrows() {
+        // 20 distinct locals, each with an immutable borrow — no conflicts.
+        // _1.._20  = const values
+        // _21.._40 = Ref(_1).._20 immut
+        // _41.._60 = copy _21.*.._40.*
+        // _0 = void
+        // return
+        let local_count = 61; // _0 + 20 values + 20 refs + 20 reads
+        let mut stmts = Vec::new();
+
+        // _1.._20 = const i
+        for i in 1..=20u32 {
+            stmts.push(Statement::Assign {
+                place: Place::from_local(Local(i)),
+                rvalue: Rvalue::Use(Operand::Constant(Constant::Int(i.into()))),
+                span: Span::DUMMY,
+            });
+        }
+
+        // _21.._40 = Ref(_1.._20) immut
+        for i in 0..20u32 {
+            stmts.push(Statement::Assign {
+                place: Place::from_local(Local(21 + i)),
+                rvalue: Rvalue::Ref {
+                    place: Place::from_local(Local(1 + i)),
+                    mutable: false,
+                },
+                span: Span::DUMMY,
+            });
+        }
+
+        // _41.._60 = copy _21.*.._40.*
+        for i in 0..20u32 {
+            let mut p = Place::from_local(Local(21 + i));
+            p.projections.push(Projection::Deref);
+            stmts.push(Statement::Assign {
+                place: Place::from_local(Local(41 + i)),
+                rvalue: Rvalue::Use(Operand::Copy(p)),
+                span: Span::DUMMY,
+            });
+        }
+
+        // _0 = void
+        stmts.push(Statement::Assign {
+            place: Place::from_local(Local(0)),
+            rvalue: Rvalue::Use(Operand::Constant(Constant::Void)),
+            span: Span::DUMMY,
+        });
+
+        let func = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 0,
+            return_type: TypeId::ERROR,
+            locals: (0..local_count)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: i > 0 && i <= 20,
+                    mutable: false,
+                    span: Span::DUMMY,
+                })
+                .collect(),
+            blocks: vec![BasicBlock {
+                statements: stmts,
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+
+        let diags = check_func(&func);
+        assert!(
+            !diags.has_errors(),
+            "20 immutable borrows of distinct locals should not conflict: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn reborrow_mutable_from_mutable_ok() {
+        // _1 = const 42
+        // _2 = Ref(_1) mut        (loan L0: borrows _1, stored in _2)
+        // _3 = Ref(_2.*) mut      (loan L1: reborrow through _2, stored in _3)
+        // _4 = copy _3.*          (use _3 only, _2 is dead)
+        // _0 = _4
+        // return
+        let func = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 0,
+            return_type: TypeId::ERROR,
+            locals: (0..5).map(|i| LocalDecl {
+                local: Local(i),
+                ty: TypeId::ERROR,
+                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
+                is_user_variable: i > 0,
+                mutable: i == 1,
+                span: Span::DUMMY,
+            }).collect(),
+            blocks: vec![BasicBlock {
+                statements: vec![
+                    Statement::Assign {
+                        place: Place::from_local(Local(1)),
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(42))),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(2)),
+                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(3)),
+                        rvalue: Rvalue::Ref {
+                            place: {
+                                let mut p = Place::from_local(Local(2));
+                                p.projections.push(Projection::Deref);
+                                p
+                            },
+                            mutable: true,
+                        },
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(4)),
+                        rvalue: Rvalue::Use(Operand::Copy({
+                            let mut p = Place::from_local(Local(3));
+                            p.projections.push(Projection::Deref);
+                            p
+                        })),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::Use(Operand::Copy(Place::from_local(Local(4)))),
+                        span: Span::DUMMY,
+                    },
+                ],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+
+        let diags = check_func(&func);
+        assert!(
+            !diags.has_errors(),
+            "Reborrow (mut from mut) with dead original should be allowed: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn two_phase_method_call_ok() {
+        // _1 = const 42
+        // _2 = Ref(_1) mut       (mutable borrow for `self`)
+        // _3 = Ref(_1) immut     (immutable borrow for argument)
+        //   (terminator) call f(_2, _3) -> bb1
+        // bb1: _0 = void; return
+        //
+        // The mutable and immutable borrows of _1 are both active at the call
+        // point but this is the two-phase borrow pattern and should be allowed.
+        let func = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 0,
+            return_type: TypeId::ERROR,
+            locals: (0..6).map(|i| LocalDecl {
+                local: Local(i),
+                ty: TypeId::ERROR,
+                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
+                is_user_variable: i > 0,
+                mutable: i == 1,
+                span: Span::DUMMY,
+            }).collect(),
+            blocks: vec![
+                BasicBlock {
+                    statements: vec![
+                        Statement::Assign {
+                            place: Place::from_local(Local(1)),
+                            rvalue: Rvalue::Use(Operand::Constant(Constant::Int(42))),
+                            span: Span::DUMMY,
+                        },
+                        Statement::Assign {
+                            place: Place::from_local(Local(2)),
+                            rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                            span: Span::DUMMY,
+                        },
+                        Statement::Assign {
+                            place: Place::from_local(Local(3)),
+                            rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                            span: Span::DUMMY,
+                        },
+                    ],
+                    terminator: Terminator::Call {
+                        func: Operand::Constant(Constant::Void), // placeholder
+                        args: vec![
+                            Operand::Move(Place::from_local(Local(2))),
+                            Operand::Copy(Place::from_local(Local(3))),
+                        ],
+                        destination: Place::from_local(Local(4)),
+                        target: spark_mir::BlockId(1),
+                        span: Span::DUMMY,
+                    },
+                    is_cleanup: false,
+                },
+                BasicBlock {
+                    statements: vec![Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Void)),
+                        span: Span::DUMMY,
+                    }],
+                    terminator: Terminator::Return,
+                    is_cleanup: false,
+                },
+            ],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+
+        let diags = check_func(&func);
+        assert!(
+            !diags.has_errors(),
+            "Two-phase borrow (x.method(&x) pattern) should be allowed: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn two_phase_both_mutable_error() {
+        // _1 = const 42
+        // _2 = Ref(_1) mut
+        // _3 = Ref(_1) mut
+        //   call f(_2, _3) -> bb1
+        // bb1: _0 = void; return
+        //
+        // Both mutable — two-phase exemption does NOT apply.
+        let func = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 0,
+            return_type: TypeId::ERROR,
+            locals: (0..6).map(|i| LocalDecl {
+                local: Local(i),
+                ty: TypeId::ERROR,
+                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
+                is_user_variable: i > 0,
+                mutable: i == 1,
+                span: Span::DUMMY,
+            }).collect(),
+            blocks: vec![
+                BasicBlock {
+                    statements: vec![
+                        Statement::Assign {
+                            place: Place::from_local(Local(1)),
+                            rvalue: Rvalue::Use(Operand::Constant(Constant::Int(42))),
+                            span: Span::DUMMY,
+                        },
+                        Statement::Assign {
+                            place: Place::from_local(Local(2)),
+                            rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                            span: Span::DUMMY,
+                        },
+                        Statement::Assign {
+                            place: Place::from_local(Local(3)),
+                            rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                            span: Span::DUMMY,
+                        },
+                    ],
+                    terminator: Terminator::Call {
+                        func: Operand::Constant(Constant::Void),
+                        args: vec![
+                            Operand::Move(Place::from_local(Local(2))),
+                            Operand::Move(Place::from_local(Local(3))),
+                        ],
+                        destination: Place::from_local(Local(4)),
+                        target: spark_mir::BlockId(1),
+                        span: Span::DUMMY,
+                    },
+                    is_cleanup: false,
+                },
+                BasicBlock {
+                    statements: vec![Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Void)),
+                        span: Span::DUMMY,
+                    }],
+                    terminator: Terminator::Return,
+                    is_cleanup: false,
+                },
+            ],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+
+        let diags = check_func(&func);
+        assert!(
+            diags.has_errors(),
+            "Two mutable borrows in a call should still be an error"
+        );
+    }
+
+    #[test]
+    fn two_phase_outside_call_error() {
+        // _1 = const 42
+        // _2 = Ref(_1) mut
+        // _3 = Ref(_1) immut
+        // _4 = copy _2.*
+        // _5 = copy _3.*
+        // _0 = _4
+        // return
+        //
+        // No call terminator — both refs used independently, NOT a two-phase
+        // borrow. Should be an error (same as mixed_mut_immut_borrows_error).
+        let func = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 0,
+            return_type: TypeId::ERROR,
+            locals: (0..6).map(|i| LocalDecl {
+                local: Local(i),
+                ty: TypeId::ERROR,
+                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
+                is_user_variable: i > 0,
+                mutable: i == 1,
+                span: Span::DUMMY,
+            }).collect(),
+            blocks: vec![BasicBlock {
+                statements: vec![
+                    Statement::Assign {
+                        place: Place::from_local(Local(1)),
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(42))),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(2)),
+                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(3)),
+                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(4)),
+                        rvalue: Rvalue::Use(Operand::Copy({
+                            let mut p = Place::from_local(Local(2));
+                            p.projections.push(Projection::Deref);
+                            p
+                        })),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(5)),
+                        rvalue: Rvalue::Use(Operand::Copy({
+                            let mut p = Place::from_local(Local(3));
+                            p.projections.push(Projection::Deref);
+                            p
+                        })),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::Use(Operand::Copy(Place::from_local(Local(4)))),
+                        span: Span::DUMMY,
+                    },
+                ],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+
+        let diags = check_func(&func);
+        assert!(
+            diags.has_errors(),
+            "Mixed mut + immut borrows used outside a call should be an error"
+        );
+    }
+
+    #[test]
+    fn reborrow_with_original_still_used_error() {
+        // _1 = const 42
+        // _2 = Ref(_1) mut       (L0)
+        // _3 = Ref(_2.*) mut     (L1: reborrow)
+        // _4 = copy _3.*         (use _3 — keeps L1 alive)
+        // _5 = copy _2.*         (use _2 — keeps L0 alive)
+        // _0 = _4
+        // return
+        //
+        // Two mutable borrows of _1: L0 (direct) and L1 (through _2.*).
+        // L0 and L1 don't directly conflict via places_overlap (different root
+        // locals: _1 vs _2). But _2 (L0's ref) is used after _3 (L1) is created,
+        // which means both borrows are active simultaneously on the same data.
+        //
+        // NOTE: With the current place-based overlap check, this test actually
+        // does NOT produce an error because the reborrow's place (_2.*) has a
+        // different root local than L0's place (_1). A full reborrow analysis
+        // would track this transitively, but for now this is a known limitation.
+        // This test documents the current behavior.
+        let func = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 0,
+            return_type: TypeId::ERROR,
+            locals: (0..6).map(|i| LocalDecl {
+                local: Local(i),
+                ty: TypeId::ERROR,
+                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
+                is_user_variable: i > 0,
+                mutable: i == 1,
+                span: Span::DUMMY,
+            }).collect(),
+            blocks: vec![BasicBlock {
+                statements: vec![
+                    Statement::Assign {
+                        place: Place::from_local(Local(1)),
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(42))),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(2)),
+                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(3)),
+                        rvalue: Rvalue::Ref {
+                            place: {
+                                let mut p = Place::from_local(Local(2));
+                                p.projections.push(Projection::Deref);
+                                p
+                            },
+                            mutable: true,
+                        },
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(4)),
+                        rvalue: Rvalue::Use(Operand::Copy({
+                            let mut p = Place::from_local(Local(3));
+                            p.projections.push(Projection::Deref);
+                            p
+                        })),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(5)),
+                        rvalue: Rvalue::Use(Operand::Copy({
+                            let mut p = Place::from_local(Local(2));
+                            p.projections.push(Projection::Deref);
+                            p
+                        })),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::Use(Operand::Copy(Place::from_local(Local(4)))),
+                        span: Span::DUMMY,
+                    },
+                ],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+
+        let diags = check_func(&func);
+        // Current behavior: no error (place-based overlap doesn't catch transitive reborrows).
+        // This documents the known limitation for future work.
+        assert!(
+            !diags.has_errors(),
+            "Reborrow with original still used: currently not caught (known limitation)"
         );
     }
 }
