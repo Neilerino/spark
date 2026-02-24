@@ -296,15 +296,23 @@ fn link_object(object_bytes: &[u8], output_path: &Path) -> Result<(), ()> {
         return Err(());
     }
 
-    let status = Command::new("cc")
-        .arg(&tmp_obj)
+    let mut cmd = Command::new("cc");
+    cmd.arg(&tmp_obj)
         .arg(&runtime_lib)
         .arg("-o")
         .arg(output_path)
         .arg("-lm") // this is for math
         .arg("-lpthread") // This is for async/threading
-        .arg("-ldl")
-        .status();
+        .arg("-ldl");
+
+    // Pin the macOS deployment target to 11.0 (Big Sur) to match the minos/sdk
+    // values embedded in the object file by spark_codegen. Without this the
+    // linker warns about version mismatches between the .o and runtime library.
+    if cfg!(target_os = "macos") {
+        cmd.arg("-mmacosx-version-min=11.0");
+    }
+
+    let status = cmd.status();
 
     // Clean up temp .o
     let _ = fs::remove_file(&tmp_obj);

@@ -6,6 +6,9 @@
     "rust-analyzer.cargo.features": "all",
     "rust-analyzer.checkOnSave": true,
     "rust-analyzer.check.command": "clippy",
+    "search.exclude": {
+        "**/target/**": true
+    },
     "spark.server.path": "./target/debug/spark-lsp",
 
     "todo-tree.general.tags": [

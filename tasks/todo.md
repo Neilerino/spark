@@ -45,8 +45,8 @@ these tags automatically — open the tree view to jump between tasks and their 
 ### Rules
 
 - One task per heading. Format: ``### `TAG` [SPARK-NNN] — Title`` so TODO Tree indexes the tag.
-- When a task is completed, change its status to `done` and move it to the **Completed** section
-  at the bottom of this file.
+- When a task is completed, remove its full block from the open sections and add a one-line
+  summary to the **Completed** section at the bottom of this file.
 - Keep tasks ordered by ID within each priority section.
 - Every code comment referencing a task **must** include the ticket ID so TODO Tree can link them.
 
@@ -54,86 +54,11 @@ these tags automatically — open the tree view to jump between tasks and their 
 
 ## Priority 1 — Bugs (user-facing correctness)
 
-### `BUG` [SPARK-001] — String interpolation crashes codegen on function calls
-
-- **Type**: Bug
-- **Effort**: medium
-- **Category**: DX
-- **Status**: open
-- **Crates**: spark_codegen
-- **Files**:
-  - `crates/spark_codegen/src/cranelift/emit_rvalue.rs` — interpolation expression emission
-- **Description**: Embedding a function call inside `"\{expr}"` braces causes a Cranelift verifier
-  error (`call_indirect.i8 ... invalid controlling type i8`). The interpolation codegen emits the
-  inner expression with the wrong return type. Workaround: assign the call result to a variable
-  first. See `docs/known-issues.md §1`.
-
-### `BUG` [SPARK-002] — String interpolation produces empty output for variables
-
-- **Type**: bug
-- **Effort**: medium
-- **Category**: DX
-- **Status**: open
-- **Crates**: spark_codegen, spark_runtime
-- **Files**:
-  - `crates/spark_codegen/src/cranelift/emit_rvalue.rs` — interpolation value emission
-  - `crates/spark_runtime/src/lib.rs` — `__spark_int_to_string` / `__spark_string_concat`
-- **Description**: Int and String variables interpolated via `"text {variable}"` produce empty
-  strings at runtime. Likely cause: `__spark_int_to_string` or `__spark_string_concat` argument
-  ordering or linkage issue. Workaround: separate `print()` calls. See `docs/known-issues.md §2`.
-
-### `BUG` [SPARK-003] — Captured RC values leak when closure env is freed
-
-- **Type**: bug
-- **Effort**: medium-high
-- **Category**: performance
-- **Status**: done
-- **Crates**: spark_codegen, spark_runtime
-- **Files**:
-  - `crates/spark_codegen/src/cranelift/mod.rs` — `generate_env_destructors()`
-  - `crates/spark_codegen/src/cranelift/emit_rvalue.rs` — Stores dtor ptr in env header
-  - `crates/spark_runtime/src/lib.rs` — `__spark_env_alloc`, `__spark_env_rc_dec`
-- **Description**: Fixed. Env header expanded from 16 to 24 bytes to include a destructor function
-  pointer at offset 16. Codegen generates per-closure destructor functions that decrement RC for
-  each captured value. `__spark_env_rc_dec` calls the destructor before freeing when RC hits zero.
-
-### `BUG` [SPARK-028] — Closure captures don't RC-inc copied RC values
-
-- **Type**: bug
-- **Effort**: medium
-- **Category**: correctness
-- **Status**: done
-- **Crates**: spark_codegen
-- **Files**:
-  - `crates/spark_codegen/src/cranelift/emit_rvalue.rs` — `emit_closure_construction`
-- **Description**: When a closure captures an RC value (String, List, Map, Set, etc.) via
-  `Operand::Copy`, the reference count is **not** incremented. `emit_closure_construction` uses
-  `emit_place_read` directly instead of going through `emit_operand` (which handles RC inc for
-  copies). This means if the original variable is dropped before the closure, the captured value
-  becomes a dangling pointer. Currently masked when the captured variable outlives the closure
-  (e.g. both live in `main`), but triggers use-after-free when a closure escapes a function that
-  owns the captured value (e.g. `fn make(s: String): (): Void { return fn() { print(s) } }`).
-  Fix: call `emit_operand` for each capture, or manually emit RC inc for `Copy` operands of RC
-  types inside `emit_closure_construction`.
+_No open bugs._
 
 ---
 
 ## Priority 2 — Architecture / Performance
-
-### `PERF` [SPARK-004] — Eliminate double lex/parse/resolve in pipeline
-
-- **Type**: performance
-- **Effort**: medium
-- **Category**: performance
-- **Status**: open
-- **Crates**: spark_driver, spark_types, spark_hir
-- **Files**:
-  - `crates/spark_driver/src/pipeline.rs` — re-lex/re-parse/re-resolve block
-  - `crates/spark_types/src/checker.rs` — AST consumption via move
-- **Description**: The type checker takes ownership of ASTs, forcing the pipeline to re-lex,
-  re-parse, and re-resolve **every source file** before HIR lowering. This doubles front-end time
-  and is replicated in every test helper. Refactor the type checker to borrow ASTs (`&ResolvedAst`)
-  or use `Rc<ResolvedAst>` for shared access. See `docs/HANDOFF.md §8`.
 
 ### `PERF` [SPARK-005] — Reduce heavyweight Clone through pipeline
 
@@ -150,22 +75,6 @@ these tags automatically — open the tree view to jump between tasks and their 
   all parsed ASTs are deep-cloned before module resolution. Use `Rc`/`Arc` wrapping or refactor
   the pipeline to pass a single `CompilationContext` by `&mut` reference. Closely related to
   SPARK-004 — consider tackling together.
-
-### `TODO` [SPARK-006] — Replace Span-keyed expression types with ExprId
-
-- **Type**: refactor
-- **Effort**: medium-high
-- **Category**: maintainability
-- **Status**: open
-- **Crates**: spark_types, spark_hir, spark_mir
-- **Files**:
-  - `crates/spark_types/src/table.rs` — `HashMap<Span, TypeId>` for expr types
-  - `crates/spark_types/src/check_expr.rs` — span-based type lookups
-  - `crates/spark_ast/src/expr.rs` — would need `ExprId` field
-- **Description**: Expression types are stored in `HashMap<Span, TypeId>` keyed by source location.
-  Two expressions at the same span (or synthetic `DUMMY` spans) silently collide. A dedicated
-  `ExprId` or `NodeId` would be more robust, enable richer queries, and unblock LSP features.
-  Consider doing alongside SPARK-004 to avoid a second large refactor of `TypeTable`.
 
 ### `FIXME` [SPARK-007] — Eliminate production unwrap/panic calls
 
@@ -254,19 +163,6 @@ these tags automatically — open the tree view to jump between tasks and their 
   - `crates/spark_driver/tests/fixtures/` — add `.spark` fixture files
 - **Description**: Tuple types have full type-system support but no E2E tests. Quick win for
   confidence. Create fixtures exercising tuple creation, field access, and function returns.
-
-### `TODO` [SPARK-013] — Multi-file module E2E test coverage
-
-- **Type**: feature
-- **Effort**: low-medium
-- **Category**: DX
-- **Status**: open
-- **Crates**: spark_driver, spark_modules
-- **Files**:
-  - `crates/spark_driver/tests/e2e.rs` — add multi-file tests
-  - `crates/spark_driver/tests/projects/` — add multi-file project fixtures
-- **Description**: Module resolution infrastructure is complete but has no multi-file E2E tests.
-  Create project fixtures with imports across files and verify the full pipeline handles them.
 
 ### `PERF` [SPARK-014] — E2E tests serialized via mutex (per-test temp files)
 
@@ -492,5 +388,11 @@ these tags automatically — open the tree view to jump between tasks and their 
 
 ## Completed
 
-<!-- Move completed tasks here with their original ID and a completion date -->
-<!-- ### TAG [SPARK-NNN] — Title (completed YYYY-MM-DD) [very short high level description]-->
+<!-- One-line summaries only. See git log for implementation details. -->
+### `BUG` [SPARK-001] — String interpolation crashes codegen on function calls (completed 2026-02-08) Full interpolation pipeline implemented
+### `BUG` [SPARK-002] — String interpolation produces empty output for variables (completed 2026-02-08) Runtime conversion/concat functions implemented
+### `BUG` [SPARK-003] — Captured RC values leak when closure env is freed (completed 2026-02-17) Env header expanded with destructor pointer
+### `PERF` [SPARK-004] — Eliminate double lex/parse/resolve in pipeline (completed 2026-02-17) Type checker borrows ASTs instead of consuming
+### `TODO` [SPARK-006] — Replace Span-keyed expression types with ExprId (completed 2026-02-17) ExprId with atomic counter replaces Span keys
+### `TODO` [SPARK-013] — Multi-file module E2E test coverage (completed 2026-02-17) multifile/ and multimod/ project fixtures with E2E tests
+### `BUG` [SPARK-028] — Closure captures don't RC-inc copied RC values (completed 2026-02-17) RC inc emitted for Copy operands in emit_closure_construction

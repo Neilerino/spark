@@ -738,6 +738,7 @@ impl CodegenBackend for CraneliftBackend {
             let mut build_version = object::write::MachOBuildVersion::default();
             build_version.platform = object::macho::PLATFORM_MACOS;
             build_version.minos = 0x000B_0000; // macOS 11.0.0 (Big Sur — minimum for arm64)
+            build_version.sdk = 0x000B_0000; // macOS 11.0.0 SDK — matches minos
             product.object.set_macho_build_version(build_version);
         }
 

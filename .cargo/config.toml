@@ -1,0 +1,6 @@
+# Pin the macOS deployment target so all compiled artifacts (including C/assembly
+# objects from dependencies like `ring`) embed macOS 11.0 (Big Sur) instead of
+# the host version. This matches the minos/sdk values in spark_codegen and the
+# -mmacosx-version-min flag passed by the driver, preventing linker warnings.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"
