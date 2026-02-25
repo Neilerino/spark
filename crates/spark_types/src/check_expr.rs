@@ -707,7 +707,7 @@ fn check_unary_op(
 }
 
 /// Checks a function call, including generic function inference.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn check_call(
     callee_ty: TypeId,
     args: &[spark_ast::CallArg],
@@ -756,6 +756,11 @@ fn check_call(
                 }
 
                 if let Some(subst) = crate::substitute::infer_type_args(&gparams, &params, &arg_types, table) {
+                    // Validate generic constraints before proceeding
+                    crate::constraint::validate_constraints(
+                        &gparams, &subst, table, definitions, call_span, diagnostics,
+                    );
+
                     // Re-check args against substituted param types
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(&declared) = params.get(i) {

@@ -126,16 +126,20 @@ _No open bugs._
   to the whole value. Parser already handles the syntax. HIR lowering needs to desugar into a
   function call. See `docs/roadmap.md §5.6`.
 
-### `TODO` [SPARK-010] — Generic constraint validation (`T: Comparable`)
+### `DONE` [SPARK-010] — Generic constraint validation (`T: Comparable`)
 
 - **Type**: feature
 - **Effort**: medium
 - **Category**: DX
-- **Status**: open
+- **Status**: done
 - **Crates**: spark_types
 - **Files**:
-  - `crates/spark_types/src/checker.rs` — constraint checking during instantiation
-  - `crates/spark_types/src/check_decl.rs` — constraint collection from declarations
+  - `crates/spark_types/src/constraint.rs` — constraint validation logic
+  - `crates/spark_types/src/check_decl.rs` — constraint collection and interface binding registration
+  - `crates/spark_types/src/check_expr.rs` — validation at generic function call sites
+  - `crates/spark_types/src/lower.rs` — validation at generic type instantiation sites
+  - `crates/spark_types/src/table.rs` — constraint and binding storage in TypeTable
+  - `crates/spark_types/src/ty.rs` — Constraint enum definition
 - **Description**: Generic type parameters work but constraints are not validated. `fn sort[T: Comparable](list: List[T])` parses but the constraint `T: Comparable` is silently ignored.
   Needed for correct generic programming.
 

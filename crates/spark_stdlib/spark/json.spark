@@ -63,10 +63,9 @@ pub fn null(): JsonValue { return JsonValue { handle: __spark_json_new_null() } 
 
 /// Creates a JSON boolean value.
 pub fn bool(v: Bool): JsonValue {
-    if v {
-        return JsonValue { handle: __spark_json_new_bool(1) }
-    } else {
-        return JsonValue { handle: __spark_json_new_bool(0) }
+    return match v {
+        true -> JsonValue { handle: __spark_json_new_bool(1) },
+        false -> JsonValue { handle: __spark_json_new_bool(0) }
     }
 }
 
@@ -124,26 +123,26 @@ JsonValue binds IJsonValue {
     fn isError(value: JsonValue): Bool {
         return value.handle == -1
     }
-    fn isNull(value: JsonValue): Bool {
-        return __spark_json_type(value.handle) == 0
-    }
-    fn isBool(value: JsonValue): Bool {
-        return __spark_json_type(value.handle) == 1
-    }
-    fn isNumber(value: JsonValue): Bool {
-        return __spark_json_type(value.handle) == 2
-    }
-    fn isString(value: JsonValue): Bool {
-        return __spark_json_type(value.handle) == 3
-    }
-    fn isArray(value: JsonValue): Bool {
-        return __spark_json_type(value.handle) == 4
-    }
-    fn isObject(value: JsonValue): Bool {
-        return __spark_json_type(value.handle) == 5
-    }
     fn typeOf(value: JsonValue): Int {
         return __spark_json_type(value.handle)
+    }
+    fn isNull(value: JsonValue): Bool {
+        return value.typeOf() == 0
+    }
+    fn isBool(value: JsonValue): Bool {
+        return value.typeOf() == 1
+    }
+    fn isNumber(value: JsonValue): Bool {
+        return value.typeOf() == 2
+    }
+    fn isString(value: JsonValue): Bool {
+        return value.typeOf() == 3
+    }
+    fn isArray(value: JsonValue): Bool {
+        return value.typeOf() == 4
+    }
+    fn isObject(value: JsonValue): Bool {
+        return value.typeOf() == 5
     }
     fn getBool(value: JsonValue): Bool {
         return __spark_json_bool(value.handle) != 0

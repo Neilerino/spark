@@ -240,6 +240,28 @@ pub enum Ty {
     Error,
 }
 
+/// A lowered constraint on a generic type parameter.
+///
+/// Stored in [`TypeTable::generic_constraints`](super::table::TypeTable) alongside
+/// the generic param `DefId`s. Validated at instantiation sites (function calls,
+/// struct construction, type expressions).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Constraint {
+    /// The type must bind a specific interface: `T: Comparable` or `T: Comparable[T]`.
+    Interface {
+        /// The interface that the type must bind.
+        interface_def_id: DefId,
+        /// Type arguments on the constraint (e.g., `[T]` in `Comparable[T]`).
+        /// May contain `Ty::Param` references that need substitution before validation.
+        type_args: Vec<TypeId>,
+    },
+    /// The type must have specific fields: `T: { id: Int, name: String }`.
+    Structural {
+        /// Required fields: `(field_name, field_type)`.
+        fields: Vec<(Symbol, TypeId)>,
+    },
+}
+
 impl Ty {
     /// Returns true if this is a numeric type (integer or float).
     #[must_use]

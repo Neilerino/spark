@@ -1,0 +1,14 @@
+struct Point {
+    x: Int
+    y: Int
+}
+
+fn acceptHasId[T: { id: Int }](entity: T): Int {
+    return 1
+}
+
+fn main(): Int {
+    p: Point = Point { x: 1, y: 2 }
+    acceptHasId(p)
+    return 0
+}

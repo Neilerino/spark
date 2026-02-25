@@ -13,7 +13,7 @@ use spark_resolve::{DefId, DefinitionKind, DefinitionTable, ResolutionMap};
 use crate::builtins::BuiltinTypes;
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
-use crate::ty::{Ty, TypeId};
+use crate::ty::{Constraint, Ty, TypeId};
 
 /// Collects type signatures for a single item.
 ///
@@ -51,7 +51,7 @@ fn collect_function(
 ) {
     // Register generic parameter types before lowering param/return types,
     // so that references to `T` in the signature resolve to `Ty::Param`.
-    let generic_param_def_ids = collect_generic_params(&func.generics, table, resolutions);
+    let generic_param_def_ids = collect_generic_params(&func.generics, table, builtins, definitions, resolutions, diagnostics);
 
     let param_types: Vec<TypeId> = func
         .params
@@ -106,7 +106,7 @@ fn collect_struct(
 ) {
     if let Some(def_id) = find_item_def(struct_def.name.span, struct_def.name.name, &DefinitionKind::Struct, resolutions, definitions) {
         // Register generic parameter types before lowering field types.
-        let generic_param_def_ids = collect_generic_params(&struct_def.generics, table, resolutions);
+        let generic_param_def_ids = collect_generic_params(&struct_def.generics, table, builtins, definitions, resolutions, diagnostics);
 
         let struct_type = table.intern(Ty::Struct(def_id));
         table.set_def_type(def_id, struct_type);
@@ -142,7 +142,7 @@ fn collect_enum(
 ) {
     if let Some(def_id) = find_item_def(enum_def.name.span, enum_def.name.name, &DefinitionKind::Enum, resolutions, definitions) {
         // Register generic parameter types before lowering variant field types.
-        let generic_param_def_ids = collect_generic_params(&enum_def.generics, table, resolutions);
+        let generic_param_def_ids = collect_generic_params(&enum_def.generics, table, builtins, definitions, resolutions, diagnostics);
 
         let enum_type = table.intern(Ty::Enum(def_id));
         table.set_def_type(def_id, enum_type);
@@ -274,6 +274,7 @@ fn collect_binding(
         // Validate interface requirements
         let interface_def_id = find_type_def_from_binding_ty(&target.interface, definitions);
         if !interface_def_id.is_dummy() {
+            table.add_interface_binding(type_def_id, interface_def_id);
             validate_interface_methods(interface_def_id, &target.methods, definitions, diagnostics);
         }
 
@@ -397,14 +398,19 @@ fn validate_interface_methods(
 
 // === Generic parameter collection ===
 
-/// Collects generic parameter `DefId`s from the AST and registers their
-/// types as `Ty::Param(def_id)` in the type table.
+/// Collects generic parameter `DefId`s from the AST, registers their
+/// types as `Ty::Param(def_id)` in the type table, and lowers any
+/// constraints into the type table's constraint map.
 ///
 /// Returns the ordered list of generic param `DefId`s.
+#[allow(clippy::too_many_arguments)]
 fn collect_generic_params(
     generics: &[spark_ast::GenericParam],
     table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
     resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
 ) -> Vec<DefId> {
     if generics.is_empty() {
         return Vec::new();
@@ -417,9 +423,80 @@ fn collect_generic_params(
             let param_ty = table.intern(Ty::Param(def_id));
             table.set_def_type(def_id, param_ty);
             param_def_ids.push(def_id);
+
+            // Lower and store constraint, if present
+            if let Some(constraint) = &generic.constraint {
+                if let Some(lowered) = lower_generic_constraint(
+                    constraint, table, builtins, definitions, resolutions, diagnostics,
+                ) {
+                    table.set_generic_constraint(def_id, lowered);
+                }
+            }
         }
     }
     param_def_ids
+}
+
+/// Lowers an AST generic constraint into a type-level [`Constraint`].
+///
+/// For named constraints, resolves the type name to determine whether it is
+/// an interface (producing `Constraint::Interface`) or a struct (producing
+/// `Constraint::Structural` from that struct's fields).
+fn lower_generic_constraint(
+    constraint: &spark_ast::GenericConstraint,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) -> Option<Constraint> {
+    match constraint {
+        spark_ast::GenericConstraint::Named(type_expr) => {
+            // Resolve the constraint type name to a DefId
+            if let spark_ast::TypeExprKind::Named { path, type_args } = &type_expr.kind {
+                let constraint_def_id = resolutions
+                    .and_then(|res| res.get_path(path.span));
+
+                if let Some(cdef_id) = constraint_def_id {
+                    let info = definitions.get(cdef_id)?;
+                    match &info.kind {
+                        DefinitionKind::Interface => {
+                            // Lower type arguments (e.g., [T] in Comparable[T])
+                            let args: Vec<TypeId> = type_args
+                                .iter()
+                                .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
+                                .collect();
+                            Some(Constraint::Interface {
+                                interface_def_id: cdef_id,
+                                type_args: args,
+                            })
+                        }
+                        DefinitionKind::Struct => {
+                            // Named type constraint: T must have all fields of the struct
+                            table.get_struct_fields(cdef_id).map(|fields| Constraint::Structural {
+                                fields: fields.to_vec(),
+                            })
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        spark_ast::GenericConstraint::Structural(fields) => {
+            let lowered_fields: Vec<(spark_intern::Symbol, TypeId)> = fields
+                .iter()
+                .map(|f| {
+                    let ty = lower_type_expr(&f.ty, table, builtins, definitions, resolutions, diagnostics);
+                    (f.name.name, ty)
+                })
+                .collect();
+            Some(Constraint::Structural { fields: lowered_fields })
+        }
+    }
 }
 
 // === Helper functions for finding DefIds ===

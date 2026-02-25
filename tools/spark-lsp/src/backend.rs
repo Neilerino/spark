@@ -356,6 +356,73 @@ fn def_type_str(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Opti
     Some(spark_types::type_name(type_id, table, &analysis.definitions))
 }
 
+/// Formats a single generic constraint for display (e.g., `Comparable` or `{ id: Int }`).
+fn format_constraint(
+    constraint: &spark_types::ty::Constraint,
+    table: &spark_types::TypeTable,
+    definitions: &spark_resolve::DefinitionTable,
+) -> String {
+    match constraint {
+        spark_types::ty::Constraint::Interface {
+            interface_def_id,
+            type_args,
+        } => {
+            let name = definitions
+                .get(*interface_def_id)
+                .map_or_else(|| "?".to_string(), |info| info.name.to_string());
+            if type_args.is_empty() {
+                name
+            } else {
+                let args: Vec<_> = type_args
+                    .iter()
+                    .map(|tid| spark_types::type_name(*tid, table, definitions))
+                    .collect();
+                format!("{name}[{}]", args.join(", "))
+            }
+        }
+        spark_types::ty::Constraint::Structural { fields } => {
+            let parts: Vec<_> = fields
+                .iter()
+                .map(|(sym, tid)| {
+                    let ty = spark_types::type_name(*tid, table, definitions);
+                    format!("{sym}: {ty}")
+                })
+                .collect();
+            format!("{{ {} }}", parts.join(", "))
+        }
+    }
+}
+
+/// Formats a generic parameter list like `[T: Comparable, U]`.
+/// Returns `None` if there are no generic params.
+fn format_generic_params(
+    def_id: spark_resolve::DefId,
+    analysis: &AnalysisResult,
+) -> Option<String> {
+    let table = analysis.type_table.as_ref()?;
+    let params = table.get_generic_params(def_id)?;
+    if params.is_empty() {
+        return None;
+    }
+    let parts: Vec<_> = params
+        .iter()
+        .map(|param_def_id| {
+            let name = analysis
+                .definitions
+                .get(*param_def_id)
+                .map_or("?", |info| info.name.as_str());
+            table.get_generic_constraint(*param_def_id).map_or_else(
+                || name.to_string(),
+                |constraint| {
+                    let c = format_constraint(constraint, table, &analysis.definitions);
+                    format!("{name}: {c}")
+                },
+            )
+        })
+        .collect();
+    Some(format!("[{}]", parts.join(", ")))
+}
+
 /// Formats hover content for a definition.
 ///
 /// Uses the type table (if available) to show typed signatures. Falls back
@@ -365,8 +432,11 @@ fn format_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Opti
     let name = def_info.name.as_str();
 
     let content = match &def_info.kind {
-        DefinitionKind::Function => def_type_str(analysis, def_id)
-            .map_or_else(|| format!("fn {name}(...)"), |ty| format!("fn {name}{ty}")),
+        DefinitionKind::Function => {
+            let generics = format_generic_params(def_id, analysis).unwrap_or_default();
+            def_type_str(analysis, def_id)
+                .map_or_else(|| format!("fn {name}{generics}(...)"), |ty| format!("fn {name}{generics}{ty}"))
+        }
         DefinitionKind::Struct => format_struct_hover(analysis, def_id, name),
         DefinitionKind::Enum => format_enum_hover(analysis, def_id, name),
         DefinitionKind::Local | DefinitionKind::Parameter => def_type_str(analysis, def_id)
@@ -393,17 +463,35 @@ fn format_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Opti
         DefinitionKind::TypeAlias => format!("alias {name}"),
         DefinitionKind::TypeDef => format!("type {name}"),
         DefinitionKind::Interface => format!("interface {name}"),
-        DefinitionKind::GenericParam => name.to_string(),
+        DefinitionKind::GenericParam => {
+            // Show "T: Comparable" if constrained, else just "T"
+            analysis
+                .type_table
+                .as_ref()
+                .and_then(|table| {
+                    let constraint = table.get_generic_constraint(def_id)?;
+                    let c = format_constraint(constraint, table, &analysis.definitions);
+                    Some(format!("{name}: {c}"))
+                })
+                .unwrap_or_else(|| name.to_string())
+        }
         DefinitionKind::LifetimeParam => format!("'{name}"),
         DefinitionKind::BuiltinFunction => format!("fn {name}(...)"),
         DefinitionKind::BuiltinMethod | DefinitionKind::BindingMethod(_) => {
+            let generics = format_generic_params(def_id, analysis).unwrap_or_default();
             def_type_str(analysis, def_id)
-                .map_or_else(|| format!("fn .{name}(...)"), |ty| format!("fn {name}{ty}"))
+                .map_or_else(|| format!("fn .{name}{generics}(...)"), |ty| format!("fn {name}{generics}{ty}"))
         }
-        DefinitionKind::Lambda => def_type_str(analysis, def_id)
-            .map_or_else(|| format!("fn {name}(...)"), |ty| format!("fn {name}{ty}")),
-        DefinitionKind::ExternFunction => def_type_str(analysis, def_id)
-            .map_or_else(|| format!("extern fn {name}(...)"), |ty| format!("extern fn {name}{ty}")),
+        DefinitionKind::Lambda => {
+            let generics = format_generic_params(def_id, analysis).unwrap_or_default();
+            def_type_str(analysis, def_id)
+                .map_or_else(|| format!("fn {name}{generics}(...)"), |ty| format!("fn {name}{generics}{ty}"))
+        }
+        DefinitionKind::ExternFunction => {
+            let generics = format_generic_params(def_id, analysis).unwrap_or_default();
+            def_type_str(analysis, def_id)
+                .map_or_else(|| format!("extern fn {name}{generics}(...)"), |ty| format!("extern fn {name}{generics}{ty}"))
+        }
     };
 
     Some(content)
@@ -415,6 +503,7 @@ fn format_struct_hover(
     def_id: spark_resolve::DefId,
     name: &str,
 ) -> String {
+    let generics = format_generic_params(def_id, analysis).unwrap_or_default();
     let fields = analysis
         .type_table
         .as_ref()
@@ -430,9 +519,9 @@ fn format_struct_hover(
             })
         });
     match fields {
-        Some(f) if f.is_empty() => format!("struct {name} {{ }}"),
-        Some(f) => format!("struct {name} {{\n{}\n}}", f.join(",\n")),
-        None => format!("struct {name}"),
+        Some(f) if f.is_empty() => format!("struct {name}{generics} {{ }}"),
+        Some(f) => format!("struct {name}{generics} {{\n{}\n}}", f.join(",\n")),
+        None => format!("struct {name}{generics}"),
     }
 }
 
@@ -442,6 +531,7 @@ fn format_enum_hover(
     def_id: spark_resolve::DefId,
     name: &str,
 ) -> String {
+    let generics = format_generic_params(def_id, analysis).unwrap_or_default();
     let variants = analysis
         .type_table
         .as_ref()
@@ -454,9 +544,9 @@ fn format_enum_hover(
             })
         });
     match variants {
-        Some(v) if v.is_empty() => format!("enum {name} {{ }}"),
-        Some(v) => format!("enum {name} {{\n{}\n}}", v.join(",\n")),
-        None => format!("enum {name}"),
+        Some(v) if v.is_empty() => format!("enum {name}{generics} {{ }}"),
+        Some(v) => format!("enum {name}{generics} {{\n{}\n}}", v.join(",\n")),
+        None => format!("enum {name}{generics}"),
     }
 }
 
@@ -1336,5 +1426,67 @@ mod tests {
         assert!(hover.is_some(), "hover should produce content for field");
         let content = hover.unwrap();
         assert!(content.contains("Int"), "Expected field type Int, got: {content}");
+    }
+
+    // ── Generic constraint hover tests ────────────────────────────────────
+
+    #[test]
+    fn hover_generic_param_with_interface_constraint() {
+        let source = "interface Printable { fn display(): String }\nfn showAll[T: Printable](item: T): String { return \"ok\" }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // `T` in `[T: Printable]` — find offset of the generic param T
+        let t_offset = source.find("showAll[T").unwrap() + "showAll[".len();
+        let hover = hover_at(&analysis, t_offset as u32).expect("hover should produce content");
+        assert!(
+            hover.contains("T: Printable"),
+            "Expected 'T: Printable', got: {hover}"
+        );
+    }
+
+    #[test]
+    fn hover_generic_param_with_structural_constraint() {
+        let source = "fn getId[T: { id: Int }](entity: T): Int { return 1 }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        let t_offset = source.find("getId[T").unwrap() + "getId[".len();
+        let hover = hover_at(&analysis, t_offset as u32).expect("hover should produce content");
+        // `Int` is lowered to `Int64` in the type system
+        assert!(
+            hover.contains("T: { id: Int64 }"),
+            "Expected 'T: {{ id: Int64 }}', got: {hover}"
+        );
+    }
+
+    #[test]
+    fn hover_generic_param_unconstrained() {
+        let source = "fn identity[T](x: T): T { return x }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        let t_offset = source.find("identity[T").unwrap() + "identity[".len();
+        let hover = hover_at(&analysis, t_offset as u32).expect("hover should produce content");
+        assert_eq!(hover, "T", "Expected just 'T', got: {hover}");
+    }
+
+    #[test]
+    fn hover_function_with_generic_params() {
+        let source = "fn identity[T](x: T): T { return x }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        // Hover over `identity` function name
+        let fn_offset = source.find("identity").unwrap();
+        let hover = hover_at(&analysis, fn_offset as u32).expect("hover should produce content");
+        assert!(
+            hover.contains("fn identity[T]"),
+            "Expected 'fn identity[T]', got: {hover}"
+        );
+    }
+
+    #[test]
+    fn hover_struct_with_generic_params() {
+        let source = "struct Pair[A, B] { first: A, second: B }";
+        let analysis = analyze_source(source).expect("analysis should succeed");
+        let s_offset = source.find("Pair").unwrap();
+        let hover = hover_at(&analysis, s_offset as u32).expect("hover should produce content");
+        assert!(
+            hover.contains("struct Pair[A, B]"),
+            "Expected 'struct Pair[A, B]', got: {hover}"
+        );
     }
 }

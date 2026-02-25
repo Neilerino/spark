@@ -1,0 +1,17 @@
+interface Sortable {
+    fn compare(other: Int): Int
+}
+
+struct Widget {
+    label: String
+}
+
+fn sortItems[T: Sortable](item: T): Int {
+    return 0
+}
+
+fn main(): Int {
+    w: Widget = Widget { label: "test" }
+    sortItems(w)
+    return 0
+}

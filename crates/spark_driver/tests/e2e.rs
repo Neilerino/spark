@@ -723,3 +723,25 @@ fn channel_try_recv() {
 fn channel_async() {
     assert_output("channel_async.spark", "30");
 }
+
+// ── Generic constraint tests ────────────────────────────────────────────
+
+#[test]
+fn generic_constraint_interface() {
+    assert_output("generic_constraint_interface.spark", "ok");
+}
+
+#[test]
+fn generic_constraint_structural() {
+    assert_output("generic_constraint_structural.spark", "1");
+}
+
+#[test]
+fn generic_constraint_fail() {
+    assert_compile_error("generic_constraint_fail.spark", "does not satisfy constraint");
+}
+
+#[test]
+fn generic_constraint_structural_fail() {
+    assert_compile_error("generic_constraint_structural_fail.spark", "missing required field");
+}

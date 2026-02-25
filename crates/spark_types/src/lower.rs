@@ -196,7 +196,7 @@ fn lower_named_def(
                     .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
                     .collect();
                 // Validate arity against registered generic params
-                if let Some(params) = table.get_generic_params(def_id) {
+                if let Some(params) = table.get_generic_params(def_id).map(<[_]>::to_vec) {
                     if arg_types.len() != params.len() {
                         diagnostics.push(
                             Diagnostic::error(format!(
@@ -209,6 +209,11 @@ fn lower_named_def(
                         );
                         return TypeId::ERROR;
                     }
+                    // Validate generic constraints on type arguments
+                    let subst = crate::substitute::build_subst_map(&params, &arg_types);
+                    crate::constraint::validate_constraints(
+                        &params, &subst, table, definitions, type_expr.span, diagnostics,
+                    );
                 }
                 return table.intern(Ty::Applied { base: def_id, args: arg_types });
             }
@@ -227,7 +232,7 @@ fn lower_named_def(
                 let arg_types: Vec<TypeId> = type_args.iter()
                     .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
                     .collect();
-                if let Some(params) = table.get_generic_params(def_id) {
+                if let Some(params) = table.get_generic_params(def_id).map(<[_]>::to_vec) {
                     if arg_types.len() != params.len() {
                         diagnostics.push(
                             Diagnostic::error(format!(
@@ -240,6 +245,11 @@ fn lower_named_def(
                         );
                         return TypeId::ERROR;
                     }
+                    // Validate generic constraints on type arguments
+                    let subst = crate::substitute::build_subst_map(&params, &arg_types);
+                    crate::constraint::validate_constraints(
+                        &params, &subst, table, definitions, type_expr.span, diagnostics,
+                    );
                 }
                 return table.intern(Ty::Applied { base: def_id, args: arg_types });
             }

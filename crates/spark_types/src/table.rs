@@ -10,7 +10,7 @@ use spark_resolve::DefId;
 use spark_span::Span;
 
 use crate::intern::TypeInterner;
-use crate::ty::{LifetimeId, Ty, TypeId};
+use crate::ty::{Constraint, LifetimeId, Ty, TypeId};
 
 /// The type table produced by the type checker.
 ///
@@ -49,6 +49,12 @@ pub struct TypeTable {
     /// Monomorphization instances: call-site `Span` → (callee `DefId`, substitution map).
     /// Populated during type checking for generic function calls, consumed during MIR monomorphization.
     pub(crate) mono_instances: FxHashMap<Span, (DefId, FxHashMap<DefId, TypeId>)>,
+    /// Maps a generic param `DefId` to its constraint, if any.
+    /// Populated during `collect_generic_params()`, consumed during constraint validation.
+    pub(crate) generic_constraints: FxHashMap<DefId, Constraint>,
+    /// Maps a type `DefId` (struct/enum) to the interface `DefId`s it binds.
+    /// Populated during `collect_binding()`, consumed during constraint validation.
+    pub(crate) type_interface_bindings: FxHashMap<DefId, Vec<DefId>>,
 }
 
 impl Default for TypeTable {
@@ -81,6 +87,8 @@ impl TypeTable {
             field_resolutions: FxHashMap::default(),
             generic_params: FxHashMap::default(),
             mono_instances: FxHashMap::default(),
+            generic_constraints: FxHashMap::default(),
+            type_interface_bindings: FxHashMap::default(),
         }
     }
 
@@ -208,6 +216,31 @@ impl TypeTable {
     #[must_use]
     pub fn get_generic_params(&self, def_id: DefId) -> Option<&[DefId]> {
         self.generic_params.get(&def_id).map(Vec::as_slice)
+    }
+
+    /// Records a constraint for a generic parameter.
+    pub fn set_generic_constraint(&mut self, param_def_id: DefId, constraint: Constraint) {
+        self.generic_constraints.insert(param_def_id, constraint);
+    }
+
+    /// Returns the constraint for a generic parameter, if any.
+    #[must_use]
+    pub fn get_generic_constraint(&self, param_def_id: DefId) -> Option<&Constraint> {
+        self.generic_constraints.get(&param_def_id)
+    }
+
+    /// Records that a type binds an interface.
+    pub fn add_interface_binding(&mut self, type_def_id: DefId, interface_def_id: DefId) {
+        self.type_interface_bindings
+            .entry(type_def_id)
+            .or_default()
+            .push(interface_def_id);
+    }
+
+    /// Returns the interface `DefId`s bound by a type.
+    #[must_use]
+    pub fn get_interface_bindings(&self, type_def_id: DefId) -> Option<&[DefId]> {
+        self.type_interface_bindings.get(&type_def_id).map(Vec::as_slice)
     }
 
     /// Records a monomorphization instance for a generic function call.

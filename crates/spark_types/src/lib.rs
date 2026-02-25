@@ -57,6 +57,7 @@ pub mod check_decl;
 pub mod check_expr;
 pub mod check_stmt;
 pub mod checker;
+pub mod constraint;
 pub mod exhaustive;
 pub mod intern;
 pub mod lower;

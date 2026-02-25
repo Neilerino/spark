@@ -1,0 +1,24 @@
+interface Printable {
+    fn display(): String
+}
+
+struct Dog {
+    name: String
+}
+
+Dog binds Printable {
+    fn display(): String {
+        return "dog"
+    }
+}
+
+fn showAll[T: Printable](item: T): String {
+    return "ok"
+}
+
+fn main(): Int {
+    d: Dog = Dog { name: "Rex" }
+    result: String = showAll(d)
+    print(result)
+    return 0
+}

@@ -1,0 +1,20 @@
+struct User {
+    id: Int
+    name: String
+}
+
+struct Point {
+    x: Int
+    y: Int
+}
+
+fn acceptHasId[T: { id: Int }](entity: T): Int {
+    return 1
+}
+
+fn main(): Int {
+    u: User = User { id: 42, name: "Alice" }
+    result: Int = acceptHasId(u)
+    print(result)
+    return 0
+}
