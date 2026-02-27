@@ -54,7 +54,21 @@ these tags automatically — open the tree view to jump between tasks and their 
 
 ## Priority 1 — Bugs (user-facing correctness)
 
-_No open bugs._
+### `BUG` [SPARK-029] — Assignment through mutable ref parameter crashes at runtime — FIXED
+
+- **Type**: bug
+- **Effort**: medium
+- **Category**: DX
+- **Status**: fixed
+- **Crates**: spark_opt
+- **Files**:
+  - `crates/spark_opt/src/dce.rs` — DCE did not track base local of projected assignments as used
+- **Description**: Assigning through a `Ref[T]!` that is a function *parameter* compiled without
+  errors but segfaulted at runtime. Root cause: the MIR inliner correctly inlined `set_ten` and
+  added a parameter initialization statement (`_9 = Copy(_3)`), but the DCE pass then removed it
+  because `_9` was not recognized as "used". The DCE's `collect_used_in_statement` did not mark
+  the base local of a projected assignment (e.g., `_9.*`) as read. Fix: add `place.local` to the
+  used set when `place.projections` is non-empty. E2E test: `ref_mutparam.spark`.
 
 ---
 

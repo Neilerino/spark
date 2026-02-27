@@ -109,6 +109,11 @@ fn compute_used_locals(func: &MirFunction) -> FxHashSet<Local> {
 fn collect_used_in_statement(stmt: &Statement, used: &mut FxHashSet<Local>) {
     match stmt {
         Statement::Assign { place, rvalue, .. } => {
+            // If the place has projections (e.g. `_9.*`, `_3.field`),
+            // the base local is READ to compute the projected address.
+            if !place.projections.is_empty() {
+                used.insert(place.local);
+            }
             // The place itself might use locals in projections.
             collect_used_in_place_projections(place, used);
             // Collect from the rvalue.
@@ -429,6 +434,38 @@ mod tests {
             .iter()
             .any(|s| matches!(s, Statement::Drop { .. }));
         assert!(has_drop, "Drop should never be removed");
+    }
+
+    #[test]
+    fn projected_assign_keeps_base_local_alive() {
+        // _1 = 42; _1.* = 10; return
+        // _1 is read by the projected assignment _1.*, so _1 = 42 must not be removed.
+        let mut func = make_func(
+            vec![BasicBlock {
+                statements: vec![
+                    assign_int(0, 0),
+                    assign_int(1, 42),
+                    Statement::Assign {
+                        place: Place {
+                            local: Local(1),
+                            projections: vec![Projection::Deref],
+                        },
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(10))),
+                        span: Span::DUMMY,
+                    },
+                ],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            vec![local_decl(0, false), local_decl(1, false)],
+        );
+
+        let _ = eliminate_dead_code(&mut func);
+        // _1 = 42 must NOT be removed (it's read by _1.*)
+        assert!(
+            matches!(func.blocks[0].statements[1], Statement::Assign { .. }),
+            "Assignment to _1 should be preserved because _1.* reads it"
+        );
     }
 
     #[test]

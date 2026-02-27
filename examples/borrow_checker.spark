@@ -1,0 +1,100 @@
+// Spark Borrow Checker Demo
+//
+// By default, Spark uses reference counting — values are copied when passed
+// to functions. For performance-critical code, you can opt into borrow
+// checking with Ref[T], which avoids copies by lending values instead.
+//
+// Run: cargo run -p spark_driver -- run examples/borrow_checker.spark
+
+// ─── Data types ────────────────────────────────────────────────────────
+
+struct Point { x: Int, y: Int }
+
+// ─── Immutable borrows: read without copying ───────────────────────────
+
+// Ref[Point] borrows the struct instead of copying it.
+// The caller retains ownership; this function just reads through the ref.
+fn get_y(p: Ref[Point]): Int {
+    return p.y
+}
+
+// You can borrow primitives too — Ref[Int] passes an Int by reference.
+fn add_one(x: Ref[Int]): Int {
+    return x + 1
+}
+
+// Multiple immutable borrows are allowed simultaneously.
+fn add_refs(a: Ref[Int], b: Ref[Int]): Int {
+    return a + b
+}
+
+// ─── Mutable references ───────────────────────────────────────────────
+
+// Ref[Int]! is a mutable reference. Closures can capture and modify them,
+// which is useful for accumulation patterns.
+fn counter_demo(): Int {
+    c: Ref[Int]! = 0
+    step: (): Void = fn() {
+        c = c + 1
+    }
+    step()
+    step()
+    step()
+    return c
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────
+
+fn main(): Int {
+    // 1. Immutable borrow of a struct — read fields without copying
+    pt: Point = Point { x: 10, y: 20 }
+    print(get_y(pt))
+
+    // 2. Immutable borrow of a primitive — pass by reference
+    r: Ref[Int] = 10
+    print(add_one(r))
+
+    // 3. Multiple immutable borrows — perfectly safe
+    a: Ref[Int] = 3
+    b: Ref[Int] = 4
+    print(add_refs(a, b))
+
+    // 4. Local mutable ref — modify in place
+    x: Ref[Int]! = 5
+    x = x * 2
+    print(x)
+
+    // 5. Local immutable ref to an existing variable
+    y: Int = 42
+    ref_y: Ref[Int] = y
+    print(ref_y)
+
+    // 6. Mutable ref via closure — count to 3
+    print(counter_demo())
+
+    return 0
+}
+
+// ─── What the borrow checker prevents (compile errors) ────────────────
+//
+// 1. Two mutable borrows of the same value:
+//      r1: Ref[Int]! = x
+//      r2: Ref[Int]! = x      // ERROR: cannot borrow as mutable twice
+//
+// 2. Mutable + immutable borrow overlap:
+//      r1: Ref[Int]  = x
+//      r2: Ref[Int]! = x      // ERROR: cannot borrow as mutable while
+//                              //        also borrowed as immutable
+//
+// 3. Use after move:
+//      y: Int = x              // x is moved
+//      print(x)                // ERROR: use of moved value
+//
+// 4. Assign through immutable reference:
+//      r: Ref[Int] = x
+//      r = 10                  // ERROR: cannot assign through immutable ref
+//
+// 5. References in parallel contexts:
+//      r: Ref[Int]! = 0
+//      nums parallel each (n: Int): Void { r = n }
+//                                  // ERROR: not thread-safe

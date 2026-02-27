@@ -1,0 +1,6 @@
+fn main(): Int {
+    x: Ref[Int]! = 5
+    x = 10
+    print(x)
+    return 0
+}

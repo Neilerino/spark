@@ -641,6 +641,11 @@ fn ref_literal() {
 }
 
 #[test]
+fn ref_mutparam() {
+    assert_output("ref_mutparam.spark", "10");
+}
+
+#[test]
 fn ref_closure() {
     assert_output("ref_closure.spark", "42");
 }
