@@ -1,0 +1,15 @@
+fn maybe_fail(x: Int): Int | String {
+    if x > 0 {
+        return x
+    }
+    return "error"
+}
+
+fn main(): Int {
+    result: Int | String = maybe_fail(7)
+    value: Int = result to {
+        s: String -> 0
+    }
+    print(value)
+    return 0
+}

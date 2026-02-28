@@ -1,0 +1,20 @@
+fn maybe_fail(x: Int): Int | String {
+    if x > 0 {
+        return x
+    }
+    return "error"
+}
+
+fn caller(): Int | String {
+    val: Int = maybe_fail(5)!
+    return val
+}
+
+fn main(): Int {
+    result: Int | String = caller()
+    match result {
+        i: Int -> print(i),
+        s: String -> print(s)
+    }
+    return 0
+}

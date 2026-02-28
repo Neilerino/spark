@@ -1,0 +1,20 @@
+fn maybe_null(x: Int): Int? {
+    if x > 0 {
+        return x
+    }
+    return Null
+}
+
+fn caller(): Int? {
+    val: Int = maybe_null(-1)!
+    return val
+}
+
+fn main(): Int {
+    result: Int? = caller()
+    match result {
+        i: Int -> print(i),
+        Null -> print(0)
+    }
+    return 0
+}

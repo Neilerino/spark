@@ -118,23 +118,33 @@ impl LayoutCache {
         layout
     }
 
-    /// Computes (or returns cached) the union layout for a union type.
+    /// Computes (or returns cached) the union layout for a union or optional type.
+    ///
+    /// For `Ty::Optional(inner)`, the layout is: 1-byte tag + padding + payload.
     pub fn union_layout_of(&mut self, union_ty_id: TypeId, table: &TypeTable) -> UnionLayout {
         if let Some(cached) = self.union_layouts.get(&union_ty_id) {
             return cached.clone();
         }
-        let members = match table.resolve(union_ty_id) {
-            Ty::Union(members) => members.clone(),
-            _ => Vec::new(),
+        let resolved = table.resolve(union_ty_id);
+        let (tag_size, max_member_size, max_member_align) = if let Ty::Optional(inner) = resolved {
+            let inner = *inner;
+            let inner_layout = self.layout_of(inner, table);
+            (1u32, inner_layout.size, inner_layout.align)
+        } else {
+            let members = match resolved {
+                Ty::Union(members) => members.clone(),
+                _ => Vec::new(),
+            };
+            let tag = tag_size_for_count(members.len());
+            let mut max_size = 0u32;
+            let mut max_align = 1u32;
+            for member_ty in &members {
+                let member_layout = self.layout_of(*member_ty, table);
+                max_size = max_size.max(member_layout.size);
+                max_align = max_align.max(member_layout.align);
+            }
+            (tag, max_size, max_align)
         };
-        let tag_size = tag_size_for_count(members.len());
-        let mut max_member_size = 0u32;
-        let mut max_member_align = 1u32;
-        for member_ty in &members {
-            let member_layout = self.layout_of(*member_ty, table);
-            max_member_size = max_member_size.max(member_layout.size);
-            max_member_align = max_member_align.max(member_layout.align);
-        }
         let payload_offset = align_to(tag_size, max_member_align);
         let overall_align = max_member_align.max(tag_size);
         let total_size = align_to(payload_offset + max_member_size, overall_align);

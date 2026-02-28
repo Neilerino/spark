@@ -395,9 +395,18 @@ pub(super) fn emit_place_addr<M: Module>(
                 }
             }
             Projection::UnionPayload(member_ty) => {
-                // Compute payload offset within the union and advance.
-                let ul = ctx.layouts.union_layout_of(current_ty, table);
-                addr = ctx.builder.ins().iadd_imm(addr, i64::from(ul.payload_offset));
+                let (_, unwrapped_ty) = clif_types::unwrap_mutable(current_ty, table);
+                if matches!(unwrapped_ty, Ty::Optional(_)) {
+                    // Optional[T]: 1-byte tag at offset 0, payload at align_to(1, inner_align).
+                    // Since alignment is always a power of 2, align_to(1, a) == a.
+                    let inner_layout = ctx.layouts.layout_of(*member_ty, table);
+                    let payload_offset = inner_layout.align;
+                    addr = ctx.builder.ins().iadd_imm(addr, i64::from(payload_offset));
+                } else {
+                    // Union: use the union layout's payload offset.
+                    let ul = ctx.layouts.union_layout_of(current_ty, table);
+                    addr = ctx.builder.ins().iadd_imm(addr, i64::from(ul.payload_offset));
+                }
                 current_ty = *member_ty;
             }
         }
@@ -1145,11 +1154,23 @@ fn emit_union_construction<M: Module>(
     let ul = ctx.layouts.union_layout_of(union_ty, table);
 
     // Find the member index (tag value).
-    let members = match table.resolve(union_ty) {
-        Ty::Union(members) => members.clone(),
-        _ => Vec::new(),
+    let member_idx = match table.resolve(union_ty) {
+        Ty::Union(members) => {
+            members.iter().position(|m| *m == member_ty).unwrap_or(0)
+        }
+        Ty::Optional(inner) => {
+            // Optional: tag 0 = Null, tag 1 = Some(inner).
+            let member_resolved = table.resolve(member_ty);
+            if matches!(member_resolved, Ty::Null) {
+                0
+            } else if member_ty == *inner {
+                1
+            } else {
+                1 // default to Some for non-null values
+            }
+        }
+        _ => 0,
     };
-    let member_idx = members.iter().position(|&m| m == member_ty).unwrap_or(0);
 
     // Write the tag.
     if ul.tag_size > 0 {

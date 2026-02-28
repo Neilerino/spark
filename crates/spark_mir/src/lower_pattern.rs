@@ -137,7 +137,8 @@ fn compile_pattern(
 
         HirPattern::Literal(lit) => {
             let constant = literal_to_constant(lit);
-            let lit_temp = fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
+            let disc_ty = discriminant_type(type_table);
+            let lit_temp = fb.fresh_temp(disc_ty, spark_span::Span::DUMMY);
             fb.push_assign(
                 Place::from_local(lit_temp),
                 Rvalue::Use(Operand::Constant(constant.clone())),
@@ -174,7 +175,7 @@ fn compile_pattern(
                 Constant::Null => {
                     // For Optional types, null means discriminant tag == 0.
                     let disc_temp =
-                        fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
+                        fb.fresh_temp(disc_ty, spark_span::Span::DUMMY);
                     fb.push_assign(
                         Place::from_local(disc_temp),
                         Rvalue::Discriminant(Place::from_local(scrut)),
@@ -197,7 +198,7 @@ fn compile_pattern(
         HirPattern::Variant { def_id, fields } => {
             // Test discriminant, then bind fields
             let disc_temp =
-                fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
+                fb.fresh_temp(discriminant_type(type_table), spark_span::Span::DUMMY);
             fb.push_assign(
                 Place::from_local(disc_temp),
                 Rvalue::Discriminant(Place::from_local(scrut)),
@@ -311,7 +312,7 @@ fn compile_pattern(
                 if let Some(idx) = members.iter().position(|&m| m == *ty) {
                     // Read discriminant from the scrutinee.
                     let disc_temp = fb.fresh_temp(
-                        spark_types::TypeId::ERROR,
+                        discriminant_type(type_table),
                         spark_span::Span::DUMMY,
                     );
                     fb.push_assign(
@@ -348,8 +349,43 @@ fn compile_pattern(
                     // Type not in union — always fails.
                     fb.terminate(Terminator::Goto { target: fail_bb });
                 }
+            } else if let spark_types::Ty::Optional(_inner) = scrut_resolved {
+                // Optional narrowing: tag == 1 means non-null (Some).
+                let disc_temp = fb.fresh_temp(
+                    discriminant_type(type_table),
+                    spark_span::Span::DUMMY,
+                );
+                fb.push_assign(
+                    Place::from_local(disc_temp),
+                    Rvalue::Discriminant(Place::from_local(scrut)),
+                    spark_span::Span::DUMMY,
+                );
+
+                let bind_bb = fb.new_block();
+                fb.terminate(Terminator::SwitchInt {
+                    discriminant: Operand::Copy(Place::from_local(disc_temp)),
+                    targets: vec![(1, bind_bb)], // 1 = Some (non-null)
+                    otherwise: fail_bb,
+                });
+
+                // In the bind block: extract payload via UnionPayload projection.
+                fb.switch_to(bind_bb);
+                let name = defs.get(*def_id).map(|info| info.name);
+                let local = match name {
+                    Some(sym) => fb.fresh_local(*ty, sym, false, spark_span::Span::DUMMY),
+                    None => fb.fresh_temp(*ty, spark_span::Span::DUMMY),
+                };
+                fb.register_def(*def_id, local);
+                let mut payload_place = Place::from_local(scrut);
+                payload_place.projections.push(Projection::UnionPayload(*ty));
+                fb.push_stmt(Statement::Assign {
+                    place: Place::from_local(local),
+                    rvalue: Rvalue::Use(Operand::Copy(payload_place)),
+                    span: spark_span::Span::DUMMY,
+                });
+                fb.terminate(Terminator::Goto { target: match_bb });
             } else {
-                // Not a union type — unconditional bind (original behavior).
+                // Not a union or optional type — unconditional bind (original behavior).
                 let name = defs.get(*def_id).map(|info| info.name);
                 let local = match name {
                     Some(sym) => fb.fresh_local(*ty, sym, false, spark_span::Span::DUMMY),
@@ -369,6 +405,16 @@ fn compile_pattern(
             fb.terminate(Terminator::Goto { target: match_bb });
         }
     }
+}
+
+/// Returns a suitable `TypeId` for discriminant temporaries.
+///
+/// Uses `Bool` (which maps to Cranelift `I8`) so the temp is actually
+/// allocated as a register variable instead of being zero-sized.
+fn discriminant_type(type_table: &TypeTable) -> spark_types::TypeId {
+    type_table
+        .lookup(&spark_types::Ty::Bool)
+        .unwrap_or(spark_types::TypeId::ERROR)
 }
 
 /// Converts an HIR literal to a MIR constant.

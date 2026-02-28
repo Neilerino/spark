@@ -139,7 +139,7 @@ pub fn desugar_propagate_optional(
 ) -> HirExpr {
     let fresh_id = definitions.next_synthetic_id(span);
     let success_arm = HirMatchArm {
-        pattern: HirPattern::Binding { def_id: fresh_id },
+        pattern: HirPattern::TypeNarrow { def_id: fresh_id, ty: success_ty },
         guard: None,
         body: HirExpr::new(HirExprKind::Local(fresh_id), success_ty, span),
         span,
@@ -768,8 +768,8 @@ mod tests {
             assert!(matches!(arms[0].pattern, HirPattern::Literal(HirLiteral::Null)));
             // First arm returns Null
             assert!(matches!(arms[0].body.kind, HirExprKind::Return(_)));
-            // Second arm is a Binding
-            assert!(matches!(arms[1].pattern, HirPattern::Binding { .. }));
+            // Second arm is TypeNarrow (extracts payload from Optional)
+            assert!(matches!(arms[1].pattern, HirPattern::TypeNarrow { .. }));
             // Second arm body uses Local
             assert!(matches!(arms[1].body.kind, HirExprKind::Local(_)));
         }

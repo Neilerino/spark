@@ -662,14 +662,41 @@ fn lower_to_narrowing(
         });
     }
 
-    // Add a passthrough arm for unhandled members
-    let pass_id = definitions.next_synthetic_id(span);
-    hir_arms.push(HirMatchArm {
-        pattern: HirPattern::Binding { def_id: pass_id },
-        guard: None,
-        body: HirExpr::new(HirExprKind::Local(pass_id), ty, span),
-        span,
-    });
+    // Add passthrough arms for unhandled union members using TypeNarrow
+    // so the MIR pattern compiler extracts payloads properly.
+    let inner_resolved = table.resolve(inner_hir.ty);
+    if let Ty::Union(members) = inner_resolved {
+        let members = members.clone();
+        // Collect types already handled by explicit arms
+        let handled: Vec<TypeId> = hir_arms
+            .iter()
+            .filter_map(|arm| match &arm.pattern {
+                HirPattern::TypeNarrow { ty, .. } => Some(*ty),
+                _ => None,
+            })
+            .collect();
+
+        for &member_ty in &members {
+            if !handled.contains(&member_ty) {
+                let pass_id = definitions.next_synthetic_id(span);
+                hir_arms.push(HirMatchArm {
+                    pattern: HirPattern::TypeNarrow { def_id: pass_id, ty: member_ty },
+                    guard: None,
+                    body: HirExpr::new(HirExprKind::Local(pass_id), member_ty, span),
+                    span,
+                });
+            }
+        }
+    } else {
+        // Non-union: fall back to binding passthrough
+        let pass_id = definitions.next_synthetic_id(span);
+        hir_arms.push(HirMatchArm {
+            pattern: HirPattern::Binding { def_id: pass_id },
+            guard: None,
+            body: HirExpr::new(HirExprKind::Local(pass_id), ty, span),
+            span,
+        });
+    }
 
     HirExprKind::Match {
         scrutinee: Box::new(inner_hir),
@@ -745,7 +772,7 @@ fn lower_to_pattern(
             HirPattern::Binding { def_id }
         }
         spark_ast::PatternKind::Wildcard => HirPattern::Wildcard,
-        _ => crate::lower_pattern::lower_pattern(pattern, resolutions),
+        _ => crate::lower_pattern::lower_pattern(pattern, resolutions, table),
     }
 }
 

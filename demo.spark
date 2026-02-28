@@ -1,0 +1,94 @@
+// ── Spark Demo ───────────────────────────────────────────────────────
+// A tour of the language in one file.
+
+// ── 1. Structs & explicit types ─────────────────────────────────────
+// Every type is written out. No inference hiding things from the reader.
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn manhattan(p: Ref[Point]): Int {
+    return p.x + p.y
+}
+
+// ── 2. Higher-order functions ───────────────────────────────────────
+// Functions are values. Pass them around, return them, store them.
+
+fn apply(f: (Int): Int, x: Int): Int {
+    return f(x)
+}
+
+fn double(x: Int): Int { return x * 2 }
+
+fn makeAdder(n: Int): (Int): Int {
+    return fn(x: Int): Int { return n + x }
+}
+
+// ── 3. Pipeline operators ───────────────────────────────────────────
+// "via" chains whole-collection transforms. Think Unix pipes for data.
+
+fn topThree(nums: List[Int]): List[Int] {
+    return nums via sort via reverse via take{count: 3}
+}
+
+// "to" pipes a single value through a chain of functions.
+
+fn addTen(x: Int): Int { return x + 10 }
+
+// ── Main ────────────────────────────────────────────────────────────
+
+fn main(): Int {
+    // Structs — passed by reference, zero copy
+    p: Point = Point { x: 3, y: 7 }
+    print(manhattan(p))                              // → 10
+
+    // Immutable by default — this would be a compile error:
+    //   p = Point { x: 1, y: 2 }
+    // You opt in to mutability with !
+    counter: Int! = 0
+
+    // Higher-order: pass a named function
+    print(apply(double, 6))                          // → 12
+
+    // Higher-order: pass a lambda
+    print(apply(fn(x: Int): Int { return x * x }, 5))  // → 25
+
+    // Closures capture their environment
+    add5: (Int): Int = makeAdder(5)
+    print(add5(10))                                  // → 15
+
+    // Lists & pipeline operators
+    scores: List[Int] = [42, 17, 93, 8, 65, 31]
+
+    // via: pipeline the whole list through sort → reverse → take
+    best: List[Int] = topThree(scores)
+    best each (s: Int): Void { print(s) }            // → 93, 65, 42
+
+    // each via: transform every element with a lambda
+    doubled: List[Int] = best each via (n: Int): Int { n * 2 }
+    doubled each (s: Int): Void { print(s) }         // → 186, 130, 84
+
+    // to: pipe a single value through functions
+    result: Int = 3 to double to addTen              // (3*2)+10
+    print(result)                                    // → 16
+
+    // Loops with mutable state
+    loop {
+        if counter > 4 {
+            break
+        }
+        counter = counter + 1
+    }
+    print(counter)                                   // → 5
+
+    // Match expressions
+    done: Bool = true
+    match done {
+        true -> print(1),                            // → 1
+        false -> print(0)
+    }
+
+    return 0
+}

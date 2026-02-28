@@ -420,10 +420,10 @@ mod tests {
             "Null arm should return, got: {:?}", arms[0].body.kind
         );
 
-        // Second arm: Binding that returns the value
+        // Second arm: TypeNarrow that extracts the payload
         let binding_def = match &arms[1].pattern {
-            HirPattern::Binding { def_id } => *def_id,
-            other => panic!("Success arm should be Binding, got: {other:?}"),
+            HirPattern::TypeNarrow { def_id, .. } => *def_id,
+            other => panic!("Success arm should be TypeNarrow, got: {other:?}"),
         };
         match &arms[1].body.kind {
             HirExprKind::Local(id) => assert_eq!(*id, binding_def,

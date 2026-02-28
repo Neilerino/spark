@@ -823,6 +823,38 @@ fn to_pipeline() {
 }
 
 #[test]
+fn to_narrowing() {
+    assert_output("to_narrowing.spark", "7");
+}
+
+#[test]
+fn to_narrowing_error() {
+    assert_output("to_narrowing_error.spark", "-1");
+}
+
+#[test]
 fn to_non_union_error() {
     assert_compile_error("to_non_union_error.spark", "requires a union type");
+}
+
+// ── Error propagation (!) tests ────────────────────────────────────────
+
+#[test]
+fn propagate_union() {
+    assert_output("propagate_union.spark", "5");
+}
+
+#[test]
+fn propagate_union_error() {
+    assert_output("propagate_union_error.spark", "error");
+}
+
+#[test]
+fn propagate_optional() {
+    assert_output("propagate_optional.spark", "42");
+}
+
+#[test]
+fn propagate_optional_null() {
+    assert_output("propagate_optional_null.spark", "0");
 }

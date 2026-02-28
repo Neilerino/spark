@@ -27,11 +27,11 @@ pub fn lower_pattern_with_guard(
 ) -> (HirPattern, Option<HirExpr>) {
     match &pattern.kind {
         PatternKind::Guard { pattern: inner, guard } => {
-            let hir_pattern = lower_pattern(inner, resolutions);
+            let hir_pattern = lower_pattern(inner, resolutions, table);
             let guard_expr = lower_expr(guard, table, definitions, resolutions, diagnostics, current_fn_ret);
             (hir_pattern, Some(guard_expr))
         }
-        _ => (lower_pattern(pattern, resolutions), None),
+        _ => (lower_pattern(pattern, resolutions, table), None),
     }
 }
 
@@ -40,6 +40,7 @@ pub fn lower_pattern_with_guard(
 pub fn lower_pattern(
     pattern: &Pattern,
     resolutions: Option<&ResolutionMap>,
+    table: &TypeTable,
 ) -> HirPattern {
     match &pattern.kind {
         PatternKind::Wildcard => HirPattern::Wildcard,
@@ -59,7 +60,7 @@ pub fn lower_pattern(
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             HirPattern::Variant {
                 def_id,
-                fields: fields.iter().map(|f| lower_pattern(f, resolutions)).collect(),
+                fields: fields.iter().map(|f| lower_pattern(f, resolutions, table)).collect(),
             }
         }
 
@@ -83,7 +84,7 @@ pub fn lower_pattern(
                                         .unwrap_or(spark_resolve::DefId::DUMMY);
                                     HirPattern::Binding { def_id }
                                 },
-                                |p| lower_pattern(p, resolutions),
+                                |p| lower_pattern(p, resolutions, table),
                             );
                         (f.name.name, pat)
                     })
@@ -93,21 +94,21 @@ pub fn lower_pattern(
         }
 
         PatternKind::Tuple(elems) => {
-            HirPattern::Tuple(elems.iter().map(|p| lower_pattern(p, resolutions)).collect())
+            HirPattern::Tuple(elems.iter().map(|p| lower_pattern(p, resolutions, table)).collect())
         }
 
         PatternKind::Or(alts) => {
-            HirPattern::Or(alts.iter().map(|p| lower_pattern(p, resolutions)).collect())
+            HirPattern::Or(alts.iter().map(|p| lower_pattern(p, resolutions, table)).collect())
         }
 
         // Guard is handled in lower_pattern_with_guard
-        PatternKind::Guard { pattern: inner, .. } => lower_pattern(inner, resolutions),
+        PatternKind::Guard { pattern: inner, .. } => lower_pattern(inner, resolutions, table),
 
-        PatternKind::TypeNarrowing { name, ty: _ } => {
+        PatternKind::TypeNarrowing { name, ty } => {
             let def_id = resolutions
                 .and_then(|res| res.get_binding(name.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
-            let narrowed_ty = spark_types::TypeId::ERROR; // Placeholder — type lookup requires TypeTable
+            let narrowed_ty = table.get_expr_type(ty.id).unwrap_or(spark_types::TypeId::ERROR);
             HirPattern::TypeNarrow { def_id, ty: narrowed_ty }
         }
 
@@ -143,15 +144,21 @@ mod tests {
     use spark_intern::sym;
     use spark_span::Span;
 
+    fn empty_table() -> TypeTable {
+        TypeTable::new()
+    }
+
     #[test]
     fn lower_wildcard() {
+        let table = empty_table();
         let pat = Pattern::new(PatternKind::Wildcard, Span::DUMMY);
-        let result = lower_pattern(&pat, None);
+        let result = lower_pattern(&pat, None, &table);
         assert!(matches!(result, HirPattern::Wildcard));
     }
 
     #[test]
     fn lower_ident_pattern() {
+        let table = empty_table();
         let pat = Pattern::new(
             PatternKind::Ident {
                 name: Ident::dummy(sym("x")),
@@ -159,27 +166,29 @@ mod tests {
             },
             Span::DUMMY,
         );
-        let result = lower_pattern(&pat, None);
+        let result = lower_pattern(&pat, None, &table);
         // Without resolutions, we get DUMMY DefId
         assert!(matches!(result, HirPattern::Binding { .. }));
     }
 
     #[test]
     fn lower_literal_pattern() {
+        let table = empty_table();
         let pat = Pattern::new(
             PatternKind::Literal(Literal::int(42, Span::DUMMY)),
             Span::DUMMY,
         );
-        let result = lower_pattern(&pat, None);
+        let result = lower_pattern(&pat, None, &table);
         assert!(matches!(result, HirPattern::Literal(HirLiteral::Int(42))));
     }
 
     #[test]
     fn lower_or_pattern() {
+        let table = empty_table();
         let a = Pattern::new(PatternKind::Wildcard, Span::DUMMY);
         let b = Pattern::new(PatternKind::Wildcard, Span::DUMMY);
         let pat = Pattern::new(PatternKind::Or(vec![a, b]), Span::DUMMY);
-        let result = lower_pattern(&pat, None);
+        let result = lower_pattern(&pat, None, &table);
         if let HirPattern::Or(alts) = result {
             assert_eq!(alts.len(), 2);
         } else {

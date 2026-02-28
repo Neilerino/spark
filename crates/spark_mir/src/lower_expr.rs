@@ -1033,11 +1033,12 @@ fn lower_return(
     temp
 }
 
-/// Emits an assignment from `src` to `dest`, inserting union wrapping if needed.
+/// Emits an assignment from `src` to `dest`, inserting union/optional wrapping if needed.
 ///
-/// When the destination local has a `Ty::Union` type and the source local has
-/// a member type, this emits `Aggregate(AggregateKind::Union { .. })` to properly
-/// construct the union (tag + payload). Otherwise, it emits a plain `Rvalue::Use`.
+/// When the destination local has a `Ty::Union` or `Ty::Optional` type and the
+/// source local has a member/inner type, this emits `Aggregate(AggregateKind::Union { .. })`
+/// to properly construct the tagged value (tag + payload). Otherwise, it emits a
+/// plain `Rvalue::Use`.
 pub fn emit_assign_with_union_wrap(
     fb: &mut FunctionBuilder,
     dest: Local,
@@ -1048,6 +1049,35 @@ pub fn emit_assign_with_union_wrap(
     let dest_ty = fb.local_type(dest);
     let src_ty = fb.local_type(src);
     let dest_resolved = type_table.resolve(dest_ty);
+
+    // Optional wrapping: inner_ty → Optional(inner_ty)
+    if let Ty::Optional(inner) = dest_resolved {
+        let src_resolved = type_table.resolve(src_ty);
+        // Same Optional type — plain copy.
+        if matches!(src_resolved, Ty::Optional(_)) && src_ty == dest_ty {
+            fb.push_assign(
+                Place::from_local(dest),
+                Rvalue::Use(Operand::Copy(Place::from_local(src))),
+                span,
+            );
+            return;
+        }
+        // Inner type or Null → wrap into Optional via Union aggregate.
+        if src_ty == *inner || matches!(src_resolved, Ty::Null) {
+            fb.push_assign(
+                Place::from_local(dest),
+                Rvalue::Aggregate(
+                    AggregateKind::Union {
+                        union_ty: dest_ty,
+                        member_ty: src_ty,
+                    },
+                    vec![Operand::Copy(Place::from_local(src))],
+                ),
+                span,
+            );
+            return;
+        }
+    }
 
     if let Ty::Union(members) = dest_resolved {
         // If source is already the same union type, plain copy.
