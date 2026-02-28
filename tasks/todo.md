@@ -90,22 +90,24 @@ these tags automatically — open the tree view to jump between tasks and their 
   the pipeline to pass a single `CompilationContext` by `&mut` reference. Closely related to
   SPARK-004 — consider tackling together.
 
-### `FIXME` [SPARK-007] — Eliminate production unwrap/panic calls
+### `DONE` [SPARK-007] — Eliminate production unwrap/panic calls
 
 - **Type**: refactor
 - **Effort**: low-medium
 - **Category**: DX, maintainability
-- **Status**: open
-- **Crates**: spark_parser, spark_codegen, spark_hir
+- **Status**: done
+- **Crates**: spark_parser, spark_codegen
 - **Files**:
-  - `crates/spark_parser/src/types.rs` — `unwrap()` on args_iter.next()
-  - `crates/spark_parser/src/expr.rs` — `.unwrap()` calls in production paths
-  - `crates/spark_codegen/src/cranelift/mod.rs` — `panic!` on data definition failure
-  - `crates/spark_codegen/src/cranelift/runtime.rs` — `expect()` on stub declarations
-  - `crates/spark_hir/src/lower_pattern.rs` — `panic!("Expected Or pattern")`
-- **Description**: ~10-15 `unwrap()`/`expect()`/`panic!()` calls exist in production paths despite
-  the "no panics on invalid input" policy. Replace each with a diagnostic emission or error node
-  return. Audit with `grep -rn 'unwrap\|expect\|panic!' crates/*/src/`.
+  - `crates/spark_parser/src/types.rs` — unwrap → diagnostic + error node for Ref[T] parsing
+  - `crates/spark_parser/src/expr.rs` — 4 unwrap → let...else with Expr::error recovery
+  - `crates/spark_parser/src/pattern.rs` — 3 unwrap → expect with ICE invariant docs
+  - `crates/spark_parser/src/lib.rs` — 4 expect messages improved to ICE prefix
+  - `crates/spark_codegen/src/cranelift/emit_rvalue.rs` — expect/panic → return None
+  - `crates/spark_codegen/src/cranelift/runtime.rs` — expect message improved to ICE
+  - `crates/spark_codegen/src/cranelift/emit_term.rs` — expect → let...else with graceful jump
+- **Description**: Replaced ~16 unwrap/expect/panic calls with proper error recovery or ICE-prefixed
+  messages. User-input panics emit diagnostics and return error nodes; internal invariants use
+  expect() with "ICE:" prefix.
 
 ---
 
@@ -126,19 +128,20 @@ these tags automatically — open the tree view to jump between tasks and their 
   when a `Ref[T]`-typed binding is initialized from a plain `T` value. Small surface area, high
   payoff — unlocks the entire borrow-checking story. See `docs/KNOWN_ISSUES.md`.
 
-### `TODO` [SPARK-009] — `via` pipeline operator
+### `DONE` [SPARK-009] — `via` pipeline operator
 
 - **Type**: feature
 - **Effort**: medium
 - **Category**: DX
-- **Status**: open
+- **Status**: done
 - **Crates**: spark_ast, spark_hir
 - **Files**:
-  - `crates/spark_hir/src/lower_expr.rs` — currently emits `HirExprKind::Error` for `ToHandler::Pipeline`
-  - `crates/spark_ast/src/expr.rs` — may need `ExprKind::Via` (split from `ToHandler::Pipeline`)
+  - `crates/spark_hir/src/lower_expr.rs` — desugars `expr via func{args}` into `func(expr, args)` call
+  - `crates/spark_ast/src/expr.rs` — `ExprKind::PipelineApply` handles `via` and `to` pipeline operations
 - **Description**: `data via sort`, `data via take{count: 5}` — applies a named function or partial
-  to the whole value. Parser already handles the syntax. HIR lowering needs to desugar into a
-  function call. See `docs/roadmap.md §5.6`.
+  to the whole value. Fully implemented: parser, type checker (`check_pipeline_apply`), HIR lowering
+  (desugars to `HirExprKind::Call`), and 5 E2E test fixtures (`via_sort`, `via_take`, `via_reverse`,
+  `via_user_fn`, `via_chain`).
 
 ### `DONE` [SPARK-010] — Generic constraint validation (`T: Comparable`)
 
@@ -157,17 +160,20 @@ these tags automatically — open the tree view to jump between tasks and their 
 - **Description**: Generic type parameters work but constraints are not validated. `fn sort[T: Comparable](list: List[T])` parses but the constraint `T: Comparable` is silently ignored.
   Needed for correct generic programming.
 
-### `BUG` [SPARK-011] — Built-in collection methods hardcoded to `[Int]`
+### `DONE` [SPARK-011] — Built-in collection methods hardcoded to `[Int]`
 
 - **Type**: bug
 - **Effort**: low-medium
 - **Category**: DX
-- **Status**: open
+- **Status**: done
 - **Crates**: spark_types
 - **Files**:
-  - `crates/spark_types/src/check_expr.rs` — built-in method type assignment
-- **Description**: `sort`, `contains`, `reverse` only type-check for `[Int]`, not generic list
-  types. These should work for any `List[T]` where `T` satisfies the method's constraints.
+  - `crates/spark_types/src/check_expr.rs` — `adapt_builtin_list_fn()` adapts sort/take/reverse
+    types at call sites; `check_list_method()` validates `contains` arg type
+  - `crates/spark_types/src/checker.rs` — updated comments on builtin registration
+- **Description**: `sort`, `take`, `reverse` now type-check for any `List[T]` via call-site
+  adaptation. `contains` validates its argument matches the list element type. E2E tests added
+  for `reverse` and `take` on `List[String]`.
 
 ### `TODO` [SPARK-012] — Tuples E2E test coverage
 
@@ -414,3 +420,6 @@ these tags automatically — open the tree view to jump between tasks and their 
 ### `TODO` [SPARK-006] — Replace Span-keyed expression types with ExprId (completed 2026-02-17) ExprId with atomic counter replaces Span keys
 ### `TODO` [SPARK-013] — Multi-file module E2E test coverage (completed 2026-02-17) multifile/ and multimod/ project fixtures with E2E tests
 ### `BUG` [SPARK-028] — Closure captures don't RC-inc copied RC values (completed 2026-02-17) RC inc emitted for Copy operands in emit_closure_construction
+### `FIXME` [SPARK-007] — Eliminate production unwrap/panic calls (completed 2026-02-27) Replaced ~16 unwrap/panic calls with error recovery or ICE-prefixed expect messages
+### `BUG` [SPARK-011] — Built-in collection methods hardcoded to [Int] (completed 2026-02-27) sort/take/reverse now work for any List[T] via call-site adaptation; contains validates elem type
+### `TODO` [SPARK-009] — `via` pipeline operator (completed 2026-02-27) Desugars `expr via func{args}` to `func(expr, args)` call via PipelineApply

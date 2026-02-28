@@ -122,7 +122,8 @@ impl<'a> TypeChecker<'a> {
                 });
                 self.table.set_def_type(def_id, fn_type);
             } else if info.name == kw::SORT {
-                // sort(List[Int]) -> List[Int]
+                // sort(List[T]) -> List[T] — registered with List[Int] as default,
+                // adapted to actual element type at call sites by adapt_builtin_list_fn()
                 let fn_type = self.table.intern(Ty::Function {
                     params: vec![list_int],
                     ret: list_int,
@@ -130,7 +131,8 @@ impl<'a> TypeChecker<'a> {
                 });
                 self.table.set_def_type(def_id, fn_type);
             } else if info.name == kw::TAKE {
-                // take(List[Int], Int) -> List[Int]
+                // take(List[T], Int) -> List[T] — registered with List[Int] as default,
+                // adapted to actual element type at call sites by adapt_builtin_list_fn()
                 let fn_type = self.table.intern(Ty::Function {
                     params: vec![list_int, int_type],
                     ret: list_int,
@@ -138,7 +140,8 @@ impl<'a> TypeChecker<'a> {
                 });
                 self.table.set_def_type(def_id, fn_type);
             } else if info.name == kw::REVERSE {
-                // reverse(List[Int]) -> List[Int]
+                // reverse(List[T]) -> List[T] — registered with List[Int] as default,
+                // adapted to actual element type at call sites by adapt_builtin_list_fn()
                 let fn_type = self.table.intern(Ty::Function {
                     params: vec![list_int],
                     ret: list_int,

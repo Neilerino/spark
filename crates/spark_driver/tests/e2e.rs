@@ -476,6 +476,16 @@ fn via_user_fn() {
     assert_output("via_user_fn.spark", "11\n12\n13");
 }
 
+#[test]
+fn via_reverse_string() {
+    assert_output("via_reverse_string.spark", "charlie\nbob\nalice");
+}
+
+#[test]
+fn via_take_string() {
+    assert_output("via_take_string.spark", "2");
+}
+
 // ============================================================================
 // Integration (multi-feature)
 // ============================================================================

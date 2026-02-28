@@ -1,0 +1,8 @@
+fn main(): Int {
+    names: List[String] = ["alice", "bob", "charlie"]
+    rev: List[String] = names via reverse
+    rev each (name: String): Void {
+        print(name)
+    }
+    return 0
+}
