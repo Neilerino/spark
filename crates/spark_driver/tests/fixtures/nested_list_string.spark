@@ -1,0 +1,7 @@
+fn main(): Int {
+    inner1: List[String] = ["hello", "world"]
+    inner2: List[String] = ["foo", "bar"]
+    outer: List[List[String]] = [inner1, inner2]
+    print(outer.len())
+    return 0
+}

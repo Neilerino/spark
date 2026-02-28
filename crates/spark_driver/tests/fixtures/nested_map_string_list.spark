@@ -1,0 +1,7 @@
+fn main(): Int {
+    vals1: List[Int] = [1, 2, 3]
+    vals2: List[Int] = [4, 5, 6]
+    m: Map[String, List[Int]] = {"a": vals1, "b": vals2}
+    print(m.len())
+    return 0
+}

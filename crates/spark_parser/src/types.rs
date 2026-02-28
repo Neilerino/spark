@@ -12,6 +12,7 @@
 use spark_ast::{
     GenericConstraint, GenericParam, Ident, Path, StructuralField, TypeExpr, TypeExprKind,
 };
+use spark_diagnostics::{Diagnostic, Label};
 use spark_intern::kw;
 use spark_lexer::TokenKind;
 
@@ -127,7 +128,13 @@ impl Parser {
                     // Ref[Type, Lifetime] or Ref[Type, Lifetime]!
                     // The inner type is first arg, lifetime is second
                     let mut args_iter = type_args.into_iter();
-                    let inner = args_iter.next().unwrap();
+                    let Some(inner) = args_iter.next() else {
+                        self.diagnostics.push(
+                            Diagnostic::error("`Ref` requires at least one type argument")
+                                .with_label(Label::primary(span, "missing type argument")),
+                        );
+                        return TypeExpr::error(span);
+                    };
                     let lifetime_type = args_iter.next();
                     // For now, treat second arg as a named type representing the lifetime
                     // In a proper implementation, we'd extract the lifetime identifier

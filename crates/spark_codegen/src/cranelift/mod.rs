@@ -4,6 +4,7 @@
 //! This is the default backend for the Spark compiler.
 
 pub mod context;
+pub mod drop_glue;
 pub mod emit_rvalue;
 pub mod emit_stmt;
 pub mod emit_term;
@@ -21,7 +22,7 @@ use rustc_hash::FxHashMap;
 use spark_diagnostics::Diagnostics;
 use spark_mir::{Local, Mir, MirFunction};
 use spark_resolve::{DefId, DefinitionTable};
-use spark_types::TypeTable;
+use spark_types::{Ty, TypeId, TypeTable};
 
 use crate::abi;
 use crate::backend::CodegenBackend;
@@ -360,57 +361,35 @@ impl CraneliftBackend {
                     let (_, unwrapped_ty) = clif_types::unwrap_mutable(*cap_ty, table);
 
                     if spark_drop::needs_drop(*cap_ty, table) || matches!(unwrapped_ty, spark_types::Ty::Function { .. }) {
-                        match unwrapped_ty {
-                            spark_types::Ty::String => {
-                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
-                                let func_ref = self.module.declare_func_in_func(stubs.string_rc_dec, &mut builder.func);
-                                builder.ins().call(func_ref, &[val]);
-                            }
-                            spark_types::Ty::List(elem) => {
-                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
-                                let elem_rc_flag = i64::from(spark_drop::needs_rc(*elem, table));
-                                let elem_rc_val = builder.ins().iconst(cranelift_codegen::ir::types::I8, elem_rc_flag);
-                                let func_ref = self.module.declare_func_in_func(stubs.list_rc_dec, &mut builder.func);
-                                builder.ins().call(func_ref, &[val, elem_rc_val]);
-                            }
-                            spark_types::Ty::Map(k, v) => {
-                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
-                                let key_rc_flag = i64::from(spark_drop::needs_rc(*k, table));
-                                let val_rc_flag = i64::from(spark_drop::needs_rc(*v, table));
-                                let key_rc_val = builder.ins().iconst(cranelift_codegen::ir::types::I8, key_rc_flag);
-                                let val_rc_val = builder.ins().iconst(cranelift_codegen::ir::types::I8, val_rc_flag);
-                                let func_ref = self.module.declare_func_in_func(stubs.map_rc_dec, &mut builder.func);
-                                builder.ins().call(func_ref, &[val, key_rc_val, val_rc_val]);
-                            }
-                            spark_types::Ty::Set(elem) => {
-                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
-                                let elem_rc_flag = i64::from(spark_drop::needs_rc(*elem, table));
-                                let elem_rc_val = builder.ins().iconst(cranelift_codegen::ir::types::I8, elem_rc_flag);
-                                let func_ref = self.module.declare_func_in_func(stubs.set_rc_dec, &mut builder.func);
-                                builder.ins().call(func_ref, &[val, elem_rc_val]);
-                            }
-                            spark_types::Ty::Function { .. } => {
-                                // Function fat pointer: load env_ptr from second slot and call __spark_env_rc_dec.
-                                let fn_env_ptr = builder.ins().load(
-                                    ptr_type,
-                                    MemFlags::new(),
-                                    env_ptr,
-                                    i32::try_from(offset).unwrap_or(0) + ptr_type.bytes() as i32,
-                                );
-                                let func_ref = self.module.declare_func_in_func(stubs.env_rc_dec, &mut builder.func);
-                                builder.ins().call(func_ref, &[fn_env_ptr]);
-                            }
-                            spark_types::Ty::Future { .. } => {
-                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
-                                let func_ref = self.module.declare_func_in_func(stubs.future_rc_dec, &mut builder.func);
-                                builder.ins().call(func_ref, &[val]);
-                            }
-                            spark_types::Ty::Channel { .. } => {
-                                let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
-                                let func_ref = self.module.declare_func_in_func(stubs.channel_rc_dec, &mut builder.func);
-                                builder.ins().call(func_ref, &[val]);
-                            }
-                            _ => {}
+                        // Function fat pointers are aggregates: emit_typed_drop
+                        // expects the ADDRESS of the fat pointer so it can load
+                        // the env_ptr from the second slot. For all other types,
+                        // we load the value (the RC pointer) and pass it directly.
+                        if matches!(unwrapped_ty, spark_types::Ty::Function { .. }) {
+                            let addr = builder.ins().iadd_imm(
+                                env_ptr,
+                                i64::from(offset),
+                            );
+                            drop_glue::emit_typed_drop(
+                                &mut builder,
+                                addr,
+                                *cap_ty,
+                                table,
+                                stubs,
+                                &mut self.module,
+                                ptr_type,
+                            );
+                        } else {
+                            let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
+                            drop_glue::emit_typed_drop(
+                                &mut builder,
+                                val,
+                                *cap_ty,
+                                table,
+                                stubs,
+                                &mut self.module,
+                                ptr_type,
+                            );
                         }
                     }
 
@@ -437,6 +416,62 @@ impl CraneliftBackend {
         }
     }
 
+    /// Pre-generates element destructor functions for all collection types
+    /// that appear in the MIR. Returns a map from element `TypeId` to the
+    /// generated `FuncId` so codegen can store the function pointer in
+    /// collection headers at construction time.
+    fn generate_collection_dtors(
+        &mut self,
+        mir: &Mir,
+        table: &TypeTable,
+        stubs: &runtime::RuntimeStubs,
+    ) -> FxHashMap<TypeId, FuncId> {
+        let mut gen = drop_glue::DropGlueGenerator::new();
+        let mut result = FxHashMap::default();
+
+        for (_, mir_func) in &mir.functions {
+            for local_decl in &mir_func.locals {
+                self.collect_elem_dtors(local_decl.ty, table, stubs, &mut gen, &mut result);
+            }
+        }
+
+        result
+    }
+
+    /// Recursively collects element destructor needs for a type.
+    fn collect_elem_dtors(
+        &mut self,
+        ty_id: TypeId,
+        table: &TypeTable,
+        stubs: &runtime::RuntimeStubs,
+        gen: &mut drop_glue::DropGlueGenerator,
+        result: &mut FxHashMap<TypeId, FuncId>,
+    ) {
+        let (_, ty) = clif_types::unwrap_mutable(ty_id, table);
+        match ty {
+            Ty::List(elem) | Ty::Set(elem) => {
+                let elem = *elem;
+                if let Some(fid) = gen.get_or_generate_elem_dtor(elem, table, stubs, &mut self.module) {
+                    result.insert(elem, fid);
+                }
+                self.collect_elem_dtors(elem, table, stubs, gen, result);
+            }
+            Ty::Map(k, v) => {
+                let k = *k;
+                let v = *v;
+                if let Some(fid) = gen.get_or_generate_elem_dtor(k, table, stubs, &mut self.module) {
+                    result.insert(k, fid);
+                }
+                if let Some(fid) = gen.get_or_generate_elem_dtor(v, table, stubs, &mut self.module) {
+                    result.insert(v, fid);
+                }
+                self.collect_elem_dtors(k, table, stubs, gen, result);
+                self.collect_elem_dtors(v, table, stubs, gen, result);
+            }
+            _ => {}
+        }
+    }
+
     /// Compiles a single MIR function.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn compile_function(
@@ -448,6 +483,7 @@ impl CraneliftBackend {
         func_ids: &FxHashMap<DefId, FuncId>,
         thunk_ids: &FxHashMap<DefId, FuncId>,
         dtor_ids: &FxHashMap<DefId, FuncId>,
+        elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
         stubs: &runtime::RuntimeStubs,
         poll_fn_map: &FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
         lambda_to_async: &FxHashMap<DefId, DefId>,
@@ -628,6 +664,7 @@ impl CraneliftBackend {
                     func_ids,
                     thunk_ids,
                     dtor_ids,
+                    elem_dtor_ids,
                     &mut self.module,
                     diagnostics,
                 );
@@ -642,6 +679,7 @@ impl CraneliftBackend {
                 func_ids,
                 thunk_ids,
                 dtor_ids,
+                elem_dtor_ids,
                 &mut self.module,
                 poll_fn_map,
                 lambda_to_async,
@@ -688,7 +726,10 @@ impl CodegenBackend for CraneliftBackend {
         // Phase 2a: Generate env destructors for closures with RC captures.
         self.generate_env_destructors(mir, table, definitions, &stubs, diagnostics);
 
-        // Phase 2b: Precompute lambda → async function mapping for spawn_coop.
+        // Phase 2b: Generate element destructor functions for collections.
+        let elem_dtor_ids = self.generate_collection_dtors(mir, table, &stubs);
+
+        // Phase 2c: Precompute lambda → async function mapping for spawn_coop.
         // For each lambda that calls an async function with a poll entry,
         // record the mapping so emit_spawn_call can use the cooperative path.
         let mut lambda_to_async: FxHashMap<DefId, DefId> = FxHashMap::default();
@@ -717,6 +758,7 @@ impl CodegenBackend for CraneliftBackend {
                     &func_ids,
                     &thunk_ids,
                     &dtor_ids,
+                    &elem_dtor_ids,
                     &stubs,
                     poll_fn_map,
                     &lambda_to_async,

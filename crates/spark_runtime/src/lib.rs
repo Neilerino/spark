@@ -146,10 +146,17 @@ const MIN_CAP: usize = 4;
 
 /// Type-erased growable list. All elements are stored as raw bytes.
 /// The `rc` field is always at offset 0 for generic RC operations.
+///
+/// The `elem_drop` field holds an optional destructor function pointer
+/// (`fn(*mut u8) -> void`). When non-null, it is called on each element
+/// during `_rc_dec` (when rc reaches 0) and `_remove`. This enables
+/// recursive cleanup of nested collections (e.g. `List[List[String]]`).
 #[repr(C)]
 struct SparkList {
     /// Reference count.
     rc: usize,
+    /// Element destructor function pointer, or 0 (null) if elements don't need RC cleanup.
+    elem_drop: usize,
     /// Pointer to the contiguous data buffer.
     data: *mut u8,
     /// Number of elements currently stored.
@@ -162,14 +169,19 @@ struct SparkList {
 
 /// Creates a new empty list for elements of the given byte size (rc = 1).
 ///
+/// `elem_drop` is a destructor function pointer for elements. Pass 0 if
+/// elements don't need RC cleanup (e.g. `Int`, `Bool`). When non-null,
+/// the function is called on each element pointer during cleanup.
+///
 /// # Safety
 ///
 /// `elem_size` must be > 0.
 #[no_mangle]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub extern "C" fn __spark_list_new(elem_size: i64) -> *mut u8 {
+pub extern "C" fn __spark_list_new(elem_size: i64, elem_drop: usize) -> *mut u8 {
     let list = Box::new(SparkList {
         rc: 1,
+        elem_drop,
         data: std::ptr::null_mut(),
         len: 0,
         cap: 0,
@@ -243,10 +255,17 @@ fn list_grow(list: &mut SparkList) {
 
 /// Type-erased linear-scan map. Keys and values are stored as raw bytes.
 /// The `rc` field is always at offset 0 for generic RC operations.
+///
+/// The `key_drop` and `val_drop` fields hold optional destructor function
+/// pointers for keys and values respectively. See [`SparkList::elem_drop`].
 #[repr(C)]
 struct SparkMap {
     /// Reference count.
     rc: usize,
+    /// Key destructor function pointer, or 0 if keys don't need RC cleanup.
+    key_drop: usize,
+    /// Value destructor function pointer, or 0 if values don't need RC cleanup.
+    val_drop: usize,
     /// Pointer to contiguous key buffer.
     keys: *mut u8,
     /// Pointer to contiguous value buffer.
@@ -263,14 +282,24 @@ struct SparkMap {
 
 /// Creates a new empty map for keys of `key_size` bytes and values of `value_size` bytes (rc = 1).
 ///
+/// `key_drop` and `val_drop` are destructor function pointers for keys and
+/// values. Pass 0 for types that don't need RC cleanup.
+///
 /// # Safety
 ///
 /// Both sizes must be > 0.
 #[no_mangle]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub extern "C" fn __spark_map_new(key_size: i64, value_size: i64) -> *mut u8 {
+pub extern "C" fn __spark_map_new(
+    key_size: i64,
+    value_size: i64,
+    key_drop: usize,
+    val_drop: usize,
+) -> *mut u8 {
     let map = Box::new(SparkMap {
         rc: 1,
+        key_drop,
+        val_drop,
         keys: std::ptr::null_mut(),
         values: std::ptr::null_mut(),
         len: 0,
@@ -389,15 +418,16 @@ fn map_grow(map: &mut SparkMap) {
 /// Creates a new empty set for elements of the given byte size.
 ///
 /// Internally, a set is stored as a `SparkList` with uniqueness checks on insert.
+/// `elem_drop` is the element destructor (see [`__spark_list_new`]).
 ///
 /// # Safety
 ///
 /// `elem_size` must be > 0.
 #[no_mangle]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub extern "C" fn __spark_set_new(elem_size: i64) -> *mut u8 {
+pub extern "C" fn __spark_set_new(elem_size: i64, elem_drop: usize) -> *mut u8 {
     // A set is just a list with dedup — reuse the same struct.
-    __spark_list_new(elem_size)
+    __spark_list_new(elem_size, elem_drop)
 }
 
 /// Inserts an element into the set if not already present.
@@ -460,14 +490,14 @@ pub unsafe extern "C" fn __spark_list_contains(ptr: *mut u8, elem_ptr: *const u8
 }
 
 /// Removes the element at `index` from the list. Aborts on out-of-bounds.
-/// If `elem_rc` is non-zero, decrements the RC of the removed element.
+/// If `elem_drop` is set in the header, calls it on the removed element.
 ///
 /// # Safety
 ///
 /// `ptr` must be a valid pointer from `__spark_list_new`.
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub unsafe extern "C" fn __spark_list_remove(ptr: *mut u8, index: i64, elem_rc: i8) {
+pub unsafe extern "C" fn __spark_list_remove(ptr: *mut u8, index: i64) {
     let list = unsafe { &mut *(ptr.cast::<SparkList>()) };
     let idx = index as usize;
     if idx >= list.len {
@@ -480,13 +510,11 @@ pub unsafe extern "C" fn __spark_list_remove(ptr: *mut u8, index: i64, elem_rc: 
 
     let elem_addr = unsafe { list.data.add(idx * list.elem_size) };
 
-    // RC dec the removed element if it's reference-counted.
-    if elem_rc != 0 {
-        let inner = unsafe { *(elem_addr.cast::<*mut u8>()) };
-        if !inner.is_null() {
-            let rc_field = unsafe { &mut *(inner.cast::<usize>()) };
-            *rc_field -= 1;
-        }
+    // Call the element destructor if one is registered.
+    if list.elem_drop != 0 {
+        let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
+            unsafe { std::mem::transmute(list.elem_drop) };
+        unsafe { elem_drop_fn(elem_addr) };
     }
 
     // Shift remaining elements left.
@@ -530,7 +558,7 @@ pub unsafe extern "C" fn __spark_map_contains(ptr: *mut u8, key_ptr: *const u8) 
 }
 
 /// Removes the entry with the given key from the map (swap-remove).
-/// If `key_rc` / `val_rc` are non-zero, decrements RC on removed key/value.
+/// Calls `key_drop` / `val_drop` from the header on the removed key/value.
 ///
 /// # Safety
 ///
@@ -538,32 +566,23 @@ pub unsafe extern "C" fn __spark_map_contains(ptr: *mut u8, key_ptr: *const u8) 
 /// `key_ptr` must point to at least `key_size` bytes.
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
-pub unsafe extern "C" fn __spark_map_remove(
-    ptr: *mut u8,
-    key_ptr: *const u8,
-    key_rc: i8,
-    val_rc: i8,
-) {
+pub unsafe extern "C" fn __spark_map_remove(ptr: *mut u8, key_ptr: *const u8) {
     let map = unsafe { &mut *(ptr.cast::<SparkMap>()) };
 
     for i in 0..map.len {
         let existing_key = unsafe { map.keys.add(i * map.key_size) };
         if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
-            // RC dec removed key/value.
-            if key_rc != 0 {
-                let inner = unsafe { *(existing_key.cast::<*mut u8>()) };
-                if !inner.is_null() {
-                    let rc = unsafe { &mut *(inner.cast::<usize>()) };
-                    *rc -= 1;
-                }
+            // Call destructors on removed key/value.
+            if map.key_drop != 0 {
+                let key_drop_fn: unsafe extern "C" fn(*mut u8) =
+                    unsafe { std::mem::transmute(map.key_drop) };
+                unsafe { key_drop_fn(existing_key) };
             }
-            if val_rc != 0 {
+            if map.val_drop != 0 {
                 let val_addr = unsafe { map.values.add(i * map.value_size) };
-                let inner = unsafe { *(val_addr.cast::<*mut u8>()) };
-                if !inner.is_null() {
-                    let rc = unsafe { &mut *(inner.cast::<usize>()) };
-                    *rc -= 1;
-                }
+                let val_drop_fn: unsafe extern "C" fn(*mut u8) =
+                    unsafe { std::mem::transmute(map.val_drop) };
+                unsafe { val_drop_fn(val_addr) };
             }
 
             // Swap-remove: move last entry into the hole.
@@ -607,7 +626,7 @@ pub unsafe extern "C" fn __spark_set_contains(ptr: *mut u8, elem_ptr: *const u8)
 }
 
 /// Removes an element from the set (swap-remove by value).
-/// If `elem_rc` is non-zero, decrements the RC of the removed element.
+/// Calls `elem_drop` from the header on the removed element.
 ///
 /// # Safety
 ///
@@ -615,19 +634,17 @@ pub unsafe extern "C" fn __spark_set_contains(ptr: *mut u8, elem_ptr: *const u8)
 /// `elem_ptr` must point to at least `elem_size` bytes.
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
-pub unsafe extern "C" fn __spark_set_remove(ptr: *mut u8, elem_ptr: *const u8, elem_rc: i8) {
+pub unsafe extern "C" fn __spark_set_remove(ptr: *mut u8, elem_ptr: *const u8) {
     let set = unsafe { &mut *(ptr.cast::<SparkList>()) };
 
     for i in 0..set.len {
         let existing = unsafe { set.data.add(i * set.elem_size) };
         if unsafe { libc_memcmp(existing, elem_ptr, set.elem_size) } {
-            // RC dec the removed element.
-            if elem_rc != 0 {
-                let inner = unsafe { *(existing.cast::<*mut u8>()) };
-                if !inner.is_null() {
-                    let rc = unsafe { &mut *(inner.cast::<usize>()) };
-                    *rc -= 1;
-                }
+            // Call element destructor if registered.
+            if set.elem_drop != 0 {
+                let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
+                    unsafe { std::mem::transmute(set.elem_drop) };
+                unsafe { elem_drop_fn(existing) };
             }
 
             // Swap-remove: move last element into the hole.
@@ -695,7 +712,7 @@ pub extern "C" fn __spark_list_from_range(start: i64, end: i64, inclusive: i8, s
     };
 
     let elem_size = std::mem::size_of::<i64>();
-    let list_ptr = __spark_list_new(elem_size as i64);
+    let list_ptr = __spark_list_new(elem_size as i64, 0); // Int elements don't need drop
 
     if count == 0 {
         return list_ptr;
@@ -741,7 +758,7 @@ pub extern "C" fn __spark_list_from_range(start: i64, end: i64, inclusive: i8, s
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_list_sort(ptr: *mut u8) -> *mut u8 {
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
-    let new_list = __spark_list_new(list.elem_size as i64);
+    let new_list = __spark_list_new(list.elem_size as i64, 0); // sort is Int-only
 
     if list.len == 0 {
         return new_list;
@@ -776,12 +793,19 @@ pub unsafe extern "C" fn __spark_list_sort(ptr: *mut u8) -> *mut u8 {
 #[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub unsafe extern "C" fn __spark_list_take(ptr: *mut u8, count: i64) -> *mut u8 {
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
-    let new_list = __spark_list_new(list.elem_size as i64);
+    let new_list = __spark_list_new(list.elem_size as i64, list.elem_drop);
 
     let n = (count as usize).min(list.len);
     for i in 0..n {
         let elem = unsafe { list.data.add(i * list.elem_size) };
         unsafe { __spark_list_push(new_list, elem) };
+        // rc_inc the copied element if it's reference-counted.
+        if list.elem_drop != 0 {
+            let inner = unsafe { *(elem.cast::<*mut u8>()) };
+            if !inner.is_null() {
+                unsafe { __spark_rc_inc(inner) };
+            }
+        }
     }
 
     new_list
@@ -796,11 +820,18 @@ pub unsafe extern "C" fn __spark_list_take(ptr: *mut u8, count: i64) -> *mut u8 
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_list_reverse(ptr: *mut u8) -> *mut u8 {
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
-    let new_list = __spark_list_new(list.elem_size as i64);
+    let new_list = __spark_list_new(list.elem_size as i64, list.elem_drop);
 
     for i in (0..list.len).rev() {
         let elem = unsafe { list.data.add(i * list.elem_size) };
         unsafe { __spark_list_push(new_list, elem) };
+        // rc_inc the copied element if it's reference-counted.
+        if list.elem_drop != 0 {
+            let inner = unsafe { *(elem.cast::<*mut u8>()) };
+            if !inner.is_null() {
+                unsafe { __spark_rc_inc(inner) };
+            }
+        }
     }
 
     new_list
@@ -946,38 +977,28 @@ pub unsafe extern "C" fn __spark_string_rc_dec(ptr: *mut u8) {
 }
 
 /// Decrements the reference count of a `SparkList`.
-/// If `elem_rc` is non-zero and the list is being freed, decrements
-/// the RC of each element pointer before freeing the list.
+/// When the count reaches zero, calls `elem_drop` (from the header) on each
+/// element for recursive cleanup, then frees the data buffer and struct.
 ///
 /// # Safety
 ///
 /// `ptr` must be a valid pointer from `__spark_list_new`.
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
-pub unsafe extern "C" fn __spark_list_rc_dec(ptr: *mut u8, elem_rc: i8) {
+pub unsafe extern "C" fn __spark_list_rc_dec(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
     let list = unsafe { &mut *(ptr.cast::<SparkList>()) };
     list.rc -= 1;
     if list.rc == 0 {
-        // If elements are RC'd, dec each one.
-        if elem_rc != 0 && !list.data.is_null() {
+        // Call element destructor on each element for recursive cleanup.
+        if list.elem_drop != 0 && !list.data.is_null() {
+            let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
+                unsafe { std::mem::transmute(list.elem_drop) };
             for i in 0..list.len {
-                let elem_ptr_loc = unsafe { list.data.add(i * list.elem_size) };
-                // Each element is itself a pointer to an RC object.
-                let inner_ptr = unsafe { *(elem_ptr_loc.cast::<*mut u8>()) };
-                if !inner_ptr.is_null() {
-                    // Generic dec — the caller knows the element type and will
-                    // have arranged for the correct typed rc_dec. For simplicity,
-                    // we use a generic dec here that just decrements the RC field.
-                    // This works because all Spark heap types start with rc:usize.
-                    let rc_field = unsafe { &mut *(inner_ptr.cast::<usize>()) };
-                    *rc_field -= 1;
-                    // Note: this does NOT recursively free sub-objects.
-                    // For v1, nested RC dec is one level deep.
-                    // A production implementation would need a type-dispatch table.
-                }
+                let elem_ptr = unsafe { list.data.add(i * list.elem_size) };
+                unsafe { elem_drop_fn(elem_ptr) };
             }
         }
         // Free the data buffer.
@@ -994,41 +1015,37 @@ pub unsafe extern "C" fn __spark_list_rc_dec(ptr: *mut u8, elem_rc: i8) {
 }
 
 /// Decrements the reference count of a `SparkMap`.
-/// If `key_rc` / `val_rc` are non-zero, decrements RC of corresponding
-/// element pointers before freeing.
+/// When the count reaches zero, calls `key_drop` / `val_drop` (from the
+/// header) on each key/value for recursive cleanup, then frees buffers.
 ///
 /// # Safety
 ///
 /// `ptr` must be a valid pointer from `__spark_map_new`.
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
-pub unsafe extern "C" fn __spark_map_rc_dec(ptr: *mut u8, key_rc: i8, val_rc: i8) {
+pub unsafe extern "C" fn __spark_map_rc_dec(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
     let map = unsafe { &mut *(ptr.cast::<SparkMap>()) };
     map.rc -= 1;
     if map.rc == 0 {
-        // Dec RC of keys if they're RC'd.
-        if key_rc != 0 && !map.keys.is_null() {
+        // Call key destructor on each key.
+        if map.key_drop != 0 && !map.keys.is_null() {
+            let key_drop_fn: unsafe extern "C" fn(*mut u8) =
+                unsafe { std::mem::transmute(map.key_drop) };
             for i in 0..map.len {
                 let key_loc = unsafe { map.keys.add(i * map.key_size) };
-                let inner = unsafe { *(key_loc.cast::<*mut u8>()) };
-                if !inner.is_null() {
-                    let rc_field = unsafe { &mut *(inner.cast::<usize>()) };
-                    *rc_field -= 1;
-                }
+                unsafe { key_drop_fn(key_loc) };
             }
         }
-        // Dec RC of values if they're RC'd.
-        if val_rc != 0 && !map.values.is_null() {
+        // Call value destructor on each value.
+        if map.val_drop != 0 && !map.values.is_null() {
+            let val_drop_fn: unsafe extern "C" fn(*mut u8) =
+                unsafe { std::mem::transmute(map.val_drop) };
             for i in 0..map.len {
                 let val_loc = unsafe { map.values.add(i * map.value_size) };
-                let inner = unsafe { *(val_loc.cast::<*mut u8>()) };
-                if !inner.is_null() {
-                    let rc_field = unsafe { &mut *(inner.cast::<usize>()) };
-                    *rc_field -= 1;
-                }
+                unsafe { val_drop_fn(val_loc) };
             }
         }
         // Free key buffer.
@@ -1058,8 +1075,8 @@ pub unsafe extern "C" fn __spark_map_rc_dec(ptr: *mut u8, key_rc: i8, val_rc: i8
 ///
 /// `ptr` must be a valid pointer from `__spark_set_new`.
 #[no_mangle]
-pub unsafe extern "C" fn __spark_set_rc_dec(ptr: *mut u8, elem_rc: i8) {
-    unsafe { __spark_list_rc_dec(ptr, elem_rc) };
+pub unsafe extern "C" fn __spark_set_rc_dec(ptr: *mut u8) {
+    unsafe { __spark_list_rc_dec(ptr) };
 }
 
 // =============================================================================
@@ -1110,14 +1127,14 @@ pub unsafe extern "C" fn __spark_string_cow(ptr: *mut u8) -> *mut u8 {
 }
 
 /// COW for lists. If rc > 1, shallow-copies the data buffer and `rc_inc`
-/// each element if `elem_rc` is set.
+/// each element if `elem_drop` is set in the header.
 ///
 /// # Safety
 ///
 /// `ptr` must be a valid `SparkList` pointer.
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
-pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8, elem_rc: i8) -> *mut u8 {
+pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8) -> *mut u8 {
     if ptr.is_null() {
         return ptr;
     }
@@ -1136,8 +1153,8 @@ pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8, elem_rc: i8) -> *mut u8 
             std::process::abort();
         }
         unsafe { std::ptr::copy_nonoverlapping(list.data, buf, list.len * list.elem_size) };
-        // rc_inc each element if they're RC'd.
-        if elem_rc != 0 {
+        // rc_inc each element if they're RC'd (elem_drop != 0 implies RC type).
+        if list.elem_drop != 0 {
             for i in 0..list.len {
                 let elem_loc = unsafe { buf.add(i * list.elem_size) };
                 let inner = unsafe { *(elem_loc.cast::<*mut u8>()) };
@@ -1152,6 +1169,7 @@ pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8, elem_rc: i8) -> *mut u8 
     };
     let new = Box::new(SparkList {
         rc: 1,
+        elem_drop: list.elem_drop,
         data: new_data,
         len: list.len,
         cap: list.cap,
@@ -1163,14 +1181,15 @@ pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8, elem_rc: i8) -> *mut u8 
     Box::into_raw(new).cast::<u8>()
 }
 
-/// COW for maps.
+/// COW for maps. Reads `key_drop` / `val_drop` from the header to
+/// determine whether to `rc_inc` keys/values during the shallow copy.
 ///
 /// # Safety
 ///
 /// `ptr` must be a valid `SparkMap` pointer.
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
-pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8, key_rc: i8, val_rc: i8) -> *mut u8 {
+pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8) -> *mut u8 {
     if ptr.is_null() {
         return ptr;
     }
@@ -1189,7 +1208,7 @@ pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8, key_rc: i8, val_rc: i8) -
             std::process::abort();
         }
         unsafe { std::ptr::copy_nonoverlapping(map.keys, buf, map.len * map.key_size) };
-        if key_rc != 0 {
+        if map.key_drop != 0 {
             for i in 0..map.len {
                 let loc = unsafe { buf.add(i * map.key_size) };
                 let inner = unsafe { *(loc.cast::<*mut u8>()) };
@@ -1212,7 +1231,7 @@ pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8, key_rc: i8, val_rc: i8) -
             std::process::abort();
         }
         unsafe { std::ptr::copy_nonoverlapping(map.values, buf, map.len * map.value_size) };
-        if val_rc != 0 {
+        if map.val_drop != 0 {
             for i in 0..map.len {
                 let loc = unsafe { buf.add(i * map.value_size) };
                 let inner = unsafe { *(loc.cast::<*mut u8>()) };
@@ -1227,6 +1246,8 @@ pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8, key_rc: i8, val_rc: i8) -
     };
     let new = Box::new(SparkMap {
         rc: 1,
+        key_drop: map.key_drop,
+        val_drop: map.val_drop,
         keys: new_keys,
         values: new_values,
         len: map.len,
@@ -1515,7 +1536,7 @@ mod tests {
         unsafe {
             let ptr = __spark_list_from_range(0, 5, 0, 1);
             assert_eq!(read_list_i64(ptr), vec![0, 1, 2, 3, 4]);
-            __spark_list_rc_dec(ptr, 0);
+            __spark_list_rc_dec(ptr);
         }
     }
 
@@ -1524,7 +1545,7 @@ mod tests {
         unsafe {
             let ptr = __spark_list_from_range(0, 5, 1, 1);
             assert_eq!(read_list_i64(ptr), vec![0, 1, 2, 3, 4, 5]);
-            __spark_list_rc_dec(ptr, 0);
+            __spark_list_rc_dec(ptr);
         }
     }
 
@@ -1533,7 +1554,7 @@ mod tests {
         unsafe {
             let ptr = __spark_list_from_range(0, 10, 0, 2);
             assert_eq!(read_list_i64(ptr), vec![0, 2, 4, 6, 8]);
-            __spark_list_rc_dec(ptr, 0);
+            __spark_list_rc_dec(ptr);
         }
     }
 
@@ -1542,7 +1563,7 @@ mod tests {
         unsafe {
             let ptr = __spark_list_from_range(10, 0, 0, -2);
             assert_eq!(read_list_i64(ptr), vec![10, 8, 6, 4, 2]);
-            __spark_list_rc_dec(ptr, 0);
+            __spark_list_rc_dec(ptr);
         }
     }
 
@@ -1552,7 +1573,7 @@ mod tests {
             // start >= end with positive step → empty
             let ptr = __spark_list_from_range(5, 3, 0, 1);
             assert_eq!(read_list_i64(ptr), Vec::<i64>::new());
-            __spark_list_rc_dec(ptr, 0);
+            __spark_list_rc_dec(ptr);
         }
     }
 
@@ -1561,7 +1582,7 @@ mod tests {
         unsafe {
             let ptr = __spark_list_from_range(0, 3, 0, 0);
             assert_eq!(read_list_i64(ptr), vec![0, 1, 2]);
-            __spark_list_rc_dec(ptr, 0);
+            __spark_list_rc_dec(ptr);
         }
     }
 }
@@ -1638,7 +1659,7 @@ pub unsafe extern "C" fn __spark_parallel_map(
     use rayon::prelude::*;
 
     let list = unsafe { &*(list_ptr.cast::<SparkList>()) };
-    let result_list = __spark_list_new(result_elem_size);
+    let result_list = __spark_list_new(result_elem_size, 0);
 
     if list.len == 0 {
         return result_list;
@@ -2397,7 +2418,7 @@ pub unsafe extern "C" fn __spark_parallel_range_map(
 
     let len = __spark_range_len(start, end, inclusive, step);
     if len <= 0 {
-        return __spark_list_new(result_elem_size);
+        return __spark_list_new(result_elem_size, 0);
     }
 
     let fn_addr = fn_ptr as usize;
@@ -2414,7 +2435,7 @@ pub unsafe extern "C" fn __spark_parallel_range_map(
         .collect();
 
     // Build a list from the results.
-    let list = __spark_list_new(result_elem_size);
+    let list = __spark_list_new(result_elem_size, 0);
     let spark_list = unsafe { &mut *(list.cast::<SparkList>()) };
 
     for result in &results {

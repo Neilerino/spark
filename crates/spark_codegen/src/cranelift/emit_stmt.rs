@@ -2,17 +2,17 @@
 //!
 //! Handles `Assign`, `Drop`, and `Nop` statements.
 
-use cranelift_codegen::ir::{types, InstBuilder, MemFlags};
+use cranelift_codegen::ir::{InstBuilder, MemFlags};
 use cranelift_module::{FuncId, Module};
 use rustc_hash::FxHashMap;
 use spark_diagnostics::Diagnostics;
 use spark_mir::Statement;
 use spark_resolve::DefinitionTable;
-use spark_types::{Ty, TypeTable};
+use spark_types::{TypeId, TypeTable};
 
 use super::context::{FunctionContext, LocalStorage};
+use super::drop_glue;
 use super::emit_rvalue;
-use super::types as clif_types;
 
 /// Emits a single MIR statement.
 #[allow(clippy::too_many_arguments)]
@@ -24,6 +24,7 @@ pub fn emit_statement<M: Module>(
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) {
@@ -43,6 +44,7 @@ pub fn emit_statement<M: Module>(
                 func_ids,
                 thunk_ids,
                 dtor_ids,
+                elem_dtor_ids,
                 module,
                 diagnostics,
             ) {
@@ -110,7 +112,6 @@ fn emit_drop<M: Module>(
 ) {
     let local = place.local;
     let ty_id = ctx.local_type_id(local);
-    let (_, ty) = clif_types::unwrap_mutable(ty_id, table);
 
     // Only droppable types need a dec call.
     if !spark_drop::needs_drop(ty_id, table) {
@@ -118,59 +119,16 @@ fn emit_drop<M: Module>(
     }
 
     let ptr_val = ctx.read_local(local);
+    let ptr_type = ctx.ptr_type;
+    let stubs = ctx.stubs;
 
-    match ty {
-        Ty::String => {
-            let func_ref = module.declare_func_in_func(ctx.stubs.string_rc_dec, ctx.builder.func);
-            ctx.builder.ins().call(func_ref, &[ptr_val]);
-        }
-        Ty::List(elem) => {
-            let elem_rc_flag = i64::from(spark_drop::needs_rc(*elem, table));
-            let elem_rc_val = ctx.builder.ins().iconst(types::I8, elem_rc_flag);
-            let func_ref = module.declare_func_in_func(ctx.stubs.list_rc_dec, ctx.builder.func);
-            ctx.builder.ins().call(func_ref, &[ptr_val, elem_rc_val]);
-        }
-        Ty::Map(k, v) => {
-            let key_rc_flag = i64::from(spark_drop::needs_rc(*k, table));
-            let val_rc_flag = i64::from(spark_drop::needs_rc(*v, table));
-            let key_rc_val = ctx.builder.ins().iconst(types::I8, key_rc_flag);
-            let val_rc_val = ctx.builder.ins().iconst(types::I8, val_rc_flag);
-            let func_ref = module.declare_func_in_func(ctx.stubs.map_rc_dec, ctx.builder.func);
-            ctx.builder
-                .ins()
-                .call(func_ref, &[ptr_val, key_rc_val, val_rc_val]);
-        }
-        Ty::Set(elem) => {
-            let elem_rc_flag = i64::from(spark_drop::needs_rc(*elem, table));
-            let elem_rc_val = ctx.builder.ins().iconst(types::I8, elem_rc_flag);
-            let func_ref = module.declare_func_in_func(ctx.stubs.set_rc_dec, ctx.builder.func);
-            ctx.builder.ins().call(func_ref, &[ptr_val, elem_rc_val]);
-        }
-        Ty::Function { .. } => {
-            // Function fat pointer: (fn_ptr, env_ptr).
-            // Load env_ptr from the second slot and call __spark_env_rc_dec.
-            // ptr_val is the address of the fat pointer.
-            let env_ptr = ctx.builder.ins().load(
-                ctx.ptr_type,
-                MemFlags::new(),
-                ptr_val,
-                ctx.ptr_type.bytes() as i32,
-            );
-            let func_ref = module.declare_func_in_func(ctx.stubs.env_rc_dec, ctx.builder.func);
-            ctx.builder.ins().call(func_ref, &[env_ptr]);
-        }
-        Ty::Future { .. } => {
-            // Future[T] is an opaque heap pointer — call __spark_future_rc_dec.
-            let func_ref = module.declare_func_in_func(ctx.stubs.future_rc_dec, ctx.builder.func);
-            ctx.builder.ins().call(func_ref, &[ptr_val]);
-        }
-        Ty::Channel { .. } => {
-            // Channel[T] is an opaque heap pointer — call __spark_channel_rc_dec.
-            let func_ref = module.declare_func_in_func(ctx.stubs.channel_rc_dec, ctx.builder.func);
-            ctx.builder.ins().call(func_ref, &[ptr_val]);
-        }
-        _ => {
-            // Non-droppable type — no-op (shouldn't reach here due to early return).
-        }
-    }
+    drop_glue::emit_typed_drop(
+        &mut ctx.builder,
+        ptr_val,
+        ty_id,
+        table,
+        stubs,
+        module,
+        ptr_type,
+    );
 }

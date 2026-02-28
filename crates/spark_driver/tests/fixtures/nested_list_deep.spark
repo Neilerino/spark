@@ -1,0 +1,7 @@
+fn main(): Int {
+    inner: List[Int] = [1, 2]
+    mid: List[List[Int]] = [inner]
+    outer: List[List[List[Int]]] = [mid]
+    print(outer.len())
+    return 0
+}

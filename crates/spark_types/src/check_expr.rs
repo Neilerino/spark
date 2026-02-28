@@ -6,7 +6,7 @@
 use spark_ast::{BinaryOp, Block, Expr, ExprKind, LiteralKind, PipelineStageKind, StringPart, UnaryOp};
 use spark_diagnostics::{Diagnostic, Label};
 use spark_intern::{kw, Symbol};
-use spark_resolve::{DefId, DefinitionTable, ResolutionMap};
+use spark_resolve::{DefId, DefinitionKind, DefinitionTable, ResolutionMap};
 use spark_span::Span;
 
 use crate::builtins::BuiltinTypes;
@@ -800,21 +800,32 @@ fn check_call(
                 return TypeId::ERROR;
             }
 
-            // Non-generic function call
-            if args.len() != params.len() {
+            // Non-generic function call — check all arg types first,
+            // then adapt builtin list function types if needed.
+            let arg_tys: Vec<TypeId> = args.iter()
+                .map(|a| check_expr(&a.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret))
+                .collect();
+
+            // Adapt builtin list function types to match actual element type
+            let (params, ret) = if let Some(did) = callee_def_id {
+                adapt_builtin_list_fn(did, arg_tys.first().copied().unwrap_or(TypeId::ERROR), params, ret, table, builtins, definitions)
+            } else {
+                (params, ret)
+            };
+
+            if arg_tys.len() != params.len() {
                 diagnostics.push(
                     Diagnostic::error(format!(
                         "expected {} argument{}, found {}",
                         params.len(),
                         if params.len() == 1 { "" } else { "s" },
-                        args.len()
+                        arg_tys.len()
                     ))
                     .with_label(Label::primary(call_span, "wrong number of arguments")),
                 );
             }
 
-            for (i, arg) in args.iter().enumerate() {
-                let arg_ty = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            for (i, (arg, &arg_ty)) in args.iter().zip(arg_tys.iter()).enumerate() {
                 if let Some(&expected) = params.get(i) {
                     if !is_compatible(arg_ty, expected, table) {
                         let expected_name = type_name(expected, table, definitions);
@@ -1477,6 +1488,12 @@ fn check_list_method(
         builtins.void
     } else if method == kw::CONTAINS {
         expect_args(1, arg_tys.len(), call_span, diagnostics);
+        if !arg_tys.is_empty() && !is_compatible(arg_tys[0], elem, table) {
+            diagnostics.push(
+                Diagnostic::error("argument type does not match list element type")
+                    .with_label(Label::primary(call_span, "type mismatch")),
+            );
+        }
         builtins.bool_ty
     } else if method == kw::REMOVE {
         expect_args(1, arg_tys.len(), call_span, diagnostics);
@@ -1996,6 +2013,39 @@ fn check_to_narrowing(
     }
 }
 
+/// Adapts the parameter and return types of a builtin list function (sort, take, reverse)
+/// to match the actual list element type passed as the first argument.
+///
+/// Builtin list functions are registered with `List[Int]` as a default, but should
+/// accept any `List[T]`. This function substitutes the actual element type at call sites.
+fn adapt_builtin_list_fn(
+    def_id: DefId,
+    first_arg_ty: TypeId,
+    params: Vec<TypeId>,
+    ret: TypeId,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+) -> (Vec<TypeId>, TypeId) {
+    let Some(info) = definitions.get(def_id) else { return (params, ret) };
+    if info.kind != DefinitionKind::BuiltinFunction { return (params, ret) }
+
+    // Extract the actual element type from the first argument
+    let actual_elem = match table.resolve(first_arg_ty).clone() {
+        Ty::List(elem) => elem,
+        _ => return (params, ret),
+    };
+    let actual_list = table.intern(Ty::List(actual_elem));
+
+    if info.name == kw::SORT || info.name == kw::REVERSE {
+        (vec![actual_list], actual_list)
+    } else if info.name == kw::TAKE {
+        (vec![actual_list, builtins.int], actual_list)
+    } else {
+        (params, ret)
+    }
+}
+
 /// Checks a pipeline apply expression (`expr via func{args}` or `expr to func{args}`).
 #[allow(clippy::too_many_arguments)]
 fn check_pipeline_apply(
@@ -2033,6 +2083,11 @@ fn check_pipeline_apply(
         );
         return TypeId::ERROR;
     };
+
+    // Adapt builtin list function types to match actual input type
+    let (params, ret) = adapt_builtin_list_fn(
+        def_id, inner_ty, params, ret, table, builtins, definitions,
+    );
 
     // Build full arg list: [inner_ty, partial_arg_types...]
     let mut all_arg_types = vec![inner_ty];
