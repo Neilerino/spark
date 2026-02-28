@@ -174,9 +174,11 @@ fn emit_constant<M: Module>(
             let name = format!(".str.{}", sym.as_raw());
             let bytes = sym.as_str().as_bytes();
 
-            let data_id = module
+            let Ok(data_id) = module
                 .declare_data(&name, cranelift_module::Linkage::Local, false, false)
-                .expect("data declaration should succeed");
+            else {
+                return None;
+            };
 
             let mut data_desc = cranelift_module::DataDescription::new();
             data_desc.define(bytes.to_vec().into_boxed_slice());
@@ -184,9 +186,8 @@ fn emit_constant<M: Module>(
             // `define_data` can encounter a `DuplicateDefinition` if the
             // data was already emitted by a prior function. That is harmless.
             match module.define_data(data_id, &data_desc) {
-                Ok(()) => {}
-                Err(cranelift_module::ModuleError::DuplicateDefinition(_)) => {}
-                Err(e) => panic!("data definition should succeed: {e}"),
+                Ok(()) | Err(cranelift_module::ModuleError::DuplicateDefinition(_)) => {}
+                Err(_) => return None,
             }
 
             // Get pointer to static data and the length.

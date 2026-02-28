@@ -1835,9 +1835,11 @@ fn emit_extern_call<M: Module>(
     }
 
     // Declare the function as an import (idempotent in Cranelift)
-    let func_id = module
-        .declare_function(symbol_name, Linkage::Import, &sig)
-        .expect("extern function declaration should not fail");
+    let Ok(func_id) = module.declare_function(symbol_name, Linkage::Import, &sig) else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
 
     let func_ref = module.declare_func_in_func(func_id, ctx.builder.func);
     let call = ctx.builder.ins().call(func_ref, &arg_vals);

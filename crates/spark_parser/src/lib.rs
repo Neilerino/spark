@@ -132,7 +132,7 @@ impl Parser {
         self.tokens.get(self.pos).unwrap_or_else(|| {
             self.tokens
                 .last()
-                .expect("token stream should have at least EOF")
+                .expect("ICE: token stream must contain at least EOF")
         })
     }
 
@@ -156,7 +156,7 @@ impl Parser {
         self.tokens.get(self.pos + n).unwrap_or_else(|| {
             self.tokens
                 .last()
-                .expect("token stream should have at least EOF")
+                .expect("ICE: token stream must contain at least EOF")
         })
     }
 
@@ -183,7 +183,12 @@ impl Parser {
         self.tokens
             .get(self.pos - 1)
             .cloned()
-            .unwrap_or_else(|| self.tokens.last().cloned().unwrap())
+            .unwrap_or_else(|| {
+                self.tokens
+                    .last()
+                    .cloned()
+                    .expect("ICE: token stream must not be empty")
+            })
     }
 
     /// Consumes the current token if it matches the given kind.
@@ -213,7 +218,7 @@ impl Parser {
             let token = self.advance();
             let symbol = token
                 .as_ident()
-                .expect("identifier token should have symbol");
+                .expect("ICE: identifier token must have symbol");
             Some(Ident::new(symbol, token.span))
         } else {
             self.error_expected("identifier");

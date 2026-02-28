@@ -469,7 +469,9 @@ impl Parser {
                 // Check: is this generic type args before struct init?
                 if Self::lhs_is_path(&lhs) && self.brackets_followed_by_brace() {
                     let type_args = self.parse_type_args_in_expr();
-                    let path = Self::lhs_as_path(&lhs).unwrap();
+                    let Some(path) = Self::lhs_as_path(&lhs) else {
+                        return Expr::error(self.span_from(start));
+                    };
                     let args = self.parse_partial_args();
                     let span = self.span_from(start);
                     return Self::convert_to_struct_or_partial_generic(path, type_args, args, span);
@@ -477,7 +479,9 @@ impl Parser {
                 // Check: generic constructor call — `Type[Args]()`
                 if Self::lhs_is_path(&lhs) && self.brackets_followed_by_paren() {
                     let type_args = self.parse_type_args_in_expr();
-                    let path = Self::lhs_as_path(&lhs).unwrap();
+                    let Some(path) = Self::lhs_as_path(&lhs) else {
+                        return Expr::error(self.span_from(start));
+                    };
                     // Consume `()`
                     self.expect(TokenKind::LParen);
                     self.expect(TokenKind::RParen);
@@ -595,7 +599,9 @@ impl Parser {
 
         // Check for named argument: name: value
         if self.check(TokenKind::Identifier) && self.peek().kind == TokenKind::Colon {
-            let name = self.expect_ident().unwrap();
+            let Some(name) = self.expect_ident() else {
+                return CallArg::positional(Expr::error(start));
+            };
             self.advance(); // consume ':'
             let value = self.parse_expr();
             let span = self.span_from(start);
@@ -1000,7 +1006,9 @@ impl Parser {
 
     fn parse_ident_or_path(&mut self) -> Expr {
         let start = self.current_span();
-        let ident = self.expect_ident().unwrap();
+        let Some(ident) = self.expect_ident() else {
+            return Expr::error(start);
+        };
 
         // Check for path continuation
         if self.check(TokenKind::Dot) && self.peek().kind == TokenKind::Identifier {

@@ -603,5 +603,5 @@ fn declare_fn<M: Module>(
     }
     module
         .declare_function(name, Linkage::Import, &sig)
-        .expect("runtime stub declaration should not fail")
+        .expect("ICE: failed to declare runtime stub; this is a compiler bug")
 }
