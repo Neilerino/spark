@@ -777,3 +777,15 @@ fn borrow_dangling_return() {
 fn borrow_alias_call() {
     assert_compile_error("borrow_alias_call.spark", "cannot pass");
 }
+
+// ── To keyword tests ───────────────────────────────────────────────────
+
+#[test]
+fn to_pipeline() {
+    assert_output("to_pipeline.spark", "10\n16");
+}
+
+#[test]
+fn to_non_union_error() {
+    assert_compile_error("to_non_union_error.spark", "requires a union type");
+}

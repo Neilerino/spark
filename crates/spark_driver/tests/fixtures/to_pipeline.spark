@@ -1,0 +1,16 @@
+fn double(x: Int): Int {
+    return x * 2
+}
+
+fn add(x: Int, n: Int): Int {
+    return x + n
+}
+
+fn main(): Int {
+    result: Int = 5 to double
+    print(result)
+
+    chained: Int = 3 to double to add{n: 10}
+    print(chained)
+    return 0
+}

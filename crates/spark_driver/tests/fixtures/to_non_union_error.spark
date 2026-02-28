@@ -1,0 +1,7 @@
+fn main(): Int {
+    x: Int = 42
+    y: Int = x to {
+        String(e) -> 0
+    }
+    return 0
+}
