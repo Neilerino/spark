@@ -1,10 +1,10 @@
 //! Workspace-level state and multi-file analysis pipeline.
 //!
 //! When the LSP server has a workspace root, all `.spark` files are
-//! discovered, parsed, and analyzed together through the full compiler
-//! frontend pipeline (lex → parse → modules → resolve → type-check).
-//! This enables cross-file features such as go-to-definition across
-//! files and workspace-wide find-references.
+//! discovered, parsed, and analyzed together through the compiler
+//! pipeline (lex → parse → modules → resolve → type-check → HIR →
+//! MIR → borrow-check). This enables cross-file features such as
+//! go-to-definition across files and workspace-wide find-references.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,8 +12,11 @@ use std::path::{Path, PathBuf};
 use ropey::Rope;
 use tower_lsp::lsp_types::{self, Url};
 
+use spark_borrow::BorrowInput;
 use spark_diagnostics::Diagnostics;
+use spark_hir::HirInput;
 use spark_lexer::Lexer;
+use spark_mir::MirInput;
 use spark_modules::ModuleResolverInput;
 use spark_parser::parse;
 use spark_resolve::{DefinitionTable, ResolvedAst, ResolverInput};
@@ -170,16 +173,19 @@ pub fn file_path_to_uri(path: &Path) -> Option<Url> {
     Url::from_file_path(path).ok()
 }
 
-/// Runs the full compiler frontend pipeline on all workspace files.
+/// Runs the compiler pipeline on all workspace files.
 ///
-/// Mirrors `spark_driver::pipeline` phases 1–5:
+/// Mirrors `spark_driver::pipeline` phases 1–8:
 /// 1. Lex + parse all files
 /// 2. Module resolution (builds module graph from file paths)
 /// 3. Name resolution (resolves identifiers across all files)
 /// 4. Type checking
+/// 5. HIR lowering (only if no errors so far)
+/// 6. MIR construction (only if no errors so far)
+/// 7. Borrow checking (only if no errors so far)
 ///
-/// Each phase runs regardless of earlier errors — diagnostics accumulate
-/// per-file so that all errors are reported.
+/// Phases 1–4 always run and accumulate diagnostics. Phases 5–7 only
+/// run if prior phases produced no errors.
 pub fn analyze_workspace(
     files: &[(Url, String)],
     root_path: &Path,
@@ -286,6 +292,36 @@ pub fn analyze_workspace(
 
     let resolved = resolve_output.resolved;
     let definitions = resolve_output.definitions;
+
+    // Phases 6–8: HIR → MIR → Borrow checking
+    // Run unconditionally when the type table is available. Unlike the
+    // compiler pipeline (which exits early on errors), the LSP accumulates
+    // diagnostics from ALL files in the workspace. Gating on
+    // `has_errors()` would skip borrow checking for the entire workspace
+    // if any single file had a type/parse error. The downstream phases
+    // handle error types gracefully.
+    if let Some(ref table) = type_table {
+        let hir_output = spark_hir::lower(HirInput {
+            resolved: resolved.clone(),
+            definitions: definitions.clone(),
+            table: table.clone(),
+        });
+        all_diagnostics.extend(hir_output.diagnostics);
+
+        let mir_output = spark_mir::lower(MirInput {
+            hir: hir_output.hir,
+            table: hir_output.table,
+            definitions: hir_output.definitions,
+        });
+        all_diagnostics.extend(mir_output.diagnostics);
+
+        let borrow_output = spark_borrow::check(BorrowInput {
+            mir: mir_output.mir,
+            table: mir_output.table,
+            definitions: mir_output.definitions,
+        });
+        all_diagnostics.extend(borrow_output.diagnostics);
+    }
 
     // Distribute diagnostics by file
     let diagnostics_by_uri = distribute_diagnostics(
@@ -631,6 +667,60 @@ mod tests {
         let path = Path::new("/workspace/src/main.spark");
         let rel = stdlib_relative_path(path);
         assert_eq!(rel, None);
+    }
+
+    #[test]
+    fn borrow_error_surfaces_in_diagnostics() {
+        let output = analyze_workspace_sources(&[(
+            "main.spark",
+            "fn main(): Int {\n    x: Int! = 5\n    a: Ref[Int]! = x\n    b: Ref[Int]! = x\n    a = 10\n    print(b)\n    return 0\n}",
+        )]);
+
+        let all_messages: Vec<&str> = output
+            .diagnostics_by_uri
+            .values()
+            .flatten()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            all_messages.iter().any(|m| m.contains("cannot borrow")),
+            "Expected borrow checker error in diagnostics, got: {all_messages:?}"
+        );
+    }
+
+    #[test]
+    fn borrow_error_with_type_error_in_other_file() {
+        // Simulates a workspace where one file has a type error and
+        // another has a borrow error. Both should get diagnostics.
+        let output = analyze_workspace_sources(&[
+            (
+                "main.spark",
+                "fn main(): Int {\n    x: Int! = 5\n    a: Ref[Int]! = x\n    b: Ref[Int]! = x\n    a = 10\n    print(b)\n    return 0\n}",
+            ),
+            (
+                "bad.spark",
+                "fn broken(): Int { }",  // type error: missing return value
+            ),
+        ]);
+
+        let all_messages: Vec<String> = output
+            .diagnostics_by_uri
+            .values()
+            .flatten()
+            .map(|d| d.message.clone())
+            .collect();
+        eprintln!("all diagnostics: {all_messages:?}");
+
+        // The type error file should have its error.
+        assert!(
+            all_messages.iter().any(|m| !m.contains("cannot borrow")),
+            "Expected type error for bad.spark"
+        );
+        // The borrow error file should ALSO have its error.
+        assert!(
+            all_messages.iter().any(|m| m.contains("cannot borrow")),
+            "Expected borrow error even with type errors in other file, got: {all_messages:?}"
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 //! LSP backend — implements the `LanguageServer` trait.
 //!
-//! Provides real-time diagnostics by running the compiler's frontend
-//! pipeline (lex → parse → resolve → type-check) on every document
-//! change, and lexer-driven semantic token highlighting.
+//! Provides real-time diagnostics by running the compiler pipeline
+//! (lex → parse → resolve → type-check → HIR → MIR → borrow-check)
+//! on every document change, and lexer-driven semantic token highlighting.
 //!
 //! When a workspace root is available, all `.spark` files are analyzed
 //! together for cross-file features (go-to-definition, find-references).
@@ -32,8 +32,11 @@ use tower_lsp::lsp_types::{
 use tower_lsp::{Client, LanguageServer};
 
 use spark_ast::Item;
+use spark_borrow::BorrowInput;
 use spark_diagnostics::Diagnostics;
+use spark_hir::HirInput;
 use spark_lexer::Lexer;
+use spark_mir::MirInput;
 use spark_modules::{ModuleGraph, ModuleResolverInput};
 use spark_parser::parse;
 use spark_resolve::{DefinitionKind, ResolverInput};
@@ -299,10 +302,37 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
             // Cache resolver output for on-demand queries (go-to-definition, hover, etc.)
             analysis = Some(AnalysisResult {
                 file_id,
-                resolved: Arc::new(resolve_output.resolved),
-                definitions: Arc::new(resolve_output.definitions),
-                type_table,
+                resolved: Arc::new(resolve_output.resolved.clone()),
+                definitions: Arc::new(resolve_output.definitions.clone()),
+                type_table: type_table.clone(),
             });
+
+            // Phases 6–8: HIR → MIR → Borrow checking
+            // Run when the type table is available. No error gating — the
+            // downstream phases handle error types gracefully, and in
+            // single-file mode we still want borrow errors reported.
+            if let Some(ref table) = type_table {
+                let hir_output = spark_hir::lower(HirInput {
+                    resolved: resolve_output.resolved,
+                    definitions: resolve_output.definitions,
+                    table: (**table).clone(),
+                });
+                all_diagnostics.extend(hir_output.diagnostics);
+
+                let mir_output = spark_mir::lower(MirInput {
+                    hir: hir_output.hir,
+                    table: hir_output.table,
+                    definitions: hir_output.definitions,
+                });
+                all_diagnostics.extend(mir_output.diagnostics);
+
+                let borrow_output = spark_borrow::check(BorrowInput {
+                    mir: mir_output.mir,
+                    table: mir_output.table,
+                    definitions: mir_output.definitions,
+                });
+                all_diagnostics.extend(borrow_output.diagnostics);
+            }
         }
     }
 

@@ -71,14 +71,7 @@ fn collect_function(
         is_async: func.is_async,
     });
 
-    // Find the DefId for this function by looking in the definition table.
-    // Extern functions use DefinitionKind::ExternFunction, so check both.
-    let expected_kind = if func.is_extern {
-        DefinitionKind::ExternFunction
-    } else {
-        DefinitionKind::Function
-    };
-    if let Some(def_id) = find_item_def(func.name.span, func.name.name, &expected_kind, resolutions, definitions) {
+    if let Some(def_id) = find_item_def(func.name.span, resolutions) {
         table.set_def_type(def_id, fn_type);
 
         // Store generic param list for this function
@@ -88,7 +81,7 @@ fn collect_function(
 
         // Also register parameter types
         for (i, param) in func.params.iter().enumerate() {
-            if let Some(param_def) = find_param_def(param.name.name, def_id, definitions) {
+            if let Some(param_def) = find_param_def(param.name.span, resolutions) {
                 table.set_def_type(param_def, param_types[i]);
             }
         }
@@ -104,7 +97,7 @@ fn collect_struct(
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
-    if let Some(def_id) = find_item_def(struct_def.name.span, struct_def.name.name, &DefinitionKind::Struct, resolutions, definitions) {
+    if let Some(def_id) = find_item_def(struct_def.name.span, resolutions) {
         // Register generic parameter types before lowering field types.
         let generic_param_def_ids = collect_generic_params(&struct_def.generics, table, builtins, definitions, resolutions, diagnostics);
 
@@ -140,7 +133,7 @@ fn collect_enum(
     resolutions: Option<&ResolutionMap>,
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
-    if let Some(def_id) = find_item_def(enum_def.name.span, enum_def.name.name, &DefinitionKind::Enum, resolutions, definitions) {
+    if let Some(def_id) = find_item_def(enum_def.name.span, resolutions) {
         // Register generic parameter types before lowering variant field types.
         let generic_param_def_ids = collect_generic_params(&enum_def.generics, table, builtins, definitions, resolutions, diagnostics);
 
@@ -188,7 +181,7 @@ fn collect_const(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     let ty = lower_type_expr(&const_def.ty, table, builtins, definitions, resolutions, diagnostics);
-    if let Some(def_id) = find_item_def(const_def.name.span, const_def.name.name, &DefinitionKind::Const, resolutions, definitions) {
+    if let Some(def_id) = find_item_def(const_def.name.span, resolutions) {
         table.set_def_type(def_id, ty);
     }
 }
@@ -203,7 +196,7 @@ fn collect_type_alias(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     let ty = lower_type_expr(&alias_def.ty, table, builtins, definitions, resolutions, diagnostics);
-    if let Some(def_id) = find_item_def(alias_def.name.span, alias_def.name.name, &DefinitionKind::TypeAlias, resolutions, definitions) {
+    if let Some(def_id) = find_item_def(alias_def.name.span, resolutions) {
         table.set_def_type(def_id, ty);
     }
 }
@@ -218,7 +211,7 @@ fn collect_type_def(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     let ty = lower_type_expr(&type_def.ty, table, builtins, definitions, resolutions, diagnostics);
-    if let Some(def_id) = find_item_def(type_def.name.span, type_def.name.name, &DefinitionKind::TypeDef, resolutions, definitions) {
+    if let Some(def_id) = find_item_def(type_def.name.span, resolutions) {
         table.set_def_type(def_id, ty);
     }
 }
@@ -231,12 +224,12 @@ fn collect_interface(
     iface: &InterfaceDef,
     table: &mut TypeTable,
     _builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
+    _definitions: &DefinitionTable,
     resolutions: Option<&ResolutionMap>,
     _diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     // Register the interface type itself
-    if let Some(def_id) = find_item_def(iface.name.span, iface.name.name, &DefinitionKind::Interface, resolutions, definitions) {
+    if let Some(def_id) = find_item_def(iface.name.span, resolutions) {
         let iface_type = table.intern(Ty::Param(def_id));
         table.set_def_type(def_id, iface_type);
     }
@@ -263,7 +256,7 @@ fn collect_binding(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     // Find the bound type's DefId
-    let type_def_id = find_type_def_from_binding_ty(&binding.ty, definitions);
+    let type_def_id = find_type_def_from_binding_ty(&binding.ty, resolutions);
     if type_def_id.is_dummy() {
         return;
     }
@@ -272,7 +265,7 @@ fn collect_binding(
 
     for target in &binding.bindings {
         // Validate interface requirements
-        let interface_def_id = find_type_def_from_binding_ty(&target.interface, definitions);
+        let interface_def_id = find_type_def_from_binding_ty(&target.interface, resolutions);
         if !interface_def_id.is_dummy() {
             table.add_interface_binding(type_def_id, interface_def_id);
             validate_interface_methods(interface_def_id, &target.methods, definitions, diagnostics);
@@ -314,7 +307,7 @@ fn collect_binding(
 
                 // Register parameter types
                 for (i, param) in method.params.iter().enumerate() {
-                    if let Some(param_def) = find_param_def(param.name.name, method_def_id, definitions) {
+                    if let Some(param_def) = find_param_def(param.name.span, resolutions) {
                         table.set_def_type(param_def, param_types[i]);
                     }
                 }
@@ -340,16 +333,11 @@ fn collect_binding(
 /// Finds the type `DefId` referenced by a binding's type expression.
 fn find_type_def_from_binding_ty(
     ty: &spark_ast::TypeExpr,
-    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
 ) -> DefId {
     if let spark_ast::TypeExprKind::Named { path, .. } = &ty.kind {
-        if path.is_simple() {
-            let name = path.segments[0].name;
-            // Search for Struct or Enum or Interface with this name
-            return definitions
-                .iter()
-                .find(|(_, info)| info.name == name && info.kind.is_type())
-                .map_or(DefId::DUMMY, |(id, _)| id);
+        if let Some(def_id) = resolutions.and_then(|r| r.get_path(path.span)) {
+            return def_id;
         }
     }
     DefId::DUMMY
@@ -501,47 +489,20 @@ fn lower_generic_constraint(
 
 // === Helper functions for finding DefIds ===
 
-/// Finds the `DefId` for a top-level item, preferring the resolver's binding
-/// map (which is file-scoped and correct in multi-file workspaces) and falling
-/// back to a name+kind scan for single-file tests without resolution data.
+/// Finds the `DefId` for a top-level item using the resolver's binding map.
 fn find_item_def(
     name_span: spark_span::Span,
-    name: spark_intern::Symbol,
-    kind: &DefinitionKind,
     resolutions: Option<&ResolutionMap>,
-    definitions: &DefinitionTable,
 ) -> Option<DefId> {
-    // Prefer the resolution map — it already resolved this name to the
-    // correct per-file DefId during name resolution.
-    if let Some(def_id) = resolutions.and_then(|r| r.get_binding(name_span)) {
-        return Some(def_id);
-    }
-    // Fallback: linear scan by name (works for single-file tests).
-    find_def_by_name_and_kind(name, kind, definitions)
+    resolutions.and_then(|r| r.get_binding(name_span))
 }
 
-/// Finds a definition by name and kind in the definition table.
-fn find_def_by_name_and_kind(
-    name: spark_intern::Symbol,
-    kind: &DefinitionKind,
-    definitions: &DefinitionTable,
-) -> Option<DefId> {
-    definitions
-        .iter()
-        .find(|(_, info)| info.name == name && &info.kind == kind)
-        .map(|(id, _)| id)
-}
-
-/// Finds a parameter definition within a function.
+/// Finds a parameter definition using the resolver's binding map.
 fn find_param_def(
-    name: spark_intern::Symbol,
-    _parent_fn: DefId,
-    definitions: &DefinitionTable,
+    name_span: spark_span::Span,
+    resolutions: Option<&ResolutionMap>,
 ) -> Option<DefId> {
-    definitions
-        .iter()
-        .find(|(_, info)| info.name == name && matches!(info.kind, DefinitionKind::Parameter))
-        .map(|(id, _)| id)
+    resolutions.and_then(|r| r.get_binding(name_span))
 }
 
 /// Finds a struct field definition.
@@ -580,7 +541,7 @@ mod tests {
     use spark_intern::sym;
     use spark_modules::ModulePath;
     use spark_resolve::{DefinitionInfo, Visibility};
-    use spark_span::Span;
+    use spark_span::{FileId, Span};
 
     fn int_type() -> TypeExpr {
         TypeExpr::new(
@@ -592,7 +553,6 @@ mod tests {
         )
     }
 
-
     #[test]
     fn collect_function_signature() {
         let mut table = crate::table::TypeTable::new();
@@ -600,40 +560,50 @@ mod tests {
         let mut defs = DefinitionTable::new();
         let mut diags = Diagnostics::new();
 
-        // Register a function definition
+        let file = FileId::new(0);
+        let fn_span = Span::new(file, 0, 3);
+        let param_a_span = Span::new(file, 4, 5);
+        let param_b_span = Span::new(file, 7, 8);
+
+        // Register definitions with unique spans
         let fn_def_id = defs.insert(DefinitionInfo::new(
             DefinitionKind::Function,
             sym("add"),
-            Span::DUMMY,
+            fn_span,
             Visibility::Public,
             ModulePath::root(),
         ));
 
-        // Register parameter definitions
-        defs.insert(DefinitionInfo::new(
+        let param_a_def_id = defs.insert(DefinitionInfo::new(
             DefinitionKind::Parameter,
             sym("a"),
-            Span::DUMMY,
+            param_a_span,
             Visibility::Private,
             ModulePath::root(),
         ));
-        defs.insert(DefinitionInfo::new(
+        let param_b_def_id = defs.insert(DefinitionInfo::new(
             DefinitionKind::Parameter,
             sym("b"),
-            Span::DUMMY,
+            param_b_span,
             Visibility::Private,
             ModulePath::root(),
         ));
+
+        // Build the resolution map
+        let mut resolutions = ResolutionMap::new();
+        resolutions.record_binding(fn_span, fn_def_id);
+        resolutions.record_binding(param_a_span, param_a_def_id);
+        resolutions.record_binding(param_b_span, param_b_def_id);
 
         let func = FunctionDef {
             visibility: spark_ast::Visibility::Public,
             is_async: false,
             is_extern: false,
-            name: Ident::dummy(sym("add")),
+            name: Ident::new(sym("add"), fn_span),
             generics: vec![],
             params: vec![
-                FnParam::new(Ident::dummy(sym("a")), int_type(), Span::DUMMY),
-                FnParam::new(Ident::dummy(sym("b")), int_type(), Span::DUMMY),
+                FnParam::new(Ident::new(sym("a"), param_a_span), int_type(), param_a_span),
+                FnParam::new(Ident::new(sym("b"), param_b_span), int_type(), param_b_span),
             ],
             ret_type: int_type(),
             body: None,
@@ -643,7 +613,7 @@ mod tests {
         };
 
         let item = Item::Function(func);
-        collect_item(&item, &mut table, &builtins, &defs, None, &mut diags);
+        collect_item(&item, &mut table, &builtins, &defs, Some(&resolutions), &mut diags);
 
         assert!(!diags.has_errors());
         let fn_ty = table.get_def_type(fn_def_id).unwrap();
@@ -657,10 +627,13 @@ mod tests {
         let mut defs = DefinitionTable::new();
         let mut diags = Diagnostics::new();
 
+        let file = FileId::new(0);
+        let struct_span = Span::new(file, 0, 4);
+
         let struct_def_id = defs.insert(DefinitionInfo::new(
             DefinitionKind::Struct,
             sym("User"),
-            Span::DUMMY,
+            struct_span,
             Visibility::Public,
             ModulePath::root(),
         ));
@@ -673,9 +646,13 @@ mod tests {
             ModulePath::root(),
         ));
 
+        // Build the resolution map
+        let mut resolutions = ResolutionMap::new();
+        resolutions.record_binding(struct_span, struct_def_id);
+
         let struct_item = StructDef {
             visibility: spark_ast::Visibility::Public,
-            name: Ident::dummy(sym("User")),
+            name: Ident::new(sym("User"), struct_span),
             generics: vec![],
             fields: vec![StructField::new(
                 Ident::dummy(sym("name")),
@@ -693,7 +670,7 @@ mod tests {
         };
 
         let item = Item::Struct(struct_item);
-        collect_item(&item, &mut table, &builtins, &defs, None, &mut diags);
+        collect_item(&item, &mut table, &builtins, &defs, Some(&resolutions), &mut diags);
 
         assert!(!diags.has_errors());
         let fields = table.get_struct_fields(struct_def_id).unwrap();

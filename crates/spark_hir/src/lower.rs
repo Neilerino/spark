@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use spark_ast::Item;
 use spark_diagnostics::Diagnostics;
-use spark_resolve::{DefId, DefinitionKind, DefinitionTable, ResolvedAst, ResolutionMap};
+use spark_resolve::{DefId, DefinitionTable, ResolvedAst, ResolutionMap};
 use spark_span::FileId;
 use spark_types::{TypeId, TypeTable};
 
@@ -96,8 +96,8 @@ impl<'a> Lowerer<'a> {
         resolutions: Option<&ResolutionMap>,
         hir: &mut Hir,
     ) {
-        let def_id = self
-            .find_def_by_name_and_kind(func.name.name, &DefinitionKind::Function)
+        let def_id = resolutions
+            .and_then(|res| res.get_binding(func.name.span))
             .unwrap_or(DefId::DUMMY);
 
         if def_id.is_dummy() {
@@ -148,8 +148,8 @@ impl<'a> Lowerer<'a> {
         resolutions: Option<&ResolutionMap>,
         hir: &mut Hir,
     ) {
-        let def_id = self
-            .find_def_by_name_and_kind(const_def.name.name, &DefinitionKind::Const)
+        let def_id = resolutions
+            .and_then(|res| res.get_binding(const_def.name.span))
             .unwrap_or(DefId::DUMMY);
 
         if def_id.is_dummy() {
@@ -258,15 +258,4 @@ impl<'a> Lowerer<'a> {
             .collect()
     }
 
-    /// Finds a definition by name and kind.
-    fn find_def_by_name_and_kind(
-        &self,
-        name: spark_intern::Symbol,
-        kind: &DefinitionKind,
-    ) -> Option<DefId> {
-        self.definitions
-            .iter()
-            .find(|(_, info)| info.name == name && &info.kind == kind)
-            .map(|(id, _)| id)
-    }
 }

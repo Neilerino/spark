@@ -760,6 +760,11 @@ const fn align_to_u32(offset: u32, align: u32) -> u32 {
 
 /// Returns the linker name for a function.
 ///
+/// Names are module-qualified to avoid collisions when different modules
+/// define functions with the same name (e.g. `spark.io::lastError` vs
+/// `spark.net::lastError`). The `main` function keeps its bare name
+/// as the program entry point.
+///
 /// Binding methods are mangled as `TypeName$method_name` to avoid clashing
 /// with free functions that share the same name in the same module.
 fn function_name(def_id: DefId, definitions: &DefinitionTable) -> String {
@@ -768,13 +773,22 @@ fn function_name(def_id: DefId, definitions: &DefinitionTable) -> String {
         .map_or_else(
             || format!("__spark_fn_{}", def_id.as_u32()),
             |info| {
+                let name = info.name.as_str();
                 if let spark_resolve::DefinitionKind::BindingMethod(type_def_id) = info.kind {
                     let type_name = definitions
                         .get(type_def_id)
                         .map_or("?", |t| t.name.as_str());
-                    format!("{}${}", type_name, info.name.as_str())
+                    if info.module.is_root() {
+                        format!("{type_name}${name}")
+                    } else {
+                        format!("{}::{type_name}${name}", info.module)
+                    }
+                } else if name == "main" {
+                    "main".to_string()
+                } else if info.module.is_root() {
+                    name.to_string()
                 } else {
-                    info.name.as_str().to_string()
+                    format!("{}::{name}", info.module)
                 }
             },
         )
