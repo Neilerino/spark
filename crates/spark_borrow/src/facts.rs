@@ -108,7 +108,53 @@ pub fn extract_facts(func: &MirFunction) -> BorrowFacts {
         );
     }
 
+    // Resolve move chains for ref_locals. When a loan's ref_local is
+    // immediately moved to another local (e.g. `_3 = Ref(...); _4 = Move(_3)`),
+    // update the ref_local to the final destination. This ensures the region
+    // analysis tracks the actual local holding the reference, not just the temp.
+    resolve_ref_local_moves(func, &mut facts);
+
     facts
+}
+
+/// Resolves move chains for loan ref_locals.
+///
+/// When the MIR lowering creates `_tmp = Ref(...)` followed by
+/// `_user = Move(_tmp)`, the loan's `ref_local` should be the user variable
+/// `_user`, not the temp `_tmp`. This matters for region analysis (liveness
+/// of the ref local) and mutation checking.
+fn resolve_ref_local_moves(func: &MirFunction, facts: &mut BorrowFacts) {
+    // Build a map: source -> destination for move-only assignments.
+    // Only consider simple moves: `_dest = Move(_src)` with no projections.
+    let mut move_chain: rustc_hash::FxHashMap<Local, Local> = rustc_hash::FxHashMap::default();
+
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if let Statement::Assign { place, rvalue, .. } = stmt {
+                if place.projections.is_empty() {
+                    if let Rvalue::Use(Operand::Move(src)) = rvalue {
+                        if src.projections.is_empty() {
+                            move_chain.insert(src.local, place.local);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Follow chains for each loan's ref_local.
+    for loan in &mut facts.loans {
+        let mut current = loan.ref_local;
+        // Follow at most a few hops to avoid infinite loops.
+        for _ in 0..8 {
+            if let Some(&next) = move_chain.get(&current) {
+                current = next;
+            } else {
+                break;
+            }
+        }
+        loan.ref_local = current;
+    }
 }
 
 /// Extracts facts from a single MIR statement.
@@ -267,8 +313,16 @@ fn collect_operand_uses(operand: &Operand, point: Point, facts: &mut BorrowFacts
     }
 }
 
-/// Collects locals used in place projections (e.g., indexing).
+/// Collects locals used in place projections (e.g., indexing or deref).
+///
+/// When a place has projections, the base local is read to compute the
+/// projected address. For `Deref`, the pointer value is read; for `Index`,
+/// the index local is read.
 fn collect_place_uses(place: &Place, point: Point, facts: &mut BorrowFacts) {
+    if !place.projections.is_empty() {
+        // The base local is read when it has projections (e.g. `_1.*` reads _1).
+        facts.uses.push((point, place.local));
+    }
     for proj in &place.projections {
         if let Projection::Index(idx_local) = proj {
             facts.uses.push((point, *idx_local));

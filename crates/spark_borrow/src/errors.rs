@@ -86,6 +86,48 @@ pub fn emit_mutation_through_immutable_ref(
     );
 }
 
+/// Emits a diagnostic for returning a reference to a local variable.
+pub fn emit_dangling_return(
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    loan: &Loan,
+    func: &MirFunction,
+) {
+    let borrow_span = span_for_point(loan.issued_at, func);
+    let name = local_name(loan.place.local, func);
+
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "cannot return reference to local variable `{name}`"
+        ))
+        .with_label(Label::primary(
+            borrow_span,
+            "borrows a value owned by the current function",
+        ))
+        .with_note("references to local variables become dangling after the function returns"),
+    );
+}
+
+/// Emits a diagnostic for passing aliasing mutable references to a function.
+pub fn emit_aliasing_call_args(
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    call_span: Span,
+    local: Local,
+    func: &MirFunction,
+) {
+    let name = local_name(local, func);
+
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "cannot pass `{name}` as multiple mutable references to the same function call"
+        ))
+        .with_label(Label::primary(
+            call_span,
+            "same mutable reference passed more than once",
+        ))
+        .with_note("this could allow aliasing mutable references inside the callee"),
+    );
+}
+
 /// Returns the span for a given program point.
 #[allow(clippy::cast_possible_truncation)]
 fn span_for_point(point: Point, func: &MirFunction) -> Span {

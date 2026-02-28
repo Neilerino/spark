@@ -289,8 +289,12 @@ fn find_runtime_lib() -> Result<PathBuf, ()> {
 fn link_object(object_bytes: &[u8], output_path: &Path) -> Result<(), ()> {
     let runtime_lib = find_runtime_lib()?;
 
-    // Write object to a temp file
-    let tmp_obj = std::env::temp_dir().join("spark_output.o");
+    // Write object to a unique temp file (avoid races when multiple spark
+    // processes link concurrently, e.g. during parallel test execution).
+    let tmp_obj = std::env::temp_dir().join(format!(
+        "spark_output_{}.o",
+        std::process::id()
+    ));
     if fs::write(&tmp_obj, object_bytes).is_err() {
         eprintln!("error: could not write object file");
         return Err(());

@@ -1,0 +1,6 @@
+fn main(): Int {
+    x: Int = 5
+    r: Ref[Int] = x
+    r = 10
+    return 0
+}

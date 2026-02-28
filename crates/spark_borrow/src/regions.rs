@@ -39,6 +39,13 @@ pub fn compute_regions(
 }
 
 /// Computes the region for a single loan.
+///
+/// A loan's region includes all points reachable from the issue point
+/// where the ref local is live. We check successor liveness rather than
+/// current-point liveness to handle the case where a ref is moved from
+/// a temp to a user variable (e.g. `_3 = Ref(...); _4 = Move(_3)`).
+/// At the move point, the ref_local (_4) is assigned (killed in live_in)
+/// but alive afterward, so we check if it's live at the successor.
 fn compute_loan_region(
     loan: &Loan,
     facts: &BorrowFacts,
@@ -53,10 +60,12 @@ fn compute_loan_region(
             continue;
         }
 
-        // Only extend to successors if the ref local is still live at this point.
-        if liveness.is_live_at(point, ref_local) || point == loan.issued_at {
-            for &(from, to) in &facts.cfg_edges {
-                if from == point && !points.contains(&to) {
+        for &(from, to) in &facts.cfg_edges {
+            if from == point && !points.contains(&to) {
+                // Extend to successor if:
+                // 1. This is the issue point (always extend), OR
+                // 2. The ref local is live at the successor point
+                if point == loan.issued_at || liveness.is_live_at(to, ref_local) {
                     worklist.push(to);
                 }
             }

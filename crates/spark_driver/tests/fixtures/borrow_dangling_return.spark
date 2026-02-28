@@ -1,0 +1,10 @@
+fn bad(): Ref[Int] {
+    x: Int = 42
+    return x
+}
+
+fn main(): Int {
+    val: Int = bad()
+    print(val)
+    return 0
+}

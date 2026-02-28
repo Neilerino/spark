@@ -38,9 +38,12 @@ pub fn lower_stmt(
                     if !matches!(table.resolve(value_stripped), Ty::Ref { .. })
                         && !lowered_value.ty.is_error()
                     {
-                        let ref_mut = *ref_mut;
+                        // Ref[T]! (Mutable(Ref)) means a mutable reference — the
+                        // `!` suffix on Ref controls borrow mutability.
+                        let is_outer_mutable = matches!(table.resolve(declared_ty), Ty::Mutable(_));
+                        let borrow_mutable = *ref_mut || is_outer_mutable;
                         lowered_value = HirExpr::new(
-                            HirExprKind::Borrow { operand: Box::new(lowered_value), mutable: ref_mut },
+                            HirExprKind::Borrow { operand: Box::new(lowered_value), mutable: borrow_mutable },
                             declared_ty, value.span,
                         );
                     }

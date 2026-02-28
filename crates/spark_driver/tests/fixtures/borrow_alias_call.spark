@@ -1,0 +1,12 @@
+fn swap(a: Ref[Int]!, b: Ref[Int]!): Void {
+    temp: Int = a
+    a = b
+    b = temp
+}
+
+fn main(): Int {
+    x: Int! = 5
+    r: Ref[Int]! = x
+    swap(r, r)
+    return 0
+}

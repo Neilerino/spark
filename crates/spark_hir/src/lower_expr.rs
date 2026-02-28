@@ -267,9 +267,23 @@ fn lower_expr_kind(
         ExprKind::Return(value) => HirExprKind::Return(
             value.as_ref().map(|v| {
                 let mut lowered = lower_expr(v, table, definitions, resolutions, diagnostics, current_fn_ret);
-                // Auto-deref if returning Ref[T] but function expects T
                 if let Some(ret_ty) = current_fn_ret {
                     let ret_stripped = strip_mutable_ty(ret_ty, table);
+                    // Auto-borrow: if function returns Ref[T] and value is T,
+                    // wrap in Borrow so the borrow checker can detect dangling refs.
+                    if let Ty::Ref { mutable: ref_mut, .. } = table.resolve(ret_stripped) {
+                        let val_stripped = strip_mutable_ty(lowered.ty, table);
+                        if !matches!(table.resolve(val_stripped), Ty::Ref { .. })
+                            && !lowered.ty.is_error()
+                        {
+                            lowered = HirExpr::new(
+                                HirExprKind::Borrow { operand: Box::new(lowered), mutable: *ref_mut },
+                                ret_ty, v.span,
+                            );
+                        }
+                    }
+                    // Auto-deref: if function returns T and value is Ref[T],
+                    // wrap in Deref.
                     if !matches!(table.resolve(ret_stripped), Ty::Ref { .. }) {
                         let val_stripped = strip_mutable_ty(lowered.ty, table);
                         if let Ty::Ref { inner, .. } = table.resolve(val_stripped) {

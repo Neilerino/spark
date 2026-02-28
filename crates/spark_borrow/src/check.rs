@@ -5,10 +5,11 @@
 //! - No use of a moved value
 //! - No borrow of a moved value
 //! - No mutation through an immutable reference
+//! - No returning a reference to a local variable
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use spark_mir::{Local, MirFunction, Place, Projection, Statement, Terminator};
+use spark_mir::{Local, MirFunction, Operand, Place, Projection, Rvalue, Statement, Terminator};
 
 use crate::errors;
 use crate::facts::{BorrowFacts, Loan, LoanId, Point};
@@ -25,6 +26,8 @@ pub fn check_borrows(
     check_use_after_move(func, facts, diagnostics);
     check_borrow_of_moved(func, facts, diagnostics);
     check_mutation_through_immutable_ref(func, facts, diagnostics);
+    check_dangling_returns(func, facts, diagnostics);
+    check_aliasing_call_args(func, facts, diagnostics);
 }
 
 /// Checks for conflicting borrows at each program point.
@@ -217,7 +220,7 @@ fn check_use_after_move(
 
         for &move_point in move_points {
             // Only report if the move happens before the use.
-            if is_before(move_point, use_point, func)
+            if is_before(move_point, use_point, facts)
                 && !has_intervening_assign(move_point, use_point, assigns, facts)
             {
                 errors::emit_use_after_move(diagnostics, use_point, move_point, local, func);
@@ -257,7 +260,7 @@ fn check_borrow_of_moved(
         let assigns = assigns_by_local.get(&borrowed_local);
 
         for &move_point in move_points {
-            if is_before(move_point, loan.issued_at, func)
+            if is_before(move_point, loan.issued_at, facts)
                 && !has_intervening_assign(move_point, loan.issued_at, assigns, facts)
             {
                 errors::emit_borrow_of_moved(diagnostics, loan, move_point, func);
@@ -295,6 +298,122 @@ fn check_mutation_through_immutable_ref(
                     );
                     errors::emit_mutation_through_immutable_ref(diagnostics, point, func);
                 }
+            }
+        }
+    }
+}
+
+/// Checks for returning a reference to a local variable.
+///
+/// A function that returns `Ref[T]` must not return a reference to a local
+/// variable, because the local's storage is freed when the function returns.
+/// References to function parameters are allowed (they outlive the callee).
+fn check_dangling_returns(
+    func: &MirFunction,
+    facts: &BorrowFacts,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) {
+    if facts.loans.is_empty() {
+        return;
+    }
+
+    // Build a reverse assignment chain: destination -> [sources].
+    // Tracks `dest = Copy(src)` and `dest = Move(src)` assignments.
+    // A destination may have multiple sources (different return paths).
+    let mut sources_of: FxHashMap<Local, Vec<Local>> = FxHashMap::default();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if let Statement::Assign { place, rvalue, .. } = stmt {
+                if place.projections.is_empty() {
+                    if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rvalue {
+                        if src.projections.is_empty() {
+                            sources_of
+                                .entry(place.local)
+                                .or_default()
+                                .push(src.local);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Build loan lookup by ref_local.
+    let loan_by_ref_local: FxHashMap<Local, &Loan> = facts
+        .loans
+        .iter()
+        .map(|loan| (loan.ref_local, loan))
+        .collect();
+
+    // Trace backwards from _0 (return place) through the assignment chain.
+    // If we find a local that holds a loan borrowing a non-parameter local,
+    // that's a dangling reference.
+    let mut worklist = vec![Local::RETURN_PLACE];
+    let mut visited = FxHashSet::default();
+    while let Some(current) = worklist.pop() {
+        if !visited.insert(current) {
+            continue;
+        }
+        if let Some(loan) = loan_by_ref_local.get(&current) {
+            let borrowed_local = loan.place.local;
+            // Parameters are locals 1..=param_count. Locals above that are
+            // function-scoped variables whose storage dies on return.
+            if borrowed_local.0 > func.param_count && borrowed_local != Local::RETURN_PLACE {
+                errors::emit_dangling_return(diagnostics, loan, func);
+                return;
+            }
+        }
+        if let Some(srcs) = sources_of.get(&current) {
+            for &src in srcs {
+                worklist.push(src);
+            }
+        }
+    }
+}
+
+/// Checks for aliasing mutable references at call sites.
+///
+/// If the same mutable-ref-holding local appears in two or more argument
+/// positions of a function call, the callee would have two `&mut` references
+/// to the same data — undefined behaviour.
+fn check_aliasing_call_args(
+    func: &MirFunction,
+    facts: &BorrowFacts,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) {
+    // Collect the set of locals that hold mutable references.
+    let mutable_ref_locals: FxHashSet<Local> = facts
+        .loans
+        .iter()
+        .filter(|loan| loan.mutable)
+        .map(|loan| loan.ref_local)
+        .collect();
+
+    if mutable_ref_locals.is_empty() {
+        return;
+    }
+
+    for block in &func.blocks {
+        if let Terminator::Call { args, span, .. } = &block.terminator {
+            // Collect (local, index) pairs for mutable-ref arguments.
+            let mut seen: FxHashMap<Local, usize> = FxHashMap::default();
+            for (i, arg) in args.iter().enumerate() {
+                let local = match arg {
+                    Operand::Copy(place) | Operand::Move(place)
+                        if place.projections.is_empty() =>
+                    {
+                        place.local
+                    }
+                    _ => continue,
+                };
+                if !mutable_ref_locals.contains(&local) {
+                    continue;
+                }
+                if seen.contains_key(&local) {
+                    errors::emit_aliasing_call_args(diagnostics, *span, local, func);
+                    break; // one error per call site
+                }
+                seen.insert(local, i);
             }
         }
     }
@@ -347,18 +466,52 @@ fn projections_equal(a: &Projection, b: &Projection) -> bool {
     }
 }
 
-/// Returns true if `before` comes before `after` in the same function.
+/// Returns true if `before` can reach `after` through the CFG.
 ///
-/// Simple heuristic: same block with lower index, or different block where
-/// `before` can reach `after` (we use the issue order as a proxy).
-fn is_before(before: Point, after: Point, _func: &MirFunction) -> bool {
+/// Within the same block, compares statement indices. Across blocks,
+/// uses actual CFG edge reachability via BFS.
+fn is_before(before: Point, after: Point, facts: &BorrowFacts) -> bool {
     if before.block == after.block {
         return before.index < after.index;
     }
-    // Cross-block: use block ID as a rough ordering heuristic.
-    // A proper implementation would do reachability, but for the common
-    // case (straight-line code, simple control flow) this suffices.
-    before.block.0 < after.block.0
+    block_can_reach(before.block, after.block, facts)
+}
+
+/// Returns true if block `from` can reach block `to` via CFG edges.
+fn block_can_reach(
+    from: spark_mir::BlockId,
+    to: spark_mir::BlockId,
+    facts: &BorrowFacts,
+) -> bool {
+    // Build block-level successors from CFG edges.
+    let mut successors: FxHashMap<spark_mir::BlockId, Vec<spark_mir::BlockId>> =
+        FxHashMap::default();
+    for &(p_from, p_to) in &facts.cfg_edges {
+        if p_from.block != p_to.block {
+            successors
+                .entry(p_from.block)
+                .or_default()
+                .push(p_to.block);
+        }
+    }
+
+    // BFS from `from` to `to`.
+    let mut visited = FxHashSet::default();
+    let mut worklist = vec![from];
+    while let Some(block) = worklist.pop() {
+        if block == to {
+            return true;
+        }
+        if !visited.insert(block) {
+            continue;
+        }
+        if let Some(succs) = successors.get(&block) {
+            for &succ in succs {
+                worklist.push(succ);
+            }
+        }
+    }
+    false
 }
 
 /// Returns true if there is an assignment to the local between two points.
@@ -366,15 +519,14 @@ fn has_intervening_assign(
     move_point: Point,
     use_point: Point,
     assigns: Option<&FxHashSet<Point>>,
-    _facts: &BorrowFacts,
+    facts: &BorrowFacts,
 ) -> bool {
     let Some(assigns) = assigns else {
         return false;
     };
 
-    // Simple check: is there an assignment at a point between the two?
     for &assign_point in assigns {
-        if is_between(move_point, assign_point, use_point) {
+        if is_between(move_point, assign_point, use_point, facts) {
             return true;
         }
     }
@@ -382,22 +534,25 @@ fn has_intervening_assign(
     false
 }
 
-/// Returns true if `middle` is between `before` and `after`.
-fn is_between(before: Point, middle: Point, after: Point) -> bool {
-    // Same block case.
+/// Returns true if `middle` is between `before` and `after` in the CFG.
+fn is_between(before: Point, middle: Point, after: Point, facts: &BorrowFacts) -> bool {
+    // Same block: simple index comparison.
     if before.block == middle.block && middle.block == after.block {
         return before.index < middle.index && middle.index < after.index;
     }
 
-    // Cross-block: rough ordering by block ID.
+    // Cross-block: check if before→middle and middle→after are both reachable.
     if before.block == middle.block {
-        return middle.index > before.index && middle.block.0 <= after.block.0;
+        return middle.index > before.index
+            && block_can_reach(middle.block, after.block, facts);
     }
     if middle.block == after.block {
-        return middle.index < after.index && before.block.0 <= middle.block.0;
+        return middle.index < after.index
+            && block_can_reach(before.block, middle.block, facts);
     }
 
-    before.block.0 < middle.block.0 && middle.block.0 < after.block.0
+    block_can_reach(before.block, middle.block, facts)
+        && block_can_reach(middle.block, after.block, facts)
 }
 
 #[cfg(test)]
@@ -1336,6 +1491,162 @@ mod tests {
         assert!(
             !diags.has_errors(),
             "Reborrow with original still used: currently not caught (known limitation)"
+        );
+    }
+
+    #[test]
+    fn dangling_return_local_error() {
+        // fn f(): Ref[Int] { x = 42; _2 = Ref(x); _0 = Copy(_2); return }
+        // Returning a reference to local `x` — should be an error.
+        let func = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 0,
+            return_type: TypeId::ERROR,
+            locals: vec![
+                LocalDecl { local: Local(0), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl { local: Local(1), ty: TypeId::ERROR, name: Some(spark_intern::sym("x")), is_user_variable: true, mutable: false, span: Span::DUMMY },
+                LocalDecl { local: Local(2), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+            ],
+            blocks: vec![BasicBlock {
+                statements: vec![
+                    Statement::Assign {
+                        place: Place::from_local(Local(1)),
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(42))),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(2)),
+                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::Use(Operand::Copy(Place::from_local(Local(2)))),
+                        span: Span::DUMMY,
+                    },
+                ],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+
+        let diags = check_func(&func);
+        assert!(
+            diags.has_errors(),
+            "Returning a reference to a local variable should be an error"
+        );
+    }
+
+    #[test]
+    fn aliasing_call_args_error() {
+        // fn f(a: Ref[T]!, b: Ref[T]!) { ... }
+        // MIR for the caller:
+        // _1 = const 42
+        // _2 = Ref(_1) mut
+        //   call f(Copy(_2), Copy(_2)) -> bb1  ← same mutable ref in both args
+        // bb1: _0 = void; return
+        let func = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 0,
+            return_type: TypeId::ERROR,
+            locals: (0..4).map(|i| LocalDecl {
+                local: Local(i),
+                ty: TypeId::ERROR,
+                name: if i == 1 { Some(spark_intern::sym("x")) } else if i == 2 { Some(spark_intern::sym("r")) } else { None },
+                is_user_variable: i > 0,
+                mutable: i >= 1,
+                span: Span::DUMMY,
+            }).collect(),
+            blocks: vec![
+                BasicBlock {
+                    statements: vec![
+                        Statement::Assign {
+                            place: Place::from_local(Local(1)),
+                            rvalue: Rvalue::Use(Operand::Constant(Constant::Int(42))),
+                            span: Span::DUMMY,
+                        },
+                        Statement::Assign {
+                            place: Place::from_local(Local(2)),
+                            rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                            span: Span::DUMMY,
+                        },
+                    ],
+                    terminator: Terminator::Call {
+                        func: Operand::Constant(Constant::Void),
+                        args: vec![
+                            Operand::Copy(Place::from_local(Local(2))),
+                            Operand::Copy(Place::from_local(Local(2))),
+                        ],
+                        destination: Place::from_local(Local(3)),
+                        target: spark_mir::BlockId(1),
+                        span: Span::DUMMY,
+                    },
+                    is_cleanup: false,
+                },
+                BasicBlock {
+                    statements: vec![Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Void)),
+                        span: Span::DUMMY,
+                    }],
+                    terminator: Terminator::Return,
+                    is_cleanup: false,
+                },
+            ],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+
+        let diags = check_func(&func);
+        assert!(
+            diags.has_errors(),
+            "Passing the same mutable ref twice to a call should be an error"
+        );
+    }
+
+    #[test]
+    fn return_ref_to_param_ok() {
+        // fn f(x: Int): Ref[Int] { _2 = Ref(_1); _0 = Copy(_2); return }
+        // Returning a reference to parameter `x` — should be allowed.
+        let func = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 1,
+            return_type: TypeId::ERROR,
+            locals: vec![
+                LocalDecl { local: Local(0), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl { local: Local(1), ty: TypeId::ERROR, name: Some(spark_intern::sym("x")), is_user_variable: true, mutable: false, span: Span::DUMMY },
+                LocalDecl { local: Local(2), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+            ],
+            blocks: vec![BasicBlock {
+                statements: vec![
+                    Statement::Assign {
+                        place: Place::from_local(Local(2)),
+                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::Use(Operand::Copy(Place::from_local(Local(2)))),
+                        span: Span::DUMMY,
+                    },
+                ],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+
+        let diags = check_func(&func);
+        assert!(
+            !diags.has_errors(),
+            "Returning a reference to a parameter should be allowed: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 }

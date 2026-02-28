@@ -750,3 +750,30 @@ fn generic_constraint_fail() {
 fn generic_constraint_structural_fail() {
     assert_compile_error("generic_constraint_structural_fail.spark", "missing required field");
 }
+
+// ── Borrow checker tests ───────────────────────────────────────────────
+
+#[test]
+fn borrow_double_mut() {
+    assert_compile_error("borrow_double_mut.spark", "cannot borrow value as mutable more than once");
+}
+
+#[test]
+fn borrow_mut_immut() {
+    assert_compile_error("borrow_mut_immut.spark", "cannot borrow value as mutable because it is also borrowed as immutable");
+}
+
+#[test]
+fn borrow_immut_assign() {
+    assert_compile_error("borrow_immut_assign.spark", "cannot assign to immutable variable");
+}
+
+#[test]
+fn borrow_dangling_return() {
+    assert_compile_error("borrow_dangling_return.spark", "cannot return reference to local variable");
+}
+
+#[test]
+fn borrow_alias_call() {
+    assert_compile_error("borrow_alias_call.spark", "cannot pass");
+}
