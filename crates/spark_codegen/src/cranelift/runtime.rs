@@ -15,19 +15,19 @@ pub struct RuntimeStubs {
     pub string_new: FuncId,
     /// `__spark_string_from_literal(data: ptr, len: i64) -> ptr`
     pub string_from_literal: FuncId,
-    /// `__spark_list_new(elem_size: i64) -> ptr`
+    /// `__spark_list_new(elem_size: i64, elem_drop: ptr) -> ptr`
     pub list_new: FuncId,
     /// `__spark_list_push(list: ptr, elem_ptr: ptr) -> void`
     pub list_push: FuncId,
     /// `__spark_list_get(list: ptr, index: i64) -> ptr`
     pub list_get: FuncId,
-    /// `__spark_map_new(key_size: i64, value_size: i64) -> ptr`
+    /// `__spark_map_new(key_size: i64, value_size: i64, key_drop: ptr, val_drop: ptr) -> ptr`
     pub map_new: FuncId,
     /// `__spark_map_insert(map: ptr, key_ptr: ptr, value_ptr: ptr) -> void`
     pub map_insert: FuncId,
     /// `__spark_map_get(map: ptr, key_ptr: ptr) -> ptr`
     pub map_get: FuncId,
-    /// `__spark_set_new(elem_size: i64) -> ptr`
+    /// `__spark_set_new(elem_size: i64, elem_drop: ptr) -> ptr`
     pub set_new: FuncId,
     /// `__spark_set_insert(set: ptr, elem_ptr: ptr) -> void`
     pub set_insert: FuncId,
@@ -37,35 +37,35 @@ pub struct RuntimeStubs {
     pub rc_inc: FuncId,
     /// `__spark_string_rc_dec(ptr) -> void`
     pub string_rc_dec: FuncId,
-    /// `__spark_list_rc_dec(ptr, i8) -> void`
+    /// `__spark_list_rc_dec(ptr) -> void`
     pub list_rc_dec: FuncId,
-    /// `__spark_map_rc_dec(ptr, i8, i8) -> void`
+    /// `__spark_map_rc_dec(ptr) -> void`
     pub map_rc_dec: FuncId,
-    /// `__spark_set_rc_dec(ptr, i8) -> void`
+    /// `__spark_set_rc_dec(ptr) -> void`
     pub set_rc_dec: FuncId,
     /// `__spark_string_cow(ptr) -> ptr`
     pub string_cow: FuncId,
-    /// `__spark_list_cow(ptr, i8) -> ptr`
+    /// `__spark_list_cow(ptr) -> ptr`
     pub list_cow: FuncId,
-    /// `__spark_map_cow(ptr, i8, i8) -> ptr`
+    /// `__spark_map_cow(ptr) -> ptr`
     pub map_cow: FuncId,
     /// `__spark_list_len(ptr) -> i64`
     pub list_len: FuncId,
     /// `__spark_list_contains(ptr, ptr) -> i8`
     pub list_contains: FuncId,
-    /// `__spark_list_remove(ptr, i64, i8) -> void`
+    /// `__spark_list_remove(ptr, i64) -> void`
     pub list_remove: FuncId,
     /// `__spark_map_len(ptr) -> i64`
     pub map_len: FuncId,
     /// `__spark_map_contains(ptr, ptr) -> i8`
     pub map_contains: FuncId,
-    /// `__spark_map_remove(ptr, ptr, i8, i8) -> void`
+    /// `__spark_map_remove(ptr, ptr) -> void`
     pub map_remove: FuncId,
     /// `__spark_set_len(ptr) -> i64`
     pub set_len: FuncId,
     /// `__spark_set_contains(ptr, ptr) -> i8`
     pub set_contains: FuncId,
-    /// `__spark_set_remove(ptr, ptr, i8) -> void`
+    /// `__spark_set_remove(ptr, ptr) -> void`
     pub set_remove: FuncId,
     /// `__spark_string_len(ptr) -> i64`
     pub string_len: FuncId,
@@ -155,7 +155,7 @@ impl RuntimeStubs {
             list_new: declare_fn(
                 module,
                 "__spark_list_new",
-                &[types::I64],
+                &[types::I64, ptr_type],
                 Some(ptr_type),
                 call_conv,
             ),
@@ -176,7 +176,7 @@ impl RuntimeStubs {
             map_new: declare_fn(
                 module,
                 "__spark_map_new",
-                &[types::I64, types::I64],
+                &[types::I64, types::I64, ptr_type, ptr_type],
                 Some(ptr_type),
                 call_conv,
             ),
@@ -197,7 +197,7 @@ impl RuntimeStubs {
             set_new: declare_fn(
                 module,
                 "__spark_set_new",
-                &[types::I64],
+                &[types::I64, ptr_type],
                 Some(ptr_type),
                 call_conv,
             ),
@@ -220,21 +220,21 @@ impl RuntimeStubs {
             list_rc_dec: declare_fn(
                 module,
                 "__spark_list_rc_dec",
-                &[ptr_type, types::I8],
+                &[ptr_type],
                 None,
                 call_conv,
             ),
             map_rc_dec: declare_fn(
                 module,
                 "__spark_map_rc_dec",
-                &[ptr_type, types::I8, types::I8],
+                &[ptr_type],
                 None,
                 call_conv,
             ),
             set_rc_dec: declare_fn(
                 module,
                 "__spark_set_rc_dec",
-                &[ptr_type, types::I8],
+                &[ptr_type],
                 None,
                 call_conv,
             ),
@@ -248,14 +248,14 @@ impl RuntimeStubs {
             list_cow: declare_fn(
                 module,
                 "__spark_list_cow",
-                &[ptr_type, types::I8],
+                &[ptr_type],
                 Some(ptr_type),
                 call_conv,
             ),
             map_cow: declare_fn(
                 module,
                 "__spark_map_cow",
-                &[ptr_type, types::I8, types::I8],
+                &[ptr_type],
                 Some(ptr_type),
                 call_conv,
             ),
@@ -276,7 +276,7 @@ impl RuntimeStubs {
             list_remove: declare_fn(
                 module,
                 "__spark_list_remove",
-                &[ptr_type, types::I64, types::I8],
+                &[ptr_type, types::I64],
                 None,
                 call_conv,
             ),
@@ -297,7 +297,7 @@ impl RuntimeStubs {
             map_remove: declare_fn(
                 module,
                 "__spark_map_remove",
-                &[ptr_type, ptr_type, types::I8, types::I8],
+                &[ptr_type, ptr_type],
                 None,
                 call_conv,
             ),
@@ -318,7 +318,7 @@ impl RuntimeStubs {
             set_remove: declare_fn(
                 module,
                 "__spark_set_remove",
-                &[ptr_type, ptr_type, types::I8],
+                &[ptr_type, ptr_type],
                 None,
                 call_conv,
             ),

@@ -39,9 +39,16 @@ fn run_spark(fixture: &str) -> SparkOutput {
 
     let spark_bin = env!("CARGO_BIN_EXE_spark");
 
+    // Set SPARK_RUNTIME_DIR so the driver finds the correct libspark_runtime.a
+    // in the same directory as the spark binary (avoids stale copies in worktrees).
+    let runtime_dir = Path::new(spark_bin)
+        .parent()
+        .expect("spark binary has no parent dir");
+
     let output = Command::new(spark_bin)
         .arg("run")
         .arg(&fixture_path)
+        .env("SPARK_RUNTIME_DIR", runtime_dir)
         .output()
         .expect("failed to run spark binary");
 
@@ -70,9 +77,14 @@ fn run_spark_project(project: &str) -> SparkOutput {
 
     let spark_bin = env!("CARGO_BIN_EXE_spark");
 
+    let runtime_dir = Path::new(spark_bin)
+        .parent()
+        .expect("spark binary has no parent dir");
+
     let output = Command::new(spark_bin)
         .arg("run")
         .arg(&project_path)
+        .env("SPARK_RUNTIME_DIR", runtime_dir)
         .output()
         .expect("failed to run spark binary");
 
@@ -228,6 +240,21 @@ fn list_append() {
 #[test]
 fn list_contains() {
     assert_output("list_contains.spark", "true\nfalse");
+}
+
+#[test]
+fn nested_list_string() {
+    assert_output("nested_list_string.spark", "2");
+}
+
+#[test]
+fn nested_map_string_list() {
+    assert_output("nested_map_string_list.spark", "2");
+}
+
+#[test]
+fn nested_list_deep() {
+    assert_output("nested_list_deep.spark", "1");
 }
 
 #[test]

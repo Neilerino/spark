@@ -70,6 +70,38 @@ these tags automatically — open the tree view to jump between tasks and their 
   the base local of a projected assignment (e.g., `_9.*`) as read. Fix: add `place.local` to the
   used set when `place.projections` is non-empty. E2E test: `ref_mutparam.spark`.
 
+### `BUG` [SPARK-031] — Nested RC decrement only frees one level deep (memory leak)
+
+- **Type**: bug
+- **Effort**: high
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_runtime, spark_codegen, spark_drop
+- **Files**:
+  - `crates/spark_runtime/src/lib.rs` — `__spark_list_rc_dec` and `__spark_map_rc_dec` only decrement
+    direct child pointers' RC fields; if a child reaches RC 0, its contents are never freed
+- **Description**: When a `List[List[String]]` is freed, the outer list decrements each inner list's
+  RC. But if an inner list reaches RC 0, nothing frees its data buffer or decrements the strings it
+  contains — they leak. Acknowledged in source: "nested RC dec is one level deep". Fix requires
+  either generating typed destructor functions at compile time (similar to closure env destructors)
+  or a runtime type-dispatch table so `rc_dec` can recursively free arbitrarily nested RC types.
+
+### `BUG` [SPARK-033] — List sort only works correctly for i64 elements
+
+- **Type**: bug
+- **Effort**: medium
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_runtime
+- **Files**:
+  - `crates/spark_runtime/src/lib.rs` — `__spark_list_sort` casts all elements to `i64` and sorts
+    as integers
+- **Description**: `__spark_list_sort` reinterprets every element as `i64` regardless of actual type.
+  Sorting a `List[Float]` produces wrong ordering (IEEE 754 bit patterns ≠ numeric order for
+  negatives), and sorting `List[String]` compares pointer addresses instead of string contents.
+  Needs a type-aware comparison: either pass a comparator function pointer from codegen, or pass a
+  type tag so the runtime can dispatch to the correct comparison logic.
+
 ---
 
 ## Priority 2 — Architecture / Performance
@@ -89,6 +121,54 @@ these tags automatically — open the tree view to jump between tasks and their 
   all parsed ASTs are deep-cloned before module resolution. Use `Rc`/`Arc` wrapping or refactor
   the pipeline to pass a single `CompilationContext` by `&mut` reference. Closely related to
   SPARK-004 — consider tackling together.
+
+### `PERF` [SPARK-030] — Map/Set O(n) linear scan → hash-based implementation
+
+- **Type**: performance
+- **Effort**: high
+- **Category**: performance
+- **Status**: open
+- **Crates**: spark_runtime
+- **Files**:
+  - `crates/spark_runtime/src/lib.rs` — `SparkMap` (lines 247-583) and `SparkSet` (lines 389-643)
+    use flat arrays with `memcmp` for every operation
+- **Description**: `SparkMap` stores keys/values in two flat byte buffers and does a linear scan with
+  `memcmp` on every insert, get, contains, and remove — O(n) per operation, O(n²) to build a map
+  of n entries. `SparkSet` is literally a `SparkList` with dedup, same O(n) per operation. Replace
+  both with hash-based implementations (e.g., open-addressing with FNV/SipHash). This is the single
+  highest-impact runtime performance improvement — maps and sets are unusable at scale.
+
+### `PERF` [SPARK-032] — String interpolation creates O(n²) intermediate allocations
+
+- **Type**: performance
+- **Effort**: medium
+- **Category**: performance
+- **Status**: open
+- **Crates**: spark_runtime, spark_codegen
+- **Files**:
+  - `crates/spark_codegen/src/cranelift/emit_rvalue.rs` — chains left-to-right `__spark_string_concat`
+    calls, creating n-1 intermediate heap strings
+  - `crates/spark_runtime/src/lib.rs` — `__spark_string_concat` allocates a new buffer per call
+- **Description**: String interpolation `"a{b}c{d}e"` emits a chain of `__spark_string_concat` calls:
+  `concat(concat(concat(concat("a", b_str), "c"), d_str), "e")`. Each call allocates a new buffer
+  and copies all preceding parts. For n parts: n-1 intermediate allocations, O(n²) total bytes
+  copied. Fix: add `__spark_string_concat_many(parts: *const *mut u8, count: i64) -> *mut u8` that
+  pre-computes total length, allocates once, and copies all parts in a single pass.
+
+### `PERF` [SPARK-034] — Functional list ops always copy even when sole owner
+
+- **Type**: performance
+- **Effort**: low
+- **Category**: performance
+- **Status**: open
+- **Crates**: spark_runtime
+- **Files**:
+  - `crates/spark_runtime/src/lib.rs` — `__spark_list_sort` (line 742), `__spark_list_take`
+    (line 776), `__spark_list_reverse` (line 797) always allocate a new list
+- **Description**: `sort`, `take`, and `reverse` unconditionally allocate a new list and copy
+  elements, even when `rc == 1` (sole owner). When the list is uniquely owned, these operations
+  could modify the buffer in-place and return the same pointer, avoiding a heap allocation and
+  full element copy. Check `rc == 1` at the top of each function and branch to an in-place path.
 
 ### `DONE` [SPARK-007] — Eliminate production unwrap/panic calls
 

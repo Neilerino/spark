@@ -34,6 +34,7 @@ pub fn emit_rvalue<M: Module>(
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
@@ -59,7 +60,7 @@ pub fn emit_rvalue<M: Module>(
         }
 
         Rvalue::Aggregate(kind, operands) => {
-            emit_aggregate(ctx, kind, operands, dest_local, table, definitions, func_ids, thunk_ids, dtor_ids, module, diagnostics)
+            emit_aggregate(ctx, kind, operands, dest_local, table, definitions, func_ids, thunk_ids, dtor_ids, elem_dtor_ids, module, diagnostics)
         }
 
         Rvalue::Discriminant(place) => {
@@ -689,6 +690,7 @@ fn emit_aggregate<M: Module>(
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
@@ -790,15 +792,15 @@ fn emit_aggregate<M: Module>(
         }
 
         AggregateKind::List => {
-            emit_list_construction(ctx, operands, dest_local, table, definitions, func_ids, thunk_ids, module)
+            emit_list_construction(ctx, operands, dest_local, table, definitions, func_ids, thunk_ids, elem_dtor_ids, module)
         }
 
         AggregateKind::Map => {
-            emit_map_construction(ctx, operands, dest_local, table, definitions, func_ids, thunk_ids, module)
+            emit_map_construction(ctx, operands, dest_local, table, definitions, func_ids, thunk_ids, elem_dtor_ids, module)
         }
 
         AggregateKind::Set => {
-            emit_set_construction(ctx, operands, dest_local, table, definitions, func_ids, thunk_ids, module, diagnostics)
+            emit_set_construction(ctx, operands, dest_local, table, definitions, func_ids, thunk_ids, elem_dtor_ids, module, diagnostics)
         }
 
         AggregateKind::Closure { func_def_id } => {
@@ -844,6 +846,7 @@ fn emit_list_construction<M: Module>(
     definitions: &DefinitionTable,
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
     module: &mut M,
 ) -> Option<Value> {
     let dest_ty = ctx.local_type_id(dest_local);
@@ -857,9 +860,12 @@ fn emit_list_construction<M: Module>(
     let elem_layout = ctx.layouts.layout_of(elem_ty, table);
     let elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(elem_layout.size));
 
-    // Call __spark_list_new(elem_size).
+    // Get the element destructor function address (or null).
+    let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, elem_dtor_ids, module);
+
+    // Call __spark_list_new(elem_size, elem_drop).
     let new_ref = module.declare_func_in_func(ctx.stubs.list_new, ctx.builder.func);
-    let call = ctx.builder.ins().call(new_ref, &[elem_size_val]);
+    let call = ctx.builder.ins().call(new_ref, &[elem_size_val, elem_drop_val]);
     let list_ptr = ctx.builder.inst_results(call)[0];
 
     // Push each element.
@@ -886,6 +892,7 @@ fn emit_map_construction<M: Module>(
     definitions: &DefinitionTable,
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
     module: &mut M,
 ) -> Option<Value> {
     let dest_ty = ctx.local_type_id(dest_local);
@@ -901,9 +908,13 @@ fn emit_map_construction<M: Module>(
     let key_size_val = ctx.builder.ins().iconst(types::I64, i64::from(key_layout.size));
     let val_size_val = ctx.builder.ins().iconst(types::I64, i64::from(val_layout.size));
 
-    // Call __spark_map_new(key_size, value_size).
+    // Get key/value destructor function addresses (or null).
+    let key_drop_val = elem_dtor_func_addr(ctx, key_ty, elem_dtor_ids, module);
+    let val_drop_val = elem_dtor_func_addr(ctx, value_ty, elem_dtor_ids, module);
+
+    // Call __spark_map_new(key_size, value_size, key_drop, val_drop).
     let new_ref = module.declare_func_in_func(ctx.stubs.map_new, ctx.builder.func);
-    let call = ctx.builder.ins().call(new_ref, &[key_size_val, val_size_val]);
+    let call = ctx.builder.ins().call(new_ref, &[key_size_val, val_size_val, key_drop_val, val_drop_val]);
     let map_ptr = ctx.builder.inst_results(call)[0];
 
     // Insert each key-value pair. Operands come in pairs: [k0, v0, k1, v1, ...].
@@ -933,6 +944,7 @@ fn emit_set_construction<M: Module>(
     definitions: &DefinitionTable,
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
@@ -949,9 +961,12 @@ fn emit_set_construction<M: Module>(
     let elem_layout = ctx.layouts.layout_of(elem_ty, table);
     let elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(elem_layout.size));
 
-    // Call __spark_set_new(elem_size).
+    // Get the element destructor function address (or null).
+    let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, elem_dtor_ids, module);
+
+    // Call __spark_set_new(elem_size, elem_drop).
     let new_ref = module.declare_func_in_func(ctx.stubs.set_new, ctx.builder.func);
-    let call = ctx.builder.ins().call(new_ref, &[elem_size_val]);
+    let call = ctx.builder.ins().call(new_ref, &[elem_size_val, elem_drop_val]);
     let set_ptr = ctx.builder.inst_results(call)[0];
 
     // Insert each element.
@@ -968,6 +983,24 @@ fn emit_set_construction<M: Module>(
 /// Emits closure construction: allocates env, stores captures, builds fat pointer.
 ///
 /// 1. Computes the env size from capture operand types
+/// Returns the Cranelift `Value` for an element destructor function address.
+///
+/// If the element type has a pre-generated dtor in `elem_dtor_ids`, returns
+/// a `func_addr` instruction referencing it. Otherwise returns `iconst(0)`.
+fn elem_dtor_func_addr<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    elem_ty: TypeId,
+    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
+    module: &mut M,
+) -> Value {
+    if let Some(&dtor_fid) = elem_dtor_ids.get(&elem_ty) {
+        let func_ref = module.declare_func_in_func(dtor_fid, ctx.builder.func);
+        ctx.builder.ins().func_addr(ctx.ptr_type, func_ref)
+    } else {
+        ctx.builder.ins().iconst(ctx.ptr_type, 0)
+    }
+}
+
 /// 2. Calls `__spark_env_alloc(size)` to get the env pointer
 /// 3. Stores each captured value at the correct offset in the env
 /// 4. Writes `(fn_ptr, env_ptr)` into the destination stack slot (fat pointer)

@@ -10,7 +10,7 @@ use spark_diagnostics::Diagnostics;
 use spark_intern::kw;
 use spark_mir::{BlockId, Operand, Place, Terminator};
 use spark_resolve::{DefinitionKind, DefinitionTable};
-use spark_types::{Ty, TypeTable};
+use spark_types::{Ty, TypeId, TypeTable};
 
 use super::context::{self, FunctionContext};
 use super::emit_rvalue;
@@ -27,6 +27,7 @@ pub fn emit_terminator<M: Module>(
     func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
     _dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    _elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
     module: &mut M,
     poll_fn_map: &FxHashMap<spark_resolve::DefId, spark_mir::async_transform::PollFnInfo>,
     lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,
@@ -1611,8 +1612,7 @@ fn emit_builtin_method<M: Module>(
                 }
             }
             // List.remove(index)
-            (Ty::List(elem), _) if method_name == kw::REMOVE => {
-                let elem_ty = *elem;
+            (Ty::List(_), _) if method_name == kw::REMOVE => {
                 if let Some(arg) = args.get(1) {
                     if let Some(idx_val) = emit_rvalue::emit_operand(
                         ctx,
@@ -1623,16 +1623,11 @@ fn emit_builtin_method<M: Module>(
                         thunk_ids,
                         module,
                     ) {
-                        let elem_rc = if spark_drop::needs_rc(elem_ty, table) {
-                            ctx.builder.ins().iconst(types::I8, 1)
-                        } else {
-                            ctx.builder.ins().iconst(types::I8, 0)
-                        };
                         let func_ref =
                             module.declare_func_in_func(ctx.stubs.list_remove, ctx.builder.func);
                         ctx.builder
                             .ins()
-                            .call(func_ref, &[cow_ptr, idx_val, elem_rc]);
+                            .call(func_ref, &[cow_ptr, idx_val]);
                     }
                 }
             }
@@ -1670,23 +1665,17 @@ fn emit_builtin_method<M: Module>(
                         thunk_ids,
                         module,
                     ) {
-                        let elem_rc = if spark_drop::needs_rc(elem_ty, table) {
-                            ctx.builder.ins().iconst(types::I8, 1)
-                        } else {
-                            ctx.builder.ins().iconst(types::I8, 0)
-                        };
                         let func_ref =
                             module.declare_func_in_func(ctx.stubs.set_remove, ctx.builder.func);
                         ctx.builder
                             .ins()
-                            .call(func_ref, &[cow_ptr, elem_addr, elem_rc]);
+                            .call(func_ref, &[cow_ptr, elem_addr]);
                     }
                 }
             }
             // Map.remove(key)
-            (Ty::Map(k, v), _) if method_name == kw::REMOVE => {
+            (Ty::Map(k, _), _) if method_name == kw::REMOVE => {
                 let key_ty = *k;
-                let val_ty = *v;
                 if let Some(arg) = args.get(1) {
                     if let Some(key_addr) = emit_rvalue::emit_operand_addr(
                         ctx,
@@ -1698,21 +1687,11 @@ fn emit_builtin_method<M: Module>(
                         thunk_ids,
                         module,
                     ) {
-                        let key_rc = if spark_drop::needs_rc(key_ty, table) {
-                            ctx.builder.ins().iconst(types::I8, 1)
-                        } else {
-                            ctx.builder.ins().iconst(types::I8, 0)
-                        };
-                        let val_rc = if spark_drop::needs_rc(val_ty, table) {
-                            ctx.builder.ins().iconst(types::I8, 1)
-                        } else {
-                            ctx.builder.ins().iconst(types::I8, 0)
-                        };
                         let func_ref =
                             module.declare_func_in_func(ctx.stubs.map_remove, ctx.builder.func);
                         ctx.builder
                             .ins()
-                            .call(func_ref, &[cow_ptr, key_addr, key_rc, val_rc]);
+                            .call(func_ref, &[cow_ptr, key_addr]);
                     }
                 }
             }
@@ -1861,47 +1840,24 @@ fn emit_cow<M: Module>(
     ctx: &mut FunctionContext<'_>,
     recv_ptr: Value,
     stripped_ty: &Ty,
-    table: &TypeTable,
+    _table: &TypeTable,
     module: &mut M,
 ) -> Value {
     match stripped_ty {
-        Ty::List(elem) => {
-            let elem_rc = if spark_drop::needs_rc(*elem, table) {
-                ctx.builder.ins().iconst(types::I8, 1)
-            } else {
-                ctx.builder.ins().iconst(types::I8, 0)
-            };
+        Ty::List(_) => {
             let func_ref = module.declare_func_in_func(ctx.stubs.list_cow, ctx.builder.func);
-            let call = ctx.builder.ins().call(func_ref, &[recv_ptr, elem_rc]);
+            let call = ctx.builder.ins().call(func_ref, &[recv_ptr]);
             ctx.builder.inst_results(call)[0]
         }
-        Ty::Map(k, v) => {
-            let key_rc = if spark_drop::needs_rc(*k, table) {
-                ctx.builder.ins().iconst(types::I8, 1)
-            } else {
-                ctx.builder.ins().iconst(types::I8, 0)
-            };
-            let val_rc = if spark_drop::needs_rc(*v, table) {
-                ctx.builder.ins().iconst(types::I8, 1)
-            } else {
-                ctx.builder.ins().iconst(types::I8, 0)
-            };
+        Ty::Map(_, _) => {
             let func_ref = module.declare_func_in_func(ctx.stubs.map_cow, ctx.builder.func);
-            let call = ctx
-                .builder
-                .ins()
-                .call(func_ref, &[recv_ptr, key_rc, val_rc]);
+            let call = ctx.builder.ins().call(func_ref, &[recv_ptr]);
             ctx.builder.inst_results(call)[0]
         }
-        Ty::Set(elem) => {
+        Ty::Set(_) => {
             // Set uses list_cow internally
-            let elem_rc = if spark_drop::needs_rc(*elem, table) {
-                ctx.builder.ins().iconst(types::I8, 1)
-            } else {
-                ctx.builder.ins().iconst(types::I8, 0)
-            };
             let func_ref = module.declare_func_in_func(ctx.stubs.list_cow, ctx.builder.func);
-            let call = ctx.builder.ins().call(func_ref, &[recv_ptr, elem_rc]);
+            let call = ctx.builder.ins().call(func_ref, &[recv_ptr]);
             ctx.builder.inst_results(call)[0]
         }
         _ => recv_ptr,
