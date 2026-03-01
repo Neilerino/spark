@@ -133,10 +133,26 @@ impl ImportItem {
 // ============================================================================
 // Link Declaration
 // ============================================================================
-/// Link directive: `link "sqlite3"` or `link "sqlite3" from "/usr/local/lib"`.
+
+/// A platform condition on a link directive.
+///
+/// Represents `when platform == "linux" or platform == "macos"`.
+/// Platforms are OR'd — the link applies if the target matches any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct LinkCondition {
+    /// Platform strings (e.g., `"linux"`, `"macos"`, `"windows"`).
+    pub platforms: Vec<Symbol>,
+    /// Span covering the `when ...` clause.
+    pub span: Span,
+}
+
+/// Link directive: `link "sqlite3"` or `link "sqlite3" from "/usr/local/lib"`
+/// or `link "ws2_32" when platform == "windows"`.
 ///
 /// Instructs the linker to link against the named C library, optionally
-/// specifying a search path where the library can be found.
+/// specifying a search path where the library can be found and a platform
+/// condition that restricts when the directive applies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct LinkDecl {
@@ -144,6 +160,8 @@ pub struct LinkDecl {
     pub library: Symbol,
     /// Optional search path (e.g., `"/usr/local/lib"`).
     pub search_path: Option<Symbol>,
+    /// Optional platform condition (e.g., `when platform == "linux"`).
+    pub condition: Option<LinkCondition>,
     /// The span.
     pub span: Span,
 }
@@ -151,8 +169,8 @@ pub struct LinkDecl {
 impl LinkDecl {
     /// Creates a new link declaration.
     #[must_use]
-    pub const fn new(library: Symbol, search_path: Option<Symbol>, span: Span) -> Self {
-        Self { library, search_path, span }
+    pub fn new(library: Symbol, search_path: Option<Symbol>, condition: Option<LinkCondition>, span: Span) -> Self {
+        Self { library, search_path, condition, span }
     }
 }
 

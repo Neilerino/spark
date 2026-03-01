@@ -8,7 +8,14 @@ description = "Spark.toml manifest parsing and path dependency resolution"
 
 [dependencies]
 toml.workspace = true
+toml_edit.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+semver.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,5 @@
+module lib_c
+
+pub fn base_value(): Int {
+    return 10
+}

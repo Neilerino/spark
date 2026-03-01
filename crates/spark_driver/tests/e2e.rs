@@ -943,3 +943,58 @@ fn extern_cptr() {
 fn link_from_path() {
     assert_output("run-pass/ffi/link_from_path.spark", "4");
 }
+
+// ============================================================================
+// Package management: init, transitive deps
+// ============================================================================
+
+#[test]
+fn spark_init() {
+    let tmp = tempfile::tempdir().unwrap();
+    let spark_bin = env!("CARGO_BIN_EXE_spark");
+
+    let output = Command::new(spark_bin)
+        .args(["init", "--name", "test_project"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("failed to run spark init");
+
+    assert!(
+        output.status.success(),
+        "spark init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let manifest_path = tmp.path().join("Spark.toml");
+    assert!(manifest_path.exists(), "Spark.toml should be created");
+
+    let contents = std::fs::read_to_string(&manifest_path).unwrap();
+    assert!(contents.contains("test_project"), "manifest should contain project name");
+
+    // Running init again should fail.
+    let output2 = Command::new(spark_bin)
+        .args(["init"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("failed to run spark init");
+
+    assert!(
+        !output2.status.success(),
+        "spark init should fail when Spark.toml already exists"
+    );
+}
+
+#[test]
+fn transitive_path_deps() {
+    let result = run_spark_project("transitive_deps");
+    assert_eq!(
+        result.exit_code, 0,
+        "transitive_deps project exited with code {}:\n{}",
+        result.exit_code, result.stderr
+    );
+    assert_eq!(
+        result.stdout.trim(),
+        "20",
+        "stdout mismatch for transitive_deps project"
+    );
+}

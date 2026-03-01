@@ -58,6 +58,33 @@ enum Cmd {
         #[arg(last = true)]
         args: Vec<String>,
     },
+    /// Initialize a new Spark project in the current directory.
+    Init {
+        /// Project name (defaults to directory name).
+        #[arg(short, long)]
+        name: Option<String>,
+    },
+    /// Fetch and update project dependencies.
+    Deps,
+    /// Publish the current package to the registry.
+    Publish {
+        /// GitHub token for uploading releases (or uses `gh` CLI auth).
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Search the package registry.
+    Search {
+        /// Search query (matches package name and description).
+        query: String,
+    },
+    /// Add a dependency to the current project.
+    Add {
+        /// Package name.
+        package: String,
+        /// Version constraint (defaults to latest available version).
+        #[arg(short, long)]
+        version: Option<String>,
+    },
 }
 
 fn main() {
@@ -95,6 +122,26 @@ fn main() {
             let code = cmd_run(&input, &args, opt_level, single_file);
             process::exit(code);
         }
+        Cmd::Init { name } => match cmd_init(name.as_deref()) {
+            Ok(()) => {}
+            Err(()) => process::exit(1),
+        },
+        Cmd::Deps => match cmd_deps() {
+            Ok(()) => {}
+            Err(()) => process::exit(1),
+        },
+        Cmd::Publish { token } => match cmd_publish(token.as_deref()) {
+            Ok(()) => {}
+            Err(()) => process::exit(1),
+        },
+        Cmd::Search { query } => match cmd_search(&query) {
+            Ok(()) => {}
+            Err(()) => process::exit(1),
+        },
+        Cmd::Add { package, version } => match cmd_add(&package, version.as_deref()) {
+            Ok(()) => {}
+            Err(()) => process::exit(1),
+        },
     }
 }
 
@@ -134,31 +181,45 @@ fn cmd_build(
         })
         .collect::<Result<Vec<_>, ()>>()?;
 
-    // Load Spark.toml manifest if present.
+    // Load Spark.toml manifest if present. Resolve all dependencies
+    // (path + git, including transitive) and collect link info.
     let mut manifest_links: Vec<String> = Vec::new();
     let mut manifest_link_paths: Vec<String> = Vec::new();
 
     if let Some(manifest_result) = spark_package::load_manifest(&abs_root) {
         match manifest_result {
             Ok(manifest) => {
-                // Resolve path dependencies: add their source files.
-                for (dep_name, dep) in &manifest.dependencies {
-                    match dep {
-                        spark_package::Dependency::Path { path } => {
-                            match spark_package::resolve_path_dep(dep_name, path, &abs_root) {
-                                Ok(dep_sources) => sources.extend(dep_sources),
-                                Err(e) => {
-                                    eprintln!("error: {e}");
-                                    return Err(());
-                                }
-                            }
+                // Resolve all dependencies (path + git + transitive).
+                match spark_package::resolve_all_deps(&manifest, &abs_root) {
+                    Ok(resolved) => {
+                        sources.extend(resolved.sources);
+
+                        // Collect transitive link info from dependencies.
+                        manifest_links.extend(resolved.link_libraries);
+                        manifest_link_paths.extend(resolved.link_paths);
+
+                        // Write Spark.lock if there are git deps.
+                        if let Err(e) = spark_package::write_lock_file(&abs_root, &resolved.lock) {
+                            eprintln!("warning: {e}");
                         }
+                    }
+                    Err(e) => {
+                        eprintln!("error: {e}");
+                        return Err(());
                     }
                 }
 
-                // Collect build section link info.
-                manifest_links = manifest.build.links;
-                manifest_link_paths = manifest.build.link_paths;
+                // Collect build section link info from root manifest.
+                for lib in manifest.build.links {
+                    if !manifest_links.contains(&lib) {
+                        manifest_links.push(lib);
+                    }
+                }
+                for path in manifest.build.link_paths {
+                    if !manifest_link_paths.contains(&path) {
+                        manifest_link_paths.push(path);
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("error: {e}");
@@ -234,6 +295,287 @@ fn cmd_run(
             1
         }
     }
+}
+
+/// Initializes a new Spark project in the current directory.
+///
+/// Creates a `Spark.toml` with the given name (or the directory name if not
+/// specified). Errors if a `Spark.toml` already exists.
+fn cmd_init(name: Option<&str>) -> Result<(), ()> {
+    let cwd = std::env::current_dir().map_err(|e| {
+        eprintln!("error: could not determine current directory: {e}");
+    })?;
+
+    let manifest_path = cwd.join("Spark.toml");
+    if manifest_path.exists() {
+        eprintln!("error: Spark.toml already exists in this directory");
+        return Err(());
+    }
+
+    let project_name = name.map(String::from).unwrap_or_else(|| {
+        cwd.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("spark-project")
+            .to_string()
+    });
+
+    let contents = format!(
+        "[project]\nname = \"{project_name}\"\nversion = \"0.1.0\"\nentry = \"main.spark\"\n\n[dependencies]\n\n[build]\nlinks = []\nlink-paths = []\n"
+    );
+
+    fs::write(&manifest_path, contents).map_err(|e| {
+        eprintln!("error: could not write Spark.toml: {e}");
+    })?;
+
+    println!("Created Spark.toml for project `{project_name}`");
+    Ok(())
+}
+
+/// Fetches and updates project dependencies.
+///
+/// Loads `Spark.toml`, resolves all dependencies (path + git + transitive),
+/// writes `Spark.lock`, and prints a summary.
+fn cmd_deps() -> Result<(), ()> {
+    let cwd = std::env::current_dir().map_err(|e| {
+        eprintln!("error: could not determine current directory: {e}");
+    })?;
+
+    let manifest = match spark_package::load_manifest(&cwd) {
+        Some(Ok(m)) => m,
+        Some(Err(e)) => {
+            eprintln!("error: {e}");
+            return Err(());
+        }
+        None => {
+            eprintln!("error: no Spark.toml found in current directory");
+            return Err(());
+        }
+    };
+
+    if manifest.dependencies.is_empty() {
+        println!("No dependencies to resolve.");
+        return Ok(());
+    }
+
+    let resolved = spark_package::resolve_all_deps(&manifest, &cwd).map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
+
+    // Write lock file.
+    if let Err(e) = spark_package::write_lock_file(&cwd, &resolved.lock) {
+        eprintln!("warning: {e}");
+    }
+
+    // Print summary.
+    let dep_count = manifest.dependencies.len();
+    let source_count = resolved.sources.len();
+    println!(
+        "Resolved {dep_count} dependenc{} ({source_count} source file{}).",
+        if dep_count == 1 { "y" } else { "ies" },
+        if source_count == 1 { "" } else { "s" },
+    );
+
+    if !resolved.lock.packages.is_empty() {
+        println!("Wrote Spark.lock with {} git package{}.",
+            resolved.lock.packages.len(),
+            if resolved.lock.packages.len() == 1 { "" } else { "s" },
+        );
+    }
+
+    Ok(())
+}
+
+/// Publishes the current package to the registry.
+///
+/// 1. Loads `Spark.toml`, validates required fields
+/// 2. Packages all `.spark` files + `Spark.toml` into a tarball
+/// 3. Uploads to GitHub Releases via `gh`
+/// 4. Clones the registry index, adds the new version, commits and pushes
+fn cmd_publish(token: Option<&str>) -> Result<(), ()> {
+    let cwd = std::env::current_dir().map_err(|e| {
+        eprintln!("error: could not determine current directory: {e}");
+    })?;
+
+    let manifest = match spark_package::load_manifest(&cwd) {
+        Some(Ok(m)) => m,
+        Some(Err(e)) => {
+            eprintln!("error: {e}");
+            return Err(());
+        }
+        None => {
+            eprintln!("error: no Spark.toml found in current directory");
+            return Err(());
+        }
+    };
+
+    let Some(repo_url) = &manifest.project.repository else {
+        eprintln!("error: `repository` field is required in [project] for publishing");
+        eprintln!("hint: add `repository = \"https://github.com/owner/repo\"` to Spark.toml");
+        return Err(());
+    };
+
+    let name = &manifest.project.name;
+    let version = &manifest.project.version;
+
+    println!("Packaging {name} v{version}...");
+
+    let (tarball, checksum) =
+        spark_package::publish::package_project(&cwd).map_err(|e| {
+            eprintln!("error: {e}");
+        })?;
+
+    println!("Uploading to GitHub Releases...");
+
+    let download_url =
+        spark_package::publish::upload_release(&tarball, repo_url, name, version, token)
+            .map_err(|e| {
+                eprintln!("error: {e}");
+            })?;
+
+    // Clean up local tarball.
+    let _ = fs::remove_file(&tarball);
+
+    println!("Updating registry index...");
+
+    let index_path = spark_package::registry::sync_index(&cwd).map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
+
+    let entry = spark_package::registry::VersionEntry {
+        version: version.parse().map_err(|e| {
+            eprintln!("error: invalid version `{version}`: {e}");
+        })?,
+        download: download_url.clone(),
+        checksum,
+        deps: manifest
+            .dependencies
+            .iter()
+            .filter_map(|(k, v)| {
+                if let spark_package::Dependency::Registry(constraint) = v {
+                    Some((k.clone(), constraint.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect(),
+    };
+
+    spark_package::publish::update_index(
+        &index_path,
+        name,
+        "", // description from manifest could be added later
+        &entry,
+    )
+    .map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
+
+    // Push index changes.
+    let output = std::process::Command::new("git")
+        .args(["push", "--quiet"])
+        .current_dir(&index_path)
+        .output()
+        .map_err(|e| {
+            eprintln!("error: could not push index changes: {e}");
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("warning: could not push index changes: {stderr}");
+        eprintln!("hint: push manually from {}", index_path.display());
+    }
+
+    println!("Published {name} v{version}");
+    println!("Download: {download_url}");
+
+    Ok(())
+}
+
+/// Searches the package registry for packages matching a query.
+fn cmd_search(query: &str) -> Result<(), ()> {
+    let cwd = std::env::current_dir().map_err(|e| {
+        eprintln!("error: could not determine current directory: {e}");
+    })?;
+
+    let index_path = spark_package::registry::sync_index(&cwd).map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
+
+    let results = spark_package::registry::search_index(&index_path, query).map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
+
+    if results.is_empty() {
+        println!("No packages found matching `{query}`.");
+        return Ok(());
+    }
+
+    println!(
+        "Found {} package{} matching `{query}`:\n",
+        results.len(),
+        if results.len() == 1 { "" } else { "s" }
+    );
+
+    for pkg in &results {
+        let latest = pkg.versions.last().map_or_else(
+            || "—".to_string(),
+            |v| v.version.to_string(),
+        );
+        println!("  {} v{}  — {}", pkg.name, latest, pkg.description);
+    }
+
+    Ok(())
+}
+
+/// Adds a dependency to the current project's `Spark.toml`.
+fn cmd_add(package: &str, version: Option<&str>) -> Result<(), ()> {
+    let cwd = std::env::current_dir().map_err(|e| {
+        eprintln!("error: could not determine current directory: {e}");
+    })?;
+
+    let manifest_path = cwd.join("Spark.toml");
+    if !manifest_path.exists() {
+        eprintln!("error: no Spark.toml found in current directory");
+        eprintln!("hint: run `spark init` to create a project");
+        return Err(());
+    }
+
+    // Sync index and look up the package.
+    let index_path = spark_package::registry::sync_index(&cwd).map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
+
+    let metadata =
+        spark_package::registry::lookup_package(&index_path, package).map_err(|e| {
+            eprintln!("error: {e}");
+        })?;
+
+    let version_str = if let Some(v) = version {
+        v.to_string()
+    } else {
+        // Use the latest version as a bare version constraint.
+        let latest = metadata
+            .versions
+            .last()
+            .ok_or_else(|| {
+                eprintln!("error: package `{package}` has no published versions");
+            })?;
+        latest.version.to_string()
+    };
+
+    // Validate the version constraint resolves.
+    spark_package::registry::resolve_version(&metadata, &version_str).map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
+
+    // Add to Spark.toml.
+    spark_package::manifest::add_dependency(&manifest_path, package, &version_str).map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
+
+    println!("Added `{package} = \"{version_str}\"` to Spark.toml");
+
+    Ok(())
 }
 
 /// Discovers project source files for compilation.

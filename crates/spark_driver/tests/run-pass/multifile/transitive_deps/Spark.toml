@@ -1,0 +1,6 @@
+[project]
+name = "transitive_test"
+version = "0.1.0"
+
+[dependencies]
+lib_b = { path = "libs/lib_b" }

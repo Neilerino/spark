@@ -1,0 +1,7 @@
+module lib_b
+
+import lib_c { base_value }
+
+pub fn doubled(): Int {
+    return base_value() * 2
+}

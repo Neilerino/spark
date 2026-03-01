@@ -21,5 +21,8 @@ Thumbs.db
 /docs/book/
 .grepai/
 
+# Spark downloaded packages
+.spark/
+
 # Editor extensions:
 **/node_modules/

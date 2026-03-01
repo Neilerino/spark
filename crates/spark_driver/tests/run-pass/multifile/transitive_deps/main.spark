@@ -1,0 +1,6 @@
+import lib_b { doubled }
+
+fn main(): Int {
+    print(doubled())
+    return 0
+}

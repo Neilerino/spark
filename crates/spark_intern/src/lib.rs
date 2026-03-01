@@ -387,6 +387,9 @@ impl Interner {
             "link",
             // FFI opaque pointer type
             "CPtr",
+            // Platform conditionals
+            "when",
+            "platform",
         ];
 
         for kw in keywords {
@@ -737,6 +740,12 @@ pub mod kw {
     /// `CPtr`
     pub const CPTR: Symbol = Symbol(112);
 
+    // Platform conditionals
+    /// `when`
+    pub const WHEN: Symbol = Symbol(113);
+    /// `platform` (contextual identifier, not a keyword)
+    pub const PLATFORM: Symbol = Symbol(114);
+
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
     pub const fn is_builtin_function(sym: Symbol) -> bool {
@@ -754,8 +763,8 @@ pub mod kw {
     /// Returns true if the given symbol is a keyword.
     #[must_use]
     pub const fn is_keyword(sym: Symbol) -> bool {
-        // Keywords are symbols 1-37 (fn through Never) plus parallel (78) plus extern (91) plus reduce (109) plus link (111)
-        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78 || sym.0 == 91 || sym.0 == 109 || sym.0 == 111
+        // Keywords are symbols 1-37 (fn through Never) plus parallel (78) plus extern (91) plus reduce (109) plus link (111) plus when (113)
+        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78 || sym.0 == 91 || sym.0 == 109 || sym.0 == 111 || sym.0 == 113
     }
 
     /// Returns true if the given symbol is a primitive type name.
@@ -906,6 +915,15 @@ mod tests {
         assert_eq!(kw::CPTR.as_str(), "CPtr");
         assert!(kw::is_keyword(kw::LINK));
         assert!(kw::is_builtin_type(kw::CPTR));
+    }
+
+    #[test]
+    fn when_and_platform_preinterned() {
+        assert_eq!(kw::WHEN.as_str(), "when");
+        assert_eq!(kw::PLATFORM.as_str(), "platform");
+        assert!(kw::is_keyword(kw::WHEN));
+        // `platform` is contextual, NOT a keyword
+        assert!(!kw::is_keyword(kw::PLATFORM));
     }
 
     #[test]

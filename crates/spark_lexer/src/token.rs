@@ -163,6 +163,8 @@ pub enum TokenKind {
     Reduce,
     /// `link`
     Link,
+    /// `when`
+    When,
     /// `true`
     True,
     /// `false`
@@ -319,6 +321,7 @@ impl TokenKind {
                 | Self::Extern
                 | Self::Reduce
                 | Self::Link
+                | Self::When
                 | Self::True
                 | Self::False
                 | Self::Null
@@ -392,6 +395,7 @@ impl TokenKind {
             "extern" => Some(Self::Extern),
             "reduce" => Some(Self::Reduce),
             "link" => Some(Self::Link),
+            "when" => Some(Self::When),
             "true" => Some(Self::True),
             "false" => Some(Self::False),
             "Null" => Some(Self::Null),
@@ -447,6 +451,7 @@ impl TokenKind {
             Self::Extern => "extern",
             Self::Reduce => "reduce",
             Self::Link => "link",
+            Self::When => "when",
             Self::True => "true",
             Self::False => "false",
             Self::Null => "Null",

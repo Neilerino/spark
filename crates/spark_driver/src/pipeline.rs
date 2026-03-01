@@ -108,6 +108,17 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     let mut link_search_paths = Vec::new();
     for ast in asts.values() {
         for link_decl in &ast.links {
+            // Skip link directives that don't match the current platform.
+            if let Some(ref cond) = link_decl.condition {
+                if !cond
+                    .platforms
+                    .iter()
+                    .any(|p| p.as_str() == current_target_os())
+                {
+                    continue;
+                }
+            }
+
             let lib = link_decl.library.as_str().to_string();
             if !link_libraries.contains(&lib) {
                 link_libraries.push(lib);
@@ -241,6 +252,19 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
         link_libraries,
         link_search_paths,
     })
+}
+
+/// Returns the current target OS name for platform conditional evaluation.
+fn current_target_os() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "unknown"
+    }
 }
 
 /// Emits warnings (but not errors) from a diagnostics set.

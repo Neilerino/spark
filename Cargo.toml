@@ -86,6 +86,13 @@ tempfile = "3"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
+toml_edit = "0.22"
+
+# Versioning
+semver = { version = "1", features = ["serde"] }
+
+# Hashing
+sha2 = "0.10"
 
 # LSP
 tower-lsp = { version = "0.20", features = ["proposed"] }

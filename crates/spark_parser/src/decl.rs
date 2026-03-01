@@ -14,7 +14,8 @@
 use spark_ast::{
     BindingDef, BindingTarget, Block, ConstDef, Decorator, DocComment, EnumDef, EnumField,
     EnumVariant, EnumVariantData, FunctionDef, Ident, ImportDecl, ImportItem, InterfaceDef, Item,
-    LinkDecl, ModuleDecl, StructDef, StructField, TypeAliasDef, TypeDefDef, UsingDecl, Visibility,
+    LinkCondition, LinkDecl, ModuleDecl, StructDef, StructField, TypeAliasDef, TypeDefDef,
+    UsingDecl, Visibility,
 };
 use spark_intern::sym;
 use spark_lexer::TokenKind;
@@ -119,7 +120,9 @@ impl Parser {
 
     /// Parses a link directive.
     ///
-    /// `LinkDecl` = "link" StringLiteral ("from" StringLiteral)?
+    /// `LinkDecl` = "link" `StringLiteral` ("from" `StringLiteral`)? ("when" `PlatformCondition`)?
+    ///
+    /// `PlatformCondition` = "platform" "==" `StringLiteral` ("or" "platform" "==" `StringLiteral`)*
     pub(crate) fn parse_link_decl(&mut self) -> LinkDecl {
         let start = self.current_span();
         self.expect(TokenKind::Link);
@@ -161,8 +164,62 @@ impl Parser {
             None
         };
 
+        // Optional `when platform == "value" (or platform == "value")*` clause.
+        let condition = if self.check(TokenKind::When) {
+            let when_start = self.current_span();
+            self.advance(); // consume `when`
+            let mut platforms = Vec::new();
+
+            // Parse first: platform == "string"
+            self.parse_platform_eq(&mut platforms);
+
+            // Parse optional: or platform == "string"
+            while self.check(TokenKind::Or) {
+                self.advance(); // consume `or`
+                self.parse_platform_eq(&mut platforms);
+            }
+
+            let when_span = self.span_from(when_start);
+            Some(LinkCondition {
+                platforms,
+                span: when_span,
+            })
+        } else {
+            None
+        };
+
         let span = self.span_from(start);
-        LinkDecl::new(library, search_path, span)
+        LinkDecl::new(library, search_path, condition, span)
+    }
+
+    /// Parses a single `platform == "string"` fragment inside a `when` clause.
+    fn parse_platform_eq(&mut self, platforms: &mut Vec<spark_intern::Symbol>) {
+        if self.check(TokenKind::Identifier) {
+            let ident = self
+                .current()
+                .as_ident()
+                .unwrap_or(spark_intern::kw::UNDERSCORE);
+            if ident == spark_intern::kw::PLATFORM {
+                self.advance(); // consume `platform`
+                self.expect(TokenKind::EqEq);
+                if self.check(TokenKind::StringLiteral) {
+                    let token = self.advance();
+                    platforms.push(
+                        token
+                            .value
+                            .as_ref()
+                            .and_then(spark_lexer::TokenValue::as_symbol)
+                            .unwrap_or_else(|| sym("<error>")),
+                    );
+                } else {
+                    self.error_expected("string literal (platform name)");
+                }
+            } else {
+                self.error_expected("`platform`");
+            }
+        } else {
+            self.error_expected("`platform`");
+        }
     }
 
     // ========================================================================
@@ -1234,5 +1291,73 @@ mod tests {
             assert!(!f.is_extern);
             assert!(f.body.is_some());
         }
+    }
+
+    // ========================================================================
+    // Link directive: `when` clause tests
+    // ========================================================================
+
+    #[test]
+    fn link_directive_with_when_single() {
+        let (ast, diags) =
+            parse_source("link \"ws2_32\" when platform == \"windows\"\nfn main(): Void { }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert_eq!(ast.links.len(), 1);
+        assert_eq!(ast.links[0].library.as_str(), "ws2_32");
+        let cond = ast.links[0].condition.as_ref().expect("expected condition");
+        assert_eq!(cond.platforms.len(), 1);
+        assert_eq!(cond.platforms[0].as_str(), "windows");
+    }
+
+    #[test]
+    fn link_directive_with_when_multiple() {
+        let (ast, diags) = parse_source(
+            "link \"pthread\" when platform == \"linux\" or platform == \"macos\"\nfn main(): Void { }",
+        );
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert_eq!(ast.links.len(), 1);
+        assert_eq!(ast.links[0].library.as_str(), "pthread");
+        let cond = ast.links[0].condition.as_ref().expect("expected condition");
+        assert_eq!(cond.platforms.len(), 2);
+        assert_eq!(cond.platforms[0].as_str(), "linux");
+        assert_eq!(cond.platforms[1].as_str(), "macos");
+    }
+
+    #[test]
+    fn link_directive_with_from_and_when() {
+        let (ast, diags) = parse_source(
+            "link \"m\" from \"/usr/lib\" when platform == \"linux\"\nfn main(): Void { }",
+        );
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert_eq!(ast.links.len(), 1);
+        assert_eq!(ast.links[0].library.as_str(), "m");
+        assert_eq!(
+            ast.links[0].search_path.map(|s| s.as_str().to_string()),
+            Some("/usr/lib".to_string())
+        );
+        let cond = ast.links[0].condition.as_ref().expect("expected condition");
+        assert_eq!(cond.platforms.len(), 1);
+        assert_eq!(cond.platforms[0].as_str(), "linux");
+    }
+
+    #[test]
+    fn link_directive_without_when_has_no_condition() {
+        let (ast, diags) = parse_source("link \"z\"\nfn main(): Void { }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert_eq!(ast.links.len(), 1);
+        assert!(ast.links[0].condition.is_none());
+    }
+
+    #[test]
+    fn link_directive_when_missing_platform() {
+        let (_, diags) = parse_source("link \"m\" when\nfn main(): Void { }");
+        assert!(diags.has_errors(), "expected error for `when` without platform");
+    }
+
+    #[test]
+    fn link_directive_when_bad_identifier() {
+        let (_, diags) =
+            parse_source("link \"m\" when foo == \"x\"\nfn main(): Void { }");
+        assert!(diags.has_errors(), "expected error for bad identifier after `when`");
     }
 }
