@@ -68,15 +68,83 @@ pub enum Dependency {
     Registry(String),
 }
 
+/// Whether to link a library statically or dynamically.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LinkKind {
+    /// Dynamic linking (default): `-l<name>`.
+    #[default]
+    Dynamic,
+    /// Static linking: `-l:lib<name>.a` (Linux) or `-l<name>` with static search (macOS).
+    Static,
+}
+
+/// A link library specification in `Spark.toml`.
+///
+/// Supports two forms:
+/// - Simple string: `"sqlite3"` (defaults to dynamic)
+/// - Detailed table: `{ name = "z", kind = "static" }`
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum LinkSpec {
+    /// A plain library name (dynamic by default).
+    Simple(String),
+    /// A library with explicit link kind.
+    Detailed {
+        /// The library name.
+        name: String,
+        /// Static or dynamic (defaults to dynamic).
+        #[serde(default)]
+        kind: LinkKind,
+    },
+}
+
+impl LinkSpec {
+    /// Returns the library name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Simple(s) => s,
+            Self::Detailed { name, .. } => name,
+        }
+    }
+
+    /// Returns the link kind (defaults to dynamic for simple specs).
+    #[must_use]
+    pub const fn kind(&self) -> LinkKind {
+        match self {
+            Self::Simple(_) => LinkKind::Dynamic,
+            Self::Detailed { kind, .. } => *kind,
+        }
+    }
+}
+
 /// The `[build]` section of a manifest.
 #[derive(Debug, Default, Deserialize)]
 pub struct BuildSection {
-    /// C libraries to link against (e.g., `["sqlite3", "z"]`).
+    /// C libraries to link against.
+    ///
+    /// Supports plain strings (dynamic by default) or detailed tables with
+    /// explicit `kind`:
+    /// ```toml
+    /// links = ["sqlite3", { name = "z", kind = "static" }]
+    /// ```
     #[serde(default)]
-    pub links: Vec<String>,
+    pub links: Vec<LinkSpec>,
     /// Additional search paths for the linker (e.g., `["/usr/local/lib"]`).
     #[serde(default, rename = "link-paths")]
     pub link_paths: Vec<String>,
+}
+
+/// A resolved link library with its linking kind.
+///
+/// Carried through dependency resolution and into the linker invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkLibrary {
+    /// The library name (e.g., `"sqlite3"`).
+    pub name: String,
+    /// Whether to link statically or dynamically.
+    pub kind: LinkKind,
 }
 
 /// Default entry point file.
@@ -177,7 +245,9 @@ link-paths = ["/usr/local/lib"]
         assert_eq!(manifest.project.entry, "app.spark");
         assert_eq!(manifest.dependencies.len(), 1);
         assert!(manifest.dependencies.contains_key("json"));
-        assert_eq!(manifest.build.links, vec!["sqlite3", "z"]);
+        assert_eq!(manifest.build.links.len(), 2);
+        assert_eq!(manifest.build.links[0], LinkSpec::Simple("sqlite3".into()));
+        assert_eq!(manifest.build.links[1], LinkSpec::Simple("z".into()));
         assert_eq!(manifest.build.link_paths, vec!["/usr/local/lib"]);
     }
 
@@ -415,5 +485,63 @@ links = ["m"]
     fn load_nonexistent_manifest() {
         let result = load_manifest(Path::new("/nonexistent/path"));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn parse_static_link_spec() {
+        let toml = r#"
+[project]
+name = "test"
+version = "0.1.0"
+
+[build]
+links = [{ name = "z", kind = "static" }]
+"#;
+        let manifest = parse_manifest(toml).unwrap();
+        assert_eq!(manifest.build.links.len(), 1);
+        assert_eq!(manifest.build.links[0].name(), "z");
+        assert_eq!(manifest.build.links[0].kind(), LinkKind::Static);
+    }
+
+    #[test]
+    fn parse_mixed_link_specs() {
+        let toml = r#"
+[project]
+name = "test"
+version = "0.1.0"
+
+[build]
+links = ["sqlite3", { name = "z", kind = "static" }, { name = "curl", kind = "dynamic" }]
+"#;
+        let manifest = parse_manifest(toml).unwrap();
+        assert_eq!(manifest.build.links.len(), 3);
+
+        // Plain string defaults to dynamic.
+        assert_eq!(manifest.build.links[0].name(), "sqlite3");
+        assert_eq!(manifest.build.links[0].kind(), LinkKind::Dynamic);
+
+        // Explicit static.
+        assert_eq!(manifest.build.links[1].name(), "z");
+        assert_eq!(manifest.build.links[1].kind(), LinkKind::Static);
+
+        // Explicit dynamic.
+        assert_eq!(manifest.build.links[2].name(), "curl");
+        assert_eq!(manifest.build.links[2].kind(), LinkKind::Dynamic);
+    }
+
+    #[test]
+    fn parse_detailed_link_defaults_to_dynamic() {
+        let toml = r#"
+[project]
+name = "test"
+version = "0.1.0"
+
+[build]
+links = [{ name = "ssl" }]
+"#;
+        let manifest = parse_manifest(toml).unwrap();
+        assert_eq!(manifest.build.links.len(), 1);
+        assert_eq!(manifest.build.links[0].name(), "ssl");
+        assert_eq!(manifest.build.links[0].kind(), LinkKind::Dynamic);
     }
 }

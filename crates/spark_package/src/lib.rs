@@ -50,7 +50,10 @@ pub mod resolve;
 pub mod resolver;
 
 pub use lock::{load_lock_file, write_lock_file, LockFile, LockedPackage};
-pub use manifest::{load_manifest, parse_manifest, BuildSection, Dependency, Manifest, ProjectSection};
+pub use manifest::{
+    load_manifest, parse_manifest, BuildSection, Dependency, LinkKind, LinkLibrary, LinkSpec,
+    Manifest, ProjectSection,
+};
 pub use registry::{
     search_index, sync_index, FetchedRegistryDep, PackageMetadata, RegistryConfig, VersionEntry,
 };

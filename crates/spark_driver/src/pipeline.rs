@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use spark_ast::Ast;
+use spark_package::{LinkKind, LinkLibrary};
 use spark_borrow::BorrowInput;
 use spark_codegen::{CodegenInput, TargetSpec};
 use spark_diagnostics::Diagnostics;
@@ -36,7 +37,7 @@ pub struct CompileOutput {
     /// The compiled native object file bytes (`.o` / `.obj`).
     pub object_bytes: Vec<u8>,
     /// Additional libraries to link (from `link` directives).
-    pub link_libraries: Vec<String>,
+    pub link_libraries: Vec<LinkLibrary>,
     /// Additional library search paths (from `link ... from "path"` directives).
     pub link_search_paths: Vec<String>,
 }
@@ -104,7 +105,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     }
 
     // -- Collect link directives from all ASTs --------------------------------
-    let mut link_libraries = Vec::new();
+    let mut link_libraries: Vec<LinkLibrary> = Vec::new();
     let mut link_search_paths = Vec::new();
     for ast in asts.values() {
         for link_decl in &ast.links {
@@ -119,8 +120,11 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
                 }
             }
 
-            let lib = link_decl.library.as_str().to_string();
-            if !link_libraries.contains(&lib) {
+            let lib = LinkLibrary {
+                name: link_decl.library.as_str().to_string(),
+                kind: LinkKind::Dynamic,
+            };
+            if !link_libraries.iter().any(|l| l.name == lib.name) {
                 link_libraries.push(lib);
             }
             if let Some(search_path) = link_decl.search_path {

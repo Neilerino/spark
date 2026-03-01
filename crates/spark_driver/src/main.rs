@@ -183,7 +183,7 @@ fn cmd_build(
 
     // Load Spark.toml manifest if present. Resolve all dependencies
     // (path + git, including transitive) and collect link info.
-    let mut manifest_links: Vec<String> = Vec::new();
+    let mut manifest_links: Vec<spark_package::LinkLibrary> = Vec::new();
     let mut manifest_link_paths: Vec<String> = Vec::new();
 
     if let Some(manifest_result) = spark_package::load_manifest(&abs_root) {
@@ -210,8 +210,12 @@ fn cmd_build(
                 }
 
                 // Collect build section link info from root manifest.
-                for lib in manifest.build.links {
-                    if !manifest_links.contains(&lib) {
+                for spec in manifest.build.links {
+                    let lib = spark_package::LinkLibrary {
+                        name: spec.name().to_string(),
+                        kind: spec.kind(),
+                    };
+                    if !manifest_links.iter().any(|l| l.name == lib.name) {
                         manifest_links.push(lib);
                     }
                 }
@@ -237,7 +241,7 @@ fn cmd_build(
     // Merge link libraries from AST `link` directives and Spark.toml `[build]`.
     let mut all_link_libs = result.link_libraries;
     for lib in manifest_links {
-        if !all_link_libs.contains(&lib) {
+        if !all_link_libs.iter().any(|l| l.name == lib.name) {
             all_link_libs.push(lib);
         }
     }
@@ -685,7 +689,7 @@ fn find_runtime_lib() -> Result<PathBuf, ()> {
 fn link_object(
     object_bytes: &[u8],
     output_path: &Path,
-    extra_libs: &[String],
+    extra_libs: &[spark_package::LinkLibrary],
     extra_link_paths: &[String],
 ) -> Result<(), ()> {
     let runtime_lib = find_runtime_lib()?;
@@ -717,7 +721,21 @@ fn link_object(
 
     // Add extra link libraries from `link` directives and Spark.toml
     for lib in extra_libs {
-        cmd.arg(format!("-l{lib}"));
+        match lib.kind {
+            spark_package::LinkKind::Static => {
+                if cfg!(target_os = "linux") {
+                    // GNU ld: -l:libfoo.a selects the static archive explicitly.
+                    cmd.arg(format!("-l:lib{}.a", lib.name));
+                } else {
+                    // macOS/Apple ld: no -l: syntax; pass -l<name> and rely on
+                    // search path ordering to find the .a archive.
+                    cmd.arg(format!("-l{}", lib.name));
+                }
+            }
+            spark_package::LinkKind::Dynamic => {
+                cmd.arg(format!("-l{}", lib.name));
+            }
+        }
     }
 
     // Pin the macOS deployment target to 11.0 (Big Sur) to match the minos/sdk

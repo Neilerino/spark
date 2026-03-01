@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::git::fetch_git_dep;
 use crate::lock::{load_lock_file, LockFile, LockedPackage};
-use crate::manifest::{load_manifest, Dependency, Manifest};
+use crate::manifest::{load_manifest, Dependency, LinkLibrary, Manifest};
 use crate::registry;
 use crate::resolve::resolve_path_dep;
 
@@ -20,7 +20,7 @@ pub struct ResolvedDeps {
     /// All source files to compile `(relative_path, source_text)`.
     pub sources: Vec<(PathBuf, String)>,
     /// All link libraries collected transitively.
-    pub link_libraries: Vec<String>,
+    pub link_libraries: Vec<LinkLibrary>,
     /// All link search paths collected transitively.
     pub link_paths: Vec<String>,
     /// The lock file to write (contains git dep commit hashes).
@@ -75,7 +75,7 @@ pub fn resolve_all_deps(
 /// Internal state for the recursive resolution.
 struct ResolveContext {
     sources: Vec<(PathBuf, String)>,
-    link_libraries: Vec<String>,
+    link_libraries: Vec<LinkLibrary>,
     link_paths: Vec<String>,
     locked_packages: Vec<LockedPackage>,
     /// Names of packages that have been fully resolved (prevents re-processing).
@@ -259,9 +259,13 @@ fn resolve_deps_recursive(
             let sub_manifest = sub_manifest_result?;
 
             // Collect link info from the dependency's build section.
-            for lib in &sub_manifest.build.links {
-                if !ctx.link_libraries.contains(lib) {
-                    ctx.link_libraries.push(lib.clone());
+            for spec in &sub_manifest.build.links {
+                let lib = LinkLibrary {
+                    name: spec.name().to_string(),
+                    kind: spec.kind(),
+                };
+                if !ctx.link_libraries.iter().any(|l| l.name == lib.name) {
+                    ctx.link_libraries.push(lib);
                 }
             }
             for path in &sub_manifest.build.link_paths {
@@ -486,8 +490,58 @@ mod tests {
         let manifest = crate::manifest::load_manifest(&root).unwrap().unwrap();
         let resolved = resolve_all_deps(&manifest, &root).unwrap();
 
-        assert_eq!(resolved.link_libraries, vec!["sqlite3"]);
+        assert_eq!(resolved.link_libraries.len(), 1);
+        assert_eq!(resolved.link_libraries[0].name, "sqlite3");
+        assert_eq!(
+            resolved.link_libraries[0].kind,
+            crate::manifest::LinkKind::Dynamic
+        );
         assert_eq!(resolved.link_paths, vec!["/usr/local/lib"]);
+    }
+
+    #[test]
+    fn transitive_link_kind_propagation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("root");
+        let lib = tmp.path().join("lib");
+
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&lib).unwrap();
+
+        write_manifest(
+            &root,
+            "root",
+            &format!(
+                "[dependencies]\nmylib = {{ path = \"{}\" }}",
+                lib.display()
+            ),
+            "",
+        );
+        write_manifest(
+            &lib,
+            "mylib",
+            "",
+            "[build]\nlinks = [{ name = \"z\", kind = \"static\" }, \"curl\"]",
+        );
+
+        write_spark_file(&lib, "mylib");
+
+        let manifest = crate::manifest::load_manifest(&root).unwrap().unwrap();
+        let resolved = resolve_all_deps(&manifest, &root).unwrap();
+
+        assert_eq!(resolved.link_libraries.len(), 2);
+
+        assert_eq!(resolved.link_libraries[0].name, "z");
+        assert_eq!(
+            resolved.link_libraries[0].kind,
+            crate::manifest::LinkKind::Static
+        );
+
+        assert_eq!(resolved.link_libraries[1].name, "curl");
+        assert_eq!(
+            resolved.link_libraries[1].kind,
+            crate::manifest::LinkKind::Dynamic
+        );
     }
 
     #[test]
