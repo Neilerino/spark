@@ -1,0 +1,9 @@
+extern fn malloc(size: Int64): CPtr
+extern fn free(ptr: CPtr): Void
+
+fn main(): Int {
+    ptr: CPtr = malloc(64)
+    free(ptr)
+    print("ok")
+    return 0
+}

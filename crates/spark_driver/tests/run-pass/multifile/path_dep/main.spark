@@ -1,0 +1,9 @@
+import mathlib { add, multiply }
+
+fn main(): Int {
+    result: Int = add(3, 4)
+    print(result)
+    product: Int = multiply(5, 6)
+    print(product)
+    return 0
+}

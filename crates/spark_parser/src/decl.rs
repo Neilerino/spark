@@ -119,7 +119,7 @@ impl Parser {
 
     /// Parses a link directive.
     ///
-    /// `LinkDecl` = "link" StringLiteral
+    /// `LinkDecl` = "link" StringLiteral ("from" StringLiteral)?
     pub(crate) fn parse_link_decl(&mut self) -> LinkDecl {
         let start = self.current_span();
         self.expect(TokenKind::Link);
@@ -136,8 +136,33 @@ impl Parser {
             sym("<error>")
         };
 
+        // Optional `from "path"` clause.
+        let search_path = if self.check(TokenKind::Identifier) {
+            let ident_sym = self.current().as_ident().unwrap_or(spark_intern::kw::UNDERSCORE);
+            if ident_sym.as_str() == "from" {
+                self.advance(); // consume `from`
+                if self.check(TokenKind::StringLiteral) {
+                    let token = self.advance();
+                    Some(
+                        token
+                            .value
+                            .as_ref()
+                            .and_then(spark_lexer::TokenValue::as_symbol)
+                            .unwrap_or_else(|| sym("<error>")),
+                    )
+                } else {
+                    self.error_expected("string literal (search path)");
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let span = self.span_from(start);
-        LinkDecl::new(library, span)
+        LinkDecl::new(library, search_path, span)
     }
 
     // ========================================================================
@@ -1151,6 +1176,7 @@ mod tests {
         assert!(!diags.has_errors(), "errors: {:?}", diags);
         assert_eq!(ast.links.len(), 1);
         assert_eq!(ast.links[0].library.as_str(), "sqlite3");
+        assert!(ast.links[0].search_path.is_none());
         assert_eq!(ast.items.len(), 1);
     }
 
@@ -1178,6 +1204,26 @@ mod tests {
         assert_eq!(ast.imports.len(), 1);
         assert_eq!(ast.links.len(), 1);
         assert_eq!(ast.items.len(), 1);
+    }
+
+    #[test]
+    fn link_directive_with_from_path() {
+        let (ast, diags) =
+            parse_source("link \"sqlite3\" from \"/usr/local/lib\"\nfn main(): Void { }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert_eq!(ast.links.len(), 1);
+        assert_eq!(ast.links[0].library.as_str(), "sqlite3");
+        assert_eq!(
+            ast.links[0].search_path.map(|s| s.as_str().to_string()),
+            Some("/usr/local/lib".to_string())
+        );
+    }
+
+    #[test]
+    fn link_directive_from_without_path_error() {
+        let (_, diags) =
+            parse_source("link \"m\" from fn main(): Void { }");
+        assert!(diags.has_errors(), "expected error for `from` without path string");
     }
 
     #[test]

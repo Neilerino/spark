@@ -1,0 +1,10 @@
+link "m"
+
+extern fn sqrt(x: Float64): Float64
+extern fn floor(x: Float64): Float64
+
+fn main(): Int {
+    result: Float64 = sqrt(25.0)
+    print(floor(result))
+    return 0
+}

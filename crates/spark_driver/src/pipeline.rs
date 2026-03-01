@@ -37,6 +37,8 @@ pub struct CompileOutput {
     pub object_bytes: Vec<u8>,
     /// Additional libraries to link (from `link` directives).
     pub link_libraries: Vec<String>,
+    /// Additional library search paths (from `link ... from "path"` directives).
+    pub link_search_paths: Vec<String>,
 }
 
 /// Runs the full compilation pipeline from source code to object bytes.
@@ -103,11 +105,18 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
 
     // -- Collect link directives from all ASTs --------------------------------
     let mut link_libraries = Vec::new();
+    let mut link_search_paths = Vec::new();
     for ast in asts.values() {
         for link_decl in &ast.links {
             let lib = link_decl.library.as_str().to_string();
             if !link_libraries.contains(&lib) {
                 link_libraries.push(lib);
+            }
+            if let Some(search_path) = link_decl.search_path {
+                let path = search_path.as_str().to_string();
+                if !link_search_paths.contains(&path) {
+                    link_search_paths.push(path);
+                }
             }
         }
     }
@@ -230,6 +239,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     Ok(CompileOutput {
         object_bytes: codegen_output.object_bytes,
         link_libraries,
+        link_search_paths,
     })
 }
 

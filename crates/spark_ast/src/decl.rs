@@ -133,14 +133,17 @@ impl ImportItem {
 // ============================================================================
 // Link Declaration
 // ============================================================================
-/// Link directive: `link "sqlite3"`
+/// Link directive: `link "sqlite3"` or `link "sqlite3" from "/usr/local/lib"`.
 ///
-/// Instructs the linker to link against the named C library.
+/// Instructs the linker to link against the named C library, optionally
+/// specifying a search path where the library can be found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct LinkDecl {
     /// The library name (e.g., `"sqlite3"`).
     pub library: Symbol,
+    /// Optional search path (e.g., `"/usr/local/lib"`).
+    pub search_path: Option<Symbol>,
     /// The span.
     pub span: Span,
 }
@@ -148,8 +151,8 @@ pub struct LinkDecl {
 impl LinkDecl {
     /// Creates a new link declaration.
     #[must_use]
-    pub const fn new(library: Symbol, span: Span) -> Self {
-        Self { library, span }
+    pub const fn new(library: Symbol, search_path: Option<Symbol>, span: Span) -> Self {
+        Self { library, search_path, span }
     }
 }
 

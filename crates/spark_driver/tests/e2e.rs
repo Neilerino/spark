@@ -909,3 +909,37 @@ fn borrow_dangling_return() {
 fn borrow_alias_call() {
     assert_compile_error("compile-fail/borrow_errors/borrow_alias_call.spark", "cannot pass");
 }
+
+// ============================================================================
+// FFI / link directive / CPtr
+// ============================================================================
+
+#[test]
+fn path_dep_import() {
+    let result = run_spark_project("path_dep");
+    assert_eq!(
+        result.exit_code, 0,
+        "path_dep project exited with code {}:\n{}",
+        result.exit_code, result.stderr
+    );
+    assert_eq!(
+        result.stdout.trim(),
+        "7\n30",
+        "stdout mismatch for path_dep project"
+    );
+}
+
+#[test]
+fn link_libm() {
+    assert_output("run-pass/ffi/link_libm.spark", "5");
+}
+
+#[test]
+fn extern_cptr() {
+    assert_output("run-pass/ffi/extern_cptr.spark", "ok");
+}
+
+#[test]
+fn link_from_path() {
+    assert_output("run-pass/ffi/link_from_path.spark", "4");
+}

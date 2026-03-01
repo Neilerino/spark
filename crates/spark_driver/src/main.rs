@@ -181,11 +181,19 @@ fn cmd_build(
         }
     }
 
+    // Merge link search paths from `link ... from "path"` directives and Spark.toml.
+    let mut all_link_paths = result.link_search_paths;
+    for path in manifest_link_paths {
+        if !all_link_paths.contains(&path) {
+            all_link_paths.push(path);
+        }
+    }
+
     link_object(
         &result.object_bytes,
         output_path,
         &all_link_libs,
-        &manifest_link_paths,
+        &all_link_paths,
     )
 }
 
