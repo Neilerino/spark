@@ -48,6 +48,8 @@ pub struct BuiltinTypes {
     pub string: TypeId,
     /// `Byte`.
     pub byte: TypeId,
+    /// `CPtr` (opaque C pointer for FFI).
+    pub cptr: TypeId,
     /// `Void`.
     pub void: TypeId,
     /// `Null`.
@@ -88,6 +90,7 @@ pub fn register_builtins(table: &mut TypeTable) -> BuiltinTypes {
     let char_ty = table.intern(Ty::Char);
     let string = table.intern(Ty::String);
     let byte = table.intern(Ty::Byte);
+    let cptr = table.intern(Ty::CPtr);
     let void = table.intern(Ty::Void);
     let null = table.intern(Ty::Null);
     let never = table.intern(Ty::Never);
@@ -115,6 +118,7 @@ pub fn register_builtins(table: &mut TypeTable) -> BuiltinTypes {
     symbol_map.insert(kw::CHAR, char_ty);
     symbol_map.insert(kw::STRING, string);
     symbol_map.insert(kw::BYTE, byte);
+    symbol_map.insert(kw::CPTR, cptr);
     symbol_map.insert(kw::VOID, void);
     symbol_map.insert(kw::NULL, null);
     symbol_map.insert(kw::NEVER, never);
@@ -137,6 +141,7 @@ pub fn register_builtins(table: &mut TypeTable) -> BuiltinTypes {
         char_ty,
         string,
         byte,
+        cptr,
         void,
         null,
         never,
@@ -185,8 +190,18 @@ mod tests {
         assert_eq!(builtins.lookup(kw::BOOL), Some(builtins.bool_ty));
         assert_eq!(builtins.lookup(kw::STRING), Some(builtins.string));
         assert_eq!(builtins.lookup(kw::VOID), Some(builtins.void));
+        assert_eq!(builtins.lookup(kw::CPTR), Some(builtins.cptr));
         // Non-builtin should return None
         assert_eq!(builtins.lookup(spark_intern::sym("MyType")), None);
+    }
+
+    #[test]
+    fn cptr_registered() {
+        let mut table = TypeTable::new();
+        let builtins = register_builtins(&mut table);
+
+        assert!(!builtins.cptr.is_error());
+        assert_eq!(table.resolve(builtins.cptr), &Ty::CPtr);
     }
 
     #[test]

@@ -19,6 +19,7 @@ members = [
     "crates/spark_driver",
     "crates/spark_stdlib",
     "crates/spark_runtime",
+    "crates/spark_package",
     # "crates/spark_cli",
 
     # Tools (applications built on core)
@@ -49,6 +50,7 @@ spark_codegen = { path = "crates/spark_codegen" }
 spark_opt = { path = "crates/spark_opt" }
 spark_drop = { path = "crates/spark_drop" }
 spark_stdlib = { path = "crates/spark_stdlib" }
+spark_package = { path = "crates/spark_package" }
 
 # Error reporting
 thiserror = "1.0"
@@ -83,6 +85,7 @@ tempfile = "3"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
 
 # LSP
 tower-lsp = { version = "0.20", features = ["proposed"] }

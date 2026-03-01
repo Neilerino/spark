@@ -3,8 +3,8 @@
 use spark_span::{FileId, Span};
 
 use crate::{
-    BindingDef, ConstDef, EnumDef, FunctionDef, ImportDecl, InterfaceDef, ModuleDecl, StructDef,
-    TypeAliasDef, TypeDefDef, UsingDecl,
+    BindingDef, ConstDef, EnumDef, FunctionDef, ImportDecl, InterfaceDef, LinkDecl, ModuleDecl,
+    StructDef, TypeAliasDef, TypeDefDef, UsingDecl,
 };
 
 #[cfg(feature = "serde")]
@@ -29,6 +29,9 @@ pub struct Ast {
     /// Import declarations.
     pub imports: Vec<ImportDecl>,
 
+    /// Link directives: `link "libname"`.
+    pub links: Vec<LinkDecl>,
+
     /// Top-level items.
     pub items: Vec<Item>,
 }
@@ -42,6 +45,7 @@ impl Ast {
             module_decl: None,
             using_decl: None,
             imports: Vec::new(),
+            links: Vec::new(),
             items: Vec::new(),
         }
     }

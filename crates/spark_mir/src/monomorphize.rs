@@ -223,6 +223,7 @@ fn type_name_short(ty_id: TypeId, table: &TypeTable) -> String {
         Ty::Char => "Char".to_owned(),
         Ty::String => "String".to_owned(),
         Ty::Byte => "Byte".to_owned(),
+        Ty::CPtr => "CPtr".to_owned(),
         Ty::Void => "Void".to_owned(),
         Ty::Struct(d) | Ty::Enum(d) => format!("D{}", d.as_u32()),
         Ty::List(inner) => format!("List_{}", type_name_short(*inner, table)),

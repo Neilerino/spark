@@ -601,6 +601,7 @@ mod tests {
             module_decl: None,
             using_decl: None,
             imports: vec![],
+            links: vec![],
             items: vec![Item::Struct(StructDef {
                 visibility: Visibility::Public,
                 name: Ident::dummy(sym("User")),

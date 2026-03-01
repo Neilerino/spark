@@ -161,6 +161,8 @@ pub enum TokenKind {
     Extern,
     /// `reduce`
     Reduce,
+    /// `link`
+    Link,
     /// `true`
     True,
     /// `false`
@@ -316,6 +318,7 @@ impl TokenKind {
                 | Self::Parallel
                 | Self::Extern
                 | Self::Reduce
+                | Self::Link
                 | Self::True
                 | Self::False
                 | Self::Null
@@ -388,6 +391,7 @@ impl TokenKind {
             "parallel" => Some(Self::Parallel),
             "extern" => Some(Self::Extern),
             "reduce" => Some(Self::Reduce),
+            "link" => Some(Self::Link),
             "true" => Some(Self::True),
             "false" => Some(Self::False),
             "Null" => Some(Self::Null),
@@ -442,6 +446,7 @@ impl TokenKind {
             Self::Parallel => "parallel",
             Self::Extern => "extern",
             Self::Reduce => "reduce",
+            Self::Link => "link",
             Self::True => "true",
             Self::False => "false",
             Self::Null => "Null",
@@ -583,6 +588,7 @@ mod tests {
     fn keyword_from_str() {
         assert_eq!(TokenKind::keyword_from_str("fn"), Some(TokenKind::Fn));
         assert_eq!(TokenKind::keyword_from_str("if"), Some(TokenKind::If));
+        assert_eq!(TokenKind::keyword_from_str("link"), Some(TokenKind::Link));
         assert_eq!(TokenKind::keyword_from_str("foo"), None);
     }
 

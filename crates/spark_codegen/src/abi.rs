@@ -25,6 +25,9 @@ pub fn spark_type_to_clif(ty_id: TypeId, table: &TypeTable, ptr_type: ClifType) 
         Ty::Float(FloatWidth::F32) => Some(types::F32),
         Ty::Float(FloatWidth::F64) => Some(types::F64),
 
+        // CPtr is an opaque C pointer, pointer-sized
+        Ty::CPtr => Some(ptr_type),
+
         // Zero-sized types — no runtime value
         Ty::Void | Ty::Null | Ty::Never | Ty::Error => None,
 
@@ -78,6 +81,7 @@ pub fn is_scalar(ty_id: TypeId, table: &TypeTable) -> bool {
             | Ty::Bool
             | Ty::Char
             | Ty::Byte
+            | Ty::CPtr
             | Ty::String
             | Ty::List(_)
             | Ty::Map(_, _)
@@ -165,6 +169,17 @@ mod tests {
 
         assert_eq!(spark_type_to_clif(string_ty, &table, ptr), Some(types::I64));
         assert_eq!(spark_type_to_clif(list_ty, &table, ptr), Some(types::I64));
+    }
+
+    #[test]
+    fn cptr_maps_to_pointer() {
+        let mut table = TypeTable::new();
+        let ptr = types::I64;
+
+        let cptr_ty = table.intern(Ty::CPtr);
+        assert_eq!(spark_type_to_clif(cptr_ty, &table, ptr), Some(types::I64));
+        assert!(is_scalar(cptr_ty, &table));
+        assert!(!is_zero_sized(cptr_ty, &table));
     }
 
     #[test]

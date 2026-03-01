@@ -1544,6 +1544,7 @@ pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -
         Ty::Char => "Char".to_string(),
         Ty::String => "String".to_string(),
         Ty::Byte => "Byte".to_string(),
+        Ty::CPtr => "CPtr".to_string(),
         Ty::Void => "Void".to_string(),
         Ty::Null => "Null".to_string(),
         Ty::Never => "Never".to_string(),

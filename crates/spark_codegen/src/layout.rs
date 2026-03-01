@@ -317,6 +317,8 @@ impl LayoutCache {
             | Ty::Map(_, _)
             | Ty::Set(_)
             | Ty::Ref { .. }
+            // CPtr is an opaque C pointer
+            | Ty::CPtr
             // Generic parameter — treat as pointer-sized
             | Ty::Param(_) => TypeLayout {
                 size: self.ptr_size,

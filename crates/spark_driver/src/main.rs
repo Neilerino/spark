@@ -125,7 +125,7 @@ fn cmd_build(
         discover_project_files(&abs_input, &abs_root)?
     };
 
-    let sources = files
+    let mut sources: Vec<(PathBuf, String)> = files
         .iter()
         .map(|path| {
             let source = read_source(path)?;
@@ -134,13 +134,59 @@ fn cmd_build(
         })
         .collect::<Result<Vec<_>, ()>>()?;
 
+    // Load Spark.toml manifest if present.
+    let mut manifest_links: Vec<String> = Vec::new();
+    let mut manifest_link_paths: Vec<String> = Vec::new();
+
+    if let Some(manifest_result) = spark_package::load_manifest(&abs_root) {
+        match manifest_result {
+            Ok(manifest) => {
+                // Resolve path dependencies: add their source files.
+                for (dep_name, dep) in &manifest.dependencies {
+                    match dep {
+                        spark_package::Dependency::Path { path } => {
+                            match spark_package::resolve_path_dep(dep_name, path, &abs_root) {
+                                Ok(dep_sources) => sources.extend(dep_sources),
+                                Err(e) => {
+                                    eprintln!("error: {e}");
+                                    return Err(());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Collect build section link info.
+                manifest_links = manifest.build.links;
+                manifest_link_paths = manifest.build.link_paths;
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                return Err(());
+            }
+        }
+    }
+
     let result = pipeline::compile(pipeline::CompileInput {
         sources,
         root_path: abs_root,
         opt_level,
     })?;
 
-    link_object(&result.object_bytes, output_path)
+    // Merge link libraries from AST `link` directives and Spark.toml `[build]`.
+    let mut all_link_libs = result.link_libraries;
+    for lib in manifest_links {
+        if !all_link_libs.contains(&lib) {
+            all_link_libs.push(lib);
+        }
+    }
+
+    link_object(
+        &result.object_bytes,
+        output_path,
+        &all_link_libs,
+        &manifest_link_paths,
+    )
 }
 
 /// Compiles and runs `input`, returning the program's exit code.
@@ -286,7 +332,12 @@ fn find_runtime_lib() -> Result<PathBuf, ()> {
 }
 
 /// Links an object file into an executable by invoking `cc`.
-fn link_object(object_bytes: &[u8], output_path: &Path) -> Result<(), ()> {
+fn link_object(
+    object_bytes: &[u8],
+    output_path: &Path,
+    extra_libs: &[String],
+    extra_link_paths: &[String],
+) -> Result<(), ()> {
     let runtime_lib = find_runtime_lib()?;
 
     // Write object to a unique temp file (avoid races when multiple spark
@@ -308,6 +359,16 @@ fn link_object(object_bytes: &[u8], output_path: &Path) -> Result<(), ()> {
         .arg("-lm") // this is for math
         .arg("-lpthread") // This is for async/threading
         .arg("-ldl");
+
+    // Add extra link search paths from Spark.toml [build] section
+    for path in extra_link_paths {
+        cmd.arg(format!("-L{path}"));
+    }
+
+    // Add extra link libraries from `link` directives and Spark.toml
+    for lib in extra_libs {
+        cmd.arg(format!("-l{lib}"));
+    }
 
     // Pin the macOS deployment target to 11.0 (Big Sur) to match the minos/sdk
     // values embedded in the object file by spark_codegen. Without this the

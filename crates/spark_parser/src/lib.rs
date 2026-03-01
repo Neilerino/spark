@@ -473,6 +473,11 @@ impl Parser {
             ast.imports.push(self.parse_import_decl());
         }
 
+        // Parse link directives
+        while self.check(TokenKind::Link) {
+            ast.links.push(self.parse_link_decl());
+        }
+
         // Parse items
         while !self.at_end() {
             let pos_before = self.pos;

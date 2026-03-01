@@ -143,7 +143,8 @@ const fn token_type_index(kind: TokenKind) -> Option<u32> {
         | TokenKind::False
         | TokenKind::Null
         | TokenKind::Extern
-        | TokenKind::Reduce => Some(KEYWORD),
+        | TokenKind::Reduce
+        | TokenKind::Link => Some(KEYWORD),
 
         // Numbers
         TokenKind::IntLiteral | TokenKind::FloatLiteral => Some(NUMBER),

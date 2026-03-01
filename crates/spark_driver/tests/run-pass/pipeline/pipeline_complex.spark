@@ -1,0 +1,147 @@
+fn square(x: Int): Int {
+    return x * x
+}
+
+fn addN(x: Int, n: Int): Int {
+    return x + n
+}
+
+fn negate(x: Int): Int {
+    return 0 - x
+}
+
+fn abs(x: Int): Int {
+    if x < 0 {
+        return 0 - x
+    }
+    return x
+}
+
+fn clamp_list(nums: List[Int], limit: Int): List[Int] {
+    return nums each via (n: Int): Int {
+        if n > limit {
+            limit
+        } else {
+            n
+        }
+    }
+}
+
+fn maybe_sqrt(x: Int): Int | String {
+    if x < 0 {
+        return "negative"
+    }
+    // Integer "square root" via linear scan — good enough for small values.
+    i: Int! = 0
+    loop {
+        if i * i >= x {
+            return i
+        }
+        i = i + 1
+    }
+    return 0
+}
+
+fn main(): Int {
+    // ---------------------------------------------------------------
+    // Stage 1: each via → via sort → via reverse → via take
+    //   [5, 2, 8, 1, 9, 3] → square → [25, 4, 64, 1, 81, 9]
+    //   → sort → [1, 4, 9, 25, 64, 81]
+    //   → reverse → [81, 64, 25, 9, 4, 1]
+    //   → take 4 → [81, 64, 25, 9]
+    // ---------------------------------------------------------------
+    raw: List[Int] = [5, 2, 8, 1, 9, 3]
+    top4_squares: List[Int] = raw each via square 
+        via sort 
+        via reverse 
+        via take{count: 4}
+        
+    print(top4_squares.len())
+    // → 4
+
+    // ---------------------------------------------------------------
+    // Stage 2: each via with partial application chained with via
+    //   [81, 64, 25, 9] → addN{n: 100} → [181, 164, 125, 109]
+    //   → via clamp_list{limit: 150} → [150, 150, 125, 109]
+    //   → reduce to sum → 150+150+125+109 = 534
+    // ---------------------------------------------------------------
+    shifted: List[Int] = top4_squares each via addN{n: 100}
+    clamped: List[Int] = shifted via clamp_list{limit: 150}
+    sum: Int = clamped reduce 0 via (acc: Int, n: Int): Int { acc + n }
+    print(sum)
+    // → 534
+
+    // ---------------------------------------------------------------
+    // Stage 3: each via with lambda producing new list → via sort
+    //   [150, 150, 125, 109] → negate → [-150, -150, -125, -109]
+    //   → each via abs → [150, 150, 125, 109]
+    //   → via sort → [109, 125, 150, 150]
+    // ---------------------------------------------------------------
+    negated: List[Int] = clamped each via negate
+    restored: List[Int] = negated each via abs via sort
+    restored each (item: Int): Void { print(item) }
+    // → 109, 125, 150, 150
+
+    // ---------------------------------------------------------------
+    // Stage 4: reduce — sum via fold
+    //   [109, 125, 150, 150] → reduce 0 via add → 534
+    // ---------------------------------------------------------------
+    total: Int = restored reduce 0 via (acc: Int, n: Int): Int { acc + n }
+    print(total)
+    // → 534
+
+    // ---------------------------------------------------------------
+    // Stage 5: each via fn ref + reduce combined
+    //   [5, 2, 8, 1, 9, 3] → square → [25, 4, 64, 1, 81, 9]
+    //   → reduce 0 via add → 184
+    // ---------------------------------------------------------------
+    sum_of_squares: Int = raw each via square reduce 0 via (acc: Int, x: Int): Int { acc + x }
+    print(sum_of_squares)
+    // → 184
+
+    // ---------------------------------------------------------------
+    // Stage 6: to narrowing after fallible map
+    //   Call maybe_sqrt on each value. It returns Int | String.
+    //   Narrow with `to` to handle errors.
+    // ---------------------------------------------------------------
+    r1: Int | String = maybe_sqrt(16)
+    v1: Int = r1 to { s: String -> -1 }
+    print(v1)
+    // → 4
+
+    r2: Int | String = maybe_sqrt(-9)
+    v2: Int = r2 to { s: String -> -1 }
+    print(v2)
+    // → -1
+
+    // ---------------------------------------------------------------
+    // Stage 7: to as pipeline function application chained
+    //   5 → square → addN{n: 10} → 35
+    // ---------------------------------------------------------------
+    piped: Int = 5 to square to addN{n: 10}
+    print(piped)
+    // → 35
+
+    // ---------------------------------------------------------------
+    // Stage 8: closure captures inside each via
+    //   Capture a local in the lambda used by each via.
+    // ---------------------------------------------------------------
+    offset: Int = 1000
+    boosted: List[Int] = raw each via (x: Int): Int { x + offset }
+    // [1005, 1002, 1008, 1001, 1009, 1003] → sort → take 3
+    top3_boosted: List[Int] = boosted via sort via take{count: 3}
+    top3_boosted each (item: Int): Void { print(item) }
+    // → 1001, 1002, 1003
+
+    // ---------------------------------------------------------------
+    // Stage 9: via reverse → each via → reduce (full chain)
+    //   [5, 2, 8, 1, 9, 3] → via reverse → [3, 9, 1, 8, 2, 5]
+    //   → each via square → [9, 81, 1, 64, 4, 25]
+    //   → reduce 1 via multiply → 9*81*1*64*4*25 = 4665600
+    // ---------------------------------------------------------------
+    big_product: Int = raw via reverse each via square reduce 1 via (acc: Int, x: Int): Int { acc * x }
+    print(big_product)
+    // → 4665600
+
+    return 0
+}

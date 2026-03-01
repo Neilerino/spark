@@ -383,6 +383,10 @@ impl Interner {
             // Reduce pipeline
             "reduce",
             "__spark_parallel_map_reduce",
+            // Link directive
+            "link",
+            // FFI opaque pointer type
+            "CPtr",
         ];
 
         for kw in keywords {
@@ -725,6 +729,14 @@ pub mod kw {
     /// `__spark_parallel_map_reduce` (internal runtime stub)
     pub const PARALLEL_MAP_REDUCE: Symbol = Symbol(110);
 
+    // Link directive
+    /// `link`
+    pub const LINK: Symbol = Symbol(111);
+
+    // FFI opaque pointer type
+    /// `CPtr`
+    pub const CPTR: Symbol = Symbol(112);
+
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
     pub const fn is_builtin_function(sym: Symbol) -> bool {
@@ -742,8 +754,8 @@ pub mod kw {
     /// Returns true if the given symbol is a keyword.
     #[must_use]
     pub const fn is_keyword(sym: Symbol) -> bool {
-        // Keywords are symbols 1-37 (fn through Never) plus parallel (78) plus extern (91) plus reduce (109)
-        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78 || sym.0 == 91 || sym.0 == 109
+        // Keywords are symbols 1-37 (fn through Never) plus parallel (78) plus extern (91) plus reduce (109) plus link (111)
+        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78 || sym.0 == 91 || sym.0 == 109 || sym.0 == 111
     }
 
     /// Returns true if the given symbol is a primitive type name.
@@ -756,8 +768,8 @@ pub mod kw {
     /// Returns true if the given symbol is a built-in type name.
     #[must_use]
     pub const fn is_builtin_type(sym: Symbol) -> bool {
-        // Built-in types are symbols 35-65 (Null through Future)
-        sym.0 >= 35 && sym.0 <= 65
+        // Built-in types are symbols 35-65 (Null through Future) plus CPtr (112)
+        (sym.0 >= 35 && sym.0 <= 65) || sym.0 == 112
     }
 }
 
@@ -886,6 +898,14 @@ mod tests {
         assert_eq!(kw::FLOAT.as_str(), "Float");
         assert_eq!(kw::STRING.as_str(), "String");
         assert_eq!(kw::BOOL.as_str(), "Bool");
+    }
+
+    #[test]
+    fn link_and_cptr_preinterned() {
+        assert_eq!(kw::LINK.as_str(), "link");
+        assert_eq!(kw::CPTR.as_str(), "CPtr");
+        assert!(kw::is_keyword(kw::LINK));
+        assert!(kw::is_builtin_type(kw::CPTR));
     }
 
     #[test]

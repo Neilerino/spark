@@ -14,7 +14,7 @@
 use spark_ast::{
     BindingDef, BindingTarget, Block, ConstDef, Decorator, DocComment, EnumDef, EnumField,
     EnumVariant, EnumVariantData, FunctionDef, Ident, ImportDecl, ImportItem, InterfaceDef, Item,
-    ModuleDecl, StructDef, StructField, TypeAliasDef, TypeDefDef, UsingDecl, Visibility,
+    LinkDecl, ModuleDecl, StructDef, StructField, TypeAliasDef, TypeDefDef, UsingDecl, Visibility,
 };
 use spark_intern::sym;
 use spark_lexer::TokenKind;
@@ -111,6 +111,33 @@ impl Parser {
 
         let span = self.span_from(start);
         ImportItem::new(name, alias, span)
+    }
+
+    // ========================================================================
+    // Link Declaration
+    // ========================================================================
+
+    /// Parses a link directive.
+    ///
+    /// `LinkDecl` = "link" StringLiteral
+    pub(crate) fn parse_link_decl(&mut self) -> LinkDecl {
+        let start = self.current_span();
+        self.expect(TokenKind::Link);
+
+        let library = if self.check(TokenKind::StringLiteral) {
+            let token = self.advance();
+            token
+                .value
+                .as_ref()
+                .and_then(spark_lexer::TokenValue::as_symbol)
+                .unwrap_or_else(|| sym("<error>"))
+        } else {
+            self.error_expected("string literal (library name)");
+            sym("<error>")
+        };
+
+        let span = self.span_from(start);
+        LinkDecl::new(library, span)
     }
 
     // ========================================================================
@@ -1116,6 +1143,41 @@ mod tests {
     fn extern_on_non_function_error() {
         let (_, diags) = parse_source("extern struct Foo { x: Int }");
         assert!(diags.has_errors(), "expected error for extern on struct");
+    }
+
+    #[test]
+    fn link_directive() {
+        let (ast, diags) = parse_source("link \"sqlite3\"\nfn main(): Void { }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert_eq!(ast.links.len(), 1);
+        assert_eq!(ast.links[0].library.as_str(), "sqlite3");
+        assert_eq!(ast.items.len(), 1);
+    }
+
+    #[test]
+    fn link_directive_multiple() {
+        let (ast, diags) =
+            parse_source("link \"sqlite3\"\nlink \"z\"\nfn main(): Void { }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert_eq!(ast.links.len(), 2);
+        assert_eq!(ast.links[0].library.as_str(), "sqlite3");
+        assert_eq!(ast.links[1].library.as_str(), "z");
+    }
+
+    #[test]
+    fn link_directive_without_string_error() {
+        let (_, diags) = parse_source("link fn main(): Void { }");
+        assert!(diags.has_errors(), "expected error for link without string literal");
+    }
+
+    #[test]
+    fn link_directive_with_imports() {
+        let (ast, diags) =
+            parse_source("import utils\nlink \"m\"\nfn main(): Void { }");
+        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert_eq!(ast.imports.len(), 1);
+        assert_eq!(ast.links.len(), 1);
+        assert_eq!(ast.items.len(), 1);
     }
 
     #[test]

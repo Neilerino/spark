@@ -35,6 +35,8 @@ pub struct CompileInput {
 pub struct CompileOutput {
     /// The compiled native object file bytes (`.o` / `.obj`).
     pub object_bytes: Vec<u8>,
+    /// Additional libraries to link (from `link` directives).
+    pub link_libraries: Vec<String>,
 }
 
 /// Runs the full compilation pipeline from source code to object bytes.
@@ -97,6 +99,17 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
 
     if had_parse_errors {
         return Err(());
+    }
+
+    // -- Collect link directives from all ASTs --------------------------------
+    let mut link_libraries = Vec::new();
+    for ast in asts.values() {
+        for link_decl in &ast.links {
+            let lib = link_decl.library.as_str().to_string();
+            if !link_libraries.contains(&lib) {
+                link_libraries.push(lib);
+            }
+        }
     }
 
     // -- Phase 3: Module resolution -------------------------------------------
@@ -216,6 +229,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
 
     Ok(CompileOutput {
         object_bytes: codegen_output.object_bytes,
+        link_libraries,
     })
 }
 

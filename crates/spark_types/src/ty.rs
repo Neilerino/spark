@@ -144,6 +144,8 @@ pub enum Ty {
     String,
     /// The byte type.
     Byte,
+    /// An opaque C pointer type for FFI.
+    CPtr,
 
     // === Special ===
     /// The void type (no value).
