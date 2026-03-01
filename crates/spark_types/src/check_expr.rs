@@ -774,6 +774,11 @@ fn check_call(
                                     ))
                                     .with_label(Label::primary(arg.value.span, format!("expected `{expected_name}`"))),
                                 );
+                            } else if is_mutable_ref_param(expected, table) && !matches!(table.resolve(arg_types[i]), Ty::Mutable(_)) {
+                                diagnostics.push(
+                                    Diagnostic::error("cannot pass immutable value as mutable reference")
+                                        .with_label(Label::primary(arg.value.span, "value is not mutable")),
+                                );
                             }
                         }
                     }
@@ -836,6 +841,11 @@ fn check_call(
                             ))
                             .with_label(Label::primary(arg.value.span, format!("expected `{expected_name}`"))),
                         );
+                    } else if is_mutable_ref_param(expected, table) && !matches!(table.resolve(arg_ty), Ty::Mutable(_)) {
+                        diagnostics.push(
+                            Diagnostic::error("cannot pass immutable value as mutable reference")
+                                .with_label(Label::primary(arg.value.span, "value is not mutable")),
+                        );
                     }
                 }
             }
@@ -889,6 +899,10 @@ fn check_field_access(
         return TypeId::ERROR;
     }
 
+    // If the base is immutable, field access must strip the Mutable wrapper
+    // from the field type — an immutable struct's fields are not assignable.
+    let base_is_mutable = matches!(table.resolve(base_ty), Ty::Mutable(_));
+
     let resolved = table.resolve(strip_ref(strip_mutable(base_ty, table), table)).clone();
     match resolved {
         Ty::Struct(def_id) => {
@@ -897,6 +911,9 @@ fn check_field_access(
                     if name == field_name {
                         if let Some(field_def) = crate::check_decl::find_field_def(field_name, def_id, definitions) {
                             table.set_field_resolution(field_span, field_def);
+                        }
+                        if !base_is_mutable {
+                            return strip_mutable(ty, table);
                         }
                         return ty;
                     }
@@ -921,7 +938,11 @@ fn check_field_access(
                         if let Some(field_def) = crate::check_decl::find_field_def(field_name, base, definitions) {
                             table.set_field_resolution(field_span, field_def);
                         }
-                        return crate::substitute::substitute_mut(ty, &subst, table);
+                        let field_ty = crate::substitute::substitute_mut(ty, &subst, table);
+                        if !base_is_mutable {
+                            return strip_mutable(field_ty, table);
+                        }
+                        return field_ty;
                     }
                 }
             }
@@ -1248,6 +1269,15 @@ pub(crate) fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
     }
 }
 
+/// Returns `true` if the type is `Mutable(Ref { .. })`, i.e. a mutable reference parameter.
+fn is_mutable_ref_param(ty: TypeId, table: &TypeTable) -> bool {
+    if let Ty::Mutable(inner) = table.resolve(ty) {
+        matches!(table.resolve(*inner), Ty::Ref { .. })
+    } else {
+        false
+    }
+}
+
 /// Validates the callback type for `each` / `each via`.
 ///
 /// For `each`: callback must be `(T) -> Void` (though we don't enforce Void return).
@@ -1308,6 +1338,107 @@ fn validate_each_callback(
             TypeId::ERROR
         }
     }
+}
+
+/// Validates a partial-application callback in an `each`/`each via` pipeline stage.
+///
+/// For `list each via func{b: val}`, the element fills the first parameter and the
+/// bound arguments fill the rest. Returns the function's return type and stores a
+/// reduced 1-parameter function type on `callback_expr` so downstream passes can
+/// extract the return type via `extract_fn_ret_ty`.
+#[allow(clippy::too_many_arguments)]
+fn validate_partial_each_callback(
+    callee: &Expr,
+    args: &[spark_ast::PartialArg],
+    elem_ty: TypeId,
+    is_via: bool,
+    callback_expr: &Expr,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+    definitions: &DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let callee_ty = check_expr(callee, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+    for arg in args {
+        check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+    }
+
+    if callee_ty.is_error() || elem_ty.is_error() {
+        table.set_expr_type(callback_expr.id, TypeId::ERROR);
+        return TypeId::ERROR;
+    }
+
+    let func_ty = table.resolve(callee_ty).clone();
+    let Ty::Function { params, ret, .. } = func_ty else {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`each{}` partial callback must be a function",
+                if is_via { " via" } else { "" },
+            ))
+            .with_label(Label::primary(callee.span, "not a function")),
+        );
+        table.set_expr_type(callback_expr.id, TypeId::ERROR);
+        return TypeId::ERROR;
+    };
+
+    // Arity: element fills first param, bound args fill the rest
+    let total_args = 1 + args.len();
+    if total_args != params.len() {
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`each{}` partial callback expected {} parameter{}, found {} (1 element + {} bound)",
+                if is_via { " via" } else { "" },
+                params.len(),
+                if params.len() == 1 { "" } else { "s" },
+                total_args,
+                args.len(),
+            ))
+            .with_label(Label::primary(callback_expr.span, "wrong number of arguments")),
+        );
+        table.set_expr_type(callback_expr.id, TypeId::ERROR);
+        return TypeId::ERROR;
+    }
+
+    // Validate element type against first param
+    if !is_compatible(elem_ty, params[0], table) {
+        let expected = type_name(params[0], table, definitions);
+        let found = type_name(elem_ty, table, definitions);
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`each{}` element type mismatch: expected `{expected}`, found `{found}`",
+                if is_via { " via" } else { "" },
+            ))
+            .with_label(Label::primary(callback_expr.span, "type mismatch")),
+        );
+    }
+
+    // Validate bound arg types against remaining params
+    for (i, arg) in args.iter().enumerate() {
+        let arg_ty = table.get_expr_type(arg.value.id).unwrap_or(TypeId::ERROR);
+        let param_ty = params[i + 1];
+        if !is_compatible(arg_ty, param_ty, table) {
+            let expected = type_name(param_ty, table, definitions);
+            let found = type_name(arg_ty, table, definitions);
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "argument type mismatch: expected `{expected}`, found `{found}`"
+                ))
+                .with_label(Label::primary(arg.value.span, format!("expected `{expected}`"))),
+            );
+        }
+    }
+
+    // Store a reduced 1-param function type so infer_stage_output_ty / extract_fn_ret_ty works
+    let reduced_ty = table.intern(Ty::Function {
+        params: vec![elem_ty],
+        ret,
+        is_async: false,
+    });
+    table.set_expr_type(callback_expr.id, reduced_ty);
+
+    ret
 }
 
 /// Strips the `Ref` wrapper if present.
@@ -1812,14 +1943,28 @@ fn check_pipeline_stage(
     match &stage.kind {
         PipelineStageKind::ForEach { callback } => {
             let elem_ty = extract_list_elem(base_ty, label, source_span, table, definitions, diagnostics);
-            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            validate_each_callback(cb_ty, elem_ty, false, callback.span, table, definitions, diagnostics);
+            if let ExprKind::Partial { callee, args } = &callback.kind {
+                validate_partial_each_callback(
+                    callee, args, elem_ty, false, callback,
+                    table, builtins, definitions, resolutions, diagnostics, current_fn_ret,
+                );
+            } else {
+                let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                validate_each_callback(cb_ty, elem_ty, false, callback.span, table, definitions, diagnostics);
+            }
             builtins.void
         }
         PipelineStageKind::Map { callback } => {
             let elem_ty = extract_list_elem(base_ty, label, source_span, table, definitions, diagnostics);
-            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let ret_ty = validate_each_callback(cb_ty, elem_ty, true, callback.span, table, definitions, diagnostics);
+            let ret_ty = if let ExprKind::Partial { callee, args } = &callback.kind {
+                validate_partial_each_callback(
+                    callee, args, elem_ty, true, callback,
+                    table, builtins, definitions, resolutions, diagnostics, current_fn_ret,
+                )
+            } else {
+                let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                validate_each_callback(cb_ty, elem_ty, true, callback.span, table, definitions, diagnostics)
+            };
             table.intern(Ty::List(ret_ty))
         }
         PipelineStageKind::Reduce { initial, callback } => {

@@ -1,0 +1,14 @@
+struct Point {
+    x: Int!
+    y: Int!
+}
+
+fn mutate(p: Ref[Point]!): Void {
+    p.x = 10
+}
+
+fn main(): Int {
+    point: Point = Point{x: 1, y: 2}
+    mutate(point)
+    return 0
+}

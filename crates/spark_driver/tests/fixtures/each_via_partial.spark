@@ -1,0 +1,10 @@
+fn addN(x: Int, n: Int): Int {
+    return x + n
+}
+
+fn main(): Int {
+    nums: List[Int] = [1, 2, 3]
+    result: List[Int] = nums each via addN{n: 10}
+    result each (item: Int): Void { print(item) }
+    return 0
+}

@@ -421,6 +421,11 @@ fn each_lambda_print() {
 }
 
 #[test]
+fn each_via_partial() {
+    assert_output("each_via_partial.spark", "11\n12\n13");
+}
+
+#[test]
 fn each_via_lambda_values() {
     assert_output("each_via_lambda_values.spark", "20\n40\n60");
 }
@@ -808,6 +813,16 @@ fn borrow_immut_assign() {
 #[test]
 fn borrow_dangling_return() {
     assert_compile_error("borrow_dangling_return.spark", "cannot return reference to local variable");
+}
+
+#[test]
+fn immutable_field_assign() {
+    assert_compile_error("immutable_field_assign.spark", "immutable");
+}
+
+#[test]
+fn immutable_mutable_borrow() {
+    assert_compile_error("immutable_mutable_borrow.spark", "cannot pass immutable value as mutable reference");
 }
 
 #[test]

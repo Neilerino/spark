@@ -585,7 +585,9 @@ fn lower_single_pipeline_stage(
 
     match &stage.kind {
         PipelineStageKind::ForEach { callback } => {
-            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let callback_hir = lower_partial_or_plain(
+                callback, table, definitions, resolutions, diagnostics, current_fn_ret, void_ty,
+            );
             let elem_ty = extract_list_elem_ty(source_hir.ty, table);
             if stage.parallel {
                 HirExprKind::ParallelForEach {
@@ -602,7 +604,9 @@ fn lower_single_pipeline_stage(
             }
         }
         PipelineStageKind::Map { callback } => {
-            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let callback_hir = lower_partial_or_plain(
+                callback, table, definitions, resolutions, diagnostics, current_fn_ret, void_ty,
+            );
             let elem_ty = extract_list_elem_ty(source_hir.ty, table);
             let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
             if stage.parallel {
@@ -847,6 +851,63 @@ pub(crate) fn auto_deref_ref(expr: HirExpr, table: &TypeTable) -> HirExpr {
         HirExpr::new(HirExprKind::Deref(Box::new(expr)), inner_ty, span)
     } else {
         expr
+    }
+}
+
+/// Lowers a pipeline callback that may be a `Partial` (e.g. `func{b: 3}`).
+///
+/// For plain callbacks, delegates to `lower_expr`. For `Partial`, synthesizes a
+/// 1-parameter lambda that calls the full function with the element as the first
+/// argument and the bound args filling the rest:
+/// `func{n: 10}` becomes `fn(elem) { func(elem, 10) }`.
+#[allow(clippy::too_many_arguments)]
+fn lower_partial_or_plain(
+    callback: &Expr,
+    table: &TypeTable,
+    definitions: &mut DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut Diagnostics,
+    current_fn_ret: Option<TypeId>,
+    void_ty: TypeId,
+) -> HirExpr {
+    if let ExprKind::Partial { callee, args } = &callback.kind {
+        let callee_hir = lower_expr(callee, table, definitions, resolutions, diagnostics, current_fn_ret);
+        let param_types = extract_param_types(callee_hir.ty, table);
+        let ret_ty = extract_fn_ret_ty(callee_hir.ty, table, void_ty);
+
+        // The type checker stored a reduced 1-param function type on the callback
+        let lambda_ty = table.get_expr_type(callback.id).unwrap_or(TypeId::ERROR);
+        let elem_ty = if let Ty::Function { params, .. } = table.resolve(lambda_ty) {
+            params.first().copied().unwrap_or(TypeId::ERROR)
+        } else {
+            TypeId::ERROR
+        };
+
+        let param_id = definitions.next_synthetic_id(callback.span);
+        let param = HirParam { def_id: param_id, ty: elem_ty, span: callback.span };
+
+        let mut call_args = vec![HirExpr::new(HirExprKind::Local(param_id), elem_ty, callback.span)];
+        for (i, arg) in args.iter().enumerate() {
+            let mut arg_hir = lower_expr(&arg.value, table, definitions, resolutions, diagnostics, current_fn_ret);
+            if let Some(&pty) = param_types.get(i + 1) {
+                arg_hir = coerce_ref(arg_hir, pty, arg.value.span, table);
+            }
+            call_args.push(arg_hir);
+        }
+
+        let body = HirExpr::new(
+            HirExprKind::Call { callee: Box::new(callee_hir), args: call_args },
+            ret_ty,
+            callback.span,
+        );
+
+        HirExpr::new(
+            HirExprKind::Lambda { params: vec![param], body: Box::new(body) },
+            lambda_ty,
+            callback.span,
+        )
+    } else {
+        lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret)
     }
 }
 

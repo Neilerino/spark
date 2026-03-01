@@ -728,12 +728,20 @@ impl Parser {
         } else if self.check(TokenKind::Fn) {
             self.parse_lambda()
         } else {
-            // Function reference: `list each show`
+            // Function reference: `list each show` or `list each via func{b: 3}`
             let ident = self
                 .expect_ident()
                 .unwrap_or_else(|| Ident::dummy(sym("_")));
             let ident_span = ident.span;
-            Expr::new(ExprKind::Ident(ident), ident_span)
+            let callee = Expr::new(ExprKind::Ident(ident), ident_span);
+
+            if self.check(TokenKind::LBrace) {
+                let args = self.parse_partial_args();
+                let span = self.span_from(ident_span);
+                Expr::new(ExprKind::Partial { callee: Box::new(callee), args }, span)
+            } else {
+                callee
+            }
         }
     }
 
