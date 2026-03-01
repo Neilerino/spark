@@ -6,6 +6,31 @@
 //!
 //! Tests are serialized via a mutex because the driver uses a shared temp path
 //! (`/tmp/spark_output.o`) during linking.
+//!
+//! ## Test layout
+//!
+//! ```text
+//! tests/
+//! ├── run-pass/       # Programs that should compile and produce expected output
+//! │   ├── basics/     # hello, arithmetic, if_else, structs, loops
+//! │   ├── collections/# list_*, nested_*
+//! │   ├── generics/   # generic_struct_init, generic_identity, constraints
+//! │   ├── lambdas/    # lambda_*, fn_reference, higher_order, closure_*
+//! │   ├── each/       # each_*, each_via_*
+//! │   ├── parallel/   # parallel_each_*
+//! │   ├── via/        # via_*
+//! │   ├── async/      # async_*, spawn_*, coop_*
+//! │   ├── references/ # ref_*
+//! │   ├── stdlib/     # stdlib_*
+//! │   ├── channels/   # channel_*
+//! │   ├── type_narrowing/ # to_*, propagate_*
+//! │   ├── io/         # io_stderr
+//! │   └── multifile/  # multi-file project dirs
+//! ├── compile-fail/   # Programs that should fail compilation
+//! │   ├── type_errors/
+//! │   └── borrow_errors/
+//! └── ui/             # Error message snapshots (future use)
+//! ```
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -24,11 +49,11 @@ struct SparkOutput {
 
 /// Runs `spark run <fixture>` and captures output.
 ///
-/// For single-file tests, pass a file name like `"hello.spark"`.
+/// For single-file tests, pass a relative path like `"run-pass/basics/hello.spark"`.
 /// For multi-file project tests, use [`run_spark_project`] instead.
 fn run_spark(fixture: &str) -> SparkOutput {
     let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+        .join("tests")
         .join(fixture);
 
     assert!(
@@ -61,11 +86,11 @@ fn run_spark(fixture: &str) -> SparkOutput {
 
 /// Runs `spark run <project/main.spark>` for multi-file project tests.
 ///
-/// Projects live under `tests/projects/<name>/` and are self-contained
+/// Projects live under `tests/run-pass/multifile/<name>/` and are self-contained
 /// directories with their own module structure.
 fn run_spark_project(project: &str) -> SparkOutput {
     let project_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/projects")
+        .join("tests/run-pass/multifile")
         .join(project)
         .join("main.spark");
 
@@ -132,7 +157,7 @@ fn assert_compile_error(fixture: &str, expected_fragment: &str) {
 /// the process to exit. Panics on timeout to prevent CI deadlocks.
 fn run_spark_with_stdin(fixture: &str, stdin_input: &str) -> SparkOutput {
     let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+        .join("tests")
         .join(fixture);
 
     assert!(
@@ -210,17 +235,47 @@ fn assert_output_with_stdin(fixture: &str, stdin_input: &str, expected_stdout: &
 
 #[test]
 fn hello_world() {
-    assert_output("hello.spark", "Hello, Spark!");
+    assert_output("run-pass/basics/hello.spark", "Hello, Spark!");
 }
 
 #[test]
 fn arithmetic() {
-    assert_output("arithmetic.spark", "15\n5\n50\n2");
+    assert_output("run-pass/basics/arithmetic.spark", "15\n5\n50\n2");
 }
 
 #[test]
 fn if_else() {
-    assert_output("if_else.spark", "bigger");
+    assert_output("run-pass/basics/if_else.spark", "bigger");
+}
+
+#[test]
+fn match_bool() {
+    assert_output("run-pass/basics/match_bool.spark", "yes");
+}
+
+#[test]
+fn struct_field_access() {
+    assert_output("run-pass/basics/struct_field.spark", "10\n20");
+}
+
+#[test]
+fn struct_param() {
+    assert_output("run-pass/basics/struct_param.spark", "25");
+}
+
+#[test]
+fn loop_break() {
+    assert_output("run-pass/basics/loop_break.spark", "4");
+}
+
+#[test]
+fn kitchen_sink() {
+    assert_output("run-pass/basics/kitchen_sink.spark", "5\n4\n3\n2\n1\n9\n18\n27\n3\n13\n3");
+}
+
+#[test]
+fn string_len() {
+    assert_output("run-pass/basics/string_len.spark", "5");
 }
 
 // ============================================================================
@@ -229,98 +284,42 @@ fn if_else() {
 
 #[test]
 fn list_len() {
-    assert_output("list_len.spark", "3");
+    assert_output("run-pass/collections/list_len.spark", "3");
 }
 
 #[test]
 fn list_append() {
-    assert_output("list_append.spark", "3");
+    assert_output("run-pass/collections/list_append.spark", "3");
 }
 
 #[test]
 fn list_contains() {
-    assert_output("list_contains.spark", "true\nfalse");
+    assert_output("run-pass/collections/list_contains.spark", "true\nfalse");
 }
 
 #[test]
 fn nested_list_string() {
-    assert_output("nested_list_string.spark", "2");
+    assert_output("run-pass/collections/nested_list_string.spark", "2");
 }
 
 #[test]
 fn nested_map_string_list() {
-    assert_output("nested_map_string_list.spark", "2");
+    assert_output("run-pass/collections/nested_map_string_list.spark", "2");
 }
 
 #[test]
 fn nested_list_deep() {
-    assert_output("nested_list_deep.spark", "1");
-}
-
-#[test]
-fn string_len() {
-    assert_output("string_len.spark", "5");
+    assert_output("run-pass/collections/nested_list_deep.spark", "1");
 }
 
 #[test]
 fn list_range() {
-    assert_output("list_range.spark", "5\n6\n5\n11\n5");
+    assert_output("run-pass/collections/list_range.spark", "5\n6\n5\n11\n5");
 }
 
 #[test]
 fn list_range_each() {
-    assert_output("list_range_each.spark", "0\n1\n2\n3\n4");
-}
-
-// ============================================================================
-// Match expressions
-// ============================================================================
-
-#[test]
-fn match_bool() {
-    assert_output("match_bool.spark", "yes");
-}
-
-// ============================================================================
-// Error cases
-// ============================================================================
-
-#[test]
-fn immutable_append_error() {
-    assert_compile_error("immutable_append.spark", "not mutable");
-}
-
-#[test]
-fn match_nonexhaustive_bool() {
-    assert_compile_error("match_nonexhaustive_bool.spark", "non-exhaustive");
-}
-
-#[test]
-fn match_nonexhaustive_int() {
-    assert_compile_error("match_nonexhaustive_int.spark", "non-exhaustive");
-}
-
-// ============================================================================
-// Structs
-// ============================================================================
-
-#[test]
-fn struct_field_access() {
-    assert_output("struct_field.spark", "10\n20");
-}
-
-#[test]
-fn struct_param() {
-    assert_output("struct_param.spark", "25");
-}
-
-// ============================================================================
-// Loops
-// ============================================================================
-
-#[test]
-fn loop_break() {
-    assert_output("loop_break.spark", "4");
+    assert_output("run-pass/collections/list_range_each.spark", "0\n1\n2\n3\n4");
 }
 
 // ============================================================================
@@ -329,12 +328,22 @@ fn loop_break() {
 
 #[test]
 fn generic_struct_init() {
-    assert_output("generic_struct_init.spark", "3\n4");
+    assert_output("run-pass/generics/generic_struct_init.spark", "3\n4");
 }
 
 #[test]
 fn generic_identity() {
-    assert_output("generic_identity.spark", "42");
+    assert_output("run-pass/generics/generic_identity.spark", "42");
+}
+
+#[test]
+fn generic_constraint_interface() {
+    assert_output("run-pass/generics/generic_constraint_interface.spark", "ok");
+}
+
+#[test]
+fn generic_constraint_structural() {
+    assert_output("run-pass/generics/generic_constraint_structural.spark", "1");
 }
 
 // ============================================================================
@@ -343,47 +352,52 @@ fn generic_identity() {
 
 #[test]
 fn lambda_call() {
-    assert_output("lambda_call.spark", "10");
+    assert_output("run-pass/lambdas/lambda_call.spark", "10");
+}
+
+#[test]
+fn lambda_implicit_return() {
+    assert_output("run-pass/lambdas/lambda_return.spark", "10");
 }
 
 #[test]
 fn fn_reference() {
-    assert_output("fn_reference.spark", "14");
+    assert_output("run-pass/lambdas/fn_reference.spark", "14");
 }
 
 #[test]
 fn higher_order() {
-    assert_output("higher_order.spark", "15");
+    assert_output("run-pass/lambdas/higher_order.spark", "15");
 }
 
 #[test]
 fn closure_capture() {
-    assert_output("closure_capture.spark", "15");
+    assert_output("run-pass/lambdas/closure_capture.spark", "15");
 }
 
 #[test]
 fn closure_multi_capture() {
-    assert_output("closure_multi_capture.spark", "20");
+    assert_output("run-pass/lambdas/closure_multi_capture.spark", "20");
 }
 
 #[test]
 fn closure_snapshot() {
-    assert_output("closure_snapshot.spark", "10\n42");
+    assert_output("run-pass/lambdas/closure_snapshot.spark", "10\n42");
 }
 
 #[test]
 fn closure_capture_string() {
-    assert_output("closure_capture_string.spark", "hello");
+    assert_output("run-pass/lambdas/closure_capture_string.spark", "hello");
 }
 
 #[test]
 fn closure_capture_list() {
-    assert_output("closure_capture_list.spark", "3");
+    assert_output("run-pass/lambdas/closure_capture_list.spark", "3");
 }
 
 #[test]
 fn closure_capture_closure() {
-    assert_output("closure_capture_closure.spark", "42");
+    assert_output("run-pass/lambdas/closure_capture_closure.spark", "42");
 }
 
 // ============================================================================
@@ -392,47 +406,42 @@ fn closure_capture_closure() {
 
 #[test]
 fn each_print() {
-    assert_output("each_print.spark", "1\n2\n3");
-}
-
-#[test]
-fn each_via_double() {
-    assert_output("each_via_double.spark", "3");
+    assert_output("run-pass/each/each_print.spark", "1\n2\n3");
 }
 
 #[test]
 fn each_fn_ref() {
-    assert_output("each_fn_ref.spark", "1\n2\n3");
-}
-
-#[test]
-fn each_via_fn_ref() {
-    assert_output("each_via_fn_ref.spark", "2\n4\n6");
-}
-
-#[test]
-fn each_cow() {
-    assert_output("each_cow.spark", "0");
+    assert_output("run-pass/each/each_fn_ref.spark", "1\n2\n3");
 }
 
 #[test]
 fn each_lambda_print() {
-    assert_output("each_lambda_print.spark", "10\n20\n30");
+    assert_output("run-pass/each/each_lambda_print.spark", "10\n20\n30");
+}
+
+#[test]
+fn each_via_double() {
+    assert_output("run-pass/each/each_via_double.spark", "3");
+}
+
+#[test]
+fn each_via_fn_ref() {
+    assert_output("run-pass/each/each_via_fn_ref.spark", "2\n4\n6");
 }
 
 #[test]
 fn each_via_partial() {
-    assert_output("each_via_partial.spark", "11\n12\n13");
+    assert_output("run-pass/each/each_via_partial.spark", "11\n12\n13");
 }
 
 #[test]
 fn each_via_lambda_values() {
-    assert_output("each_via_lambda_values.spark", "20\n40\n60");
+    assert_output("run-pass/each/each_via_lambda_values.spark", "20\n40\n60");
 }
 
 #[test]
-fn lambda_implicit_return() {
-    assert_output("lambda_return.spark", "10");
+fn each_cow() {
+    assert_output("run-pass/each/each_cow.spark", "0");
 }
 
 // ============================================================================
@@ -441,42 +450,32 @@ fn lambda_implicit_return() {
 
 #[test]
 fn parallel_each_via_double() {
-    assert_output("parallel_each_via_double.spark", "2\n4\n6");
+    assert_output("run-pass/parallel/parallel_each_via_double.spark", "2\n4\n6");
 }
 
 #[test]
 fn parallel_each_via_fn_ref() {
-    assert_output("parallel_each_via_fn_ref.spark", "2\n4\n6");
+    assert_output("run-pass/parallel/parallel_each_via_fn_ref.spark", "2\n4\n6");
 }
 
 #[test]
 fn parallel_each_via_closure() {
-    assert_output("parallel_each_via_closure.spark", "10\n20\n30");
+    assert_output("run-pass/parallel/parallel_each_via_closure.spark", "10\n20\n30");
 }
 
 #[test]
 fn parallel_each_via_len() {
-    assert_output("parallel_each_via_len.spark", "5");
+    assert_output("run-pass/parallel/parallel_each_via_len.spark", "5");
 }
 
 #[test]
 fn parallel_each_cow() {
-    assert_output("parallel_each_cow.spark", "0");
+    assert_output("run-pass/parallel/parallel_each_cow.spark", "0");
 }
 
 #[test]
 fn parallel_each_single() {
-    assert_output("parallel_each_single.spark", "42");
-}
-
-#[test]
-fn parallel_each_nonlist_error() {
-    assert_compile_error("parallel_each_nonlist_error.spark", "requires a List");
-}
-
-#[test]
-fn parallel_each_ref_mutation_error() {
-    assert_compile_error("parallel_each_ref_mutation.spark", "not thread-safe");
+    assert_output("run-pass/parallel/parallel_each_single.spark", "42");
 }
 
 // ============================================================================
@@ -485,46 +484,37 @@ fn parallel_each_ref_mutation_error() {
 
 #[test]
 fn via_sort() {
-    assert_output("via_sort.spark", "1\n2\n3");
+    assert_output("run-pass/via/via_sort.spark", "1\n2\n3");
 }
 
 #[test]
 fn via_take() {
-    assert_output("via_take.spark", "3");
+    assert_output("run-pass/via/via_take.spark", "3");
 }
 
 #[test]
 fn via_reverse() {
-    assert_output("via_reverse.spark", "3\n2\n1");
+    assert_output("run-pass/via/via_reverse.spark", "3\n2\n1");
 }
 
 #[test]
 fn via_chain() {
-    assert_output("via_chain.spark", "1\n2\n3");
+    assert_output("run-pass/via/via_chain.spark", "1\n2\n3");
 }
 
 #[test]
 fn via_user_fn() {
-    assert_output("via_user_fn.spark", "11\n12\n13");
+    assert_output("run-pass/via/via_user_fn.spark", "11\n12\n13");
 }
 
 #[test]
 fn via_reverse_string() {
-    assert_output("via_reverse_string.spark", "charlie\nbob\nalice");
+    assert_output("run-pass/via/via_reverse_string.spark", "charlie\nbob\nalice");
 }
 
 #[test]
 fn via_take_string() {
-    assert_output("via_take_string.spark", "2");
-}
-
-// ============================================================================
-// Integration (multi-feature)
-// ============================================================================
-
-#[test]
-fn kitchen_sink() {
-    assert_output("kitchen_sink.spark", "5\n4\n3\n2\n1\n9\n18\n27\n3\n13\n3");
+    assert_output("run-pass/via/via_take_string.spark", "2");
 }
 
 // ============================================================================
@@ -533,57 +523,42 @@ fn kitchen_sink() {
 
 #[test]
 fn async_basic() {
-    assert_output("async_basic.spark", "42");
+    assert_output("run-pass/async/async_basic.spark", "42");
 }
 
 #[test]
 fn async_args() {
-    assert_output("async_args.spark", "10");
+    assert_output("run-pass/async/async_args.spark", "10");
 }
 
 #[test]
 fn async_spawn() {
-    assert_output("async_spawn.spark", "42");
+    assert_output("run-pass/async/async_spawn.spark", "42");
 }
 
 #[test]
 fn async_void() {
-    assert_output("async_void.spark", "hello");
+    assert_output("run-pass/async/async_void.spark", "hello");
 }
 
 #[test]
-fn await_non_future_error() {
-    assert_compile_error("await_non_future_error.spark", "cannot `await`");
-}
-
-#[test]
-fn spawn_non_async_error() {
-    assert_compile_error("spawn_non_async_error.spark", "cannot `spawn`");
+fn async_stdin() {
+    assert_output_with_stdin("run-pass/async/async_stdin.spark", "hello\n", "42\nhello");
 }
 
 #[test]
 fn spawn_basic() {
-    assert_output("spawn_basic.spark", "42");
+    assert_output("run-pass/async/spawn_basic.spark", "42");
 }
 
 #[test]
 fn spawn_parallel() {
-    assert_output("spawn_parallel.spark", "10\n15");
+    assert_output("run-pass/async/spawn_parallel.spark", "10\n15");
 }
 
 #[test]
 fn spawn_closure() {
-    assert_output("spawn_closure.spark", "123");
-}
-
-#[test]
-fn spawn_mutable_error() {
-    assert_compile_error("spawn_mutable_error.spark", "mutable binding");
-}
-
-#[test]
-fn spawn_ref_error() {
-    assert_compile_error("spawn_ref_error.spark", "not thread-safe");
+    assert_output("run-pass/async/spawn_closure.spark", "123");
 }
 
 // ============================================================================
@@ -592,105 +567,195 @@ fn spawn_ref_error() {
 
 #[test]
 fn coop_basic() {
-    assert_output("coop_basic.spark", "42");
+    assert_output("run-pass/async/coop_basic.spark", "42");
 }
 
 #[test]
 fn coop_chain() {
-    assert_output("coop_chain.spark", "15");
+    assert_output("run-pass/async/coop_chain.spark", "15");
 }
 
 #[test]
 fn coop_parallel() {
-    assert_output("coop_parallel.spark", "30");
+    assert_output("run-pass/async/coop_parallel.spark", "30");
 }
 
+// ============================================================================
+// References
+// ============================================================================
+
+#[test]
+fn ref_param() {
+    assert_output("run-pass/references/ref_param.spark", "20");
+}
+
+#[test]
+fn ref_local() {
+    assert_output("run-pass/references/ref_local.spark", "42");
+}
+
+#[test]
+fn ref_literal() {
+    assert_output("run-pass/references/ref_literal.spark", "11");
+}
+
+#[test]
+fn ref_mutparam() {
+    assert_output("run-pass/references/ref_mutparam.spark", "10");
+}
+
+#[test]
+fn ref_closure() {
+    assert_output("run-pass/references/ref_closure.spark", "42");
+}
+
+// ============================================================================
 // Standard library
 // ============================================================================
 
 #[test]
 fn stdlib_math() {
-    assert_output("stdlib_math.spark", "4\n1024\n5\n3\n4\n1\n2\n4");
+    assert_output("run-pass/stdlib/stdlib_math.spark", "4\n1024\n5\n3\n4\n1\n2\n4");
 }
 
 #[test]
 fn stdlib_json_parse() {
-    assert_output("stdlib_json_parse.spark", "Alice\n30");
+    assert_output("run-pass/stdlib/stdlib_json_parse.spark", "Alice\n30");
 }
 
 #[test]
 fn stdlib_json_stringify() {
     assert_output(
-        "stdlib_json_stringify.spark",
+        "run-pass/stdlib/stdlib_json_stringify.spark",
         "{\"greeting\":\"hello\",\"count\":42}",
     );
 }
 
 #[test]
 fn stdlib_json_error() {
-    assert_output("stdlib_json_error.spark", "got error");
+    assert_output("run-pass/stdlib/stdlib_json_error.spark", "got error");
 }
 
 #[test]
 fn stdlib_json_array() {
-    assert_output("stdlib_json_array.spark", "3\n10\n30");
+    assert_output("run-pass/stdlib/stdlib_json_array.spark", "3\n10\n30");
 }
 
 #[test]
 fn stdlib_json_nested() {
-    assert_output("stdlib_json_nested.spark", "2\nfirst\nsecond");
+    assert_output("run-pass/stdlib/stdlib_json_nested.spark", "2\nfirst\nsecond");
 }
 
 #[test]
 fn stdlib_io_write_read() {
-    assert_output("stdlib_io_write_read.spark", "hello from spark");
+    assert_output("run-pass/stdlib/stdlib_io_write_read.spark", "hello from spark");
 }
 
 #[test]
 fn stdlib_io_exists() {
-    assert_output("stdlib_io_exists.spark", "false\ntrue");
+    assert_output("run-pass/stdlib/stdlib_io_exists.spark", "false\ntrue");
 }
 
 #[test]
 fn stdlib_io_error() {
-    assert_output("stdlib_io_error.spark", "got error");
+    assert_output("run-pass/stdlib/stdlib_io_error.spark", "got error");
 }
 
 #[test]
 fn stdlib_io_dir() {
     // Clean up from any previous failed run
     let _ = std::fs::remove_dir_all("/tmp/spark_e2e_io_dir_test");
-    assert_output("stdlib_io_dir.spark", "a.txt\nb.txt");
+    assert_output("run-pass/stdlib/stdlib_io_dir.spark", "a.txt\nb.txt");
     // Clean up the directory after test
     let _ = std::fs::remove_dir_all("/tmp/spark_e2e_io_dir_test");
 }
 
+// ============================================================================
+// Channels
+// ============================================================================
+
+#[test]
+fn channel_basic() {
+    assert_output("run-pass/channels/channel_basic.spark", "42");
+}
+
+#[test]
+fn channel_try_recv() {
+    assert_output("run-pass/channels/channel_try_recv.spark", "88");
+}
+
+#[test]
+fn channel_async() {
+    assert_output("run-pass/channels/channel_async.spark", "30");
+}
+
+// ============================================================================
+// Type narrowing (to keyword, error propagation)
+// ============================================================================
+
+#[test]
+fn to_pipeline() {
+    assert_output("run-pass/type_narrowing/to_pipeline.spark", "10\n16");
+}
+
+#[test]
+fn to_narrowing() {
+    assert_output("run-pass/type_narrowing/to_narrowing.spark", "7");
+}
+
+#[test]
+fn to_narrowing_error() {
+    assert_output("run-pass/type_narrowing/to_narrowing_error.spark", "-1");
+}
+
+#[test]
+fn propagate_union() {
+    assert_output("run-pass/type_narrowing/propagate_union.spark", "5");
+}
+
+#[test]
+fn propagate_union_error() {
+    assert_output("run-pass/type_narrowing/propagate_union_error.spark", "error");
+}
+
+#[test]
+fn propagate_optional() {
+    assert_output("run-pass/type_narrowing/propagate_optional.spark", "42");
+}
+
+#[test]
+fn propagate_optional_null() {
+    assert_output("run-pass/type_narrowing/propagate_optional_null.spark", "0");
+}
+
+// ============================================================================
+// Stdin / Stderr I/O
+// ============================================================================
+
+#[test]
+fn io_stderr() {
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let result = run_spark("run-pass/io/io_stderr.spark");
+    assert_eq!(
+        result.exit_code, 0,
+        "fixture io_stderr.spark exited with code {}:\n{}",
+        result.exit_code, result.stderr
+    );
+    assert_eq!(
+        result.stdout.trim(),
+        "normal output",
+        "stdout mismatch for io_stderr.spark"
+    );
+    assert!(
+        result.stderr.contains("error output"),
+        "stderr should contain 'error output', got:\n{}",
+        result.stderr
+    );
+}
+
+// ============================================================================
 // Multi-file compilation
 // ============================================================================
-#[test]
-fn ref_param() {
-    assert_output("ref_param.spark", "20");
-}
-
-#[test]
-fn ref_local() {
-    assert_output("ref_local.spark", "42");
-}
-
-#[test]
-fn ref_literal() {
-    assert_output("ref_literal.spark", "11");
-}
-
-#[test]
-fn ref_mutparam() {
-    assert_output("ref_mutparam.spark", "10");
-}
-
-#[test]
-fn ref_closure() {
-    assert_output("ref_closure.spark", "42");
-}
 
 #[test]
 fn multifile_import() {
@@ -725,151 +790,104 @@ fn multimod_using_import() {
 }
 
 // ============================================================================
-// Stdin / Stderr I/O
+// Compile-fail: type errors
 // ============================================================================
 
 #[test]
-fn async_stdin() {
-    assert_output_with_stdin("async_stdin.spark", "hello\n", "42\nhello");
+fn immutable_append_error() {
+    assert_compile_error("compile-fail/type_errors/immutable_append.spark", "not mutable");
 }
 
 #[test]
-fn io_stderr() {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let result = run_spark("io_stderr.spark");
-    assert_eq!(
-        result.exit_code, 0,
-        "fixture io_stderr.spark exited with code {}:\n{}",
-        result.exit_code, result.stderr
-    );
-    assert_eq!(
-        result.stdout.trim(),
-        "normal output",
-        "stdout mismatch for io_stderr.spark"
-    );
-    assert!(
-        result.stderr.contains("error output"),
-        "stderr should contain 'error output', got:\n{}",
-        result.stderr
-    );
-}
-
-// ── Channel tests ───────────────────────────────────────────────────────
-
-#[test]
-fn channel_basic() {
-    assert_output("channel_basic.spark", "42");
+fn match_nonexhaustive_bool() {
+    assert_compile_error("compile-fail/type_errors/match_nonexhaustive_bool.spark", "non-exhaustive");
 }
 
 #[test]
-fn channel_try_recv() {
-    assert_output("channel_try_recv.spark", "88");
+fn match_nonexhaustive_int() {
+    assert_compile_error("compile-fail/type_errors/match_nonexhaustive_int.spark", "non-exhaustive");
 }
 
 #[test]
-fn channel_async() {
-    assert_output("channel_async.spark", "30");
-}
-
-// ── Generic constraint tests ────────────────────────────────────────────
-
-#[test]
-fn generic_constraint_interface() {
-    assert_output("generic_constraint_interface.spark", "ok");
+fn await_non_future_error() {
+    assert_compile_error("compile-fail/type_errors/await_non_future_error.spark", "cannot `await`");
 }
 
 #[test]
-fn generic_constraint_structural() {
-    assert_output("generic_constraint_structural.spark", "1");
+fn spawn_non_async_error() {
+    assert_compile_error("compile-fail/type_errors/spawn_non_async_error.spark", "cannot `spawn`");
+}
+
+#[test]
+fn spawn_mutable_error() {
+    assert_compile_error("compile-fail/type_errors/spawn_mutable_error.spark", "mutable binding");
+}
+
+#[test]
+fn spawn_ref_error() {
+    assert_compile_error("compile-fail/type_errors/spawn_ref_error.spark", "not thread-safe");
+}
+
+#[test]
+fn parallel_each_nonlist_error() {
+    assert_compile_error("compile-fail/type_errors/parallel_each_nonlist_error.spark", "requires a List");
+}
+
+#[test]
+fn parallel_each_ref_mutation_error() {
+    assert_compile_error("compile-fail/type_errors/parallel_each_ref_mutation.spark", "not thread-safe");
 }
 
 #[test]
 fn generic_constraint_fail() {
-    assert_compile_error("generic_constraint_fail.spark", "does not satisfy constraint");
+    assert_compile_error("compile-fail/type_errors/generic_constraint_fail.spark", "does not satisfy constraint");
 }
 
 #[test]
 fn generic_constraint_structural_fail() {
-    assert_compile_error("generic_constraint_structural_fail.spark", "missing required field");
-}
-
-// ── Borrow checker tests ───────────────────────────────────────────────
-
-#[test]
-fn borrow_double_mut() {
-    assert_compile_error("borrow_double_mut.spark", "cannot borrow value as mutable more than once");
-}
-
-#[test]
-fn borrow_mut_immut() {
-    assert_compile_error("borrow_mut_immut.spark", "cannot borrow value as mutable because it is also borrowed as immutable");
-}
-
-#[test]
-fn borrow_immut_assign() {
-    assert_compile_error("borrow_immut_assign.spark", "cannot assign to immutable variable");
-}
-
-#[test]
-fn borrow_dangling_return() {
-    assert_compile_error("borrow_dangling_return.spark", "cannot return reference to local variable");
-}
-
-#[test]
-fn immutable_field_assign() {
-    assert_compile_error("immutable_field_assign.spark", "immutable");
-}
-
-#[test]
-fn immutable_mutable_borrow() {
-    assert_compile_error("immutable_mutable_borrow.spark", "cannot pass immutable value as mutable reference");
-}
-
-#[test]
-fn borrow_alias_call() {
-    assert_compile_error("borrow_alias_call.spark", "cannot pass");
-}
-
-// ── To keyword tests ───────────────────────────────────────────────────
-
-#[test]
-fn to_pipeline() {
-    assert_output("to_pipeline.spark", "10\n16");
-}
-
-#[test]
-fn to_narrowing() {
-    assert_output("to_narrowing.spark", "7");
-}
-
-#[test]
-fn to_narrowing_error() {
-    assert_output("to_narrowing_error.spark", "-1");
+    assert_compile_error("compile-fail/type_errors/generic_constraint_structural_fail.spark", "missing required field");
 }
 
 #[test]
 fn to_non_union_error() {
-    assert_compile_error("to_non_union_error.spark", "requires a union type");
-}
-
-// ── Error propagation (!) tests ────────────────────────────────────────
-
-#[test]
-fn propagate_union() {
-    assert_output("propagate_union.spark", "5");
+    assert_compile_error("compile-fail/type_errors/to_non_union_error.spark", "requires a union type");
 }
 
 #[test]
-fn propagate_union_error() {
-    assert_output("propagate_union_error.spark", "error");
+fn immutable_field_assign() {
+    assert_compile_error("compile-fail/type_errors/immutable_field_assign.spark", "immutable");
 }
 
 #[test]
-fn propagate_optional() {
-    assert_output("propagate_optional.spark", "42");
+fn immutable_mutable_borrow() {
+    assert_compile_error("compile-fail/type_errors/immutable_mutable_borrow.spark", "cannot pass immutable value as mutable reference");
+}
+
+// ============================================================================
+// Compile-fail: borrow errors
+// ============================================================================
+
+#[test]
+fn borrow_double_mut() {
+    assert_compile_error("compile-fail/borrow_errors/borrow_double_mut.spark", "cannot borrow value as mutable more than once");
 }
 
 #[test]
-fn propagate_optional_null() {
-    assert_output("propagate_optional_null.spark", "0");
+fn borrow_mut_immut() {
+    assert_compile_error("compile-fail/borrow_errors/borrow_mut_immut.spark", "cannot borrow value as mutable because it is also borrowed as immutable");
+}
+
+#[test]
+fn borrow_immut_assign() {
+    assert_compile_error("compile-fail/borrow_errors/borrow_immut_assign.spark", "cannot assign to immutable variable");
+}
+
+#[test]
+fn borrow_dangling_return() {
+    assert_compile_error("compile-fail/borrow_errors/borrow_dangling_return.spark", "cannot return reference to local variable");
+}
+
+#[test]
+fn borrow_alias_call() {
+    assert_compile_error("compile-fail/borrow_errors/borrow_alias_call.spark", "cannot pass");
 }

@@ -130,7 +130,8 @@ comments, grouped by tag type and filterable by crate.
 3. **COMPREHENSIVE TESTS** - Every feature, every error path, edge cases
 4. **ALL PUBLIC ITEMS DOCUMENTED** - Doc comments required
 5. **SINGLE RESPONSIBILITY** - Each crate has exactly one job
-6. **LOW COUPLING, HIGH COHESION** - Crates should work together seamlessly. Without depending too heavily on one another. So that we can make a change in one crate independant of the rest of the codebase.
+6. **NO TEMPORARY WORKAROUNDS** - If we're refactoring, and need to make a change that would break old unit tests get confirmation how to proceed. We will either create a task to clean up later, or if it makes sense resolve in current task.
+7. **LOW COUPLING, HIGH COHESION** - Crates should work together seamlessly. Without depending too heavily on one another. So that we can make a change in one crate independant of the rest of the codebase.
 
 ---
 
@@ -144,7 +145,7 @@ panic!("unexpected token")
 
 // ✅ CORRECT - record error, return error node, continue
 self.diagnostics.push(Diagnostic::error("unexpected token")
-    .with_label(Label::primary(span, "expected ';'")));
+    .with_label(Label::primary(span, "expected '}'")));
 return Expr::new(ExprKind::Error, span);
 ```
 
@@ -279,6 +280,12 @@ cargo run -p spark_driver -- build hello.spark -o hello
 # Install system-wide (copies spark + libspark_runtime.a to prefix)
 ./install.sh              # default: ~/.local/bin + ~/.local/lib
 ./install.sh /usr/local   # or a custom prefix
+
+# If latest build is installed:
+spark run --single-file file.spark
+# Or for full workspace discovery - If any files in workspace have errors will not run
+spark run file.spark
+
 ```
 
 Requires a C compiler accessible as `cc` (Xcode CLI tools on macOS, `gcc`/`clang` on Linux).
@@ -338,8 +345,9 @@ cargo run -p spark_driver -- build f.spark -o f # Compile to executable
 ❌ Re-interning pre-interned keywords  
 ❌ Missing spans on AST nodes  
 ❌ Silent error handling (returning None without diagnostic)  
-❌ Non-exhaustive pattern matching  
+❌ Non-exhaustive pattern matching
 ❌ Missing tests
+❌ Hacky fallbacks
 
 **For examples**, see any completed crate - they demonstrate correct patterns throughout.
 

@@ -54,22 +54,6 @@ these tags automatically — open the tree view to jump between tasks and their 
 
 ## Priority 1 — Bugs (user-facing correctness)
 
-### `BUG` [SPARK-029] — Assignment through mutable ref parameter crashes at runtime — FIXED
-
-- **Type**: bug
-- **Effort**: medium
-- **Category**: DX
-- **Status**: fixed
-- **Crates**: spark_opt
-- **Files**:
-  - `crates/spark_opt/src/dce.rs` — DCE did not track base local of projected assignments as used
-- **Description**: Assigning through a `Ref[T]!` that is a function *parameter* compiled without
-  errors but segfaulted at runtime. Root cause: the MIR inliner correctly inlined `set_ten` and
-  added a parameter initialization statement (`_9 = Copy(_3)`), but the DCE pass then removed it
-  because `_9` was not recognized as "used". The DCE's `collect_used_in_statement` did not mark
-  the base local of a projected assignment (e.g., `_9.*`) as read. Fix: add `place.local` to the
-  used set when `place.projections` is non-empty. E2E test: `ref_mutparam.spark`.
-
 ### `BUG` [SPARK-031] — Nested RC decrement only frees one level deep (memory leak)
 
 - **Type**: bug
@@ -170,25 +154,6 @@ these tags automatically — open the tree view to jump between tasks and their 
   could modify the buffer in-place and return the same pointer, avoiding a heap allocation and
   full element copy. Check `rc == 1` at the top of each function and branch to an in-place path.
 
-### `DONE` [SPARK-007] — Eliminate production unwrap/panic calls
-
-- **Type**: refactor
-- **Effort**: low-medium
-- **Category**: DX, maintainability
-- **Status**: done
-- **Crates**: spark_parser, spark_codegen
-- **Files**:
-  - `crates/spark_parser/src/types.rs` — unwrap → diagnostic + error node for Ref[T] parsing
-  - `crates/spark_parser/src/expr.rs` — 4 unwrap → let...else with Expr::error recovery
-  - `crates/spark_parser/src/pattern.rs` — 3 unwrap → expect with ICE invariant docs
-  - `crates/spark_parser/src/lib.rs` — 4 expect messages improved to ICE prefix
-  - `crates/spark_codegen/src/cranelift/emit_rvalue.rs` — expect/panic → return None
-  - `crates/spark_codegen/src/cranelift/runtime.rs` — expect message improved to ICE
-  - `crates/spark_codegen/src/cranelift/emit_term.rs` — expect → let...else with graceful jump
-- **Description**: Replaced ~16 unwrap/expect/panic calls with proper error recovery or ICE-prefixed
-  messages. User-input panics emit diagnostics and return error nodes; internal invariants use
-  expect() with "ICE:" prefix.
-
 ---
 
 ## Priority 3 — Features (language completeness)
@@ -207,53 +172,6 @@ these tags automatically — open the tree view to jump between tasks and their 
   for `Ref[T]` with 1 arg and inferred lifetime, (b) implicit borrow coercion in the type checker
   when a `Ref[T]`-typed binding is initialized from a plain `T` value. Small surface area, high
   payoff — unlocks the entire borrow-checking story. See `docs/KNOWN_ISSUES.md`.
-
-### `DONE` [SPARK-009] — `via` pipeline operator
-
-- **Type**: feature
-- **Effort**: medium
-- **Category**: DX
-- **Status**: done
-- **Crates**: spark_ast, spark_hir
-- **Files**:
-  - `crates/spark_hir/src/lower_expr.rs` — desugars `expr via func{args}` into `func(expr, args)` call
-  - `crates/spark_ast/src/expr.rs` — `ExprKind::PipelineApply` handles `via` and `to` pipeline operations
-- **Description**: `data via sort`, `data via take{count: 5}` — applies a named function or partial
-  to the whole value. Fully implemented: parser, type checker (`check_pipeline_apply`), HIR lowering
-  (desugars to `HirExprKind::Call`), and 5 E2E test fixtures (`via_sort`, `via_take`, `via_reverse`,
-  `via_user_fn`, `via_chain`).
-
-### `DONE` [SPARK-010] — Generic constraint validation (`T: Comparable`)
-
-- **Type**: feature
-- **Effort**: medium
-- **Category**: DX
-- **Status**: done
-- **Crates**: spark_types
-- **Files**:
-  - `crates/spark_types/src/constraint.rs` — constraint validation logic
-  - `crates/spark_types/src/check_decl.rs` — constraint collection and interface binding registration
-  - `crates/spark_types/src/check_expr.rs` — validation at generic function call sites
-  - `crates/spark_types/src/lower.rs` — validation at generic type instantiation sites
-  - `crates/spark_types/src/table.rs` — constraint and binding storage in TypeTable
-  - `crates/spark_types/src/ty.rs` — Constraint enum definition
-- **Description**: Generic type parameters work but constraints are not validated. `fn sort[T: Comparable](list: List[T])` parses but the constraint `T: Comparable` is silently ignored.
-  Needed for correct generic programming.
-
-### `DONE` [SPARK-011] — Built-in collection methods hardcoded to `[Int]`
-
-- **Type**: bug
-- **Effort**: low-medium
-- **Category**: DX
-- **Status**: done
-- **Crates**: spark_types
-- **Files**:
-  - `crates/spark_types/src/check_expr.rs` — `adapt_builtin_list_fn()` adapts sort/take/reverse
-    types at call sites; `check_list_method()` validates `contains` arg type
-  - `crates/spark_types/src/checker.rs` — updated comments on builtin registration
-- **Description**: `sort`, `take`, `reverse` now type-check for any `List[T]` via call-site
-  adaptation. `contains` validates its argument matches the list element type. E2E tests added
-  for `reverse` and `take` on `List[String]`.
 
 ### `TODO` [SPARK-012] — Tuples E2E test coverage
 
@@ -280,28 +198,6 @@ these tags automatically — open the tree view to jump between tasks and their 
 - **Description**: All E2E tests share a single temp path for the intermediate object file, so they
   run sequentially behind a mutex. Use `tempfile::NamedTempFile` or a per-test temp directory to
   allow parallel execution.
-
-### `DONE` [SPARK-027] — Operators on `Ref[T]` should auto-deref to the enclosed type
-
-- **Type**: feature
-- **Effort**: medium
-- **Category**: DX
-- **Status**: done
-- **Crates**: spark_types, spark_hir
-- **Files**:
-  - `crates/spark_resolve/src/lib.rs` — operator resolution should unwrap Ref types
-  - `crates/spark_types/src/lib.rs` — type-checking for binary/compound-assign through refs
-  - `crates/spark_codegen/src/lib.rs` — emit implicit load before operator, store after compound assign
-- **Description**: Arithmetic, comparison, and compound-assignment operators (`+`, `-`, `+=`, etc.)
-  currently only work on bare value types. When the operand is a `Ref[T]` (or `Ref[T!]!`), the
-  compiler should auto-dereference to `T` for the operator and, for compound-assignment on a
-  mutable ref, write the result back through the reference. Example:
-  ```spark
-  test: Ref[Int!]! = 0
-  test += 1          // should desugar to: *test = *test + 1
-  test = test + 1    // should also work via auto-deref on the RHS
-  ```
-  This is analogous to Rust's `Deref`/`DerefMut` coercion for operators.
 
 ---
 
@@ -430,31 +326,6 @@ these tags automatically — open the tree view to jump between tasks and their 
   never used as values. Only generate thunks for functions actually referenced in non-call positions
   (detectable from MIR `Constant::FunctionRef` usage). Reduces object file bloat.
 
-### `DONE` [SPARK-023] — Reborrowing and two-phase borrows
-
-- **Type**: feature
-- **Effort**: low-medium
-- **Category**: DX
-- **Status**: done
-- **Crates**: spark_borrow
-- **Files**:
-  - `crates/spark_borrow/src/check.rs` — conflict detection
-- **Description**: Borrow checker currently rejects re-borrowing a reference (shortening region)
-  and `x.method(&x)` patterns. Workarounds exist. Ergonomics improvement only.
-
-### `DONE` [SPARK-024] — O(n²) borrow conflict detection
-
-- **Type**: performance
-- **Effort**: low-medium
-- **Category**: performance
-- **Status**: done
-- **Crates**: spark_borrow
-- **Files**:
-  - `crates/spark_borrow/src/check.rs` — active loan iteration per program point
-- **Description**: Conflict detection iterates all active loans per program point. For functions with
-  many borrows this is O(n²). Low priority until larger programs are compiled — then consider an
-  interval-tree or sorted-set approach.
-
 ---
 
 ## Research / Planning
@@ -503,3 +374,8 @@ these tags automatically — open the tree view to jump between tasks and their 
 ### `FIXME` [SPARK-007] — Eliminate production unwrap/panic calls (completed 2026-02-27) Replaced ~16 unwrap/panic calls with error recovery or ICE-prefixed expect messages
 ### `BUG` [SPARK-011] — Built-in collection methods hardcoded to [Int] (completed 2026-02-27) sort/take/reverse now work for any List[T] via call-site adaptation; contains validates elem type
 ### `TODO` [SPARK-009] — `via` pipeline operator (completed 2026-02-27) Desugars `expr via func{args}` to `func(expr, args)` call via PipelineApply
+### `TODO` [SPARK-010] — Generic constraint validation (completed 2026-02-27) Constraints on generic type params validated at call sites and instantiation sites
+### `TODO` [SPARK-027] — Operators on Ref[T] auto-deref (completed 2026-02-27) Auto-dereference through Ref[T] for arithmetic, comparison, and compound-assignment operators
+### `BUG` [SPARK-029] — Assignment through mutable ref parameter crash (completed 2026-02-27) DCE now tracks base local of projected assignments as used
+### `TODO` [SPARK-023] — Reborrowing and two-phase borrows (completed 2026-02-27) Borrow checker supports re-borrowing and x.method(&x) patterns
+### `PERF` [SPARK-024] — O(n²) borrow conflict detection (completed 2026-02-27) Optimized active loan iteration in conflict detection
