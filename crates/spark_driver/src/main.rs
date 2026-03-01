@@ -150,8 +150,8 @@ fn cmd_run(
     opt_level: spark_opt::OptLevel,
     single_file: bool,
 ) -> i32 {
-    // Compile to a temp directory
-    let tmp_dir = std::env::temp_dir().join("spark_run");
+    // Compile to a per-process temp directory
+    let tmp_dir = std::env::temp_dir().join(format!("spark_run_{}", std::process::id()));
     if fs::create_dir_all(&tmp_dir).is_err() {
         eprintln!("error: could not create temp directory");
         return 1;
@@ -170,8 +170,8 @@ fn cmd_run(
     // Run the compiled program
     let status = Command::new(&exe_path).args(args).status();
 
-    // Clean up
-    let _ = fs::remove_file(&exe_path);
+    // Clean up the per-process temp directory
+    let _ = fs::remove_dir_all(&tmp_dir);
 
     match status {
         Ok(s) => s.code().unwrap_or(1),

@@ -4,8 +4,8 @@
 //! then asserts against stdout, stderr, and exit code. This provides full-pipeline
 //! regression coverage from source code to runtime output.
 //!
-//! Tests are serialized via a mutex because the driver uses a shared temp path
-//! (`/tmp/spark_output.o`) during linking.
+//! Tests run in parallel — each `spark run` invocation uses a per-process temp
+//! directory for its compiled executable, so concurrent tests don't collide.
 //!
 //! ## Test layout
 //!
@@ -34,11 +34,7 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::time::Duration;
-
-/// Serialize all E2E tests to avoid races on the shared `/tmp/spark_output.o`.
-static LOCK: Mutex<()> = Mutex::new(());
 
 /// Captured output from running a Spark program.
 struct SparkOutput {
@@ -122,7 +118,7 @@ fn run_spark_project(project: &str) -> SparkOutput {
 
 /// Runs a fixture and asserts stdout matches expected output (exit code 0).
 fn assert_output(fixture: &str, expected_stdout: &str) {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let result = run_spark(fixture);
     assert_eq!(
         result.exit_code, 0,
@@ -138,7 +134,7 @@ fn assert_output(fixture: &str, expected_stdout: &str) {
 
 /// Runs a fixture and asserts compilation fails with a message fragment in stderr.
 fn assert_compile_error(fixture: &str, expected_fragment: &str) {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let result = run_spark(fixture);
     assert_ne!(
         result.exit_code, 0,
@@ -215,7 +211,7 @@ fn run_spark_with_stdin(fixture: &str, stdin_input: &str) -> SparkOutput {
 
 /// Runs a fixture with piped stdin and asserts stdout matches expected output.
 fn assert_output_with_stdin(fixture: &str, stdin_input: &str, expected_stdout: &str) {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let result = run_spark_with_stdin(fixture, stdin_input);
     assert_eq!(
         result.exit_code, 0,
@@ -734,7 +730,7 @@ fn propagate_optional_null() {
 
 #[test]
 fn io_stderr() {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let result = run_spark("run-pass/io/io_stderr.spark");
     assert_eq!(
         result.exit_code, 0,
@@ -759,7 +755,7 @@ fn io_stderr() {
 
 #[test]
 fn multifile_import() {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let result = run_spark_project("multifile");
     assert_eq!(
         result.exit_code, 0,
@@ -775,7 +771,7 @@ fn multifile_import() {
 
 #[test]
 fn multimod_using_import() {
-    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let result = run_spark_project("multimod");
     assert_eq!(
         result.exit_code, 0,

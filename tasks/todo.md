@@ -182,22 +182,9 @@ these tags automatically — open the tree view to jump between tasks and their 
 - **Crates**: spark_driver
 - **Files**:
   - `crates/spark_driver/tests/e2e.rs` — add tuple E2E tests
-  - `crates/spark_driver/tests/fixtures/` — add `.spark` fixture files
+  - `crates/spark_driver/tests/run-pass/` — add `.spark` fixture files
 - **Description**: Tuple types have full type-system support but no E2E tests. Quick win for
   confidence. Create fixtures exercising tuple creation, field access, and function returns.
-
-### `PERF` [SPARK-014] — E2E tests serialized via mutex (per-test temp files)
-
-- **Type**: performance
-- **Effort**: low
-- **Category**: performance
-- **Status**: open
-- **Crates**: spark_driver
-- **Files**:
-  - `crates/spark_driver/tests/e2e.rs` — shared `/tmp/spark_output.o` behind mutex
-- **Description**: All E2E tests share a single temp path for the intermediate object file, so they
-  run sequentially behind a mutex. Use `tempfile::NamedTempFile` or a per-test temp directory to
-  allow parallel execution.
 
 ---
 
@@ -267,37 +254,6 @@ these tags automatically — open the tree view to jump between tasks and their 
 
 ## Priority 5 — Future features (design ready, not yet started)
 
-### `TODO` [SPARK-019] — `parallel each` / `parallel each via` (Rayon)
-
-- **Type**: feature
-- **Effort**: medium
-- **Category**: DX
-- **Status**: open
-- **Crates**: spark_intern, spark_lexer, spark_parser, spark_hir, spark_mir, spark_codegen, spark_runtime
-- **Files**:
-  - See `docs/design-notes/concurrency-model.md` for full implementation plan
-- **Description**: CPU parallelism via Rayon. Lowest-risk concurrency feature — reuses existing
-  callback ABI. Add `parallel` keyword, parse `parallel each` / `parallel each via`, dispatch to
-  `__spark_parallel_map` / `__spark_parallel_foreach` runtime stubs.
-
-### `TODO` [SPARK-020] — Standard library (`spark.*` modules)
-
-- **Type**: feature
-- **Effort**: high
-- **Category**: DX
-- **Status**: in-progress
-- **Crates**: spark_stdlib, spark_resolve, spark_types, spark_codegen, spark_runtime
-- **Files**:
-  - See `docs/design-notes/standard-library.md` for full architecture
-- **Description**: Namespaced, opt-in modules backed by native runtime functions. Start with
-  `spark.math` and `spark.io` to validate the pipeline, then `spark.json`, `spark.net`, `spark.http`.
-  Manifest-based architecture — function signatures + FFI symbol mappings.
-  **Completed**: `spark.math`, `spark.io`, `spark.json`, `spark.time`, `spark.net`, `spark.http`.
-  - `spark.net`: TCP (listen/accept/connect/read/write/shutdown), UDP (bind/send/recv), DNS resolve.
-    Backed by `tokio::net` via `block_on`. Handle-table architecture with `Arc`-wrapped resources.
-  - `spark.http`: Client (GET/POST/PUT/DELETE via `reqwest`), Server (HTTP/1.1 via `tokio::net` TCP
-    with manual parsing). Handle-table for servers and pending requests.
-
 ### `TODO` [SPARK-021] — Async Phase 3 v2 (segmented suspension)
 
 - **Type**: feature
@@ -310,7 +266,7 @@ these tags automatically — open the tree view to jump between tasks and their 
 - **Description**: Complete cooperative async state machine: segmented poll functions that
   suspend/resume at each await point. v1 (complete) calls the original function synchronously.
   v2 requires splitting function bodies at await points into state machine states, saving/restoring
-  live variables. See `docs/design-notes/concurrency-model.md`.
+  live variables.
 
 ### `PERF` [SPARK-022] — Lazy thunk generation
 
@@ -379,3 +335,4 @@ these tags automatically — open the tree view to jump between tasks and their 
 ### `BUG` [SPARK-029] — Assignment through mutable ref parameter crash (completed 2026-02-27) DCE now tracks base local of projected assignments as used
 ### `TODO` [SPARK-023] — Reborrowing and two-phase borrows (completed 2026-02-27) Borrow checker supports re-borrowing and x.method(&x) patterns
 ### `PERF` [SPARK-024] — O(n²) borrow conflict detection (completed 2026-02-27) Optimized active loan iteration in conflict detection
+### `PERF` [SPARK-014] — E2E tests serialized via mutex (completed 2026-03-01) Per-process temp dirs in cmd_run(); mutex removed from e2e.rs
