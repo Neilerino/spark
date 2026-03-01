@@ -28,7 +28,7 @@
 
 | File                                                           | Contains                                             |
 | -------------------------------------------------------------- | ---------------------------------------------------- |
-| [tasks/todo.md](tasks/todo.md)                                 | Open tasks, ticket IDs, status, effort estimates     |
+| [Linear project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c) | Open tasks, priorities, status (source of truth) |
 | [tasks/research/](tasks/research/)                             | Research & planning deliverables (SPARK-NNN.md)      |
 | [HANDOFF.md](HANDOFF.md)                                       | Status, completed crates, next tasks                 |
 | [docs/lang-spec.md](docs/lang-spec.md)                         | Grammar, syntax, all language features with examples |
@@ -84,15 +84,16 @@ Tooling:         tools/spark-lsp, spark_stdlib
 
 ## Task Tracking System
 
-All open work is tracked in **[tasks/todo.md](tasks/todo.md)**. Every task has a `SPARK-NNN` ticket
-ID that cross-references code comments with the task file.
+All open work is tracked in the **[Linear project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c)**.
+Every issue title includes its `[SPARK-NNN]` ID for cross-referencing with code comments.
 
 ### How it works
 
-1. **[tasks/todo.md](tasks/todo.md)** — The single source of truth for all open, in-progress, and
-   completed tasks. Contains full descriptions, affected crates/files, effort estimates, and status.
+1. **Linear** — The single source of truth for all open, in-progress, and completed tasks.
+   Issues are labelled (Bug, Performance, Feature, Refactor, Documentation, Testing, Research)
+   and prioritized (Urgent, High, Medium, Low).
 2. **Code comments** — In any source file, a comment like `// TODO [SPARK-001]` links that location
-   to the corresponding task in `todo.md`. The **TODO Tree** VS Code extension indexes these and
+   to the corresponding Linear issue. The **TODO Tree** VS Code extension indexes these and
    shows them in a sidebar tree view, grouped by tag.
 3. **[tasks/research/](tasks/research/)** — Research and planning tasks produce deliverables as
    markdown files here, named `SPARK-NNN.md` matching the ticket ID.
@@ -110,9 +111,10 @@ ID that cross-references code comments with the task file.
 
 ### Adding a task
 
-1. Open `tasks/todo.md`, find the highest `SPARK-NNN` ID, increment by 1.
-2. Add the entry using the template defined at the top of that file.
-3. Add `// TAG [SPARK-NNN] - todo.md` comments in every affected source file.
+1. Create a new issue in the [Linear Spark project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c)
+   with a `[SPARK-NNN]` prefix in the title (increment from the highest existing ID).
+2. Set the appropriate label, priority, and description.
+3. Add `// TAG [SPARK-NNN]` comments in every affected source file.
 4. For research/planning tasks, create `tasks/research/SPARK-NNN.md` with deliverables.
 
 ### VS Code integration
@@ -357,7 +359,7 @@ cargo run -p spark_driver -- build f.spark -o f # Compile to executable
 
 1. **Read the spec** - [lang-spec.md](docs/lang-spec.md) has examples of every feature
 2. **Check architecture doc** - [compiler-architecture.md](docs/compiler-architecture.md) has schemas and design rationale
-3. **Check the task tracker** - [tasks/todo.md](tasks/todo.md) has all open work with affected files
+3. **Check the task tracker** - [Linear project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c) has all open work with affected files
 4. **Look at tests** - They show expected usage patterns
 5. **READMEs explain "why"** - Every crate README has "Design Decisions" section
 
