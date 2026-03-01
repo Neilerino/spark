@@ -46,17 +46,17 @@ pub fn validate_constraints(
         }
 
         match &constraint {
-            Constraint::Interface { interface_def_id, type_args } => {
+            Constraint::Interface { interface_def_id, .. } => {
                 if !check_interface_constraint(
-                    concrete_ty, *interface_def_id, type_args, param_def_id,
-                    subst, table, definitions, span, diagnostics,
+                    concrete_ty, *interface_def_id,
+                    table, definitions, span, diagnostics,
                 ) {
                     all_satisfied = false;
                 }
             }
             Constraint::Structural { fields } => {
                 if !check_structural_constraint(
-                    concrete_ty, fields, param_def_id,
+                    concrete_ty, fields,
                     table, definitions, span, diagnostics,
                 ) {
                     all_satisfied = false;
@@ -69,13 +69,9 @@ pub fn validate_constraints(
 }
 
 /// Checks that a concrete type binds the required interface.
-#[allow(clippy::too_many_arguments)]
 fn check_interface_constraint(
     concrete_ty: TypeId,
     interface_def_id: DefId,
-    type_args: &[TypeId],
-    param_def_id: DefId,
-    subst: &FxHashMap<DefId, TypeId>,
     table: &mut TypeTable,
     definitions: &DefinitionTable,
     span: Span,
@@ -85,15 +81,9 @@ fn check_interface_constraint(
 
     let Some(concrete_did) = concrete_def_id else {
         // Primitive or unresolvable type — emit diagnostic
-        emit_interface_error(concrete_ty, interface_def_id, param_def_id, table, definitions, span, diagnostics);
+        emit_interface_error(concrete_ty, interface_def_id, table, definitions, span, diagnostics);
         return false;
     };
-
-    // Substitute any Ty::Param references in the constraint's type_args
-    let _substituted_args: Vec<TypeId> = type_args
-        .iter()
-        .map(|&arg| crate::substitute::substitute_mut(arg, subst, table))
-        .collect();
 
     // Check if the concrete type has a binding for this interface
     let has_binding = table
@@ -101,7 +91,7 @@ fn check_interface_constraint(
         .is_some_and(|bindings| bindings.contains(&interface_def_id));
 
     if !has_binding {
-        emit_interface_error(concrete_ty, interface_def_id, param_def_id, table, definitions, span, diagnostics);
+        emit_interface_error(concrete_ty, interface_def_id, table, definitions, span, diagnostics);
         return false;
     }
 
@@ -112,7 +102,6 @@ fn check_interface_constraint(
 fn emit_interface_error(
     concrete_ty: TypeId,
     interface_def_id: DefId,
-    _param_def_id: DefId,
     table: &TypeTable,
     definitions: &DefinitionTable,
     span: Span,
@@ -138,7 +127,6 @@ fn emit_interface_error(
 fn check_structural_constraint(
     concrete_ty: TypeId,
     required_fields: &[(spark_intern::Symbol, TypeId)],
-    _param_def_id: DefId,
     table: &TypeTable,
     definitions: &DefinitionTable,
     span: Span,

@@ -15,6 +15,7 @@ use spark_resolve::DefinitionKind;
 use crate::builtins::{register_builtins, BuiltinTypes};
 use crate::check_decl::collect_item;
 use crate::check_expr::{check_block, check_expr};
+use crate::ctx::TypeCheckCtx;
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
 use crate::ty::{FloatWidth, IntWidth, Ty};
@@ -80,15 +81,15 @@ impl<'a> TypeChecker<'a> {
 
         for (file_id, ast) in &resolved.asts {
             let resolutions = resolved.resolutions.get(file_id);
+            let mut ctx = TypeCheckCtx {
+                table: &mut self.table,
+                builtins: &self.builtins,
+                definitions,
+                resolutions,
+                diagnostics: &mut self.diagnostics,
+            };
             for item in &ast.items {
-                collect_item(
-                    item,
-                    &mut self.table,
-                    &self.builtins,
-                    definitions,
-                    resolutions,
-                    &mut self.diagnostics,
-                );
+                collect_item(item, &mut ctx);
             }
         }
     }
@@ -185,15 +186,15 @@ impl<'a> TypeChecker<'a> {
 
         for (file_id, ast) in &resolved.asts {
             let file_resolutions = resolved.resolutions.get(file_id);
+            let mut ctx = TypeCheckCtx {
+                table: &mut self.table,
+                builtins: &self.builtins,
+                definitions,
+                resolutions: file_resolutions,
+                diagnostics: &mut self.diagnostics,
+            };
             for item in &ast.items {
-                check_item_body(
-                    item,
-                    file_resolutions,
-                    &mut self.table,
-                    &self.builtins,
-                    definitions,
-                    &mut self.diagnostics,
-                );
+                check_item_body(item, &mut ctx);
             }
         }
     }
@@ -202,66 +203,40 @@ impl<'a> TypeChecker<'a> {
 /// Checks the body of a single item.
 fn check_item_body(
     item: &Item,
-    resolutions: Option<&spark_resolve::ResolutionMap>,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    diagnostics: &mut Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
     match item {
         Item::Function(func) => {
             if let Some(body) = &func.body {
                 // Determine the function's return type
-                let ret_type = lower_type_expr(
-                    &func.ret_type,
-                    table,
-                    builtins,
-                    definitions,
-                    resolutions,
-                    diagnostics,
-                );
+                let ret_type = lower_type_expr(&func.ret_type, ctx);
 
                 // Register parameter types for the body scope
                 for param in &func.params {
-                    let param_ty = lower_type_expr(
-                        &param.ty,
-                        table,
-                        builtins,
-                        definitions,
-                        resolutions,
-                        diagnostics,
-                    );
-                    if let Some(res) = resolutions {
+                    let param_ty = lower_type_expr(&param.ty, ctx);
+                    if let Some(res) = ctx.resolutions {
                         if let Some(def_id) = res.get_binding(param.name.span) {
-                            table.set_def_type(def_id, param_ty);
+                            ctx.table.set_def_type(def_id, param_ty);
                         }
                     }
                 }
 
                 // Check the body
-                let body_ty = check_block(
-                    body,
-                    table,
-                    builtins,
-                    definitions,
-                    resolutions,
-                    diagnostics,
-                    Some(ret_type),
-                );
+                let body_ty = check_block(body, ctx, Some(ret_type));
 
                 // Functions require explicit `return` to return a value.
                 // If the return type is non-void and the body doesn't diverge
                 // (i.e. body_ty is not Never), then a return statement is missing.
-                let body_resolved = table.resolve(body_ty);
-                if ret_type != builtins.void
+                let body_resolved = ctx.table.resolve(body_ty);
+                if ret_type != ctx.builtins.void
                     && !matches!(body_resolved, crate::Ty::Never)
                 {
                     let ret_name = crate::check_expr::type_name(
                         ret_type,
-                        table,
-                        definitions,
+                        ctx.table,
+                        ctx.definitions,
                     );
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         spark_diagnostics::Diagnostic::error(format!(
                             "missing `return` in function `{}` with return type `{ret_name}`",
                             func.name.name
@@ -276,29 +251,14 @@ fn check_item_body(
         }
         Item::Const(const_def) => {
             // Check the constant's value expression
-            let expected_ty = lower_type_expr(
-                &const_def.ty,
-                table,
-                builtins,
-                definitions,
-                resolutions,
-                diagnostics,
-            );
+            let expected_ty = lower_type_expr(&const_def.ty, ctx);
 
-            let val_ty = check_expr(
-                &const_def.value,
-                table,
-                builtins,
-                definitions,
-                resolutions,
-                diagnostics,
-                None,
-            );
+            let val_ty = check_expr(&const_def.value, ctx, None);
 
-            if !crate::check_expr::is_compatible(val_ty, expected_ty, table) {
-                let expected = crate::check_expr::type_name(expected_ty, table, definitions);
-                let found = crate::check_expr::type_name(val_ty, table, definitions);
-                diagnostics.push(
+            if !crate::check_expr::is_compatible(val_ty, expected_ty, ctx.table) {
+                let expected = crate::check_expr::type_name(expected_ty, ctx.table, ctx.definitions);
+                let found = crate::check_expr::type_name(val_ty, ctx.table, ctx.definitions);
+                ctx.diagnostics.push(
                     spark_diagnostics::Diagnostic::error(format!(
                         "constant `{}` type mismatch: expected `{expected}`, found `{found}`",
                         const_def.name.name
@@ -311,7 +271,7 @@ fn check_item_body(
             }
         }
         Item::Binding(binding) => {
-            check_binding_bodies(binding, resolutions, table, builtins, definitions, diagnostics);
+            check_binding_bodies(binding, ctx);
         }
         // Other items don't have bodies to check
         _ => {}
@@ -321,64 +281,38 @@ fn check_item_body(
 /// Type-checks all method bodies in a binding.
 fn check_binding_bodies(
     binding: &spark_ast::BindingDef,
-    resolutions: Option<&spark_resolve::ResolutionMap>,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    diagnostics: &mut Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
     for target in &binding.bindings {
         for method in &target.methods {
             if let Some(body) = &method.body {
                 // Get the method's return type from its function type
-                let ret_type = lower_type_expr(
-                    &method.ret_type,
-                    table,
-                    builtins,
-                    definitions,
-                    resolutions,
-                    diagnostics,
-                );
+                let ret_type = lower_type_expr(&method.ret_type, ctx);
 
                 // Register parameter types for the body scope
                 for param in &method.params {
-                    let param_ty = lower_type_expr(
-                        &param.ty,
-                        table,
-                        builtins,
-                        definitions,
-                        resolutions,
-                        diagnostics,
-                    );
-                    if let Some(res) = resolutions {
+                    let param_ty = lower_type_expr(&param.ty, ctx);
+                    if let Some(res) = ctx.resolutions {
                         if let Some(def_id) = res.get_binding(param.name.span) {
-                            table.set_def_type(def_id, param_ty);
+                            ctx.table.set_def_type(def_id, param_ty);
                         }
                     }
                 }
 
                 // Check the body
-                let body_ty = check_block(
-                    body,
-                    table,
-                    builtins,
-                    definitions,
-                    resolutions,
-                    diagnostics,
-                    Some(ret_type),
-                );
+                let body_ty = check_block(body, ctx, Some(ret_type));
 
                 // Validate return completeness
-                let body_resolved = table.resolve(body_ty);
-                if ret_type != builtins.void
+                let body_resolved = ctx.table.resolve(body_ty);
+                if ret_type != ctx.builtins.void
                     && !matches!(body_resolved, crate::Ty::Never)
                 {
                     let ret_name = crate::check_expr::type_name(
                         ret_type,
-                        table,
-                        definitions,
+                        ctx.table,
+                        ctx.definitions,
                     );
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         spark_diagnostics::Diagnostic::error(format!(
                             "missing `return` in method `{}` with return type `{ret_name}`",
                             method.name.name

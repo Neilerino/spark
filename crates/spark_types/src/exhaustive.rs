@@ -7,11 +7,11 @@
 use rustc_hash::FxHashSet;
 use spark_ast::{LiteralKind, MatchArm, PatternKind};
 use spark_diagnostics::{Diagnostic, Label};
-use spark_resolve::{DefId, DefinitionTable, ResolutionMap};
+use spark_resolve::{DefId, DefinitionTable};
 use spark_span::Span;
 
-use crate::builtins::BuiltinTypes;
 use crate::check_expr::type_name;
+use crate::ctx::TypeCheckCtx;
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
 use crate::ty::{Ty, TypeId};
@@ -114,23 +114,18 @@ impl Coverage {
 ///
 /// Emits an error diagnostic if not all possible values of the scrutinee
 /// type are covered, and a warning for unreachable arms.
-#[allow(clippy::too_many_arguments)]
 pub fn check_exhaustiveness(
     scrutinee_ty: TypeId,
     arms: &[MatchArm],
     match_span: Span,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
     // Don't check error types
     if scrutinee_ty.is_error() {
         return;
     }
 
-    let scrutinee_resolved = table.resolve(scrutinee_ty).clone();
+    let scrutinee_resolved = ctx.table.resolve(scrutinee_ty).clone();
 
     // Never type is always exhausted (even with zero arms)
     if matches!(scrutinee_resolved, Ty::Never) {
@@ -144,16 +139,12 @@ pub fn check_exhaustiveness(
             &arm.pattern.kind,
             scrutinee_ty,
             &scrutinee_resolved,
-            table,
-            builtins,
-            definitions,
-            resolutions,
-            diagnostics,
+            ctx,
         );
 
         // Check if this arm is unreachable
         if coverage.subsumes(&arm_coverage) {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::warning("unreachable match arm")
                     .with_label(Label::primary(arm.span, "this arm is unreachable")),
             );
@@ -169,17 +160,17 @@ pub fn check_exhaustiveness(
 
     match &scrutinee_resolved {
         Ty::Enum(def_id) => check_enum_exhaustiveness(
-            *def_id, &coverage, match_span, table, definitions, diagnostics,
+            *def_id, &coverage, match_span, ctx.table, ctx.definitions, ctx.diagnostics,
         ),
         Ty::Applied { base, .. } => {
             // Delegate to the base type's exhaustiveness rules
-            let base_ty = table.get_def_type(*base).unwrap_or(TypeId::ERROR);
-            if matches!(table.resolve(base_ty), Ty::Enum(_)) {
+            let base_ty = ctx.table.get_def_type(*base).unwrap_or(TypeId::ERROR);
+            if matches!(ctx.table.resolve(base_ty), Ty::Enum(_)) {
                 check_enum_exhaustiveness(
-                    *base, &coverage, match_span, table, definitions, diagnostics,
+                    *base, &coverage, match_span, ctx.table, ctx.definitions, ctx.diagnostics,
                 );
             } else {
-                diagnostics.push(
+                ctx.diagnostics.push(
                     Diagnostic::error("non-exhaustive match")
                         .with_label(Label::primary(match_span, "match is not exhaustive"))
                         .with_note("add a wildcard arm `_ ->` to cover remaining values"),
@@ -187,20 +178,20 @@ pub fn check_exhaustiveness(
             }
         }
         Ty::Union(members) => check_union_exhaustiveness(
-            members, &coverage, match_span, table, definitions, diagnostics,
+            members, &coverage, match_span, ctx.table, ctx.definitions, ctx.diagnostics,
         ),
         Ty::Optional(inner) => {
-            let null_ty = builtins.null;
+            let null_ty = ctx.builtins.null;
             check_optional_exhaustiveness(
-                *inner, null_ty, &coverage, match_span, table, definitions, diagnostics,
+                *inner, null_ty, &coverage, match_span, ctx.table, ctx.definitions, ctx.diagnostics,
             );
         }
         Ty::Bool => check_bool_exhaustiveness(
-            &coverage, match_span, diagnostics,
+            &coverage, match_span, ctx.diagnostics,
         ),
         _ => {
             // Int, String, Float, Char, Struct, Tuple, etc. require wildcard
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error("non-exhaustive match")
                     .with_label(Label::primary(match_span, "match is not exhaustive"))
                     .with_note("add a wildcard arm `_ ->` to cover remaining values"),
@@ -210,16 +201,11 @@ pub fn check_exhaustiveness(
 }
 
 /// Computes the coverage contribution of a single pattern.
-#[allow(clippy::too_many_arguments)]
 fn pattern_coverage(
     kind: &PatternKind,
     scrutinee_ty: TypeId,
     scrutinee_resolved: &Ty,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> Coverage {
     match kind {
         // Wildcard, plain bindings, and error patterns cover everything
@@ -227,14 +213,14 @@ fn pattern_coverage(
 
         // Typed binding — covers that type in a union
         PatternKind::Ident { ty: Some(ty_expr), .. } => {
-            let lowered = lower_type_expr(ty_expr, table, builtins, definitions, resolutions, diagnostics);
-            union_member_coverage(lowered, scrutinee_ty, scrutinee_resolved, table)
+            let lowered = lower_type_expr(ty_expr, ctx);
+            union_member_coverage(lowered, scrutinee_ty, scrutinee_resolved, ctx.table)
         }
 
         // Type narrowing — covers that type in a union
         PatternKind::TypeNarrowing { ty, .. } => {
-            let lowered = lower_type_expr(ty, table, builtins, definitions, resolutions, diagnostics);
-            union_member_coverage(lowered, scrutinee_ty, scrutinee_resolved, table)
+            let lowered = lower_type_expr(ty, ctx);
+            union_member_coverage(lowered, scrutinee_ty, scrutinee_resolved, ctx.table)
         }
 
         // Literal patterns
@@ -248,7 +234,7 @@ fn pattern_coverage(
                     // Covers Null in Optional or union
                     match scrutinee_resolved {
                         Ty::Optional(_) | Ty::Union(_) => {
-                            let null_ty = table.intern(Ty::Null);
+                            let null_ty = ctx.table.intern(Ty::Null);
                             let mut set = FxHashSet::default();
                             set.insert(null_ty);
                             Coverage::UnionMembers(set)
@@ -262,7 +248,7 @@ fn pattern_coverage(
 
         // Variant pattern — covers that variant
         PatternKind::Variant { path, .. } => {
-            if let Some(res) = resolutions {
+            if let Some(res) = ctx.resolutions {
                 if let Some(def_id) = res.get_path(path.span) {
                     let mut set = FxHashSet::default();
                     set.insert(def_id);
@@ -277,8 +263,7 @@ fn pattern_coverage(
             let mut combined = Coverage::Empty;
             for alt in alts {
                 let sub = pattern_coverage(
-                    &alt.kind, scrutinee_ty, scrutinee_resolved,
-                    table, builtins, definitions, resolutions, diagnostics,
+                    &alt.kind, scrutinee_ty, scrutinee_resolved, ctx,
                 );
                 combined.merge(&sub);
             }
@@ -480,6 +465,7 @@ fn check_bool_exhaustiveness(
 mod tests {
     use super::*;
     use crate::builtins::register_builtins;
+    use crate::ctx::TypeCheckCtx;
     use spark_ast::{Expr, ExprKind, Ident, Literal, Pattern};
     use spark_diagnostics::Diagnostics;
     use spark_intern::sym;
@@ -501,12 +487,16 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![make_arm(Pattern::wildcard(Span::DUMMY))];
-        check_exhaustiveness(
-            builtins.int, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(!diags.has_errors(), "Wildcard should be exhaustive: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
+        assert!(!ctx.diagnostics.has_errors(), "Wildcard should be exhaustive: {:?}",
+            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
@@ -517,11 +507,15 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![make_arm(Pattern::ident(Ident::dummy(sym("x"))))];
-        check_exhaustiveness(
-            builtins.int, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(!diags.has_errors());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
+        assert!(!ctx.diagnostics.has_errors());
     }
 
     #[test]
@@ -535,11 +529,15 @@ mod tests {
             PatternKind::Literal(Literal::int(42, Span::DUMMY)),
             Span::DUMMY,
         ))];
-        check_exhaustiveness(
-            builtins.int, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(diags.has_errors());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
+        assert!(ctx.diagnostics.has_errors());
     }
 
     #[test]
@@ -559,12 +557,16 @@ mod tests {
                 Span::DUMMY,
             )),
         ];
-        check_exhaustiveness(
-            builtins.bool_ty, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(!diags.has_errors(), "Both bools should be exhaustive: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.bool_ty, &arms, Span::DUMMY, &mut ctx);
+        assert!(!ctx.diagnostics.has_errors(), "Both bools should be exhaustive: {:?}",
+            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
@@ -578,11 +580,15 @@ mod tests {
             PatternKind::Literal(Literal::bool(true, Span::DUMMY)),
             Span::DUMMY,
         ))];
-        check_exhaustiveness(
-            builtins.bool_ty, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(diags.has_errors());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.bool_ty, &arms, Span::DUMMY, &mut ctx);
+        assert!(ctx.diagnostics.has_errors());
     }
 
     #[test]
@@ -599,13 +605,17 @@ mod tests {
                 Span::DUMMY,
             )),
         ];
-        check_exhaustiveness(
-            builtins.int, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         // Should warn about unreachable arm but no errors
-        assert!(!diags.has_errors());
-        let warnings: Vec<_> = diags.iter()
+        assert!(!ctx.diagnostics.has_errors());
+        let warnings: Vec<_> = ctx.diagnostics.iter()
             .filter(|d| d.message.contains("unreachable"))
             .collect();
         assert!(!warnings.is_empty(), "Should have unreachable warning");
@@ -619,11 +629,15 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![];
-        check_exhaustiveness(
-            builtins.int, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(diags.has_errors());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
+        assert!(ctx.diagnostics.has_errors());
     }
 
     #[test]
@@ -634,11 +648,15 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![];
-        check_exhaustiveness(
-            TypeId::ERROR, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(!diags.has_errors());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(TypeId::ERROR, &arms, Span::DUMMY, &mut ctx);
+        assert!(!ctx.diagnostics.has_errors());
     }
 
     #[test]
@@ -649,11 +667,15 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![make_arm(Pattern::new(PatternKind::Error, Span::DUMMY))];
-        check_exhaustiveness(
-            builtins.int, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(!diags.has_errors());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
+        assert!(!ctx.diagnostics.has_errors());
     }
 
     #[test]
@@ -670,11 +692,15 @@ mod tests {
             },
             Span::DUMMY,
         ))];
-        check_exhaustiveness(
-            builtins.int, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(diags.has_errors(), "Guard should not count toward exhaustiveness");
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
+        assert!(ctx.diagnostics.has_errors(), "Guard should not count toward exhaustiveness");
     }
 
     #[test]
@@ -685,11 +711,15 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![];
-        check_exhaustiveness(
-            builtins.never, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(!diags.has_errors());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.never, &arms, Span::DUMMY, &mut ctx);
+        assert!(!ctx.diagnostics.has_errors());
     }
 
     #[test]
@@ -713,12 +743,16 @@ mod tests {
             ]),
             Span::DUMMY,
         ))];
-        check_exhaustiveness(
-            builtins.bool_ty, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(!diags.has_errors(), "Or-pattern `true | false` should be exhaustive: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(builtins.bool_ty, &arms, Span::DUMMY, &mut ctx);
+        assert!(!ctx.diagnostics.has_errors(), "Or-pattern `true | false` should be exhaustive: {:?}",
+            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
@@ -756,12 +790,16 @@ mod tests {
         ));
 
         let arms = vec![value_arm, null_arm];
-        check_exhaustiveness(
-            optional_ty, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(!diags.has_errors(), "Optional with value + Null should be exhaustive: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(optional_ty, &arms, Span::DUMMY, &mut ctx);
+        assert!(!ctx.diagnostics.has_errors(), "Optional with value + Null should be exhaustive: {:?}",
+            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
@@ -807,12 +845,16 @@ mod tests {
         ));
 
         let arms = vec![int_arm, str_arm];
-        check_exhaustiveness(
-            union_ty, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, None, &mut diags,
-        );
-        assert!(!diags.has_errors(), "Union with all members covered should be exhaustive: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(union_ty, &arms, Span::DUMMY, &mut ctx);
+        assert!(!ctx.diagnostics.has_errors(), "Union with all members covered should be exhaustive: {:?}",
+            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
@@ -867,12 +909,16 @@ mod tests {
         ));
 
         let arms = vec![arm_a, arm_b];
-        check_exhaustiveness(
-            enum_ty, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, Some(&res), &mut diags,
-        );
-        assert!(!diags.has_errors(), "Enum with all variants should be exhaustive: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: Some(&res),
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(enum_ty, &arms, Span::DUMMY, &mut ctx);
+        assert!(!ctx.diagnostics.has_errors(), "Enum with all variants should be exhaustive: {:?}",
+            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
@@ -914,12 +960,16 @@ mod tests {
         ));
 
         let arms = vec![arm_a];
-        check_exhaustiveness(
-            enum_ty, &arms, Span::DUMMY,
-            &mut table, &builtins, &defs, Some(&res), &mut diags,
-        );
-        assert!(diags.has_errors());
-        let msgs: Vec<_> = diags.iter().map(|d| &d.message).collect();
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: Some(&res),
+            diagnostics: &mut diags,
+        };
+        check_exhaustiveness(enum_ty, &arms, Span::DUMMY, &mut ctx);
+        assert!(ctx.diagnostics.has_errors());
+        let msgs: Vec<_> = ctx.diagnostics.iter().map(|d| &d.message).collect();
         assert!(
             msgs.iter().any(|m| m.contains("non-exhaustive")),
             "Expected non-exhaustive error, got: {msgs:?}"

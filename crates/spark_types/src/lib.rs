@@ -58,6 +58,7 @@ pub mod check_expr;
 pub mod check_stmt;
 pub mod checker;
 pub mod constraint;
+pub mod ctx;
 pub mod exhaustive;
 pub mod intern;
 pub mod lower;
@@ -71,6 +72,7 @@ use spark_resolve::{DefinitionTable, ResolvedAst};
 
 pub use check_expr::type_name;
 pub use checker::TypeCheckerOutput;
+pub use ctx::TypeCheckCtx;
 pub use table::TypeTable;
 pub use ty::{FloatWidth, IntWidth, LifetimeId, Ty, TypeId};
 

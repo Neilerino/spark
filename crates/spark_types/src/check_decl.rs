@@ -10,79 +10,69 @@ use spark_ast::{
 };
 use spark_resolve::{DefId, DefinitionKind, DefinitionTable, ResolutionMap};
 
-use crate::builtins::BuiltinTypes;
+use crate::ctx::TypeCheckCtx;
 use crate::lower::lower_type_expr;
-use crate::table::TypeTable;
 use crate::ty::{Constraint, Ty, TypeId};
 
 /// Collects type signatures for a single item.
 ///
 /// This is called during Pass 1 to register definitions before their
 /// bodies are type-checked.
-#[allow(clippy::too_many_arguments)]
 pub fn collect_item(
     item: &Item,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
     match item {
-        Item::Function(f) => collect_function(f, table, builtins, definitions, resolutions, diagnostics),
-        Item::Struct(s) => collect_struct(s, table, builtins, definitions, resolutions, diagnostics),
-        Item::Enum(e) => collect_enum(e, table, builtins, definitions, resolutions, diagnostics),
-        Item::Const(c) => collect_const(c, table, builtins, definitions, resolutions, diagnostics),
-        Item::TypeAlias(a) => collect_type_alias(a, table, builtins, definitions, resolutions, diagnostics),
-        Item::TypeDef(t) => collect_type_def(t, table, builtins, definitions, resolutions, diagnostics),
-        Item::Interface(i) => collect_interface(i, table, builtins, definitions, resolutions, diagnostics),
-        Item::Binding(b) => collect_binding(b, table, builtins, definitions, resolutions, diagnostics),
+        Item::Function(f) => collect_function(f, ctx),
+        Item::Struct(s) => collect_struct(s, ctx),
+        Item::Enum(e) => collect_enum(e, ctx),
+        Item::Const(c) => collect_const(c, ctx),
+        Item::TypeAlias(a) => collect_type_alias(a, ctx),
+        Item::TypeDef(t) => collect_type_def(t, ctx),
+        Item::Interface(i) => collect_interface(i, ctx),
+        Item::Binding(b) => collect_binding(b, ctx),
     }
 }
 
 /// Collects a function's type signature.
 fn collect_function(
     func: &FunctionDef,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
     // Register generic parameter types before lowering param/return types,
     // so that references to `T` in the signature resolve to `Ty::Param`.
-    let generic_param_def_ids = collect_generic_params(&func.generics, table, builtins, definitions, resolutions, diagnostics);
+    let generic_param_def_ids = collect_generic_params(&func.generics, ctx);
 
     let param_types: Vec<TypeId> = func
         .params
         .iter()
-        .map(|p| lower_type_expr(&p.ty, table, builtins, definitions, resolutions, diagnostics))
+        .map(|p| lower_type_expr(&p.ty, ctx))
         .collect();
 
-    let ret_type = lower_type_expr(&func.ret_type, table, builtins, definitions, resolutions, diagnostics);
+    let ret_type = lower_type_expr(&func.ret_type, ctx);
 
     let (param_types, ret_type) = crate::lower::apply_lifetime_elision(
-        &param_types, ret_type, func.span, table, diagnostics,
+        &param_types, ret_type, func.span, ctx.table, ctx.diagnostics,
     );
 
-    let fn_type = table.intern(Ty::Function {
+    let fn_type = ctx.table.intern(Ty::Function {
         params: param_types.clone(),
         ret: ret_type,
         is_async: func.is_async,
     });
 
-    if let Some(def_id) = find_item_def(func.name.span, resolutions) {
-        table.set_def_type(def_id, fn_type);
+    if let Some(def_id) = find_item_def(func.name.span, ctx.resolutions) {
+        ctx.table.set_def_type(def_id, fn_type);
 
         // Store generic param list for this function
         if !generic_param_def_ids.is_empty() {
-            table.set_generic_params(def_id, generic_param_def_ids);
+            ctx.table.set_generic_params(def_id, generic_param_def_ids);
         }
 
         // Also register parameter types
         for (i, param) in func.params.iter().enumerate() {
-            if let Some(param_def) = find_param_def(param.name.span, resolutions) {
-                table.set_def_type(param_def, param_types[i]);
+            if let Some(param_def) = find_param_def(param.name.span, ctx.resolutions) {
+                ctx.table.set_def_type(param_def, param_types[i]);
             }
         }
     }
@@ -91,128 +81,107 @@ fn collect_function(
 /// Collects a struct's type and field types.
 fn collect_struct(
     struct_def: &StructDef,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
-    if let Some(def_id) = find_item_def(struct_def.name.span, resolutions) {
+    if let Some(def_id) = find_item_def(struct_def.name.span, ctx.resolutions) {
         // Register generic parameter types before lowering field types.
-        let generic_param_def_ids = collect_generic_params(&struct_def.generics, table, builtins, definitions, resolutions, diagnostics);
+        let generic_param_def_ids = collect_generic_params(&struct_def.generics, ctx);
 
-        let struct_type = table.intern(Ty::Struct(def_id));
-        table.set_def_type(def_id, struct_type);
+        let struct_type = ctx.table.intern(Ty::Struct(def_id));
+        ctx.table.set_def_type(def_id, struct_type);
 
         // Store generic param list for this struct
         if !generic_param_def_ids.is_empty() {
-            table.set_generic_params(def_id, generic_param_def_ids);
+            ctx.table.set_generic_params(def_id, generic_param_def_ids);
         }
 
         // Collect field types
         let mut fields = Vec::with_capacity(struct_def.fields.len());
         for field in &struct_def.fields {
-            let field_type = lower_type_expr(&field.ty, table, builtins, definitions, resolutions, diagnostics);
+            let field_type = lower_type_expr(&field.ty, ctx);
             fields.push((field.name.name, field_type));
 
             // Register the field def type
-            if let Some(field_def) = find_field_def(field.name.name, def_id, definitions) {
-                table.set_def_type(field_def, field_type);
+            if let Some(field_def) = find_field_def(field.name.name, def_id, ctx.definitions) {
+                ctx.table.set_def_type(field_def, field_type);
             }
         }
-        table.set_struct_fields(def_id, fields);
+        ctx.table.set_struct_fields(def_id, fields);
     }
 }
 
 /// Collects an enum's type and variant types.
 fn collect_enum(
     enum_def: &EnumDef,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
-    if let Some(def_id) = find_item_def(enum_def.name.span, resolutions) {
+    if let Some(def_id) = find_item_def(enum_def.name.span, ctx.resolutions) {
         // Register generic parameter types before lowering variant field types.
-        let generic_param_def_ids = collect_generic_params(&enum_def.generics, table, builtins, definitions, resolutions, diagnostics);
+        let generic_param_def_ids = collect_generic_params(&enum_def.generics, ctx);
 
-        let enum_type = table.intern(Ty::Enum(def_id));
-        table.set_def_type(def_id, enum_type);
+        let enum_type = ctx.table.intern(Ty::Enum(def_id));
+        ctx.table.set_def_type(def_id, enum_type);
 
         // Store generic param list for this enum
         if !generic_param_def_ids.is_empty() {
-            table.set_generic_params(def_id, generic_param_def_ids);
+            ctx.table.set_generic_params(def_id, generic_param_def_ids);
         }
 
         let mut variants = Vec::with_capacity(enum_def.variants.len());
 
         for variant in &enum_def.variants {
             if let Some(variant_def) =
-                find_variant_def(variant.name.name, def_id, definitions)
+                find_variant_def(variant.name.name, def_id, ctx.definitions)
             {
                 // The variant's type is the parent enum type
-                table.set_def_type(variant_def, enum_type);
+                ctx.table.set_def_type(variant_def, enum_type);
                 variants.push((variant.name.name, variant_def));
 
                 // Collect variant fields
                 if let EnumVariantData::Fields(fields) = &variant.data {
                     let mut variant_fields = Vec::with_capacity(fields.len());
                     for field in fields {
-                        let field_type =
-                            lower_type_expr(&field.ty, table, builtins, definitions, resolutions, diagnostics);
+                        let field_type = lower_type_expr(&field.ty, ctx);
                         variant_fields.push((field.name.name, field_type));
                     }
-                    table.set_variant_fields(variant_def, variant_fields);
+                    ctx.table.set_variant_fields(variant_def, variant_fields);
                 }
             }
         }
-        table.set_enum_variants(def_id, variants);
+        ctx.table.set_enum_variants(def_id, variants);
     }
 }
 
 /// Collects a constant's type.
 fn collect_const(
     const_def: &ConstDef,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
-    let ty = lower_type_expr(&const_def.ty, table, builtins, definitions, resolutions, diagnostics);
-    if let Some(def_id) = find_item_def(const_def.name.span, resolutions) {
-        table.set_def_type(def_id, ty);
+    let ty = lower_type_expr(&const_def.ty, ctx);
+    if let Some(def_id) = find_item_def(const_def.name.span, ctx.resolutions) {
+        ctx.table.set_def_type(def_id, ty);
     }
 }
 
 /// Collects a type alias.
 fn collect_type_alias(
     alias_def: &TypeAliasDef,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
-    let ty = lower_type_expr(&alias_def.ty, table, builtins, definitions, resolutions, diagnostics);
-    if let Some(def_id) = find_item_def(alias_def.name.span, resolutions) {
-        table.set_def_type(def_id, ty);
+    let ty = lower_type_expr(&alias_def.ty, ctx);
+    if let Some(def_id) = find_item_def(alias_def.name.span, ctx.resolutions) {
+        ctx.table.set_def_type(def_id, ty);
     }
 }
 
 /// Collects a distinct type definition.
 fn collect_type_def(
     type_def: &TypeDefDef,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
-    let ty = lower_type_expr(&type_def.ty, table, builtins, definitions, resolutions, diagnostics);
-    if let Some(def_id) = find_item_def(type_def.name.span, resolutions) {
-        table.set_def_type(def_id, ty);
+    let ty = lower_type_expr(&type_def.ty, ctx);
+    if let Some(def_id) = find_item_def(type_def.name.span, ctx.resolutions) {
+        ctx.table.set_def_type(def_id, ty);
     }
 }
 
@@ -222,16 +191,12 @@ fn collect_type_def(
 /// validated against the interface's requirements.
 fn collect_interface(
     iface: &InterfaceDef,
-    table: &mut TypeTable,
-    _builtins: &BuiltinTypes,
-    _definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    _diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
     // Register the interface type itself
-    if let Some(def_id) = find_item_def(iface.name.span, resolutions) {
-        let iface_type = table.intern(Ty::Param(def_id));
-        table.set_def_type(def_id, iface_type);
+    if let Some(def_id) = find_item_def(iface.name.span, ctx.resolutions) {
+        let iface_type = ctx.table.intern(Ty::Param(def_id));
+        ctx.table.set_def_type(def_id, iface_type);
     }
 
     // Register method signatures — they don't have separate DefIds currently,
@@ -246,17 +211,12 @@ fn collect_interface(
 /// interns the function type, and registers it on the method's `DefId`.
 /// Also records the methods in `TypeTable::type_methods` for lookup
 /// during method call resolution.
-#[allow(clippy::too_many_arguments)]
 fn collect_binding(
     binding: &BindingDef,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
     // Find the bound type's DefId
-    let type_def_id = find_type_def_from_binding_ty(&binding.ty, resolutions);
+    let type_def_id = find_type_def_from_binding_ty(&binding.ty, ctx.resolutions);
     if type_def_id.is_dummy() {
         return;
     }
@@ -265,10 +225,10 @@ fn collect_binding(
 
     for target in &binding.bindings {
         // Validate interface requirements
-        let interface_def_id = find_type_def_from_binding_ty(&target.interface, resolutions);
+        let interface_def_id = find_type_def_from_binding_ty(&target.interface, ctx.resolutions);
         if !interface_def_id.is_dummy() {
-            table.add_interface_binding(type_def_id, interface_def_id);
-            validate_interface_methods(interface_def_id, &target.methods, definitions, diagnostics);
+            ctx.table.add_interface_binding(type_def_id, interface_def_id);
+            validate_interface_methods(interface_def_id, &target.methods, ctx.definitions, ctx.diagnostics);
         }
 
         for method in &target.methods {
@@ -276,7 +236,7 @@ fn collect_binding(
             let method_def_id = find_binding_method_def(
                 method.name.name,
                 type_def_id,
-                definitions,
+                ctx.definitions,
             );
 
             if let Some(method_def_id) = method_def_id {
@@ -284,31 +244,31 @@ fn collect_binding(
                 let param_types: Vec<TypeId> = method
                     .params
                     .iter()
-                    .map(|p| lower_type_expr(&p.ty, table, builtins, definitions, resolutions, diagnostics))
+                    .map(|p| lower_type_expr(&p.ty, ctx))
                     .collect();
 
                 // Lower return type
-                let ret_type = lower_type_expr(&method.ret_type, table, builtins, definitions, resolutions, diagnostics);
+                let ret_type = lower_type_expr(&method.ret_type, ctx);
 
                 // Apply lifetime elision
                 let (param_types, ret_type) = crate::lower::apply_lifetime_elision(
-                    &param_types, ret_type, method.span, table, diagnostics,
+                    &param_types, ret_type, method.span, ctx.table, ctx.diagnostics,
                 );
 
                 // Intern the function type
-                let fn_type = table.intern(Ty::Function {
+                let fn_type = ctx.table.intern(Ty::Function {
                     params: param_types.clone(),
                     ret: ret_type,
                     is_async: method.is_async,
                 });
 
                 // Register the method type
-                table.set_def_type(method_def_id, fn_type);
+                ctx.table.set_def_type(method_def_id, fn_type);
 
                 // Register parameter types
                 for (i, param) in method.params.iter().enumerate() {
-                    if let Some(param_def) = find_param_def(param.name.span, resolutions) {
-                        table.set_def_type(param_def, param_types[i]);
+                    if let Some(param_def) = find_param_def(param.name.span, ctx.resolutions) {
+                        ctx.table.set_def_type(param_def, param_types[i]);
                     }
                 }
 
@@ -320,12 +280,12 @@ fn collect_binding(
     // Register all methods for the bound type
     if !all_methods.is_empty() {
         // Merge with any existing methods (from other bindings)
-        if let Some(existing) = table.get_type_methods(type_def_id) {
+        if let Some(existing) = ctx.table.get_type_methods(type_def_id) {
             let mut merged = existing.to_vec();
             merged.extend(all_methods);
-            table.set_type_methods(type_def_id, merged);
+            ctx.table.set_type_methods(type_def_id, merged);
         } else {
-            table.set_type_methods(type_def_id, all_methods);
+            ctx.table.set_type_methods(type_def_id, all_methods);
         }
     }
 }
@@ -391,14 +351,9 @@ fn validate_interface_methods(
 /// constraints into the type table's constraint map.
 ///
 /// Returns the ordered list of generic param `DefId`s.
-#[allow(clippy::too_many_arguments)]
 fn collect_generic_params(
     generics: &[spark_ast::GenericParam],
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> Vec<DefId> {
     if generics.is_empty() {
         return Vec::new();
@@ -406,18 +361,16 @@ fn collect_generic_params(
 
     let mut param_def_ids = Vec::with_capacity(generics.len());
     for generic in generics {
-        if let Some(def_id) = resolutions.and_then(|res| res.get_binding(generic.name.span)) {
-            // Register the param type: T → Ty::Param(def_id)
-            let param_ty = table.intern(Ty::Param(def_id));
-            table.set_def_type(def_id, param_ty);
+        if let Some(def_id) = ctx.resolutions.and_then(|res| res.get_binding(generic.name.span)) {
+            // Register the param type: T -> Ty::Param(def_id)
+            let param_ty = ctx.table.intern(Ty::Param(def_id));
+            ctx.table.set_def_type(def_id, param_ty);
             param_def_ids.push(def_id);
 
             // Lower and store constraint, if present
             if let Some(constraint) = &generic.constraint {
-                if let Some(lowered) = lower_generic_constraint(
-                    constraint, table, builtins, definitions, resolutions, diagnostics,
-                ) {
-                    table.set_generic_constraint(def_id, lowered);
+                if let Some(lowered) = lower_generic_constraint(constraint, ctx) {
+                    ctx.table.set_generic_constraint(def_id, lowered);
                 }
             }
         }
@@ -432,27 +385,23 @@ fn collect_generic_params(
 /// `Constraint::Structural` from that struct's fields).
 fn lower_generic_constraint(
     constraint: &spark_ast::GenericConstraint,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> Option<Constraint> {
     match constraint {
         spark_ast::GenericConstraint::Named(type_expr) => {
             // Resolve the constraint type name to a DefId
             if let spark_ast::TypeExprKind::Named { path, type_args } = &type_expr.kind {
-                let constraint_def_id = resolutions
+                let constraint_def_id = ctx.resolutions
                     .and_then(|res| res.get_path(path.span));
 
                 if let Some(cdef_id) = constraint_def_id {
-                    let info = definitions.get(cdef_id)?;
+                    let info = ctx.definitions.get(cdef_id)?;
                     match &info.kind {
                         DefinitionKind::Interface => {
                             // Lower type arguments (e.g., [T] in Comparable[T])
                             let args: Vec<TypeId> = type_args
                                 .iter()
-                                .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
+                                .map(|t| lower_type_expr(t, ctx))
                                 .collect();
                             Some(Constraint::Interface {
                                 interface_def_id: cdef_id,
@@ -461,7 +410,7 @@ fn lower_generic_constraint(
                         }
                         DefinitionKind::Struct => {
                             // Named type constraint: T must have all fields of the struct
-                            table.get_struct_fields(cdef_id).map(|fields| Constraint::Structural {
+                            ctx.table.get_struct_fields(cdef_id).map(|fields| Constraint::Structural {
                                 fields: fields.to_vec(),
                             })
                         }
@@ -478,7 +427,7 @@ fn lower_generic_constraint(
             let lowered_fields: Vec<(spark_intern::Symbol, TypeId)> = fields
                 .iter()
                 .map(|f| {
-                    let ty = lower_type_expr(&f.ty, table, builtins, definitions, resolutions, diagnostics);
+                    let ty = lower_type_expr(&f.ty, ctx);
                     (f.name.name, ty)
                 })
                 .collect();
@@ -613,11 +562,18 @@ mod tests {
         };
 
         let item = Item::Function(func);
-        collect_item(&item, &mut table, &builtins, &defs, Some(&resolutions), &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: Some(&resolutions),
+            diagnostics: &mut diags,
+        };
+        collect_item(&item, &mut ctx);
 
-        assert!(!diags.has_errors());
-        let fn_ty = table.get_def_type(fn_def_id).unwrap();
-        assert!(matches!(table.resolve(fn_ty), Ty::Function { .. }));
+        assert!(!ctx.diagnostics.has_errors());
+        let fn_ty = ctx.table.get_def_type(fn_def_id).unwrap();
+        assert!(matches!(ctx.table.resolve(fn_ty), Ty::Function { .. }));
     }
 
     #[test]
@@ -670,10 +626,17 @@ mod tests {
         };
 
         let item = Item::Struct(struct_item);
-        collect_item(&item, &mut table, &builtins, &defs, Some(&resolutions), &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: Some(&resolutions),
+            diagnostics: &mut diags,
+        };
+        collect_item(&item, &mut ctx);
 
-        assert!(!diags.has_errors());
-        let fields = table.get_struct_fields(struct_def_id).unwrap();
+        assert!(!ctx.diagnostics.has_errors());
+        let fields = ctx.table.get_struct_fields(struct_def_id).unwrap();
         assert_eq!(fields.len(), 1);
         assert_eq!(fields[0].0, sym("name"));
     }

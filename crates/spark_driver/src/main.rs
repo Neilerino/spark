@@ -7,6 +7,7 @@
 //! spark build <input.spark> [-o output]          # compile project to executable
 //! spark run <input.spark> [-- args...]           # compile project + run
 //! spark run --single-file <input.spark>          # compile only the input file
+//! spark bindgen <header.h> [-l lib] [-o out]     # generate Spark bindings from C header
 //! ```
 
 #![forbid(unsafe_code)]
@@ -85,6 +86,20 @@ enum Cmd {
         #[arg(short, long)]
         version: Option<String>,
     },
+    /// Generate Spark bindings from a C header file.
+    Bindgen {
+        /// Path to the C header file.
+        header: String,
+        /// Library name for the `link` directive (inferred from header if omitted).
+        #[arg(short = 'l', long)]
+        library: Option<String>,
+        /// Output file path (prints to stdout if omitted).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Additional include paths for clang.
+        #[arg(short = 'I', long = "include")]
+        includes: Vec<String>,
+    },
 }
 
 fn main() {
@@ -139,6 +154,15 @@ fn main() {
             Err(()) => process::exit(1),
         },
         Cmd::Add { package, version } => match cmd_add(&package, version.as_deref()) {
+            Ok(()) => {}
+            Err(()) => process::exit(1),
+        },
+        Cmd::Bindgen {
+            header,
+            library,
+            output,
+            includes,
+        } => match cmd_bindgen(&header, library.as_deref(), output.as_deref(), &includes) {
             Ok(()) => {}
             Err(()) => process::exit(1),
         },
@@ -578,6 +602,52 @@ fn cmd_add(package: &str, version: Option<&str>) -> Result<(), ()> {
     })?;
 
     println!("Added `{package} = \"{version_str}\"` to Spark.toml");
+
+    Ok(())
+}
+
+/// Generates Spark FFI bindings from a C header file.
+///
+/// Uses libclang to parse the header and emits `extern fn` declarations.
+/// Writes to a file (`-o`) or stdout. Prints warnings to stderr.
+fn cmd_bindgen(
+    header: &str,
+    library: Option<&str>,
+    output: Option<&Path>,
+    includes: &[String],
+) -> Result<(), ()> {
+    let config = spark_bindgen::BindgenConfig {
+        header_path: header.to_string(),
+        library_name: library.map(String::from),
+        include_paths: includes.to_vec(),
+        extra_args: vec![],
+    };
+
+    let result = spark_bindgen::run_bindgen(&config).map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
+
+    // Print warnings to stderr.
+    for warning in &result.output.warnings {
+        eprintln!("warning: {}: {}", warning.entity, warning.reason);
+    }
+
+    let spark_source = spark_bindgen::render_spark(&result);
+
+    if let Some(path) = output {
+        fs::write(path, &spark_source).map_err(|e| {
+            eprintln!("error: could not write `{}`: {e}", path.display());
+        })?;
+        eprintln!(
+            "Generated {} binding(s) from `{}` -> `{}` ({} warning(s))",
+            result.output.functions.len(),
+            result.header_name,
+            path.display(),
+            result.output.warnings.len(),
+        );
+    } else {
+        print!("{spark_source}");
+    }
 
     Ok(())
 }

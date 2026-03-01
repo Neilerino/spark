@@ -1,0 +1,16 @@
+[package]
+name = "spark_bindgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Generate Spark FFI bindings from C headers using libclang"
+
+[dependencies]
+clang.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

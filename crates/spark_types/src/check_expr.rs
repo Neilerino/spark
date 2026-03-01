@@ -11,74 +11,60 @@ use spark_span::Span;
 
 use crate::builtins::BuiltinTypes;
 use crate::check_stmt::check_stmt;
+use crate::ctx::TypeCheckCtx;
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
 use crate::ty::{Ty, TypeId};
 
 /// Type-checks an expression and returns its type.
 ///
-/// Records the resulting `TypeId` in `table.expr_types` keyed by the
+/// Records the resulting `TypeId` in `ctx.table.expr_types` keyed by the
 /// expression's span.
-#[allow(clippy::too_many_arguments)]
 pub fn check_expr(
     expr: &Expr,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
-    check_expr_expected(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret, None)
+    check_expr_expected(expr, ctx, current_fn_ret, None)
 }
 
 /// Type-checks an expression with an expected type hint from context.
 ///
 /// The `expected_ty` is used by propagation (`!`) to determine which union
 /// members are the "success" type vs error types to propagate.
-#[allow(clippy::too_many_arguments)]
 pub fn check_expr_expected(
     expr: &Expr,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
     expected_ty: Option<TypeId>,
 ) -> TypeId {
-    let ty = check_expr_inner(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret, expected_ty);
-    table.set_expr_type(expr.id, ty);
+    let ty = check_expr_inner(expr, ctx, current_fn_ret, expected_ty);
+    ctx.table.set_expr_type(expr.id, ty);
     ty
 }
 
 /// Inner expression type checker — dispatches on `ExprKind`.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 fn check_expr_inner(
     expr: &Expr,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
     expected_ty: Option<TypeId>,
 ) -> TypeId {
     match &expr.kind {
         // === Literals ===
         ExprKind::Literal(lit) => match &lit.kind {
-            LiteralKind::Int(_) => builtins.int,
-            LiteralKind::Float(_) => builtins.float,
+            LiteralKind::Int(_) => ctx.builtins.int,
+            LiteralKind::Float(_) => ctx.builtins.float,
             LiteralKind::String(s) => {
                 // Type-check each interpolated sub-expression.
                 for part in &s.parts {
                     if let StringPart::Interpolation(sub_expr) = part {
                         let sub_ty = check_expr(
-                            sub_expr, table, builtins, definitions,
-                            resolutions, diagnostics, current_fn_ret,
+                            sub_expr, ctx, current_fn_ret,
                         );
                         // Verify the type supports string conversion.
-                        let resolved = table.resolve(sub_ty);
+                        let resolved = ctx.table.resolve(sub_ty);
                         let ok = matches!(
                             resolved,
                             Ty::String
@@ -89,8 +75,8 @@ fn check_expr_inner(
                                 | Ty::Error
                         );
                         if !ok {
-                            let name = type_name(sub_ty, table, definitions);
-                            diagnostics.push(
+                            let name = type_name(sub_ty, ctx.table, ctx.definitions);
+                            ctx.diagnostics.push(
                                 Diagnostic::error("type cannot be interpolated into a string")
                                     .with_label(Label::primary(
                                         sub_expr.span,
@@ -101,18 +87,18 @@ fn check_expr_inner(
                         }
                     }
                 }
-                builtins.string
+                ctx.builtins.string
             }
-            LiteralKind::Char(_) => builtins.char_ty,
-            LiteralKind::Bool(_) => builtins.bool_ty,
-            LiteralKind::Null => builtins.null,
+            LiteralKind::Char(_) => ctx.builtins.char_ty,
+            LiteralKind::Bool(_) => ctx.builtins.bool_ty,
+            LiteralKind::Null => ctx.builtins.null,
         },
 
         // === Identifiers ===
         ExprKind::Ident(ident) => {
-            if let Some(res) = resolutions {
+            if let Some(res) = ctx.resolutions {
                 if let Some(def_id) = res.get_ident(ident.span) {
-                    return table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
+                    return ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
                 }
             }
             // Unresolved identifier — the resolver should have caught this,
@@ -121,9 +107,9 @@ fn check_expr_inner(
         }
 
         ExprKind::Path(path) => {
-            if let Some(res) = resolutions {
+            if let Some(res) = ctx.resolutions {
                 if let Some(def_id) = res.get_path(path.span) {
-                    return table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
+                    return ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
                 }
             }
             TypeId::ERROR
@@ -131,56 +117,56 @@ fn check_expr_inner(
 
         // === Binary operators ===
         ExprKind::Binary { op, lhs, rhs } => {
-            let lhs_ty = check_expr(lhs, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let rhs_ty = check_expr(rhs, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let lhs_ty = check_expr(lhs, ctx, current_fn_ret);
+            let rhs_ty = check_expr(rhs, ctx, current_fn_ret);
 
-            check_binary_op(*op, lhs_ty, rhs_ty, expr.span, lhs.span, rhs.span, table, builtins, diagnostics)
+            check_binary_op(*op, lhs_ty, rhs_ty, expr.span, lhs.span, rhs.span, ctx)
         }
 
         // === Unary operators ===
         ExprKind::Unary { op, operand } => {
-            let operand_ty = check_expr(operand, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            check_unary_op(*op, operand_ty, expr.span, operand.span, table, builtins, diagnostics)
+            let operand_ty = check_expr(operand, ctx, current_fn_ret);
+            check_unary_op(*op, operand_ty, expr.span, operand.span, ctx.table, ctx.builtins, ctx.diagnostics)
         }
 
         // === Function call ===
         ExprKind::Call { callee, args } => {
-            let callee_ty = check_expr(callee, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            check_call(callee_ty, args, expr.span, callee.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+            let callee_ty = check_expr(callee, ctx, current_fn_ret);
+            check_call(callee_ty, args, expr.span, callee.span, ctx, current_fn_ret)
         }
 
         // === Field access ===
         ExprKind::Field { base, field } => {
-            let base_ty = check_expr(base, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            check_field_access(base_ty, field.name, field.span, table, definitions, diagnostics)
+            let base_ty = check_expr(base, ctx, current_fn_ret);
+            check_field_access(base_ty, field.name, field.span, ctx.table, ctx.definitions, ctx.diagnostics)
         }
 
         // === Optional field access ===
         ExprKind::OptionalField { base, field } => {
-            let base_ty = check_expr(base, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let inner_ty = unwrap_optional(base_ty, table);
-            let field_ty = check_field_access(inner_ty, field.name, field.span, table, definitions, diagnostics);
+            let base_ty = check_expr(base, ctx, current_fn_ret);
+            let inner_ty = unwrap_optional(base_ty, ctx.table);
+            let field_ty = check_field_access(inner_ty, field.name, field.span, ctx.table, ctx.definitions, ctx.diagnostics);
             if field_ty.is_error() {
                 return TypeId::ERROR;
             }
-            table.intern(Ty::Optional(field_ty))
+            ctx.table.intern(Ty::Optional(field_ty))
         }
 
         // === Index access ===
         ExprKind::Index { base, index } => {
-            let base_ty = check_expr(base, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let _index_ty = check_expr(index, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let base_ty = check_expr(base, ctx, current_fn_ret);
+            let _index_ty = check_expr(index, ctx, current_fn_ret);
 
-            match table.resolve(strip_mutable(base_ty, table)).clone() {
-                Ty::List(elem) => table.intern(Ty::Optional(elem)),
-                Ty::Map(_, value) => table.intern(Ty::Optional(value)),
+            match ctx.table.resolve(strip_mutable(base_ty, ctx.table)).clone() {
+                Ty::List(elem) => ctx.table.intern(Ty::Optional(elem)),
+                Ty::Map(_, value) => ctx.table.intern(Ty::Optional(value)),
                 Ty::Tuple(elems) => {
                     // For now, return the first element type or Error
                     elems.first().copied().unwrap_or(TypeId::ERROR)
                 }
                 Ty::Error => TypeId::ERROR,
                 _ => {
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::error("type is not indexable")
                             .with_label(Label::primary(base.span, "cannot index this type")),
                     );
@@ -193,63 +179,60 @@ fn check_expr_inner(
         ExprKind::StructInit { path, type_args, fields, spread } => {
             // Intercept Channel[T]() constructor
             if path.is_simple() && path.segments[0].name == kw::CHANNEL {
-                return check_channel_constructor(type_args, fields, expr.span, table, builtins, definitions, resolutions, diagnostics);
+                return check_channel_constructor(type_args, fields, expr.span, ctx);
             }
-            check_struct_init(path, type_args, fields, spread.as_deref(), expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+            check_struct_init(path, type_args, fields, spread.as_deref(), expr.span, ctx, current_fn_ret)
         }
 
         // === Enum variant ===
         ExprKind::EnumVariant { path, variant, fields } => {
-            check_enum_variant(path, variant, fields, expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+            check_enum_variant(path, variant, fields, expr.span, ctx, current_fn_ret)
         }
 
         // === Block ===
         ExprKind::Block(block) => {
-            check_block(block, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+            check_block(block, ctx, current_fn_ret)
         }
 
         // === If expression ===
         ExprKind::If { condition, then_branch, else_branch } => {
-            let cond_ty = check_expr(condition, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let cond_ty = check_expr(condition, ctx, current_fn_ret);
 
-            if !is_compatible(cond_ty, builtins.bool_ty, table) {
-                diagnostics.push(
+            if !is_compatible(cond_ty, ctx.builtins.bool_ty, ctx.table) {
+                ctx.diagnostics.push(
                     Diagnostic::error("if condition must be Bool")
                         .with_label(Label::primary(condition.span, "expected Bool")),
                 );
             }
 
-            let then_ty = check_expr(then_branch, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let then_ty = check_expr(then_branch, ctx, current_fn_ret);
 
-            else_branch.as_ref().map_or(builtins.void, |else_branch| {
-                let else_ty = check_expr(else_branch, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-                unify_branches(then_ty, else_ty, table, builtins)
+            else_branch.as_ref().map_or(ctx.builtins.void, |else_branch| {
+                let else_ty = check_expr(else_branch, ctx, current_fn_ret);
+                unify_branches(then_ty, else_ty, ctx.table, ctx.builtins)
             })
         }
 
         // === Match expression ===
         ExprKind::Match { scrutinee, arms } => {
-            let scrutinee_ty = check_expr(scrutinee, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let scrutinee_ty = check_expr(scrutinee, ctx, current_fn_ret);
 
             let mut arm_types = Vec::with_capacity(arms.len());
             for arm in arms {
                 // Pattern checking is simplified — we just check the body
-                let body_ty = check_expr(&arm.body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
                 arm_types.push(body_ty);
             }
 
             // Check exhaustiveness
-            crate::exhaustive::check_exhaustiveness(
-                scrutinee_ty, arms, expr.span,
-                table, builtins, definitions, resolutions, diagnostics,
-            );
+            crate::exhaustive::check_exhaustiveness(scrutinee_ty, arms, expr.span, ctx);
 
             if arm_types.is_empty() {
-                builtins.never
+                ctx.builtins.never
             } else {
                 let mut result = arm_types[0];
                 for &ty in &arm_types[1..] {
-                    result = unify_branches(result, ty, table, builtins);
+                    result = unify_branches(result, ty, ctx.table, ctx.builtins);
                 }
                 result
             }
@@ -257,66 +240,66 @@ fn check_expr_inner(
 
         // === Loop ===
         ExprKind::Loop { body } => {
-            let _ = check_expr(body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = check_expr(body, ctx, current_fn_ret);
             // Loop's type comes from break expressions — for now, Void
-            builtins.void
+            ctx.builtins.void
         }
 
         // === Break ===
         ExprKind::Break(value) => {
             if let Some(val) = value {
-                let _ = check_expr(val, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                let _ = check_expr(val, ctx, current_fn_ret);
             }
-            builtins.never
+            ctx.builtins.never
         }
 
         // === Continue ===
-        ExprKind::Continue => builtins.never,
+        ExprKind::Continue => ctx.builtins.never,
 
         // === Return ===
         ExprKind::Return(value) => {
-            let val_ty = value.as_ref().map_or(builtins.void, |val| {
-                check_expr(val, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+            let val_ty = value.as_ref().map_or(ctx.builtins.void, |val| {
+                check_expr(val, ctx, current_fn_ret)
             });
 
             if let Some(expected) = current_fn_ret {
-                if !is_compatible(val_ty, expected, table) {
-                    let expected_name = type_name(expected, table, definitions);
-                    let found_name = type_name(val_ty, table, definitions);
-                    diagnostics.push(
+                if !is_compatible(val_ty, expected, ctx.table) {
+                    let expected_name = type_name(expected, ctx.table, ctx.definitions);
+                    let found_name = type_name(val_ty, ctx.table, ctx.definitions);
+                    ctx.diagnostics.push(
                         Diagnostic::error(format!("return type mismatch: expected `{expected_name}`, found `{found_name}`"))
                             .with_label(Label::primary(expr.span, format!("expected `{expected_name}`"))),
                     );
                 }
             }
 
-            builtins.never
+            ctx.builtins.never
         }
 
         // === Lambda ===
         ExprKind::Lambda { params, ret_type, body } => {
             let param_types: Vec<TypeId> = params
                 .iter()
-                .map(|p| lower_type_expr(&p.ty, table, builtins, definitions, resolutions, diagnostics))
+                .map(|p| lower_type_expr(&p.ty, ctx))
                 .collect();
 
             // Register param types
             for (i, param) in params.iter().enumerate() {
-                if let Some(res) = resolutions {
+                if let Some(res) = ctx.resolutions {
                     if let Some(def_id) = res.get_binding(param.name.span) {
-                        table.set_def_type(def_id, param_types[i]);
+                        ctx.table.set_def_type(def_id, param_types[i]);
                     }
                 }
             }
 
             let declared_ret = ret_type
                 .as_ref()
-                .map(|rt| lower_type_expr(rt, table, builtins, definitions, resolutions, diagnostics));
+                .map(|rt| lower_type_expr(rt, ctx));
 
-            let body_ty = check_expr(body, table, builtins, definitions, resolutions, diagnostics, declared_ret);
+            let body_ty = check_expr(body, ctx, declared_ret);
             let ret = declared_ret.unwrap_or(body_ty);
 
-            table.intern(Ty::Function {
+            ctx.table.intern(Ty::Function {
                 params: param_types,
                 ret,
                 is_async: false,
@@ -325,33 +308,33 @@ fn check_expr_inner(
 
         // === Coalesce (??) ===
         ExprKind::Coalesce { lhs, rhs } => {
-            let lhs_ty = check_expr(lhs, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let rhs_ty = check_expr(rhs, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let lhs_ty = check_expr(lhs, ctx, current_fn_ret);
+            let rhs_ty = check_expr(rhs, ctx, current_fn_ret);
 
-            let inner = unwrap_optional(lhs_ty, table);
+            let inner = unwrap_optional(lhs_ty, ctx.table);
             if inner == lhs_ty && !lhs_ty.is_error() {
-                diagnostics.push(
+                ctx.diagnostics.push(
                     Diagnostic::error("left side of `??` must be an optional type")
                         .with_label(Label::primary(lhs.span, "not optional")),
                 );
             }
 
             // The result is the non-optional inner type unified with rhs
-            if inner.is_error() { rhs_ty } else { unify_branches(inner, rhs_ty, table, builtins) }
+            if inner.is_error() { rhs_ty } else { unify_branches(inner, rhs_ty, ctx.table, ctx.builtins) }
         }
 
         // === Propagate (!) ===
         ExprKind::Propagate(inner_expr) => {
-            let inner_ty = check_expr(inner_expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let inner_ty = check_expr(inner_expr, ctx, current_fn_ret);
 
             // For Optional(T) → success type is T
-            if let Ty::Optional(success) = table.resolve(inner_ty) {
+            if let Ty::Optional(success) = ctx.table.resolve(inner_ty) {
                 let success = *success;
                 // Validate that Null is compatible with the enclosing function's return type
                 if let Some(ret) = current_fn_ret {
-                    if !is_compatible(builtins.null, ret, table) {
-                        let ret_name = type_name(ret, table, definitions);
-                        diagnostics.push(
+                    if !is_compatible(ctx.builtins.null, ret, ctx.table) {
+                        let ret_name = type_name(ret, ctx.table, ctx.definitions);
+                        ctx.diagnostics.push(
                             Diagnostic::error(format!(
                                 "propagation operator `!` may return `Null`, but function return type `{ret_name}` does not include `Null`"
                             ))
@@ -359,7 +342,7 @@ fn check_expr_inner(
                         );
                     }
                 } else {
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::error("`!` can only be used inside a function")
                             .with_label(Label::primary(expr.span, "not inside a function")),
                     );
@@ -368,18 +351,18 @@ fn check_expr_inner(
             }
 
             // For Union types → use split_union to determine success type
-            if matches!(table.resolve(inner_ty), Ty::Union(_)) {
+            if matches!(ctx.table.resolve(inner_ty), Ty::Union(_)) {
                 // Try to split using the expected type (from context) or fn return type
                 if let Some((success_ty, errors)) =
-                    crate::union::split_union(inner_ty, expected_ty, current_fn_ret, table)
+                    crate::union::split_union(inner_ty, expected_ty, current_fn_ret, ctx.table)
                 {
                     // Validate that each error type is compatible with the enclosing function's return type
                     if let Some(ret) = current_fn_ret {
                         for &error_ty in &errors {
-                            if !is_compatible(error_ty, ret, table) {
-                                let error_name = type_name(error_ty, table, definitions);
-                                let ret_name = type_name(ret, table, definitions);
-                                diagnostics.push(
+                            if !is_compatible(error_ty, ret, ctx.table) {
+                                let error_name = type_name(error_ty, ctx.table, ctx.definitions);
+                                let ret_name = type_name(ret, ctx.table, ctx.definitions);
+                                ctx.diagnostics.push(
                                     Diagnostic::error(format!(
                                         "propagation operator `!` may return `{error_name}`, but function return type `{ret_name}` does not include it"
                                     ))
@@ -388,7 +371,7 @@ fn check_expr_inner(
                             }
                         }
                     } else {
-                        diagnostics.push(
+                        ctx.diagnostics.push(
                             Diagnostic::error("`!` can only be used inside a function")
                                 .with_label(Label::primary(expr.span, "not inside a function")),
                         );
@@ -398,13 +381,13 @@ fn check_expr_inner(
             }
 
             // Fallback: unwrap nullable
-            let result = unwrap_optional(inner_ty, table);
+            let result = unwrap_optional(inner_ty, ctx.table);
             // If unwrap_optional actually unwrapped something, Null was removed — validate it
             if result != inner_ty {
                 if let Some(ret) = current_fn_ret {
-                    if !is_compatible(builtins.null, ret, table) {
-                        let ret_name = type_name(ret, table, definitions);
-                        diagnostics.push(
+                    if !is_compatible(ctx.builtins.null, ret, ctx.table) {
+                        let ret_name = type_name(ret, ctx.table, ctx.definitions);
+                        ctx.diagnostics.push(
                             Diagnostic::error(format!(
                                 "propagation operator `!` may return `Null`, but function return type `{ret_name}` does not include `Null`"
                             ))
@@ -412,7 +395,7 @@ fn check_expr_inner(
                         );
                     }
                 } else {
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::error("`!` can only be used inside a function")
                             .with_label(Label::primary(expr.span, "not inside a function")),
                     );
@@ -423,78 +406,78 @@ fn check_expr_inner(
 
         // === Is ===
         ExprKind::Is { expr: inner_expr, ty } => {
-            let _ = check_expr(inner_expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let _ = lower_type_expr(ty, table, builtins, definitions, resolutions, diagnostics);
-            builtins.bool_ty
+            let _ = check_expr(inner_expr, ctx, current_fn_ret);
+            let _ = lower_type_expr(ty, ctx);
+            ctx.builtins.bool_ty
         }
 
         // === As ===
         ExprKind::As { expr: inner_expr, ty } => {
-            let _ = check_expr(inner_expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            lower_type_expr(ty, table, builtins, definitions, resolutions, diagnostics)
+            let _ = check_expr(inner_expr, ctx, current_fn_ret);
+            lower_type_expr(ty, ctx)
         }
 
         // === Collections ===
         ExprKind::List(elems) => {
             if elems.is_empty() {
                 // Empty list — element type unknown, use Error for now
-                table.intern(Ty::List(TypeId::ERROR))
+                ctx.table.intern(Ty::List(TypeId::ERROR))
             } else {
-                let first_ty = check_expr(&elems[0], table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                let first_ty = check_expr(&elems[0], ctx, current_fn_ret);
                 for elem in &elems[1..] {
-                    let _ = check_expr(elem, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                    let _ = check_expr(elem, ctx, current_fn_ret);
                 }
-                table.intern(Ty::List(first_ty))
+                ctx.table.intern(Ty::List(first_ty))
             }
         }
 
         ExprKind::Map(entries) => {
             if entries.is_empty() {
-                table.intern(Ty::Map(TypeId::ERROR, TypeId::ERROR))
+                ctx.table.intern(Ty::Map(TypeId::ERROR, TypeId::ERROR))
             } else {
-                let key_ty = check_expr(&entries[0].key, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-                let val_ty = check_expr(&entries[0].value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                let key_ty = check_expr(&entries[0].key, ctx, current_fn_ret);
+                let val_ty = check_expr(&entries[0].value, ctx, current_fn_ret);
                 for entry in &entries[1..] {
-                    let _ = check_expr(&entry.key, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-                    let _ = check_expr(&entry.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                    let _ = check_expr(&entry.key, ctx, current_fn_ret);
+                    let _ = check_expr(&entry.value, ctx, current_fn_ret);
                 }
-                table.intern(Ty::Map(key_ty, val_ty))
+                ctx.table.intern(Ty::Map(key_ty, val_ty))
             }
         }
 
         ExprKind::Set(elems) => {
             if elems.is_empty() {
-                table.intern(Ty::Set(TypeId::ERROR))
+                ctx.table.intern(Ty::Set(TypeId::ERROR))
             } else {
-                let first_ty = check_expr(&elems[0], table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                let first_ty = check_expr(&elems[0], ctx, current_fn_ret);
                 for elem in &elems[1..] {
-                    let _ = check_expr(elem, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                    let _ = check_expr(elem, ctx, current_fn_ret);
                 }
-                table.intern(Ty::Set(first_ty))
+                ctx.table.intern(Ty::Set(first_ty))
             }
         }
 
         ExprKind::Tuple(elems) => {
             let elem_types: Vec<TypeId> = elems
                 .iter()
-                .map(|e| check_expr(e, table, builtins, definitions, resolutions, diagnostics, current_fn_ret))
+                .map(|e| check_expr(e, ctx, current_fn_ret))
                 .collect();
-            table.intern(Ty::Tuple(elem_types))
+            ctx.table.intern(Ty::Tuple(elem_types))
         }
 
         // === Paren ===
         ExprKind::Paren(inner) => {
-            check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+            check_expr(inner, ctx, current_fn_ret)
         }
 
         // === Await ===
         ExprKind::Await(inner) | ExprKind::BlockAwait(inner) => {
-            let inner_ty = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            match table.resolve(inner_ty) {
+            let inner_ty = check_expr(inner, ctx, current_fn_ret);
+            match ctx.table.resolve(inner_ty) {
                 Ty::Future { inner } => *inner,
                 _ if inner_ty.is_error() => TypeId::ERROR,
                 _ => {
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::error("cannot `await` a non-future type")
                             .with_label(Label::primary(expr.span, "not a future")),
                     );
@@ -505,12 +488,12 @@ fn check_expr_inner(
 
         // === Spawn ===
         ExprKind::Spawn(inner) => {
-            let inner_ty = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            match table.resolve(inner_ty) {
+            let inner_ty = check_expr(inner, ctx, current_fn_ret);
+            match ctx.table.resolve(inner_ty) {
                 Ty::Future { .. } => inner_ty,
                 _ if inner_ty.is_error() => TypeId::ERROR,
                 _ => {
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::error("cannot `spawn` a non-async expression")
                             .with_label(Label::primary(inner.span, "not a future")),
                     );
@@ -521,71 +504,71 @@ fn check_expr_inner(
 
         // === Method calls on collections and strings ===
         ExprKind::MethodCall { receiver, method, args } => {
-            let recv_ty = check_expr(receiver, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let recv_ty = check_expr(receiver, ctx, current_fn_ret);
             let arg_tys: Vec<TypeId> = args
                 .iter()
-                .map(|a| check_expr(&a.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret))
+                .map(|a| check_expr(&a.value, ctx, current_fn_ret))
                 .collect();
 
-            check_method_call(recv_ty, method.name, &arg_tys, receiver.span, expr.span, table, builtins, definitions, diagnostics)
+            check_method_call(recv_ty, method.name, &arg_tys, receiver.span, expr.span, ctx)
         }
 
         ExprKind::Pipeline { source, stages } => {
-            let mut current_ty = check_expr(source, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let mut current_ty = check_expr(source, ctx, current_fn_ret);
             for stage in stages {
-                current_ty = check_pipeline_stage(stage, current_ty, source.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                current_ty = check_pipeline_stage(stage, current_ty, source.span, ctx, current_fn_ret);
             }
             current_ty
         }
 
         ExprKind::To { expr: inner, arms } => {
-            let inner_ty = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            check_to_narrowing(inner_ty, arms, expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+            let inner_ty = check_expr(inner, ctx, current_fn_ret);
+            check_to_narrowing(inner_ty, arms, expr.span, ctx, current_fn_ret)
         }
 
         ExprKind::PipelineApply { expr: inner, operation, args } => {
-            let inner_ty = check_expr(inner, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            check_pipeline_apply(inner_ty, operation, args, expr.span, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+            let inner_ty = check_expr(inner, ctx, current_fn_ret);
+            check_pipeline_apply(inner_ty, operation, args, expr.span, ctx, current_fn_ret)
         }
 
         ExprKind::Range { start, end, .. } => {
-            let _ = check_expr(start, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let _ = check_expr(end, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = check_expr(start, ctx, current_fn_ret);
+            let _ = check_expr(end, ctx, current_fn_ret);
             // Bare range type — not yet supported
             TypeId::ERROR
         }
 
         ExprKind::ListRange { start, end, step, .. } => {
-            let start_ty = check_expr(start, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let end_ty = check_expr(end, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let start_ty = check_expr(start, ctx, current_fn_ret);
+            let end_ty = check_expr(end, ctx, current_fn_ret);
             if let Some(s) = step {
-                let step_ty = check_expr(s, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-                if step_ty != builtins.int && !step_ty.is_error() {
-                    diagnostics.push(
+                let step_ty = check_expr(s, ctx, current_fn_ret);
+                if step_ty != ctx.builtins.int && !step_ty.is_error() {
+                    ctx.diagnostics.push(
                         Diagnostic::error("list range step must be `Int`")
                             .with_label(Label::primary(s.span, "expected `Int`")),
                     );
                 }
             }
-            if start_ty != builtins.int && !start_ty.is_error() {
-                diagnostics.push(
+            if start_ty != ctx.builtins.int && !start_ty.is_error() {
+                ctx.diagnostics.push(
                     Diagnostic::error("list range start must be `Int`")
                         .with_label(Label::primary(start.span, "expected `Int`")),
                 );
             }
-            if end_ty != builtins.int && !end_ty.is_error() {
-                diagnostics.push(
+            if end_ty != ctx.builtins.int && !end_ty.is_error() {
+                ctx.diagnostics.push(
                     Diagnostic::error("list range end must be `Int`")
                         .with_label(Label::primary(end.span, "expected `Int`")),
                 );
             }
-            table.intern(Ty::List(builtins.int))
+            ctx.table.intern(Ty::List(ctx.builtins.int))
         }
 
         ExprKind::Partial { callee, args } => {
-            let _ = check_expr(callee, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = check_expr(callee, ctx, current_fn_ret);
             for arg in args {
-                let _ = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                let _ = check_expr(&arg.value, ctx, current_fn_ret);
             }
             TypeId::ERROR
         }
@@ -597,27 +580,22 @@ fn check_expr_inner(
 /// Type-checks a block expression.
 pub fn check_block(
     block: &Block,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
     for stmt in &block.stmts {
-        check_stmt(stmt, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+        check_stmt(stmt, ctx, current_fn_ret);
     }
 
-    let ty = block.expr.as_ref().map_or(builtins.void, |expr| {
-        check_expr(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret)
+    let ty = block.expr.as_ref().map_or(ctx.builtins.void, |expr| {
+        check_expr(expr, ctx, current_fn_ret)
     });
-    table.set_expr_type(block.id, ty);
+    ctx.table.set_expr_type(block.id, ty);
     ty
 }
 
 // === Binary operator checking ===
 
-#[allow(clippy::too_many_arguments)]
 fn check_binary_op(
     op: BinaryOp,
     lhs_ty: TypeId,
@@ -625,9 +603,7 @@ fn check_binary_op(
     op_span: Span,
     lhs_span: Span,
     rhs_span: Span,
-    table: &TypeTable,
-    builtins: &BuiltinTypes,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     // Error types propagate silently
     if lhs_ty.is_error() || rhs_ty.is_error() {
@@ -636,20 +612,20 @@ fn check_binary_op(
 
     if op.is_arithmetic() {
         // Strip Mutable/Ref wrappers — `count + 1` where count is Int! or Ref[Int] should work
-        let lhs_base = strip_ref(strip_mutable(lhs_ty, table), table);
-        let rhs_base = strip_ref(strip_mutable(rhs_ty, table), table);
-        let lhs_resolved = table.resolve(lhs_base);
+        let lhs_base = strip_ref(strip_mutable(lhs_ty, ctx.table), ctx.table);
+        let rhs_base = strip_ref(strip_mutable(rhs_ty, ctx.table), ctx.table);
+        let lhs_resolved = ctx.table.resolve(lhs_base);
         if !lhs_resolved.is_numeric() {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error(format!("operator `{}` requires numeric operands", op.as_str()))
                     .with_label(Label::primary(lhs_span, "not numeric")),
             );
             return TypeId::ERROR;
         }
-        if !is_compatible(lhs_base, rhs_base, table) {
-            let l = type_name(lhs_base, table, &DefinitionTable::new());
-            let r = type_name(rhs_base, table, &DefinitionTable::new());
-            diagnostics.push(
+        if !is_compatible(lhs_base, rhs_base, ctx.table) {
+            let l = type_name(lhs_base, ctx.table, &DefinitionTable::new());
+            let r = type_name(rhs_base, ctx.table, &DefinitionTable::new());
+            ctx.diagnostics.push(
                 Diagnostic::error(format!("mismatched types for `{}`: `{l}` and `{r}`", op.as_str()))
                     .with_label(Label::primary(lhs_span, format!("`{l}`")))
                     .with_label(Label::secondary(rhs_span, format!("`{r}`"))),
@@ -661,48 +637,48 @@ fn check_binary_op(
     }
 
     if op.is_comparison() {
-        let lhs_base = strip_ref(strip_mutable(lhs_ty, table), table);
-        let rhs_base = strip_ref(strip_mutable(rhs_ty, table), table);
-        if !is_compatible(lhs_base, rhs_base, table) {
-            let l = type_name(lhs_base, table, &DefinitionTable::new());
-            let r = type_name(rhs_base, table, &DefinitionTable::new());
-            diagnostics.push(
+        let lhs_base = strip_ref(strip_mutable(lhs_ty, ctx.table), ctx.table);
+        let rhs_base = strip_ref(strip_mutable(rhs_ty, ctx.table), ctx.table);
+        if !is_compatible(lhs_base, rhs_base, ctx.table) {
+            let l = type_name(lhs_base, ctx.table, &DefinitionTable::new());
+            let r = type_name(rhs_base, ctx.table, &DefinitionTable::new());
+            ctx.diagnostics.push(
                 Diagnostic::error(format!("cannot compare `{l}` with `{r}`"))
                     .with_label(Label::primary(op_span, "type mismatch")),
             );
         }
-        return builtins.bool_ty;
+        return ctx.builtins.bool_ty;
     }
 
     if op.is_logical() {
-        if !is_compatible(lhs_ty, builtins.bool_ty, table) {
-            diagnostics.push(
+        if !is_compatible(lhs_ty, ctx.builtins.bool_ty, ctx.table) {
+            ctx.diagnostics.push(
                 Diagnostic::error(format!("operator `{}` requires Bool operands", op.as_str()))
                     .with_label(Label::primary(lhs_span, "expected Bool")),
             );
         }
-        if !is_compatible(rhs_ty, builtins.bool_ty, table) {
-            diagnostics.push(
+        if !is_compatible(rhs_ty, ctx.builtins.bool_ty, ctx.table) {
+            ctx.diagnostics.push(
                 Diagnostic::error(format!("operator `{}` requires Bool operands", op.as_str()))
                     .with_label(Label::primary(rhs_span, "expected Bool")),
             );
         }
-        return builtins.bool_ty;
+        return ctx.builtins.bool_ty;
     }
 
     if op.is_bitwise() {
-        let lhs_base = strip_ref(strip_mutable(lhs_ty, table), table);
-        let rhs_base = strip_ref(strip_mutable(rhs_ty, table), table);
-        let lhs_resolved = table.resolve(lhs_base);
+        let lhs_base = strip_ref(strip_mutable(lhs_ty, ctx.table), ctx.table);
+        let rhs_base = strip_ref(strip_mutable(rhs_ty, ctx.table), ctx.table);
+        let lhs_resolved = ctx.table.resolve(lhs_base);
         if !lhs_resolved.is_integer() {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error(format!("operator `{}` requires integer operands", op.as_str()))
                     .with_label(Label::primary(lhs_span, "not integer")),
             );
             return TypeId::ERROR;
         }
-        if !is_compatible(lhs_base, rhs_base, table) {
-            diagnostics.push(
+        if !is_compatible(lhs_base, rhs_base, ctx.table) {
+            ctx.diagnostics.push(
                 Diagnostic::error(format!("mismatched integer types for `{}`", op.as_str()))
                     .with_label(Label::primary(op_span, "type mismatch")),
             );
@@ -765,43 +741,39 @@ fn check_unary_op(
 }
 
 /// Checks a function call, including generic function inference.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 fn check_call(
     callee_ty: TypeId,
     args: &[spark_ast::CallArg],
     call_span: Span,
     callee_span: Span,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
     if callee_ty.is_error() {
         // Still check args to report errors in them
         for arg in args {
-            let _ = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = check_expr(&arg.value, ctx, current_fn_ret);
         }
         return TypeId::ERROR;
     }
 
-    let callee_resolved = table.resolve(callee_ty).clone();
+    let callee_resolved = ctx.table.resolve(callee_ty).clone();
     match callee_resolved {
         Ty::Function { params, ret, is_async } => {
             // Check if this is a generic function by finding its DefId.
-            let callee_def_id = find_callee_def_id(callee_span, resolutions);
+            let callee_def_id = find_callee_def_id(callee_span, ctx.resolutions);
             let generic_params = callee_def_id
-                .and_then(|did| table.get_generic_params(did).map(<[_]>::to_vec));
+                .and_then(|did| ctx.table.get_generic_params(did).map(<[_]>::to_vec));
 
             if let Some(gparams) = generic_params.filter(|p| !p.is_empty()) {
                 // Generic function — type-check args first, then infer type params.
                 let arg_types: Vec<TypeId> = args.iter()
-                    .map(|a| check_expr(&a.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret))
+                    .map(|a| check_expr(&a.value, ctx, current_fn_ret))
                     .collect();
 
                 if args.len() != params.len() {
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::error(format!(
                             "expected {} argument{}, found {}",
                             params.len(),
@@ -813,27 +785,27 @@ fn check_call(
                     return TypeId::ERROR;
                 }
 
-                if let Some(subst) = crate::substitute::infer_type_args(&gparams, &params, &arg_types, table) {
+                if let Some(subst) = crate::substitute::infer_type_args(&gparams, &params, &arg_types, ctx.table) {
                     // Validate generic constraints before proceeding
                     crate::constraint::validate_constraints(
-                        &gparams, &subst, table, definitions, call_span, diagnostics,
+                        &gparams, &subst, ctx.table, ctx.definitions, call_span, ctx.diagnostics,
                     );
 
                     // Re-check args against substituted param types
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(&declared) = params.get(i) {
-                            let expected = crate::substitute::substitute_mut(declared, &subst, table);
-                            if !is_compatible(arg_types[i], expected, table) {
-                                let expected_name = type_name(expected, table, definitions);
-                                let found_name = type_name(arg_types[i], table, definitions);
-                                diagnostics.push(
+                            let expected = crate::substitute::substitute_mut(declared, &subst, ctx.table);
+                            if !is_compatible(arg_types[i], expected, ctx.table) {
+                                let expected_name = type_name(expected, ctx.table, ctx.definitions);
+                                let found_name = type_name(arg_types[i], ctx.table, ctx.definitions);
+                                ctx.diagnostics.push(
                                     Diagnostic::error(format!(
                                         "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
                                     ))
                                     .with_label(Label::primary(arg.value.span, format!("expected `{expected_name}`"))),
                                 );
-                            } else if is_mutable_ref_param(expected, table) && !matches!(table.resolve(arg_types[i]), Ty::Mutable(_)) {
-                                diagnostics.push(
+                            } else if is_mutable_ref_param(expected, ctx.table) && !matches!(ctx.table.resolve(arg_types[i]), Ty::Mutable(_)) {
+                                ctx.diagnostics.push(
                                     Diagnostic::error("cannot pass immutable value as mutable reference")
                                         .with_label(Label::primary(arg.value.span, "value is not mutable")),
                                 );
@@ -843,20 +815,20 @@ fn check_call(
 
                     // Record this mono instance for MIR monomorphization.
                     if let Some(def_id) = callee_def_id {
-                        table.set_mono_instance(call_span, def_id, subst.clone());
+                        ctx.table.set_mono_instance(call_span, def_id, subst.clone());
                     }
 
                     // Return the substituted return type
-                    let substituted_ret = crate::substitute::substitute_mut(ret, &subst, table);
+                    let substituted_ret = crate::substitute::substitute_mut(ret, &subst, ctx.table);
                     return if is_async {
-                        table.intern(Ty::Future { inner: substituted_ret })
+                        ctx.table.intern(Ty::Future { inner: substituted_ret })
                     } else {
                         substituted_ret
                     };
                 }
 
                 // Inference failed — report error
-                diagnostics.push(
+                ctx.diagnostics.push(
                     Diagnostic::error("cannot infer type arguments for generic function")
                         .with_label(Label::primary(call_span, "type inference failed")),
                 );
@@ -866,18 +838,18 @@ fn check_call(
             // Non-generic function call — check all arg types first,
             // then adapt builtin list function types if needed.
             let arg_tys: Vec<TypeId> = args.iter()
-                .map(|a| check_expr(&a.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret))
+                .map(|a| check_expr(&a.value, ctx, current_fn_ret))
                 .collect();
 
             // Adapt builtin list function types to match actual element type
             let (params, ret) = if let Some(did) = callee_def_id {
-                adapt_builtin_list_fn(did, arg_tys.first().copied().unwrap_or(TypeId::ERROR), params, ret, table, builtins, definitions)
+                adapt_builtin_list_fn(did, arg_tys.first().copied().unwrap_or(TypeId::ERROR), params, ret, ctx.table, ctx.builtins, ctx.definitions)
             } else {
                 (params, ret)
             };
 
             if arg_tys.len() != params.len() {
-                diagnostics.push(
+                ctx.diagnostics.push(
                     Diagnostic::error(format!(
                         "expected {} argument{}, found {}",
                         params.len(),
@@ -890,17 +862,17 @@ fn check_call(
 
             for (i, (arg, &arg_ty)) in args.iter().zip(arg_tys.iter()).enumerate() {
                 if let Some(&expected) = params.get(i) {
-                    if !is_compatible(arg_ty, expected, table) {
-                        let expected_name = type_name(expected, table, definitions);
-                        let found_name = type_name(arg_ty, table, definitions);
-                        diagnostics.push(
+                    if !is_compatible(arg_ty, expected, ctx.table) {
+                        let expected_name = type_name(expected, ctx.table, ctx.definitions);
+                        let found_name = type_name(arg_ty, ctx.table, ctx.definitions);
+                        ctx.diagnostics.push(
                             Diagnostic::error(format!(
                                 "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
                             ))
                             .with_label(Label::primary(arg.value.span, format!("expected `{expected_name}`"))),
                         );
-                    } else if is_mutable_ref_param(expected, table) && !matches!(table.resolve(arg_ty), Ty::Mutable(_)) {
-                        diagnostics.push(
+                    } else if is_mutable_ref_param(expected, ctx.table) && !matches!(ctx.table.resolve(arg_ty), Ty::Mutable(_)) {
+                        ctx.diagnostics.push(
                             Diagnostic::error("cannot pass immutable value as mutable reference")
                                 .with_label(Label::primary(arg.value.span, "value is not mutable")),
                         );
@@ -909,7 +881,7 @@ fn check_call(
             }
 
             if is_async {
-                table.intern(Ty::Future { inner: ret })
+                ctx.table.intern(Ty::Future { inner: ret })
             } else {
                 ret
             }
@@ -917,17 +889,17 @@ fn check_call(
         // Struct construction via call syntax is handled by StructInit
         Ty::Struct(_) | Ty::Enum(_) => {
             for arg in args {
-                let _ = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                let _ = check_expr(&arg.value, ctx, current_fn_ret);
             }
             callee_ty
         }
         _ => {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error("expression is not callable")
                     .with_label(Label::primary(callee_span, "not a function")),
             );
             for arg in args {
-                let _ = check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                let _ = check_expr(&arg.value, ctx, current_fn_ret);
             }
             TypeId::ERROR
         }
@@ -1031,57 +1003,52 @@ fn check_field_access(
 }
 
 /// Checks struct initialization.
-#[allow(clippy::too_many_arguments)]
 fn check_struct_init(
     path: &spark_ast::Path,
     type_args: &[spark_ast::TypeExpr],
     fields: &[spark_ast::FieldInit],
     spread: Option<&Expr>,
     init_span: Span,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
     // Resolve the struct path
-    let def_id = resolutions
+    let def_id = ctx.resolutions
         .and_then(|res| res.get_path(path.span))
         .unwrap_or(DefId::DUMMY);
 
     if def_id.is_dummy() {
         // Struct not resolved — check field values anyway
         for field in fields {
-            let _ = check_expr(&field.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = check_expr(&field.value, ctx, current_fn_ret);
         }
         if let Some(spread) = spread {
-            let _ = check_expr(spread, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = check_expr(spread, ctx, current_fn_ret);
         }
         return TypeId::ERROR;
     }
 
-    let struct_type = table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
+    let struct_type = ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
 
     // Check if this is a generic struct — if so, infer type args from field values.
-    let generic_params = table.get_generic_params(def_id).map(<[_]>::to_vec);
+    let generic_params = ctx.table.get_generic_params(def_id).map(<[_]>::to_vec);
     let is_generic = generic_params.as_ref().is_some_and(|p| !p.is_empty());
 
     // Check each field and collect value types for inference.
-    if let Some(struct_fields) = table.get_struct_fields(def_id) {
+    if let Some(struct_fields) = ctx.table.get_struct_fields(def_id) {
         let struct_fields = struct_fields.to_vec();
         let mut field_val_types: Vec<(Symbol, TypeId)> = Vec::new();
 
         for field in fields {
-            let val_ty = check_expr(&field.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let val_ty = check_expr(&field.value, ctx, current_fn_ret);
             if let Some((_, expected_ty)) = struct_fields.iter().find(|(name, _)| *name == field.name.name) {
                 field_val_types.push((field.name.name, val_ty));
 
                 // For generic structs, defer compatibility check until after inference.
-                if !is_generic && !is_compatible(val_ty, *expected_ty, table) {
-                    let expected_name = type_name(*expected_ty, table, definitions);
-                    let found_name = type_name(val_ty, table, definitions);
-                    diagnostics.push(
+                if !is_generic && !is_compatible(val_ty, *expected_ty, ctx.table) {
+                    let expected_name = type_name(*expected_ty, ctx.table, ctx.definitions);
+                    let found_name = type_name(val_ty, ctx.table, ctx.definitions);
+                    ctx.diagnostics.push(
                         Diagnostic::error(format!(
                             "field `{}` type mismatch: expected `{expected_name}`, found `{found_name}`",
                             field.name.name
@@ -1090,7 +1057,7 @@ fn check_struct_init(
                     );
                 }
             } else {
-                diagnostics.push(
+                ctx.diagnostics.push(
                     Diagnostic::error(format!("unknown field `{}`", field.name.name))
                         .with_label(Label::primary(field.name.span, "not a field of this struct")),
                 );
@@ -1105,7 +1072,7 @@ fn check_struct_init(
             let subst = if !type_args.is_empty() {
                 // Explicit type args provided: Pair[Int, String] { ... }
                 if type_args.len() != params.len() {
-                    diagnostics.push(
+                    ctx.diagnostics.push(
                         Diagnostic::error(format!(
                             "expected {} type argument(s), found {}",
                             params.len(),
@@ -1117,7 +1084,7 @@ fn check_struct_init(
                 } else {
                     let lowered: Vec<TypeId> = type_args
                         .iter()
-                        .map(|ta| lower_type_expr(ta, table, builtins, definitions, resolutions, diagnostics))
+                        .map(|ta| lower_type_expr(ta, ctx))
                         .collect();
                     Some(crate::substitute::build_subst_map(params, &lowered))
                 }
@@ -1131,18 +1098,18 @@ fn check_struct_init(
                         actual_types.push(*val_ty);
                     }
                 }
-                crate::substitute::infer_type_args(params, &declared_types, &actual_types, table)
+                crate::substitute::infer_type_args(params, &declared_types, &actual_types, ctx.table)
             };
 
             if let Some(subst) = subst {
                 // Re-check fields with substituted types
                 for (field_name, val_ty) in &field_val_types {
                     if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| n == field_name) {
-                        let substituted = crate::substitute::substitute_mut(*field_ty, &subst, table);
-                        if !is_compatible(*val_ty, substituted, table) {
-                            let expected_name = type_name(substituted, table, definitions);
-                            let found_name = type_name(*val_ty, table, definitions);
-                            diagnostics.push(
+                        let substituted = crate::substitute::substitute_mut(*field_ty, &subst, ctx.table);
+                        if !is_compatible(*val_ty, substituted, ctx.table) {
+                            let expected_name = type_name(substituted, ctx.table, ctx.definitions);
+                            let found_name = type_name(*val_ty, ctx.table, ctx.definitions);
+                            ctx.diagnostics.push(
                                 Diagnostic::error(format!(
                                     "field `{field_name}` type mismatch: expected `{expected_name}`, found `{found_name}`"
                                 ))
@@ -1155,49 +1122,44 @@ fn check_struct_init(
                 // Build the Applied type
                 let args: Vec<TypeId> = params.iter().map(|p| subst[p]).collect();
                 if let Some(spread) = spread {
-                    let _ = check_expr(spread, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+                    let _ = check_expr(spread, ctx, current_fn_ret);
                 }
-                return table.intern(Ty::Applied { base: def_id, args });
+                return ctx.table.intern(Ty::Applied { base: def_id, args });
             }
             // Inference/explicit args failed — fall through and return the plain struct type
         }
     }
 
     if let Some(spread) = spread {
-        let _ = check_expr(spread, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+        let _ = check_expr(spread, ctx, current_fn_ret);
     }
 
     struct_type
 }
 
 /// Checks enum variant construction.
-#[allow(clippy::too_many_arguments)]
 fn check_enum_variant(
     path: &spark_ast::Path,
     _variant: &spark_ast::Ident,
     fields: &[Expr],
     _init_span: Span,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
-    let def_id = resolutions
+    let def_id = ctx.resolutions
         .and_then(|res| res.get_path(path.span))
         .unwrap_or(DefId::DUMMY);
 
     // Check field values regardless
     for field in fields {
-        let _ = check_expr(field, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+        let _ = check_expr(field, ctx, current_fn_ret);
     }
 
     if def_id.is_dummy() {
         return TypeId::ERROR;
     }
 
-    table.get_def_type(def_id).unwrap_or(TypeId::ERROR)
+    ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR)
 }
 
 // === Type compatibility ===
@@ -1404,47 +1366,42 @@ fn validate_each_callback(
 /// bound arguments fill the rest. Returns the function's return type and stores a
 /// reduced 1-parameter function type on `callback_expr` so downstream passes can
 /// extract the return type via `extract_fn_ret_ty`.
-#[allow(clippy::too_many_arguments)]
 fn validate_partial_each_callback(
     callee: &Expr,
     args: &[spark_ast::PartialArg],
     elem_ty: TypeId,
     is_via: bool,
     callback_expr: &Expr,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
-    let callee_ty = check_expr(callee, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+    let callee_ty = check_expr(callee, ctx, current_fn_ret);
     for arg in args {
-        check_expr(&arg.value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+        check_expr(&arg.value, ctx, current_fn_ret);
     }
 
     if callee_ty.is_error() || elem_ty.is_error() {
-        table.set_expr_type(callback_expr.id, TypeId::ERROR);
+        ctx.table.set_expr_type(callback_expr.id, TypeId::ERROR);
         return TypeId::ERROR;
     }
 
-    let func_ty = table.resolve(callee_ty).clone();
+    let func_ty = ctx.table.resolve(callee_ty).clone();
     let Ty::Function { params, ret, .. } = func_ty else {
-        diagnostics.push(
+        ctx.diagnostics.push(
             Diagnostic::error(format!(
                 "`each{}` partial callback must be a function",
                 if is_via { " via" } else { "" },
             ))
             .with_label(Label::primary(callee.span, "not a function")),
         );
-        table.set_expr_type(callback_expr.id, TypeId::ERROR);
+        ctx.table.set_expr_type(callback_expr.id, TypeId::ERROR);
         return TypeId::ERROR;
     };
 
     // Arity: element fills first param, bound args fill the rest
     let total_args = 1 + args.len();
     if total_args != params.len() {
-        diagnostics.push(
+        ctx.diagnostics.push(
             Diagnostic::error(format!(
                 "`each{}` partial callback expected {} parameter{}, found {} (1 element + {} bound)",
                 if is_via { " via" } else { "" },
@@ -1455,15 +1412,15 @@ fn validate_partial_each_callback(
             ))
             .with_label(Label::primary(callback_expr.span, "wrong number of arguments")),
         );
-        table.set_expr_type(callback_expr.id, TypeId::ERROR);
+        ctx.table.set_expr_type(callback_expr.id, TypeId::ERROR);
         return TypeId::ERROR;
     }
 
     // Validate element type against first param
-    if !is_compatible(elem_ty, params[0], table) {
-        let expected = type_name(params[0], table, definitions);
-        let found = type_name(elem_ty, table, definitions);
-        diagnostics.push(
+    if !is_compatible(elem_ty, params[0], ctx.table) {
+        let expected = type_name(params[0], ctx.table, ctx.definitions);
+        let found = type_name(elem_ty, ctx.table, ctx.definitions);
+        ctx.diagnostics.push(
             Diagnostic::error(format!(
                 "`each{}` element type mismatch: expected `{expected}`, found `{found}`",
                 if is_via { " via" } else { "" },
@@ -1474,12 +1431,12 @@ fn validate_partial_each_callback(
 
     // Validate bound arg types against remaining params
     for (i, arg) in args.iter().enumerate() {
-        let arg_ty = table.get_expr_type(arg.value.id).unwrap_or(TypeId::ERROR);
+        let arg_ty = ctx.table.get_expr_type(arg.value.id).unwrap_or(TypeId::ERROR);
         let param_ty = params[i + 1];
-        if !is_compatible(arg_ty, param_ty, table) {
-            let expected = type_name(param_ty, table, definitions);
-            let found = type_name(arg_ty, table, definitions);
-            diagnostics.push(
+        if !is_compatible(arg_ty, param_ty, ctx.table) {
+            let expected = type_name(param_ty, ctx.table, ctx.definitions);
+            let found = type_name(arg_ty, ctx.table, ctx.definitions);
+            ctx.diagnostics.push(
                 Diagnostic::error(format!(
                     "argument type mismatch: expected `{expected}`, found `{found}`"
                 ))
@@ -1489,12 +1446,12 @@ fn validate_partial_each_callback(
     }
 
     // Store a reduced 1-param function type so infer_stage_output_ty / extract_fn_ret_ty works
-    let reduced_ty = table.intern(Ty::Function {
+    let reduced_ty = ctx.table.intern(Ty::Function {
         params: vec![elem_ty],
         ret,
         is_async: false,
     });
-    table.set_expr_type(callback_expr.id, reduced_ty);
+    ctx.table.set_expr_type(callback_expr.id, reduced_ty);
 
     ret
 }
@@ -1601,47 +1558,43 @@ pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -
 }
 
 /// Type-checks a method call on a collection, string, or user-defined type receiver.
-#[allow(clippy::too_many_arguments)]
 fn check_method_call(
     recv_ty: TypeId,
     method: Symbol,
     arg_tys: &[TypeId],
     recv_span: Span,
     call_span: Span,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     if recv_ty.is_error() {
         return TypeId::ERROR;
     }
 
-    let (is_mutable, stripped) = match table.resolve(recv_ty).clone() {
-        Ty::Mutable(inner) => (true, table.resolve(inner).clone()),
+    let (is_mutable, stripped) = match ctx.table.resolve(recv_ty).clone() {
+        Ty::Mutable(inner) => (true, ctx.table.resolve(inner).clone()),
         other => (false, other),
     };
 
     // Auto-deref through Ref
     let stripped = match &stripped {
-        Ty::Ref { inner, .. } => table.resolve(*inner).clone(),
+        Ty::Ref { inner, .. } => ctx.table.resolve(*inner).clone(),
         _ => stripped,
     };
 
     match stripped {
-        Ty::List(elem) => check_list_method(method, elem, is_mutable, arg_tys, call_span, recv_span, table, builtins, diagnostics),
-        Ty::Map(k, v) => check_map_method(method, k, v, is_mutable, arg_tys, call_span, recv_span, table, builtins, diagnostics),
-        Ty::Set(elem) => check_set_method(method, elem, is_mutable, arg_tys, call_span, recv_span, table, builtins, diagnostics),
-        Ty::String => check_string_method(method, arg_tys, call_span, builtins, diagnostics),
-        Ty::Channel { inner } => check_channel_method(method, inner, arg_tys, call_span, table, builtins, diagnostics),
+        Ty::List(elem) => check_list_method(method, elem, is_mutable, arg_tys, call_span, recv_span, ctx),
+        Ty::Map(_k, _v) => check_map_method(method, is_mutable, arg_tys, call_span, recv_span, ctx),
+        Ty::Set(_elem) => check_set_method(method, is_mutable, arg_tys, call_span, recv_span, ctx),
+        Ty::String => check_string_method(method, arg_tys, call_span, ctx.builtins, ctx.diagnostics),
+        Ty::Channel { inner } => check_channel_method(method, inner, arg_tys, call_span, ctx.table, ctx.builtins, ctx.diagnostics),
         Ty::Struct(def_id) | Ty::Enum(def_id) => {
-            check_user_method_call(def_id, method, arg_tys, recv_span, call_span, table, definitions, diagnostics)
+            check_user_method_call(def_id, method, arg_tys, recv_span, call_span, ctx)
         }
         Ty::Applied { base, .. } => {
-            check_user_method_call(base, method, arg_tys, recv_span, call_span, table, definitions, diagnostics)
+            check_user_method_call(base, method, arg_tys, recv_span, call_span, ctx)
         }
         _ => {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error(format!("type has no method `{method}`"))
                     .with_label(Label::primary(recv_span, "no methods available on this type")),
             );
@@ -1651,7 +1604,6 @@ fn check_method_call(
 }
 
 /// Checks a method call on `List[T]`.
-#[allow(clippy::too_many_arguments)]
 fn check_list_method(
     method: Symbol,
     elem: TypeId,
@@ -1659,38 +1611,36 @@ fn check_list_method(
     arg_tys: &[TypeId],
     call_span: Span,
     recv_span: Span,
-    table: &TypeTable,
-    builtins: &BuiltinTypes,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     if method == kw::LEN {
-        expect_args(0, arg_tys.len(), call_span, diagnostics);
-        builtins.int
+        expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
+        ctx.builtins.int
     } else if method == kw::APPEND {
-        expect_args(1, arg_tys.len(), call_span, diagnostics);
-        require_mutable("List", is_mutable, recv_span, diagnostics);
-        if !arg_tys.is_empty() && !is_compatible(arg_tys[0], elem, table) {
-            diagnostics.push(
+        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        require_mutable("List", is_mutable, recv_span, ctx.diagnostics);
+        if !arg_tys.is_empty() && !is_compatible(arg_tys[0], elem, ctx.table) {
+            ctx.diagnostics.push(
                 Diagnostic::error("argument type does not match list element type")
                     .with_label(Label::primary(call_span, "type mismatch")),
             );
         }
-        builtins.void
+        ctx.builtins.void
     } else if method == kw::CONTAINS {
-        expect_args(1, arg_tys.len(), call_span, diagnostics);
-        if !arg_tys.is_empty() && !is_compatible(arg_tys[0], elem, table) {
-            diagnostics.push(
+        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        if !arg_tys.is_empty() && !is_compatible(arg_tys[0], elem, ctx.table) {
+            ctx.diagnostics.push(
                 Diagnostic::error("argument type does not match list element type")
                     .with_label(Label::primary(call_span, "type mismatch")),
             );
         }
-        builtins.bool_ty
+        ctx.builtins.bool_ty
     } else if method == kw::REMOVE {
-        expect_args(1, arg_tys.len(), call_span, diagnostics);
-        require_mutable("List", is_mutable, recv_span, diagnostics);
-        builtins.void
+        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        require_mutable("List", is_mutable, recv_span, ctx.diagnostics);
+        ctx.builtins.void
     } else {
-        diagnostics.push(
+        ctx.diagnostics.push(
             Diagnostic::error(format!("List has no method `{method}`"))
                 .with_label(Label::primary(call_span, "unknown method")),
         );
@@ -1699,31 +1649,26 @@ fn check_list_method(
 }
 
 /// Checks a method call on `Map[K, V]`.
-#[allow(clippy::too_many_arguments)]
 fn check_map_method(
     method: Symbol,
-    _key: TypeId,
-    _value: TypeId,
     is_mutable: bool,
     arg_tys: &[TypeId],
     call_span: Span,
     recv_span: Span,
-    _table: &TypeTable,
-    builtins: &BuiltinTypes,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     if method == kw::LEN {
-        expect_args(0, arg_tys.len(), call_span, diagnostics);
-        builtins.int
+        expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
+        ctx.builtins.int
     } else if method == kw::CONTAINS {
-        expect_args(1, arg_tys.len(), call_span, diagnostics);
-        builtins.bool_ty
+        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        ctx.builtins.bool_ty
     } else if method == kw::REMOVE {
-        expect_args(1, arg_tys.len(), call_span, diagnostics);
-        require_mutable("Map", is_mutable, recv_span, diagnostics);
-        builtins.void
+        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        require_mutable("Map", is_mutable, recv_span, ctx.diagnostics);
+        ctx.builtins.void
     } else {
-        diagnostics.push(
+        ctx.diagnostics.push(
             Diagnostic::error(format!("Map has no method `{method}`"))
                 .with_label(Label::primary(call_span, "unknown method")),
         );
@@ -1732,34 +1677,30 @@ fn check_map_method(
 }
 
 /// Checks a method call on `Set[T]`.
-#[allow(clippy::too_many_arguments)]
 fn check_set_method(
     method: Symbol,
-    _elem: TypeId,
     is_mutable: bool,
     arg_tys: &[TypeId],
     call_span: Span,
     recv_span: Span,
-    _table: &TypeTable,
-    builtins: &BuiltinTypes,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     if method == kw::LEN {
-        expect_args(0, arg_tys.len(), call_span, diagnostics);
-        builtins.int
+        expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
+        ctx.builtins.int
     } else if method == kw::ADD {
-        expect_args(1, arg_tys.len(), call_span, diagnostics);
-        require_mutable("Set", is_mutable, recv_span, diagnostics);
-        builtins.void
+        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        require_mutable("Set", is_mutable, recv_span, ctx.diagnostics);
+        ctx.builtins.void
     } else if method == kw::CONTAINS {
-        expect_args(1, arg_tys.len(), call_span, diagnostics);
-        builtins.bool_ty
+        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        ctx.builtins.bool_ty
     } else if method == kw::REMOVE {
-        expect_args(1, arg_tys.len(), call_span, diagnostics);
-        require_mutable("Set", is_mutable, recv_span, diagnostics);
-        builtins.void
+        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        require_mutable("Set", is_mutable, recv_span, ctx.diagnostics);
+        ctx.builtins.void
     } else {
-        diagnostics.push(
+        ctx.diagnostics.push(
             Diagnostic::error(format!("Set has no method `{method}`"))
                 .with_label(Label::primary(call_span, "unknown method")),
         );
@@ -1790,32 +1731,27 @@ fn check_string_method(
 /// Type-checks a `Channel[T]()` constructor expression.
 ///
 /// Validates exactly 1 type argument and 0 value fields.
-#[allow(clippy::too_many_arguments)]
 fn check_channel_constructor(
     type_args: &[spark_ast::TypeExpr],
     fields: &[spark_ast::FieldInit],
     init_span: Span,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     if type_args.len() != 1 {
-        diagnostics.push(
+        ctx.diagnostics.push(
             Diagnostic::error("Channel requires exactly one type argument")
                 .with_label(Label::primary(init_span, "expected Channel[T]()")),
         );
         return TypeId::ERROR;
     }
     if !fields.is_empty() {
-        diagnostics.push(
+        ctx.diagnostics.push(
             Diagnostic::error("Channel constructor takes no arguments")
                 .with_label(Label::primary(init_span, "unexpected fields")),
         );
     }
-    let inner = lower_type_expr(&type_args[0], table, builtins, definitions, resolutions, diagnostics);
-    table.intern(Ty::Channel { inner })
+    let inner = lower_type_expr(&type_args[0], ctx);
+    ctx.table.intern(Ty::Channel { inner })
 }
 
 /// Checks a method call on `Channel[T]`.
@@ -1867,19 +1803,16 @@ fn check_channel_method(
 /// Looks up the method in `TypeTable::type_methods`, validates arguments,
 /// stores the resolved method `DefId` in `method_resolutions`, and returns
 /// the method's return type.
-#[allow(clippy::too_many_arguments)]
 fn check_user_method_call(
     type_def_id: DefId,
     method: Symbol,
     arg_tys: &[TypeId],
     recv_span: Span,
     call_span: Span,
-    table: &mut TypeTable,
-    definitions: &DefinitionTable,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     // Look up available methods for this type
-    let methods = table.get_type_methods(type_def_id).map(<[(spark_intern::Symbol, DefId)]>::to_vec);
+    let methods = ctx.table.get_type_methods(type_def_id).map(<[(spark_intern::Symbol, DefId)]>::to_vec);
 
     if let Some(methods) = methods {
         // Search for the method by name
@@ -1887,8 +1820,8 @@ fn check_user_method_call(
             let method_def_id = *method_def_id;
 
             // Get the method's function type
-            if let Some(fn_type_id) = table.get_def_type(method_def_id) {
-                let fn_ty = table.resolve(fn_type_id).clone();
+            if let Some(fn_type_id) = ctx.table.get_def_type(method_def_id) {
+                let fn_ty = ctx.table.resolve(fn_type_id).clone();
                 if let Ty::Function { params, ret, .. } = fn_ty {
                     // The first parameter is the receiver (e.g., `self: Foo`),
                     // remaining parameters are the call arguments.
@@ -1900,7 +1833,7 @@ fn check_user_method_call(
 
                     // Check argument count (excluding receiver)
                     if arg_tys.len() != call_params.len() {
-                        diagnostics.push(
+                        ctx.diagnostics.push(
                             Diagnostic::error(format!(
                                 "expected {} argument{}, found {}",
                                 call_params.len(),
@@ -1914,10 +1847,10 @@ fn check_user_method_call(
                     // Check argument types
                     for (i, arg_ty) in arg_tys.iter().enumerate() {
                         if let Some(&expected) = call_params.get(i) {
-                            if !is_compatible(*arg_ty, expected, table) {
-                                let expected_name = type_name(expected, table, definitions);
-                                let found_name = type_name(*arg_ty, table, definitions);
-                                diagnostics.push(
+                            if !is_compatible(*arg_ty, expected, ctx.table) {
+                                let expected_name = type_name(expected, ctx.table, ctx.definitions);
+                                let found_name = type_name(*arg_ty, ctx.table, ctx.definitions);
+                                ctx.diagnostics.push(
                                     Diagnostic::error(format!(
                                         "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
                                     ))
@@ -1928,7 +1861,7 @@ fn check_user_method_call(
                     }
 
                     // Store the method resolution for MIR lowering
-                    table.set_method_resolution(call_span, method_def_id);
+                    ctx.table.set_method_resolution(call_span, method_def_id);
 
                     return ret;
                 }
@@ -1940,10 +1873,10 @@ fn check_user_method_call(
     }
 
     // No method found
-    let type_name_str = definitions
+    let type_name_str = ctx.definitions
         .get(type_def_id)
         .map_or("<unknown>", |info| info.name.as_str());
-    diagnostics.push(
+    ctx.diagnostics.push(
         Diagnostic::error(format!("type `{type_name_str}` has no method `{method}`"))
             .with_label(Label::primary(recv_span, "no such method")),
     );
@@ -1971,19 +1904,14 @@ fn expect_args(
 /// Type-checks a `to` expression.
 ///
 /// Checks a single pipeline stage, given the input type from the previous stage.
-#[allow(clippy::too_many_arguments)]
 fn check_pipeline_stage(
     stage: &spark_ast::PipelineStage,
     input_ty: TypeId,
     source_span: Span,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
-    let base_ty = strip_mutable(input_ty, table);
+    let base_ty = strip_mutable(input_ty, ctx.table);
 
     let label = if stage.parallel {
         match &stage.kind {
@@ -2001,36 +1929,36 @@ fn check_pipeline_stage(
 
     match &stage.kind {
         PipelineStageKind::ForEach { callback } => {
-            let elem_ty = extract_list_elem(base_ty, label, source_span, table, definitions, diagnostics);
+            let elem_ty = extract_list_elem(base_ty, label, source_span, ctx.table, ctx.definitions, ctx.diagnostics);
             if let ExprKind::Partial { callee, args } = &callback.kind {
                 validate_partial_each_callback(
                     callee, args, elem_ty, false, callback,
-                    table, builtins, definitions, resolutions, diagnostics, current_fn_ret,
+                    ctx, current_fn_ret,
                 );
             } else {
-                let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-                validate_each_callback(cb_ty, elem_ty, false, callback.span, table, definitions, diagnostics);
+                let cb_ty = check_expr(callback, ctx, current_fn_ret);
+                validate_each_callback(cb_ty, elem_ty, false, callback.span, ctx.table, ctx.definitions, ctx.diagnostics);
             }
-            builtins.void
+            ctx.builtins.void
         }
         PipelineStageKind::Map { callback } => {
-            let elem_ty = extract_list_elem(base_ty, label, source_span, table, definitions, diagnostics);
+            let elem_ty = extract_list_elem(base_ty, label, source_span, ctx.table, ctx.definitions, ctx.diagnostics);
             let ret_ty = if let ExprKind::Partial { callee, args } = &callback.kind {
                 validate_partial_each_callback(
                     callee, args, elem_ty, true, callback,
-                    table, builtins, definitions, resolutions, diagnostics, current_fn_ret,
+                    ctx, current_fn_ret,
                 )
             } else {
-                let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-                validate_each_callback(cb_ty, elem_ty, true, callback.span, table, definitions, diagnostics)
+                let cb_ty = check_expr(callback, ctx, current_fn_ret);
+                validate_each_callback(cb_ty, elem_ty, true, callback.span, ctx.table, ctx.definitions, ctx.diagnostics)
             };
-            table.intern(Ty::List(ret_ty))
+            ctx.table.intern(Ty::List(ret_ty))
         }
         PipelineStageKind::Reduce { initial, callback } => {
-            let elem_ty = extract_list_elem(base_ty, label, source_span, table, definitions, diagnostics);
-            let init_ty = check_expr(initial, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let cb_ty = check_expr(callback, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            validate_reduce_callback(cb_ty, init_ty, elem_ty, callback.span, table, definitions, diagnostics)
+            let elem_ty = extract_list_elem(base_ty, label, source_span, ctx.table, ctx.definitions, ctx.diagnostics);
+            let init_ty = check_expr(initial, ctx, current_fn_ret);
+            let cb_ty = check_expr(callback, ctx, current_fn_ret);
+            validate_reduce_callback(cb_ty, init_ty, elem_ty, callback.span, ctx.table, ctx.definitions, ctx.diagnostics)
         }
     }
 }
@@ -2142,22 +2070,17 @@ fn validate_reduce_callback(
 /// - Each handler arm handles one or more union members
 /// - Unhandled members pass through
 /// - Result is the unified handler body types + unhandled member types
-#[allow(clippy::too_many_arguments)]
 fn check_to_narrowing(
     inner_ty: TypeId,
     arms: &[spark_ast::MatchArm],
     span: Span,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
-    let members = crate::union::union_members(inner_ty, table);
+    let members = crate::union::union_members(inner_ty, ctx.table);
 
-    if members.len() <= 1 && !matches!(table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_)) {
-        diagnostics.push(
+    if members.len() <= 1 && !matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_)) {
+        ctx.diagnostics.push(
             Diagnostic::error("'to' expression requires a union type")
                 .with_label(Label::primary(span, "not a union type")),
         );
@@ -2169,22 +2092,20 @@ fn check_to_narrowing(
     for arm in arms {
         // Check the pattern — for type narrowing patterns, resolve the type
         if let spark_ast::PatternKind::TypeNarrowing { ty: pat_ty, .. } = &arm.pattern.kind {
-            let narrowed_ty = crate::lower::lower_type_expr(
-                pat_ty, table, builtins, definitions, resolutions, diagnostics,
-            );
+            let narrowed_ty = crate::lower::lower_type_expr(pat_ty, ctx);
             handled_types.push(narrowed_ty);
         } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
             // Enum variant pattern — resolve it
-            let variant_ty = resolutions
+            let variant_ty = ctx.resolutions
                 .and_then(|res| res.get_path(path.span))
-                .and_then(|def_id| table.get_def_type(def_id))
+                .and_then(|def_id| ctx.table.get_def_type(def_id))
                 .unwrap_or(TypeId::ERROR);
             if !variant_ty.is_error() {
                 handled_types.push(variant_ty);
             }
         }
 
-        let body_ty = check_expr(&arm.body, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+        let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
         body_types.push(body_ty);
     }
 
@@ -2199,10 +2120,10 @@ fn check_to_narrowing(
     let mut result_ty = if let Some(&first) = body_types.first() {
         first
     } else {
-        builtins.void
+        ctx.builtins.void
     };
     for &bty in &body_types[1..] {
-        result_ty = unify_branches(result_ty, bty, table, builtins);
+        result_ty = unify_branches(result_ty, bty, ctx.table, ctx.builtins);
     }
 
     // If there are unhandled types, the result includes them
@@ -2211,7 +2132,7 @@ fn check_to_narrowing(
     } else {
         // Result is union of handler body types + unhandled types
         for &u in &unhandled {
-            result_ty = unify_branches(result_ty, u, table, builtins);
+            result_ty = unify_branches(result_ty, u, ctx.table, ctx.builtins);
         }
         result_ty
     }
@@ -2251,37 +2172,29 @@ fn adapt_builtin_list_fn(
 }
 
 /// Checks a pipeline apply expression (`expr via func{args}` or `expr to func{args}`).
-#[allow(clippy::too_many_arguments)]
 fn check_pipeline_apply(
     inner_ty: TypeId,
     operation: &spark_ast::Ident,
     args: &[spark_ast::PartialArg],
     span: Span,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
     // Generic function-call validation: `expr via func{a: v}` → `func(expr, v)`
-    let func_def_id = resolutions.and_then(|r| r.get_ident(operation.span));
+    let func_def_id = ctx.resolutions.and_then(|r| r.get_ident(operation.span));
     let Some(def_id) = func_def_id else {
         // Unresolved — still check arg values for errors
         for arg in args {
-            let _ = check_expr(
-                &arg.value, table, builtins, definitions,
-                resolutions, diagnostics, current_fn_ret,
-            );
+            let _ = check_expr(&arg.value, ctx, current_fn_ret);
         }
         return TypeId::ERROR;
     };
-    let Some(func_ty_id) = table.get_def_type(def_id) else {
+    let Some(func_ty_id) = ctx.table.get_def_type(def_id) else {
         return TypeId::ERROR;
     };
-    let func_ty = table.resolve(func_ty_id).clone();
+    let func_ty = ctx.table.resolve(func_ty_id).clone();
     let Ty::Function { params, ret, .. } = func_ty else {
-        diagnostics.push(
+        ctx.diagnostics.push(
             Diagnostic::error("`via` target must be a function")
                 .with_label(Label::primary(operation.span, "not a function")),
         );
@@ -2290,21 +2203,18 @@ fn check_pipeline_apply(
 
     // Adapt builtin list function types to match actual input type
     let (params, ret) = adapt_builtin_list_fn(
-        def_id, inner_ty, params, ret, table, builtins, definitions,
+        def_id, inner_ty, params, ret, ctx.table, ctx.builtins, ctx.definitions,
     );
 
     // Build full arg list: [inner_ty, partial_arg_types...]
     let mut all_arg_types = vec![inner_ty];
     for arg in args {
-        all_arg_types.push(check_expr(
-            &arg.value, table, builtins, definitions,
-            resolutions, diagnostics, current_fn_ret,
-        ));
+        all_arg_types.push(check_expr(&arg.value, ctx, current_fn_ret));
     }
 
     // Arity check
     if all_arg_types.len() != params.len() {
-        diagnostics.push(
+        ctx.diagnostics.push(
             Diagnostic::error(format!(
                 "`via {}` expected {} argument{}, found {}",
                 operation.name,
@@ -2321,11 +2231,11 @@ fn check_pipeline_apply(
     for (i, (&arg_ty, &param_ty)) in
         all_arg_types.iter().zip(params.iter()).enumerate()
     {
-        if !is_compatible(arg_ty, param_ty, table) {
-            let expected_name = type_name(param_ty, table, definitions);
-            let found_name = type_name(arg_ty, table, definitions);
+        if !is_compatible(arg_ty, param_ty, ctx.table) {
+            let expected_name = type_name(param_ty, ctx.table, ctx.definitions);
+            let found_name = type_name(arg_ty, ctx.table, ctx.definitions);
             if i == 0 {
-                diagnostics.push(
+                ctx.diagnostics.push(
                     Diagnostic::error(format!(
                         "`via {}` first argument type mismatch: expected `{expected_name}`, found `{found_name}`",
                         operation.name
@@ -2334,7 +2244,7 @@ fn check_pipeline_apply(
                 );
             } else {
                 let arg_span = args[i - 1].value.span;
-                diagnostics.push(
+                ctx.diagnostics.push(
                     Diagnostic::error(format!(
                         "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
                     ))

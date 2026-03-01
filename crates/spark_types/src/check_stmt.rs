@@ -5,39 +5,32 @@
 
 use spark_ast::{Stmt, StmtKind};
 use spark_diagnostics::{Diagnostic, Label};
-use spark_resolve::{DefinitionTable, ResolutionMap};
 
-use crate::builtins::BuiltinTypes;
 use crate::check_expr::{check_expr, check_expr_expected, is_compatible, strip_mutable, strip_ref, type_name};
+use crate::ctx::TypeCheckCtx;
 use crate::lower::lower_type_expr;
-use crate::table::TypeTable;
 use crate::ty::{Ty, TypeId};
 
 /// Type-checks a statement.
-#[allow(clippy::too_many_arguments)]
 pub fn check_stmt(
     stmt: &Stmt,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) {
     match &stmt.kind {
         StmtKind::Let { name, ty, mutable: _, value } => {
             // Lower the declared type
-            let declared_ty = lower_type_expr(ty, table, builtins, definitions, resolutions, diagnostics);
+            let declared_ty = lower_type_expr(ty, ctx);
 
             // Check the value expression, passing the declared type as context
             // so that propagation (!) can use it to split union types.
-            let value_ty = check_expr_expected(value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret, Some(declared_ty));
+            let value_ty = check_expr_expected(value, ctx, current_fn_ret, Some(declared_ty));
 
             // Verify compatibility
-            if !is_compatible(value_ty, declared_ty, table) {
-                let expected = type_name(declared_ty, table, definitions);
-                let found = type_name(value_ty, table, definitions);
-                diagnostics.push(
+            if !is_compatible(value_ty, declared_ty, ctx.table) {
+                let expected = type_name(declared_ty, ctx.table, ctx.definitions);
+                let found = type_name(value_ty, ctx.table, ctx.definitions);
+                ctx.diagnostics.push(
                     Diagnostic::error(format!(
                         "type mismatch in `{}`: expected `{expected}`, found `{found}`",
                         name.name
@@ -53,36 +46,36 @@ pub fn check_stmt(
             let local_ty = declared_ty;
 
             // Try to find the DefId for this local
-            if let Some(res) = resolutions {
+            if let Some(res) = ctx.resolutions {
                 if let Some(def_id) = res.get_binding(name.span) {
-                    table.set_def_type(def_id, local_ty);
+                    ctx.table.set_def_type(def_id, local_ty);
                 }
             }
         }
 
         StmtKind::Assign { target, value } => {
-            let target_ty = check_expr(target, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let value_ty = check_expr(value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let target_ty = check_expr(target, ctx, current_fn_ret);
+            let value_ty = check_expr(value, ctx, current_fn_ret);
 
             // Target must be mutable
-            if !target_ty.is_error() && !matches!(table.resolve(target_ty), Ty::Mutable(_)) {
-                diagnostics.push(
+            if !target_ty.is_error() && !matches!(ctx.table.resolve(target_ty), Ty::Mutable(_)) {
+                ctx.diagnostics.push(
                     Diagnostic::error("cannot assign to immutable variable")
                         .with_label(Label::primary(target.span, "not mutable (declare with `Type!` for mutability)")),
                 );
             }
 
             // Check type compatibility (strip mutable wrapper for comparison)
-            let inner_ty = if let Ty::Mutable(inner) = table.resolve(target_ty) {
+            let inner_ty = if let Ty::Mutable(inner) = ctx.table.resolve(target_ty) {
                 *inner
             } else {
                 target_ty
             };
 
-            if !is_compatible(value_ty, inner_ty, table) {
-                let expected = type_name(inner_ty, table, definitions);
-                let found = type_name(value_ty, table, definitions);
-                diagnostics.push(
+            if !is_compatible(value_ty, inner_ty, ctx.table) {
+                let expected = type_name(inner_ty, ctx.table, ctx.definitions);
+                let found = type_name(value_ty, ctx.table, ctx.definitions);
+                ctx.diagnostics.push(
                     Diagnostic::error(format!("assignment type mismatch: expected `{expected}`, found `{found}`"))
                         .with_label(Label::primary(value.span, format!("expected `{expected}`"))),
                 );
@@ -90,39 +83,39 @@ pub fn check_stmt(
         }
 
         StmtKind::CompoundAssign { target, op, value } => {
-            let target_ty = check_expr(target, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
-            let value_ty = check_expr(value, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let target_ty = check_expr(target, ctx, current_fn_ret);
+            let value_ty = check_expr(value, ctx, current_fn_ret);
 
             // Target must be mutable
-            if !target_ty.is_error() && !matches!(table.resolve(target_ty), Ty::Mutable(_)) {
-                diagnostics.push(
+            if !target_ty.is_error() && !matches!(ctx.table.resolve(target_ty), Ty::Mutable(_)) {
+                ctx.diagnostics.push(
                     Diagnostic::error(format!("cannot use `{}` on immutable variable", op.as_str()))
                         .with_label(Label::primary(target.span, "not mutable")),
                 );
             }
 
             // Strip mutable, then strip Ref for type checking
-            let stripped_mut = if let Ty::Mutable(inner) = table.resolve(target_ty) {
+            let stripped_mut = if let Ty::Mutable(inner) = ctx.table.resolve(target_ty) {
                 *inner
             } else {
                 target_ty
             };
-            let inner_ty = strip_ref(stripped_mut, table);
+            let inner_ty = strip_ref(stripped_mut, ctx.table);
 
             // Both operands must be numeric
-            if !inner_ty.is_error() && !table.resolve(inner_ty).is_numeric() {
-                diagnostics.push(
+            if !inner_ty.is_error() && !ctx.table.resolve(inner_ty).is_numeric() {
+                ctx.diagnostics.push(
                     Diagnostic::error(format!("operator `{}` requires numeric operands", op.as_str()))
                         .with_label(Label::primary(target.span, "not numeric")),
                 );
             }
 
             // Strip Ref from value type before compatibility check
-            let value_base = strip_ref(strip_mutable(value_ty, table), table);
-            if !is_compatible(value_base, inner_ty, table) {
-                let expected = type_name(inner_ty, table, definitions);
-                let found = type_name(value_ty, table, definitions);
-                diagnostics.push(
+            let value_base = strip_ref(strip_mutable(value_ty, ctx.table), ctx.table);
+            if !is_compatible(value_base, inner_ty, ctx.table) {
+                let expected = type_name(inner_ty, ctx.table, ctx.definitions);
+                let found = type_name(value_ty, ctx.table, ctx.definitions);
+                ctx.diagnostics.push(
                     Diagnostic::error(format!("type mismatch for `{}`: expected `{expected}`, found `{found}`", op.as_str()))
                         .with_label(Label::primary(value.span, format!("expected `{expected}`"))),
                 );
@@ -130,7 +123,7 @@ pub fn check_stmt(
         }
 
         StmtKind::Expr(expr) => {
-            let _ = check_expr(expr, table, builtins, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = check_expr(expr, ctx, current_fn_ret);
         }
     }
 }
@@ -141,6 +134,7 @@ mod tests {
     use spark_ast::*;
     use spark_diagnostics::Diagnostics;
     use spark_intern::sym;
+    use spark_resolve::DefinitionTable;
     use spark_span::Span;
 
     fn int_type() -> TypeExpr {
@@ -175,8 +169,15 @@ mod tests {
             Span::DUMMY,
         );
 
-        check_stmt(&stmt, &mut table, &builtins, &defs, None, &mut diags, None);
-        assert!(!diags.has_errors());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_stmt(&stmt, &mut ctx, None);
+        assert!(!ctx.diagnostics.has_errors());
     }
 
     #[test]
@@ -202,8 +203,15 @@ mod tests {
             Span::DUMMY,
         );
 
-        check_stmt(&stmt, &mut table, &builtins, &defs, None, &mut diags, None);
-        assert!(diags.has_errors());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_stmt(&stmt, &mut ctx, None);
+        assert!(ctx.diagnostics.has_errors());
     }
 
     #[test]
@@ -214,8 +222,15 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let stmt = Stmt::expr(int_literal());
-        check_stmt(&stmt, &mut table, &builtins, &defs, None, &mut diags, None);
-        assert!(!diags.has_errors());
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        check_stmt(&stmt, &mut ctx, None);
+        assert!(!ctx.diagnostics.has_errors());
     }
 
     /// Helper: builds a compound assign statement with a target ident that
@@ -254,11 +269,18 @@ mod tests {
         table.set_def_type(def_id, mut_ref_ty);
 
         let stmt = compound_assign_stmt(target_span, spark_ast::CompoundOp::Add);
-        check_stmt(&stmt, &mut table, &builtins, &defs, Some(&res), &mut diags, None);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: Some(&res),
+            diagnostics: &mut diags,
+        };
+        check_stmt(&stmt, &mut ctx, None);
         assert!(
-            !diags.has_errors(),
+            !ctx.diagnostics.has_errors(),
             "Compound assign on Ref[Int] should work: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
 
@@ -283,9 +305,16 @@ mod tests {
         table.set_def_type(def_id, ref_ty); // NOT Mutable(...)
 
         let stmt = compound_assign_stmt(target_span, spark_ast::CompoundOp::Add);
-        check_stmt(&stmt, &mut table, &builtins, &defs, Some(&res), &mut diags, None);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: Some(&res),
+            diagnostics: &mut diags,
+        };
+        check_stmt(&stmt, &mut ctx, None);
         assert!(
-            diags.has_errors(),
+            ctx.diagnostics.has_errors(),
             "Compound assign on immutable variable should error"
         );
     }
@@ -312,9 +341,16 @@ mod tests {
         table.set_def_type(def_id, mut_ref_ty);
 
         let stmt = compound_assign_stmt(target_span, spark_ast::CompoundOp::Add);
-        check_stmt(&stmt, &mut table, &builtins, &defs, Some(&res), &mut diags, None);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: Some(&res),
+            diagnostics: &mut diags,
+        };
+        check_stmt(&stmt, &mut ctx, None);
         assert!(
-            diags.has_errors(),
+            ctx.diagnostics.has_errors(),
             "Compound assign on Ref[String] should error (not numeric)"
         );
     }

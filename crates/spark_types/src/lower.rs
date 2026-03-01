@@ -5,9 +5,9 @@
 
 use spark_ast::{TypeExpr, TypeExprKind};
 use spark_diagnostics::{Diagnostic, Label};
-use spark_resolve::{DefId, DefinitionKind, DefinitionTable, ResolutionMap};
+use spark_resolve::{DefId, DefinitionKind};
 
-use crate::builtins::BuiltinTypes;
+use crate::ctx::TypeCheckCtx;
 use crate::table::TypeTable;
 use crate::ty::{LifetimeId, Ty, TypeId};
 
@@ -19,41 +19,33 @@ use crate::ty::{LifetimeId, Ty, TypeId};
 /// - Structural and infer types produce `Ty::Error` with a diagnostic
 pub fn lower_type_expr(
     type_expr: &TypeExpr,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
-    let ty = lower_type_expr_inner(type_expr, table, builtins, definitions, resolutions, diagnostics);
+    let ty = lower_type_expr_inner(type_expr, ctx);
     // Record the lowered type at this ExprId so HIR lowering can look it up.
-    table.set_expr_type(type_expr.id, ty);
+    ctx.table.set_expr_type(type_expr.id, ty);
     ty
 }
 
 /// Inner implementation of type-expression lowering.
 fn lower_type_expr_inner(
     type_expr: &TypeExpr,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     match &type_expr.kind {
         TypeExprKind::Named { path, type_args } => {
-            lower_named_type(path, type_args, type_expr, table, builtins, definitions, resolutions, diagnostics)
+            lower_named_type(path, type_args, type_expr, ctx)
         }
 
         TypeExprKind::Optional(inner) => {
-            let inner_id = lower_type_expr(inner, table, builtins, definitions, resolutions, diagnostics);
-            table.intern(Ty::Optional(inner_id))
+            let inner_id = lower_type_expr(inner, ctx);
+            ctx.table.intern(Ty::Optional(inner_id))
         }
 
         TypeExprKind::Union(types) => {
             let mut members: Vec<TypeId> = types
                 .iter()
-                .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
+                .map(|t| lower_type_expr(t, ctx))
                 .collect();
             members.sort();
             members.dedup();
@@ -62,29 +54,29 @@ fn lower_type_expr_inner(
                 return members[0];
             }
 
-            table.intern(Ty::Union(members))
+            ctx.table.intern(Ty::Union(members))
         }
 
         TypeExprKind::Mutable(inner) => {
-            let inner_id = lower_type_expr(inner, table, builtins, definitions, resolutions, diagnostics);
-            table.intern(Ty::Mutable(inner_id))
+            let inner_id = lower_type_expr(inner, ctx);
+            ctx.table.intern(Ty::Mutable(inner_id))
         }
 
         TypeExprKind::Tuple(elems) => {
             let elem_ids: Vec<TypeId> = elems
                 .iter()
-                .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
+                .map(|t| lower_type_expr(t, ctx))
                 .collect();
-            table.intern(Ty::Tuple(elem_ids))
+            ctx.table.intern(Ty::Tuple(elem_ids))
         }
 
         TypeExprKind::Function { params, ret } => {
             let param_ids: Vec<TypeId> = params
                 .iter()
-                .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
+                .map(|t| lower_type_expr(t, ctx))
                 .collect();
-            let ret_id = lower_type_expr(ret, table, builtins, definitions, resolutions, diagnostics);
-            table.intern(Ty::Function {
+            let ret_id = lower_type_expr(ret, ctx);
+            ctx.table.intern(Ty::Function {
                 params: param_ids,
                 ret: ret_id,
                 is_async: false,
@@ -92,9 +84,9 @@ fn lower_type_expr_inner(
         }
 
         TypeExprKind::Ref { inner, mutable, lifetime } => {
-            let inner_id = lower_type_expr(inner, table, builtins, definitions, resolutions, diagnostics);
-            let lifetime_id = table.intern_lifetime(lifetime.name);
-            table.intern(Ty::Ref {
+            let inner_id = lower_type_expr(inner, ctx);
+            let lifetime_id = ctx.table.intern_lifetime(lifetime.name);
+            ctx.table.intern(Ty::Ref {
                 inner: inner_id,
                 mutable: *mutable,
                 lifetime: lifetime_id,
@@ -102,7 +94,7 @@ fn lower_type_expr_inner(
         }
 
         TypeExprKind::Structural(_) => {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error("structural types are not yet supported")
                     .with_label(Label::primary(type_expr.span, "structural type")),
             );
@@ -110,7 +102,7 @@ fn lower_type_expr_inner(
         }
 
         TypeExprKind::Infer => {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error("type inference is not supported; explicit types are required")
                     .with_label(Label::primary(type_expr.span, "cannot infer type")),
             );
@@ -122,30 +114,25 @@ fn lower_type_expr_inner(
 }
 
 /// Lowers a named type expression (built-in, resolved, or generic).
-#[allow(clippy::too_many_arguments)]
 fn lower_named_type(
     path: &spark_ast::Path,
     type_args: &[TypeExpr],
     type_expr: &TypeExpr,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     // Try to resolve as a built-in type first (single-segment paths)
     if path.is_simple() && type_args.is_empty() {
         let name = path.segments[0].name;
-        if let Some(id) = builtins.lookup(name) {
+        if let Some(id) = ctx.builtins.lookup(name) {
             return id;
         }
     }
 
     // Try to resolve via the resolution map
-    if let Some(res) = resolutions {
+    if let Some(res) = ctx.resolutions {
         if let Some(def_id) = res.get_path(path.span) {
             return lower_named_def(
-                def_id, type_args, type_expr, table, builtins, definitions, resolutions, diagnostics,
+                def_id, type_args, type_expr, ctx,
             );
         }
     }
@@ -154,12 +141,12 @@ fn lower_named_type(
     if path.is_simple() {
         let name = path.segments[0].name;
         return lower_builtin_generic(
-            name, type_args, type_expr, table, builtins, definitions, resolutions, diagnostics,
+            name, type_args, type_expr, ctx,
         );
     }
 
     // Unresolved type — report error
-    diagnostics.push(
+    ctx.diagnostics.push(
         Diagnostic::error(format!("unresolved type `{}`", path.last().map_or("<empty>", |s| s.name.as_str())))
             .with_label(Label::primary(type_expr.span, "not found")),
     );
@@ -167,23 +154,18 @@ fn lower_named_type(
 }
 
 /// Lowers a named type that was resolved to a `DefId`.
-#[allow(clippy::too_many_arguments)]
 fn lower_named_def(
     def_id: DefId,
     type_args: &[TypeExpr],
     type_expr: &TypeExpr,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
-    let Some(info) = definitions.get(def_id) else {
+    let Some(info) = ctx.definitions.get(def_id) else {
         return TypeId::ERROR;
     };
 
     // Check if it's a builtin type name that was also registered as a definition
-    if let Some(id) = builtins.lookup(info.name) {
+    if let Some(id) = ctx.builtins.lookup(info.name) {
         if type_args.is_empty() {
             return id;
         }
@@ -193,12 +175,12 @@ fn lower_named_def(
         DefinitionKind::Struct => {
             if !type_args.is_empty() {
                 let arg_types: Vec<TypeId> = type_args.iter()
-                    .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
+                    .map(|t| lower_type_expr(t, ctx))
                     .collect();
                 // Validate arity against registered generic params
-                if let Some(params) = table.get_generic_params(def_id).map(<[_]>::to_vec) {
+                if let Some(params) = ctx.table.get_generic_params(def_id).map(<[_]>::to_vec) {
                     if arg_types.len() != params.len() {
-                        diagnostics.push(
+                        ctx.diagnostics.push(
                             Diagnostic::error(format!(
                                 "expected {} type argument{}, found {}",
                                 params.len(),
@@ -212,29 +194,29 @@ fn lower_named_def(
                     // Validate generic constraints on type arguments
                     let subst = crate::substitute::build_subst_map(&params, &arg_types);
                     crate::constraint::validate_constraints(
-                        &params, &subst, table, definitions, type_expr.span, diagnostics,
+                        &params, &subst, ctx.table, ctx.definitions, type_expr.span, ctx.diagnostics,
                     );
                 }
-                return table.intern(Ty::Applied { base: def_id, args: arg_types });
+                return ctx.table.intern(Ty::Applied { base: def_id, args: arg_types });
             }
             // Check if this type requires type args
-            if table.get_generic_params(def_id).is_some_and(|p| !p.is_empty()) {
-                diagnostics.push(
+            if ctx.table.get_generic_params(def_id).is_some_and(|p| !p.is_empty()) {
+                ctx.diagnostics.push(
                     Diagnostic::error(format!("missing type arguments for generic type `{}`", info.name))
                         .with_label(Label::primary(type_expr.span, "requires type arguments")),
                 );
                 return TypeId::ERROR;
             }
-            table.intern(Ty::Struct(def_id))
+            ctx.table.intern(Ty::Struct(def_id))
         }
         DefinitionKind::Enum => {
             if !type_args.is_empty() {
                 let arg_types: Vec<TypeId> = type_args.iter()
-                    .map(|t| lower_type_expr(t, table, builtins, definitions, resolutions, diagnostics))
+                    .map(|t| lower_type_expr(t, ctx))
                     .collect();
-                if let Some(params) = table.get_generic_params(def_id).map(<[_]>::to_vec) {
+                if let Some(params) = ctx.table.get_generic_params(def_id).map(<[_]>::to_vec) {
                     if arg_types.len() != params.len() {
-                        diagnostics.push(
+                        ctx.diagnostics.push(
                             Diagnostic::error(format!(
                                 "expected {} type argument{}, found {}",
                                 params.len(),
@@ -248,36 +230,36 @@ fn lower_named_def(
                     // Validate generic constraints on type arguments
                     let subst = crate::substitute::build_subst_map(&params, &arg_types);
                     crate::constraint::validate_constraints(
-                        &params, &subst, table, definitions, type_expr.span, diagnostics,
+                        &params, &subst, ctx.table, ctx.definitions, type_expr.span, ctx.diagnostics,
                     );
                 }
-                return table.intern(Ty::Applied { base: def_id, args: arg_types });
+                return ctx.table.intern(Ty::Applied { base: def_id, args: arg_types });
             }
-            if table.get_generic_params(def_id).is_some_and(|p| !p.is_empty()) {
-                diagnostics.push(
+            if ctx.table.get_generic_params(def_id).is_some_and(|p| !p.is_empty()) {
+                ctx.diagnostics.push(
                     Diagnostic::error(format!("missing type arguments for generic type `{}`", info.name))
                         .with_label(Label::primary(type_expr.span, "requires type arguments")),
                 );
                 return TypeId::ERROR;
             }
-            table.intern(Ty::Enum(def_id))
+            ctx.table.intern(Ty::Enum(def_id))
         }
         DefinitionKind::TypeAlias | DefinitionKind::TypeDef => {
             // For now, look up the type that was registered for this def
-            table.get_def_type(def_id).unwrap_or(TypeId::ERROR)
+            ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR)
         }
         DefinitionKind::Interface => {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error("interfaces cannot be used as types directly")
                     .with_label(Label::primary(type_expr.span, "interface used as type")),
             );
             TypeId::ERROR
         }
         DefinitionKind::GenericParam => {
-            table.intern(Ty::Param(def_id))
+            ctx.table.intern(Ty::Param(def_id))
         }
         _ => {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error(format!("`{}` is not a type", info.name))
                     .with_label(Label::primary(type_expr.span, "expected a type")),
             );
@@ -287,82 +269,77 @@ fn lower_named_def(
 }
 
 /// Lowers built-in generic types like `List[T]`, `Map[K, V]`, `Set[T]`.
-#[allow(clippy::too_many_arguments)]
 fn lower_builtin_generic(
     name: spark_intern::Symbol,
     type_args: &[TypeExpr],
     type_expr: &TypeExpr,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     use spark_intern::kw;
 
     if name == kw::LIST {
         if type_args.len() != 1 {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error("List requires exactly one type argument")
                     .with_label(Label::primary(type_expr.span, "expected List[T]")),
             );
             return TypeId::ERROR;
         }
-        let elem = lower_type_expr(&type_args[0], table, builtins, definitions, resolutions, diagnostics);
-        return table.intern(Ty::List(elem));
+        let elem = lower_type_expr(&type_args[0], ctx);
+        return ctx.table.intern(Ty::List(elem));
     }
 
     if name == kw::MAP {
         if type_args.len() != 2 {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error("Map requires exactly two type arguments")
                     .with_label(Label::primary(type_expr.span, "expected Map[K, V]")),
             );
             return TypeId::ERROR;
         }
-        let key = lower_type_expr(&type_args[0], table, builtins, definitions, resolutions, diagnostics);
-        let value = lower_type_expr(&type_args[1], table, builtins, definitions, resolutions, diagnostics);
-        return table.intern(Ty::Map(key, value));
+        let key = lower_type_expr(&type_args[0], ctx);
+        let value = lower_type_expr(&type_args[1], ctx);
+        return ctx.table.intern(Ty::Map(key, value));
     }
 
     if name == kw::SET {
         if type_args.len() != 1 {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error("Set requires exactly one type argument")
                     .with_label(Label::primary(type_expr.span, "expected Set[T]")),
             );
             return TypeId::ERROR;
         }
-        let elem = lower_type_expr(&type_args[0], table, builtins, definitions, resolutions, diagnostics);
-        return table.intern(Ty::Set(elem));
+        let elem = lower_type_expr(&type_args[0], ctx);
+        return ctx.table.intern(Ty::Set(elem));
     }
 
     if name == kw::FUTURE {
         if type_args.len() != 1 {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error("Future requires exactly one type argument")
                     .with_label(Label::primary(type_expr.span, "expected Future[T]")),
             );
             return TypeId::ERROR;
         }
-        let inner = lower_type_expr(&type_args[0], table, builtins, definitions, resolutions, diagnostics);
-        return table.intern(Ty::Future { inner });
+        let inner = lower_type_expr(&type_args[0], ctx);
+        return ctx.table.intern(Ty::Future { inner });
     }
 
     if name == kw::CHANNEL {
         if type_args.len() != 1 {
-            diagnostics.push(
+            ctx.diagnostics.push(
                 Diagnostic::error("Channel requires exactly one type argument")
                     .with_label(Label::primary(type_expr.span, "expected Channel[T]")),
             );
             return TypeId::ERROR;
         }
-        let inner = lower_type_expr(&type_args[0], table, builtins, definitions, resolutions, diagnostics);
-        return table.intern(Ty::Channel { inner });
+        let inner = lower_type_expr(&type_args[0], ctx);
+        return ctx.table.intern(Ty::Channel { inner });
     }
 
     // Not a known builtin generic — report error
-    diagnostics.push(
+    ctx.diagnostics.push(
         Diagnostic::error(format!("unresolved type `{name}`"))
             .with_label(Label::primary(type_expr.span, "not found")),
     );
@@ -497,9 +474,11 @@ fn rewrite_ref_lifetime(ty: TypeId, new_lt: LifetimeId, table: &mut TypeTable) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ctx::TypeCheckCtx;
     use spark_ast::{Ident, Path};
     use spark_diagnostics::Diagnostics;
     use spark_intern::sym;
+    use spark_resolve::DefinitionTable;
     use spark_span::Span;
 
     fn make_named(name: &str) -> TypeExpr {
@@ -530,9 +509,16 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named("Int");
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(!diags.has_errors());
+        assert!(!ctx.diagnostics.has_errors());
         assert_eq!(id, builtins.int);
     }
 
@@ -544,9 +530,16 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named("Bool");
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(!diags.has_errors());
+        assert!(!ctx.diagnostics.has_errors());
         assert_eq!(id, builtins.bool_ty);
     }
 
@@ -561,10 +554,17 @@ mod tests {
             TypeExprKind::Optional(Box::new(make_named("Int"))),
             Span::DUMMY,
         );
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(!diags.has_errors());
-        assert!(matches!(table.resolve(id), Ty::Optional(_)));
+        assert!(!ctx.diagnostics.has_errors());
+        assert!(matches!(ctx.table.resolve(id), Ty::Optional(_)));
     }
 
     #[test]
@@ -578,10 +578,17 @@ mod tests {
             TypeExprKind::Mutable(Box::new(make_named("Int"))),
             Span::DUMMY,
         );
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(!diags.has_errors());
-        assert!(matches!(table.resolve(id), Ty::Mutable(_)));
+        assert!(!ctx.diagnostics.has_errors());
+        assert!(matches!(ctx.table.resolve(id), Ty::Mutable(_)));
     }
 
     #[test]
@@ -595,10 +602,17 @@ mod tests {
             TypeExprKind::Union(vec![make_named("Int"), make_named("String")]),
             Span::DUMMY,
         );
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(!diags.has_errors());
-        assert!(matches!(table.resolve(id), Ty::Union(_)));
+        assert!(!ctx.diagnostics.has_errors());
+        assert!(matches!(ctx.table.resolve(id), Ty::Union(_)));
     }
 
     #[test]
@@ -612,10 +626,17 @@ mod tests {
             TypeExprKind::Tuple(vec![make_named("Int"), make_named("Bool")]),
             Span::DUMMY,
         );
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(!diags.has_errors());
-        assert!(matches!(table.resolve(id), Ty::Tuple(_)));
+        assert!(!ctx.diagnostics.has_errors());
+        assert!(matches!(ctx.table.resolve(id), Ty::Tuple(_)));
     }
 
     #[test]
@@ -632,10 +653,17 @@ mod tests {
             },
             Span::DUMMY,
         );
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(!diags.has_errors());
-        assert!(matches!(table.resolve(id), Ty::Function { .. }));
+        assert!(!ctx.diagnostics.has_errors());
+        assert!(matches!(ctx.table.resolve(id), Ty::Function { .. }));
     }
 
     #[test]
@@ -646,10 +674,17 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named_generic("List", vec![make_named("Int")]);
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(!diags.has_errors());
-        assert!(matches!(table.resolve(id), Ty::List(_)));
+        assert!(!ctx.diagnostics.has_errors());
+        assert!(matches!(ctx.table.resolve(id), Ty::List(_)));
     }
 
     #[test]
@@ -660,10 +695,17 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named_generic("Map", vec![make_named("String"), make_named("Int")]);
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(!diags.has_errors());
-        assert!(matches!(table.resolve(id), Ty::Map(_, _)));
+        assert!(!ctx.diagnostics.has_errors());
+        assert!(matches!(ctx.table.resolve(id), Ty::Map(_, _)));
     }
 
     #[test]
@@ -674,9 +716,16 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = TypeExpr::error(Span::DUMMY);
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(!diags.has_errors());
+        assert!(!ctx.diagnostics.has_errors());
         assert!(id.is_error());
     }
 
@@ -688,9 +737,16 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = TypeExpr::new(TypeExprKind::Structural(vec![]), Span::DUMMY);
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(diags.has_errors());
+        assert!(ctx.diagnostics.has_errors());
         assert!(id.is_error());
     }
 
@@ -702,9 +758,16 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named("NonExistent");
-        let id = lower_type_expr(&te, &mut table, &builtins, &defs, None, &mut diags);
+        let mut ctx = TypeCheckCtx {
+            table: &mut table,
+            builtins: &builtins,
+            definitions: &defs,
+            resolutions: None,
+            diagnostics: &mut diags,
+        };
+        let id = lower_type_expr(&te, &mut ctx);
 
-        assert!(diags.has_errors());
+        assert!(ctx.diagnostics.has_errors());
         assert!(id.is_error());
     }
 

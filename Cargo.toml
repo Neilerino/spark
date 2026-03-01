@@ -20,6 +20,7 @@ members = [
     "crates/spark_stdlib",
     "crates/spark_runtime",
     "crates/spark_package",
+    "crates/spark_bindgen",
     # "crates/spark_cli",
 
     # Tools (applications built on core)
@@ -51,6 +52,10 @@ spark_opt = { path = "crates/spark_opt" }
 spark_drop = { path = "crates/spark_drop" }
 spark_stdlib = { path = "crates/spark_stdlib" }
 spark_package = { path = "crates/spark_package" }
+spark_bindgen = { path = "crates/spark_bindgen" }
+
+# FFI bindgen
+clang = { version = "2", features = ["runtime"] }
 
 # Error reporting
 thiserror = "1.0"

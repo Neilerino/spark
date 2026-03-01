@@ -27,6 +27,7 @@ spark_opt.workspace = true
 spark_codegen.workspace = true
 spark_stdlib.workspace = true
 spark_package.workspace = true
+spark_bindgen.workspace = true
 clap.workspace = true
 
 [dev-dependencies]
