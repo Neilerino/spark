@@ -252,6 +252,351 @@ these tags automatically — open the tree view to jump between tasks and their 
 
 ---
 
+## Priority 4.5 — Documentation (spec–implementation alignment)
+
+### `TODO` [SPARK-035] — Spec: update `.length` to `.len()`
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — String Methods section (line ~303), Collections section (line ~1939)
+- **Description**: The spec documents `s.length` (property) for String and `list.length` for List,
+  but the implementation uses `.len()` (method call) everywhere. Update all references in the spec
+  to use `.len()`.
+
+### `TODO` [SPARK-036] — Spec: document global `print()` builtin
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Standard Library Overview > I/O section (line ~1908)
+- **Description**: The spec shows `io.print()` / `io.println()` requiring an import, but the
+  implementation provides a global `print()` builtin with no import. Document `print()` as a
+  language builtin in the spec. Keep `io.print` / `io.println` as explicit alternatives.
+
+### `TODO` [SPARK-037] — Spec: document `Ref[T]` shorthand (no lifetime)
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Memory Model section (line ~1499)
+- **Description**: The spec only shows `Ref[T, A]` with an explicit lifetime parameter. The
+  implementation supports `Ref[T]` (no lifetime) for the common case. Update the Memory Model
+  section to present `Ref[T]` as the default form and `Ref[T, A]` as the advanced opt-in for
+  lifetime relationships — consistent with the "progressive complexity" philosophy.
+
+### `TODO` [SPARK-038] — Spec: document `Channel[T]()` constructor with explicit type arg
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Concurrency > Channels section (line ~1678)
+- **Description**: The spec shows `Channel()` without a type parameter in the constructor, but the
+  implementation requires `Channel[T]()`. Update the spec to use `Channel[Int]()`, etc. This
+  aligns with the language's "explicitness over implicitness" principle.
+
+### `TODO` [SPARK-039] — Spec: document `each` / `each via` with function references
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Control Flow > Each section (line ~782), Via section (line ~802)
+- **Description**: The spec only shows `each` and `each via` with inline lambda blocks. The
+  implementation also supports bare function references: `nums each show` and
+  `nums each via double`. Document both forms.
+
+### `TODO` [SPARK-040] — Spec: unify `to` section (pipeline + narrowing)
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Control Flow > To section (line ~829), Partials in Pipelines (line ~1002)
+- **Description**: `to` serves dual purpose: type narrowing with a block (`result to { ... }`) and
+  pipeline application with a function (`5 to double`). The spec describes narrowing in the To
+  section and buries pipeline usage in the Partials section. Create a unified To section that
+  explains both uses clearly.
+
+### `TODO` [SPARK-041] — Spec: document `spawn { expr }` expression form
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Concurrency > Spawn section (line ~1663)
+- **Description**: The spec shows `return` inside spawn blocks, but the implementation uses
+  expression form where the last expression is the value (consistent with `if`, `match`, and
+  `each via` blocks). Update the spec examples to use expression form.
+
+### `TODO` [SPARK-042] — Spec: document struct field comma optionality
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Structs section (line ~1024)
+- **Description**: The spec shows struct field definitions without commas, but the implementation
+  accepts both comma-separated and newline-separated fields. Document that field separators
+  (commas) are optional when fields are newline-delimited.
+
+### `TODO` [SPARK-043] — Spec: document `import spark.` prefix for stdlib
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Modules and Visibility > Importing section (line ~1822),
+    Standard Library Overview (line ~1875)
+- **Description**: The spec shows `import math`, `import io` etc. but the implementation uses
+  `import spark.io { ... }`, `import spark.math { ... }`. Update the spec to show the correct
+  dotted-path import syntax for standard library modules.
+
+### `TODO` [SPARK-044] — Spec: document simpler interface method syntax
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Interfaces section (line ~1201)
+- **Description**: The spec leads with the advanced `fn serialize[T: Self](item: T): String` form
+  for interface methods. The implementation supports a simpler `fn display(): String` syntax
+  without generic parameters. Restructure the Interfaces section to lead with the simple form and
+  present `[T: Self]` as an advanced option.
+
+### `TODO` [SPARK-045] — Spec: document `parallel each` / `parallel each via`
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — new section needed (Concurrency or Control Flow)
+- **Description**: `parallel each` and `parallel each via` are fully implemented and tested but
+  have zero spec coverage. Add a section documenting the syntax, semantics, COW capture behavior,
+  and thread-safety restrictions (no mutable captures, no Ref captures).
+
+### `TODO` [SPARK-046] — Spec: document closure capture-by-snapshot semantics
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Functions > Inline Functions section (line ~952)
+- **Description**: Closures capture outer variables by snapshot (copy at creation time). Mutations
+  to the original variable after closure creation are not seen by the closure. This is a critical
+  semantic detail that is not documented. Add a subsection with the snapshot example:
+  `x: Int! = 10; f = fn() { x }; x = 42; f() // returns 10`.
+
+### `TODO` [SPARK-047] — Spec: document `each` COW/copy semantics for captured mutables
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Control Flow > Each section (line ~782)
+- **Description**: Mutations to outer mutable variables inside `each` do not persist after iteration
+  completes (`x: Int! = 0; nums each (n): Void { x = x + n }; print(x)` prints `0`). This COW
+  behavior is surprising and undocumented. Add a note explaining the semantics and rationale
+  (safety for potential parallelization). Consider whether the compiler should warn when `each`
+  captures a mutable variable it cannot actually mutate.
+
+### `TODO` [SPARK-048] — Spec: document struct mutable field markers
+
+- **Type**: documentation
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: (none — spec only)
+- **Files**:
+  - `docs/lang-spec.md` — Structs > Mutation section (line ~1054)
+- **Description**: The spec only shows mutability on variables (`user: User! = ...`). The
+  implementation also supports mutable markers on struct field definitions (`x: Int!` in a struct
+  body). Document the semantics: what do field-level `!` markers mean vs. variable-level `!`?
+  The compile-fail test shows the variable must still be `!` to mutate fields.
+
+---
+
+## Priority 4.6 — Spec design decisions needed
+
+### `FIXME` [SPARK-049] — Resolve `await` in sync context vs. `block` keyword
+
+- **Type**: research
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_codegen, spark_types
+- **Files**:
+  - `docs/lang-spec.md` — Concurrency > Async/Await section (line ~1618), Running Async from
+    Sync Context (line ~1652)
+  - `crates/spark_types/src/checker.rs` — await validation
+  - `crates/spark_codegen/src/cranelift/` — await lowering
+- **Description**: The spec defines a `block` keyword for running async functions from sync context,
+  but the implementation allows `await` directly in non-async functions and `block` is never used.
+  This needs a deliberate design decision:
+  - **Option A**: Remove `block` from the spec, let `await` work everywhere (current behavior)
+  - **Option B**: Enforce `block` in sync context, restrict `await` to `async fn` bodies
+  Option B preserves the colored-function boundary which aids reasoning about async code, but
+  Option A is simpler. Document the decision in `tasks/research/SPARK-049.md`.
+
+### `FIXME` [SPARK-050] — I/O error handling model contradicts language philosophy
+
+- **Type**: bug
+- **Effort**: high
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_stdlib, spark_runtime, spark_codegen
+- **Files**:
+  - `crates/spark_stdlib/spark/io.spark` — current API surface
+  - `crates/spark_runtime/src/lib.rs` — `__spark_io_*` functions
+  - `docs/lang-spec.md` — Standard Library Overview > I/O section (line ~1908)
+- **Description**: The spec says I/O functions return union types (`String | IoError`) with `!`
+  propagation, but the implementation uses a C-style `lastError()` sentinel pattern where
+  `readFile()` returns a bare `String` and errors are checked via a separate `lastError()` call.
+  This contradicts the core principle "errors are values, not exceptions" and makes it easy to
+  forget error checking. The implementation should be updated to return union types matching the
+  spec's design.
+
+---
+
+## Priority 4.7 — Missing E2E test coverage
+
+### `TODO` [SPARK-051] — E2E tests: string interpolation
+
+- **Type**: feature
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_driver
+- **Files**:
+  - `crates/spark_driver/tests/e2e.rs` — add test
+  - `crates/spark_driver/tests/run-pass/basics/` — add fixture
+- **Description**: String interpolation (`"Hello, {name}!"`) is a core language feature with no E2E
+  test. Add fixtures covering: variable interpolation, expression interpolation, nested braces,
+  escaped braces `\{`.
+
+### `TODO` [SPARK-052] — E2E tests: match with guards
+
+- **Type**: feature
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_driver
+- **Files**:
+  - `crates/spark_driver/tests/e2e.rs` — add test
+  - `crates/spark_driver/tests/run-pass/basics/` — add fixture
+- **Description**: Match with guard clauses (`n if n < 13 -> "child"`) is documented in the spec
+  but has no E2E test.
+
+### `TODO` [SPARK-053] — E2E tests: enums with associated data
+
+- **Type**: feature
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_driver
+- **Files**:
+  - `crates/spark_driver/tests/e2e.rs` — add test
+  - `crates/spark_driver/tests/run-pass/` — add fixture dir or file
+- **Description**: Enums with associated data (`Result.Success(42)`) and matching on variants are
+  core to the error handling story but have no E2E test coverage.
+
+### `TODO` [SPARK-054] — E2E tests: optional chaining `?.` and null coalescing `??`
+
+- **Type**: feature
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_driver
+- **Files**:
+  - `crates/spark_driver/tests/e2e.rs` — add test
+  - `crates/spark_driver/tests/run-pass/` — add fixture
+- **Description**: Optional chaining (`user?.name`) and null coalescing (`x ?? default`) are safety
+  features documented in the spec with no E2E tests.
+
+### `TODO` [SPARK-055] — E2E tests: `as` / `is` type operators
+
+- **Type**: feature
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_driver
+- **Files**:
+  - `crates/spark_driver/tests/e2e.rs` — add test
+  - `crates/spark_driver/tests/run-pass/` — add fixture
+- **Description**: `is` (type check) and `as` (type cast) operators are in the spec but have no
+  E2E test coverage.
+
+### `TODO` [SPARK-056] — E2E tests: `const` declarations
+
+- **Type**: feature
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_driver
+- **Files**:
+  - `crates/spark_driver/tests/e2e.rs` — add test
+  - `crates/spark_driver/tests/run-pass/basics/` — add fixture
+- **Description**: `const` declarations (`const MAX: Int = 100`) are documented in the spec but
+  have no E2E test coverage.
+
+### `TODO` [SPARK-057] — E2E tests: type aliases (`alias`, `type`)
+
+- **Type**: feature
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_driver
+- **Files**:
+  - `crates/spark_driver/tests/e2e.rs` — add test
+  - `crates/spark_driver/tests/run-pass/` — add fixture
+- **Description**: Both `alias` (interchangeable) and `type` (distinct) aliases are in the spec
+  but have no E2E tests.
+
+### `TODO` [SPARK-058] — E2E tests: Set and Map operations
+
+- **Type**: feature
+- **Effort**: low
+- **Category**: DX
+- **Status**: open
+- **Crates**: spark_driver
+- **Files**:
+  - `crates/spark_driver/tests/e2e.rs` — add tests
+  - `crates/spark_driver/tests/run-pass/collections/` — add fixtures
+- **Description**: Set literals, Set operations (add, remove, contains, union, intersection) and
+  Map access/mutation are in the spec but have no E2E tests beyond `map.len()`.
+
+---
+
 ## Priority 5 — Future features (design ready, not yet started)
 
 ### `TODO` [SPARK-021] — Async Phase 3 v2 (segmented suspension)
