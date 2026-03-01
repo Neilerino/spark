@@ -346,21 +346,79 @@ fn check_expr_inner(
 
             // For Optional(T) → success type is T
             if let Ty::Optional(success) = table.resolve(inner_ty) {
-                return *success;
+                let success = *success;
+                // Validate that Null is compatible with the enclosing function's return type
+                if let Some(ret) = current_fn_ret {
+                    if !is_compatible(builtins.null, ret, table) {
+                        let ret_name = type_name(ret, table, definitions);
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "propagation operator `!` may return `Null`, but function return type `{ret_name}` does not include `Null`"
+                            ))
+                            .with_label(Label::primary(expr.span, "propagates `Null` here")),
+                        );
+                    }
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error("`!` can only be used inside a function")
+                            .with_label(Label::primary(expr.span, "not inside a function")),
+                    );
+                }
+                return success;
             }
 
             // For Union types → use split_union to determine success type
             if matches!(table.resolve(inner_ty), Ty::Union(_)) {
                 // Try to split using the expected type (from context) or fn return type
-                if let Some((success_ty, _errors)) =
+                if let Some((success_ty, errors)) =
                     crate::union::split_union(inner_ty, expected_ty, current_fn_ret, table)
                 {
+                    // Validate that each error type is compatible with the enclosing function's return type
+                    if let Some(ret) = current_fn_ret {
+                        for &error_ty in &errors {
+                            if !is_compatible(error_ty, ret, table) {
+                                let error_name = type_name(error_ty, table, definitions);
+                                let ret_name = type_name(ret, table, definitions);
+                                diagnostics.push(
+                                    Diagnostic::error(format!(
+                                        "propagation operator `!` may return `{error_name}`, but function return type `{ret_name}` does not include it"
+                                    ))
+                                    .with_label(Label::primary(expr.span, format!("propagates `{error_name}` here"))),
+                                );
+                            }
+                        }
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error("`!` can only be used inside a function")
+                                .with_label(Label::primary(expr.span, "not inside a function")),
+                        );
+                    }
                     return success_ty;
                 }
             }
 
             // Fallback: unwrap nullable
-            unwrap_optional(inner_ty, table)
+            let result = unwrap_optional(inner_ty, table);
+            // If unwrap_optional actually unwrapped something, Null was removed — validate it
+            if result != inner_ty {
+                if let Some(ret) = current_fn_ret {
+                    if !is_compatible(builtins.null, ret, table) {
+                        let ret_name = type_name(ret, table, definitions);
+                        diagnostics.push(
+                            Diagnostic::error(format!(
+                                "propagation operator `!` may return `Null`, but function return type `{ret_name}` does not include `Null`"
+                            ))
+                            .with_label(Label::primary(expr.span, "propagates `Null` here")),
+                        );
+                    }
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error("`!` can only be used inside a function")
+                            .with_label(Label::primary(expr.span, "not inside a function")),
+                    );
+                }
+            }
+            result
         }
 
         // === Is ===

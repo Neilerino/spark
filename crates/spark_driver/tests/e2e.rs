@@ -859,6 +859,16 @@ fn immutable_mutable_borrow() {
     assert_compile_error("compile-fail/type_errors/immutable_mutable_borrow.spark", "cannot pass immutable value as mutable reference");
 }
 
+#[test]
+fn propagate_return_mismatch() {
+    assert_compile_error("compile-fail/type_errors/propagate_return_mismatch.spark", "does not include `Null`");
+}
+
+#[test]
+fn propagate_union_return_mismatch() {
+    assert_compile_error("compile-fail/type_errors/propagate_union_return_mismatch.spark", "does not include it");
+}
+
 // ============================================================================
 // Compile-fail: borrow errors
 // ============================================================================
