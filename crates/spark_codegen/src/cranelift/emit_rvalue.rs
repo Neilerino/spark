@@ -737,7 +737,7 @@ fn emit_aggregate<M: Module>(
             let variant_idx = table
                 .get_enum_variants(*def_id)
                 .and_then(|variants| variants.iter().position(|(name, _)| *name == *variant))
-                .unwrap_or(0);
+                .expect("ICE: enum variant not found in variant list; this is a compiler bug");
 
             // Store the tag.
             if el.tag_size > 0 {
@@ -1156,7 +1156,8 @@ fn emit_union_construction<M: Module>(
     // Find the member index (tag value).
     let member_idx = match table.resolve(union_ty) {
         Ty::Union(members) => {
-            members.iter().position(|m| *m == member_ty).unwrap_or(0)
+            members.iter().position(|m| *m == member_ty)
+                .expect("ICE: union member type not found in union members; this is a compiler bug")
         }
         Ty::Optional(inner) => {
             // Optional: tag 0 = Null, tag 1 = Some(inner).
@@ -1169,7 +1170,7 @@ fn emit_union_construction<M: Module>(
                 1 // default to Some for non-null values
             }
         }
-        _ => 0,
+        other => panic!("ICE: expected Union or Optional type for union tag, found {other:?}; this is a compiler bug"),
     };
 
     // Write the tag.
