@@ -50,6 +50,7 @@ pub mod lower;
 pub mod lower_expr;
 pub mod lower_pattern;
 pub mod lower_stmt;
+pub mod visitor;
 
 use spark_resolve::{DefinitionTable, ResolvedAst};
 use spark_types::{TypeId, TypeTable};
@@ -66,6 +67,12 @@ pub(crate) fn lower_type_expr(ty: &spark_ast::TypeExpr, table: &TypeTable) -> Ty
 pub use hir::{
     Hir, HirExpr, HirExprKind, HirFunction, HirLiteral, HirMatchArm, HirParam, HirPattern,
     HirStatic, HirStmt,
+};
+
+pub use visitor::{
+    walk_expr, walk_expr_mut, walk_function, walk_function_mut, walk_hir, walk_hir_mut,
+    walk_match_arm, walk_match_arm_mut, walk_pattern, walk_pattern_mut, walk_static,
+    walk_static_mut, walk_stmt, walk_stmt_mut, HirMutVisitor, HirVisitor,
 };
 
 /// Input to the HIR lowering pass.

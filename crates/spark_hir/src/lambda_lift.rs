@@ -13,7 +13,8 @@ use spark_modules::ModulePath;
 use spark_resolve::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visibility};
 use spark_types::{Ty, TypeId, TypeTable};
 
-use crate::hir::{Hir, HirExpr, HirExprKind, HirFunction, HirMatchArm, HirStmt};
+use crate::hir::{Hir, HirExpr, HirExprKind, HirFunction, HirParam};
+use crate::visitor::{walk_expr, walk_expr_mut, HirMutVisitor, HirVisitor};
 
 /// Lifts all lambda expressions in the HIR into top-level functions.
 ///
@@ -28,44 +29,56 @@ pub fn lift_lambdas(
 ) {
     // Collect existing function DefIds to avoid mutating the map while iterating.
     let func_ids: Vec<DefId> = hir.functions.keys().copied().collect();
-    let mut lifted = Vec::new();
-    let mut counter: u32 = 0;
+
+    let mut lifter = LambdaLifter {
+        lifted: Vec::new(),
+        definitions,
+        table,
+        counter: 0,
+        diagnostics,
+    };
 
     for def_id in func_ids {
         if let Some(func) = hir.functions.get_mut(&def_id) {
-            walk_expr(&mut func.body, &mut lifted, definitions, table, &mut counter, diagnostics);
+            lifter.visit_expr_mut(&mut func.body);
         }
     }
 
-    for func in lifted {
+    for func in lifter.lifted {
         hir.functions.insert(func.def_id, func);
     }
 }
 
-/// Recursively walks an HIR expression, lifting any `Lambda` nodes encountered.
-#[allow(clippy::too_many_lines)]
-fn walk_expr(
-    expr: &mut HirExpr,
-    lifted: &mut Vec<HirFunction>,
-    definitions: &mut DefinitionTable,
-    table: &mut TypeTable,
-    counter: &mut u32,
-    diagnostics: &mut Diagnostics,
-) {
-    match &mut expr.kind {
-        // === The case we care about: Lambda ===
-        HirExprKind::Lambda { .. } => {
-            // Take ownership of the lambda contents.
+// ─── Lambda lifter (mutable visitor) ────────────────────────────────────────
+
+/// Mutable visitor that lifts `Lambda` and `Spawn` nodes into top-level functions.
+struct LambdaLifter<'a> {
+    /// Accumulated lifted functions to be inserted into `hir.functions`.
+    lifted: Vec<HirFunction>,
+    /// Definition table for allocating synthetic `DefId`s.
+    definitions: &'a mut DefinitionTable,
+    /// Type table for looking up and registering types.
+    table: &'a mut TypeTable,
+    /// Counter for generating unique lambda names.
+    counter: u32,
+    /// Diagnostic sink for errors (e.g. thread-safety violations).
+    diagnostics: &'a mut Diagnostics,
+}
+
+impl HirMutVisitor for LambdaLifter<'_> {
+    fn visit_expr_mut(&mut self, expr: &mut HirExpr) {
+        // Lambda lifting — take ownership and transform.
+        if matches!(expr.kind, HirExprKind::Lambda { .. }) {
             let old_kind = std::mem::replace(&mut expr.kind, HirExprKind::Error);
             if let HirExprKind::Lambda { params, mut body } = old_kind {
                 // Depth-first: lift any nested lambdas inside this body first.
-                walk_expr(&mut body, lifted, definitions, table, counter, diagnostics);
+                self.visit_expr_mut(&mut body);
 
                 // Allocate a synthetic DefId for the lifted function.
-                let name = spark_intern::sym(&format!("__lambda_{counter}"));
-                *counter += 1;
+                let name = spark_intern::sym(&format!("__lambda_{}", self.counter));
+                self.counter += 1;
 
-                let def_id = definitions.insert(DefinitionInfo::new(
+                let def_id = self.definitions.insert(DefinitionInfo::new(
                     DefinitionKind::Lambda,
                     name,
                     expr.span,
@@ -74,16 +87,16 @@ fn walk_expr(
                 ));
 
                 // Extract return type from the function type.
-                let ret_type = extract_ret_type(expr.ty, table);
+                let ret_type = extract_ret_type(expr.ty, self.table);
 
                 // Register the function type for this DefId in the type table.
-                table.set_def_type(def_id, expr.ty);
+                self.table.set_def_type(def_id, expr.ty);
 
                 // Collect free variables (captures) from the lambda body.
-                let captures = collect_captures(&body, &params, definitions);
+                let captures = collect_captures(&body, &params, self.definitions);
 
                 // Create the lifted function.
-                lifted.push(HirFunction {
+                self.lifted.push(HirFunction {
                     def_id,
                     params,
                     body: *body,
@@ -105,184 +118,95 @@ fn walk_expr(
                     };
                 }
             }
+            return;
         }
 
-        // === Recursion into all sub-expressions ===
+        // Determine post-walk action before walking children.
+        let is_spawn = matches!(expr.kind, HirExprKind::Spawn(_));
+        let is_parallel_callback = matches!(
+            expr.kind,
+            HirExprKind::ParallelForEach { .. } | HirExprKind::ParallelMap { .. }
+        );
+        let is_parallel_map_reduce = matches!(expr.kind, HirExprKind::ParallelMapReduce { .. });
 
-        // Leaf nodes — no children to walk.
-        HirExprKind::Literal(_)
-        | HirExprKind::Local(_)
-        | HirExprKind::MakeClosure { .. }
-        | HirExprKind::Continue
-        | HirExprKind::Error => {}
+        // Walk all children (default recursion).
+        walk_expr_mut(self, expr);
 
-        // Single sub-expression.
-        HirExprKind::UnaryOp { operand, .. }
-        | HirExprKind::Borrow { operand, .. } => {
-            walk_expr(operand, lifted, definitions, table, counter, diagnostics);
-        }
-        HirExprKind::Deref(inner)
-        | HirExprKind::Await(inner)
-        | HirExprKind::Loop { body: inner }
-        | HirExprKind::Is { expr: inner, .. }
-        | HirExprKind::As { expr: inner, .. } => {
-            walk_expr(inner, lifted, definitions, table, counter, diagnostics);
-        }
-
-        // Spawn: wrap the body in a synthetic zero-arg closure for deferred execution.
-        HirExprKind::Spawn(inner) => {
-            // Walk the inner first to process any nested lambdas.
-            walk_expr(inner, lifted, definitions, table, counter, diagnostics);
-
-            // Lift the spawn body into a synthetic closure.
-            lift_spawn_body(expr, lifted, definitions, table, counter, diagnostics);
-        }
-        HirExprKind::Return(opt) | HirExprKind::Break(opt) => {
-            if let Some(inner) = opt {
-                walk_expr(inner, lifted, definitions, table, counter, diagnostics);
-            }
+        // Post-walk: spawn body lifting.
+        if is_spawn {
+            lift_spawn_body(
+                expr,
+                &mut self.lifted,
+                self.definitions,
+                self.table,
+                &mut self.counter,
+                self.diagnostics,
+            );
         }
 
-        // Two sub-expressions.
-        HirExprKind::BinaryOp { lhs, rhs, .. } => {
-            walk_expr(lhs, lifted, definitions, table, counter, diagnostics);
-            walk_expr(rhs, lifted, definitions, table, counter, diagnostics);
-        }
-        HirExprKind::FieldAccess { base, .. } => {
-            walk_expr(base, lifted, definitions, table, counter, diagnostics);
-        }
-        HirExprKind::Index { base, index } => {
-            walk_expr(base, lifted, definitions, table, counter, diagnostics);
-            walk_expr(index, lifted, definitions, table, counter, diagnostics);
-        }
-
-        // Calls.
-        HirExprKind::Call { callee, args } => {
-            walk_expr(callee, lifted, definitions, table, counter, diagnostics);
-            for arg in args {
-                walk_expr(arg, lifted, definitions, table, counter, diagnostics);
+        // Post-walk: thread-safety checks on parallel callbacks.
+        if is_parallel_callback {
+            if let HirExprKind::ParallelForEach { callback, .. }
+            | HirExprKind::ParallelMap { callback, .. } = &expr.kind
+            {
+                check_parallel_ref_captures(callback, self.table, self.diagnostics);
             }
-        }
-        HirExprKind::MethodCall { receiver, args, .. } => {
-            walk_expr(receiver, lifted, definitions, table, counter, diagnostics);
-            for arg in args {
-                walk_expr(arg, lifted, definitions, table, counter, diagnostics);
+        } else if is_parallel_map_reduce {
+            if let HirExprKind::ParallelMapReduce { mapper, .. } = &expr.kind {
+                check_parallel_ref_captures(mapper, self.table, self.diagnostics);
             }
-        }
-
-        // Constructors / collections.
-        HirExprKind::StructInit { fields, .. } => {
-            for (_, val) in fields {
-                walk_expr(val, lifted, definitions, table, counter, diagnostics);
-            }
-        }
-        HirExprKind::EnumVariant { fields, .. } => {
-            for f in fields {
-                walk_expr(f, lifted, definitions, table, counter, diagnostics);
-            }
-        }
-        HirExprKind::ListLit(elems)
-        | HirExprKind::SetLit(elems)
-        | HirExprKind::TupleLit(elems) => {
-            for e in elems {
-                walk_expr(e, lifted, definitions, table, counter, diagnostics);
-            }
-        }
-        HirExprKind::ListRange { start, end, step, .. } => {
-            walk_expr(start, lifted, definitions, table, counter, diagnostics);
-            walk_expr(end, lifted, definitions, table, counter, diagnostics);
-            if let Some(s) = step {
-                walk_expr(s, lifted, definitions, table, counter, diagnostics);
-            }
-        }
-        HirExprKind::MapLit(pairs) => {
-            for (k, v) in pairs {
-                walk_expr(k, lifted, definitions, table, counter, diagnostics);
-                walk_expr(v, lifted, definitions, table, counter, diagnostics);
-            }
-        }
-
-        // Control flow.
-        HirExprKind::Block { stmts, expr: trailing } => {
-            for stmt in stmts {
-                walk_stmt(stmt, lifted, definitions, table, counter, diagnostics);
-            }
-            if let Some(e) = trailing {
-                walk_expr(e, lifted, definitions, table, counter, diagnostics);
-            }
-        }
-        HirExprKind::If { cond, then_, else_ } => {
-            walk_expr(cond, lifted, definitions, table, counter, diagnostics);
-            walk_expr(then_, lifted, definitions, table, counter, diagnostics);
-            if let Some(e) = else_ {
-                walk_expr(e, lifted, definitions, table, counter, diagnostics);
-            }
-        }
-        HirExprKind::Match { scrutinee, arms } => {
-            walk_expr(scrutinee, lifted, definitions, table, counter, diagnostics);
-            for arm in arms {
-                walk_arm(arm, lifted, definitions, table, counter, diagnostics);
-            }
-        }
-
-        // String interpolation.
-        HirExprKind::StringInterp { parts } => {
-            for part in parts {
-                walk_expr(part, lifted, definitions, table, counter, diagnostics);
-            }
-        }
-
-        // Parallel iteration.
-        HirExprKind::ParallelForEach { list, callback, .. } => {
-            walk_expr(list, lifted, definitions, table, counter, diagnostics);
-            walk_expr(callback, lifted, definitions, table, counter, diagnostics);
-            check_parallel_ref_captures(callback, table, diagnostics);
-        }
-        HirExprKind::ParallelMap { list, callback, .. } => {
-            walk_expr(list, lifted, definitions, table, counter, diagnostics);
-            walk_expr(callback, lifted, definitions, table, counter, diagnostics);
-            check_parallel_ref_captures(callback, table, diagnostics);
-        }
-        HirExprKind::ParallelMapReduce { list, mapper, combiner, initial, .. } => {
-            walk_expr(list, lifted, definitions, table, counter, diagnostics);
-            walk_expr(mapper, lifted, definitions, table, counter, diagnostics);
-            check_parallel_ref_captures(mapper, table, diagnostics);
-            walk_expr(combiner, lifted, definitions, table, counter, diagnostics);
-            walk_expr(initial, lifted, definitions, table, counter, diagnostics);
         }
     }
 }
 
-/// Walks a statement, recursing into its sub-expressions.
-fn walk_stmt(
-    stmt: &mut HirStmt,
-    lifted: &mut Vec<HirFunction>,
-    definitions: &mut DefinitionTable,
-    table: &mut TypeTable,
-    counter: &mut u32,
-    diagnostics: &mut Diagnostics,
-) {
-    match stmt {
-        HirStmt::Let { value, .. } => walk_expr(value, lifted, definitions, table, counter, diagnostics),
-        HirStmt::Assign { target, value } => {
-            walk_expr(target, lifted, definitions, table, counter, diagnostics);
-            walk_expr(value, lifted, definitions, table, counter, diagnostics);
+// ─── Capture collector (immutable visitor) ──────────────────────────────────
+
+/// Immutable visitor that collects free variables referenced from a lambda body.
+struct CaptureCollector<'a> {
+    /// The lambda's own parameter `DefId`s (excluded from captures).
+    param_defs: &'a rustc_hash::FxHashSet<DefId>,
+    /// Definition table for checking definition kinds.
+    definitions: &'a DefinitionTable,
+    /// Accumulated captures `(DefId, TypeId)`.
+    captures: Vec<(DefId, TypeId)>,
+    /// Deduplication set.
+    seen: rustc_hash::FxHashSet<DefId>,
+}
+
+impl HirVisitor for CaptureCollector<'_> {
+    fn visit_expr(&mut self, expr: &HirExpr) {
+        match &expr.kind {
+            HirExprKind::Local(def_id) => {
+                // Skip lambda's own parameters.
+                if self.param_defs.contains(def_id) {
+                    return;
+                }
+                // Skip functions, builtins, and binding methods — they're not captured values.
+                if let Some(info) = self.definitions.get(*def_id) {
+                    if matches!(
+                        info.kind,
+                        DefinitionKind::Function
+                            | DefinitionKind::BuiltinFunction
+                            | DefinitionKind::BuiltinMethod
+                            | DefinitionKind::Lambda
+                            | DefinitionKind::BindingMethod(_)
+                    ) {
+                        return;
+                    }
+                }
+                // Deduplicate by DefId.
+                if self.seen.insert(*def_id) {
+                    self.captures.push((*def_id, expr.ty));
+                }
+            }
+            // Lambda nodes inside a lambda body are already lifted by depth-first walk.
+            HirExprKind::Lambda { .. } => {}
+            _ => walk_expr(self, expr),
         }
-        HirStmt::Expr(e) => walk_expr(e, lifted, definitions, table, counter, diagnostics),
     }
 }
 
-/// Walks a match arm body.
-fn walk_arm(
-    arm: &mut HirMatchArm,
-    lifted: &mut Vec<HirFunction>,
-    definitions: &mut DefinitionTable,
-    table: &mut TypeTable,
-    counter: &mut u32,
-    diagnostics: &mut Diagnostics,
-) {
-    walk_expr(&mut arm.body, lifted, definitions, table, counter, diagnostics);
-}
+// ─── Helper functions ───────────────────────────────────────────────────────
 
 /// Checks whether a parallel callback captures any reference types.
 ///
@@ -445,7 +369,7 @@ fn type_contains_ref(ty_id: TypeId, table: &TypeTable) -> bool {
 /// variables from enclosing scopes that need to be captured.
 fn collect_captures(
     body: &HirExpr,
-    params: &[crate::hir::HirParam],
+    params: &[HirParam],
     definitions: &DefinitionTable,
 ) -> Vec<(DefId, TypeId)> {
     use rustc_hash::FxHashSet;
@@ -453,190 +377,14 @@ fn collect_captures(
     for p in params {
         param_defs.insert(p.def_id);
     }
-    let mut captures = Vec::new();
-    let mut seen = FxHashSet::default();
-    collect_captures_walk(body, &param_defs, definitions, &mut captures, &mut seen);
-    captures
-}
-
-/// Recursive walker for capture collection.
-fn collect_captures_walk(
-    expr: &HirExpr,
-    param_defs: &rustc_hash::FxHashSet<DefId>,
-    definitions: &DefinitionTable,
-    captures: &mut Vec<(DefId, TypeId)>,
-    seen: &mut rustc_hash::FxHashSet<DefId>,
-) {
-    match &expr.kind {
-        HirExprKind::Local(def_id) => {
-            // Skip lambda's own parameters.
-            if param_defs.contains(def_id) {
-                return;
-            }
-            // Skip functions, builtins, and binding methods — they're not captured values.
-            if let Some(info) = definitions.get(*def_id) {
-                if matches!(
-                    info.kind,
-                    DefinitionKind::Function
-                        | DefinitionKind::BuiltinFunction
-                        | DefinitionKind::BuiltinMethod
-                        | DefinitionKind::Lambda
-                        | DefinitionKind::BindingMethod(_)
-                ) {
-                    return;
-                }
-            }
-            // Deduplicate by DefId.
-            if seen.insert(*def_id) {
-                captures.push((*def_id, expr.ty));
-            }
-        }
-        // Leaf nodes.
-        HirExprKind::Literal(_)
-        | HirExprKind::MakeClosure { .. }
-        | HirExprKind::Continue
-        | HirExprKind::Error => {}
-        // Single sub-expression.
-        HirExprKind::UnaryOp { operand, .. }
-        | HirExprKind::Borrow { operand, .. } => {
-            collect_captures_walk(operand, param_defs, definitions, captures, seen);
-        }
-        HirExprKind::Deref(inner)
-        | HirExprKind::Await(inner)
-        | HirExprKind::Spawn(inner)
-        | HirExprKind::Loop { body: inner }
-        | HirExprKind::Is { expr: inner, .. }
-        | HirExprKind::As { expr: inner, .. } => {
-            collect_captures_walk(inner, param_defs, definitions, captures, seen);
-        }
-        HirExprKind::Return(opt) | HirExprKind::Break(opt) => {
-            if let Some(inner) = opt {
-                collect_captures_walk(inner, param_defs, definitions, captures, seen);
-            }
-        }
-        // Two sub-expressions.
-        HirExprKind::BinaryOp { lhs, rhs, .. } => {
-            collect_captures_walk(lhs, param_defs, definitions, captures, seen);
-            collect_captures_walk(rhs, param_defs, definitions, captures, seen);
-        }
-        HirExprKind::FieldAccess { base, .. } => {
-            collect_captures_walk(base, param_defs, definitions, captures, seen);
-        }
-        HirExprKind::Index { base, index } => {
-            collect_captures_walk(base, param_defs, definitions, captures, seen);
-            collect_captures_walk(index, param_defs, definitions, captures, seen);
-        }
-        // Calls.
-        HirExprKind::Call { callee, args } => {
-            collect_captures_walk(callee, param_defs, definitions, captures, seen);
-            for arg in args {
-                collect_captures_walk(arg, param_defs, definitions, captures, seen);
-            }
-        }
-        HirExprKind::MethodCall { receiver, args, .. } => {
-            collect_captures_walk(receiver, param_defs, definitions, captures, seen);
-            for arg in args {
-                collect_captures_walk(arg, param_defs, definitions, captures, seen);
-            }
-        }
-        // Constructors.
-        HirExprKind::StructInit { fields, .. } => {
-            for (_, val) in fields {
-                collect_captures_walk(val, param_defs, definitions, captures, seen);
-            }
-        }
-        HirExprKind::EnumVariant { fields, .. } => {
-            for f in fields {
-                collect_captures_walk(f, param_defs, definitions, captures, seen);
-            }
-        }
-        HirExprKind::ListLit(elems)
-        | HirExprKind::SetLit(elems)
-        | HirExprKind::TupleLit(elems) => {
-            for e in elems {
-                collect_captures_walk(e, param_defs, definitions, captures, seen);
-            }
-        }
-        HirExprKind::ListRange { start, end, step, .. } => {
-            collect_captures_walk(start, param_defs, definitions, captures, seen);
-            collect_captures_walk(end, param_defs, definitions, captures, seen);
-            if let Some(s) = step {
-                collect_captures_walk(s, param_defs, definitions, captures, seen);
-            }
-        }
-        HirExprKind::MapLit(pairs) => {
-            for (k, v) in pairs {
-                collect_captures_walk(k, param_defs, definitions, captures, seen);
-                collect_captures_walk(v, param_defs, definitions, captures, seen);
-            }
-        }
-        // Control flow.
-        HirExprKind::Block { stmts, expr: trailing } => {
-            for stmt in stmts {
-                collect_captures_walk_stmt(stmt, param_defs, definitions, captures, seen);
-            }
-            if let Some(e) = trailing {
-                collect_captures_walk(e, param_defs, definitions, captures, seen);
-            }
-        }
-        HirExprKind::If { cond, then_, else_ } => {
-            collect_captures_walk(cond, param_defs, definitions, captures, seen);
-            collect_captures_walk(then_, param_defs, definitions, captures, seen);
-            if let Some(e) = else_ {
-                collect_captures_walk(e, param_defs, definitions, captures, seen);
-            }
-        }
-        HirExprKind::Match { scrutinee, arms } => {
-            collect_captures_walk(scrutinee, param_defs, definitions, captures, seen);
-            for arm in arms {
-                collect_captures_walk(&arm.body, param_defs, definitions, captures, seen);
-            }
-        }
-        HirExprKind::StringInterp { parts } => {
-            for part in parts {
-                collect_captures_walk(part, param_defs, definitions, captures, seen);
-            }
-        }
-        // Parallel iteration.
-        HirExprKind::ParallelForEach { list, callback, .. } => {
-            collect_captures_walk(list, param_defs, definitions, captures, seen);
-            collect_captures_walk(callback, param_defs, definitions, captures, seen);
-        }
-        HirExprKind::ParallelMap { list, callback, .. } => {
-            collect_captures_walk(list, param_defs, definitions, captures, seen);
-            collect_captures_walk(callback, param_defs, definitions, captures, seen);
-        }
-        HirExprKind::ParallelMapReduce { list, mapper, combiner, initial, .. } => {
-            collect_captures_walk(list, param_defs, definitions, captures, seen);
-            collect_captures_walk(mapper, param_defs, definitions, captures, seen);
-            collect_captures_walk(combiner, param_defs, definitions, captures, seen);
-            collect_captures_walk(initial, param_defs, definitions, captures, seen);
-        }
-        // Lambda nodes inside a lambda body are already lifted by depth-first walk.
-        HirExprKind::Lambda { .. } => {}
-    }
-}
-
-/// Walks a statement for capture collection.
-fn collect_captures_walk_stmt(
-    stmt: &HirStmt,
-    param_defs: &rustc_hash::FxHashSet<DefId>,
-    definitions: &DefinitionTable,
-    captures: &mut Vec<(DefId, TypeId)>,
-    seen: &mut rustc_hash::FxHashSet<DefId>,
-) {
-    match stmt {
-        HirStmt::Let { value, .. } => {
-            collect_captures_walk(value, param_defs, definitions, captures, seen);
-        }
-        HirStmt::Assign { target, value } => {
-            collect_captures_walk(target, param_defs, definitions, captures, seen);
-            collect_captures_walk(value, param_defs, definitions, captures, seen);
-        }
-        HirStmt::Expr(e) => {
-            collect_captures_walk(e, param_defs, definitions, captures, seen);
-        }
-    }
+    let mut collector = CaptureCollector {
+        param_defs: &param_defs,
+        definitions,
+        captures: Vec::new(),
+        seen: FxHashSet::default(),
+    };
+    collector.visit_expr(body);
+    collector.captures
 }
 
 /// Extracts the return type from a `Ty::Function` type.
@@ -652,7 +400,7 @@ fn extract_ret_type(type_id: TypeId, table: &TypeTable) -> TypeId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hir::{HirExpr, HirExprKind, HirFunction, HirLiteral, HirParam};
+    use crate::hir::{HirExpr, HirExprKind, HirFunction, HirLiteral, HirParam, HirStmt};
     use spark_span::Span;
     use spark_types::IntWidth;
     use std::collections::HashMap;
