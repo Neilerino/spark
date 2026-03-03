@@ -10,7 +10,7 @@ use spark_diagnostics::{Diagnostic, Label};
 use spark_resolve::{DefId, DefinitionTable};
 use spark_span::Span;
 
-use crate::check_expr::type_name;
+use crate::display::display_type as type_name;
 use crate::ctx::TypeCheckCtx;
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;

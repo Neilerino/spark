@@ -138,7 +138,7 @@ fn emit_switch_int<M: Module>(
         thunk_ids,
         module,
     )
-    .unwrap_or_else(|| ctx.builder.ins().iconst(types::I8, 0));
+    .expect("ICE: switch discriminant operand produced no value; this is a compiler bug");
 
     for (value, target) in targets {
         let val_ty = ctx.builder.func.dfg.value_type(disc_val);
@@ -375,7 +375,7 @@ fn emit_call<M: Module>(
         // The callee writes directly to this address; no return value.
         let sret_addr = ctx
             .local_stack_addr(destination.local)
-            .unwrap_or_else(|| ctx.builder.ins().iconst(ctx.ptr_type, 0));
+            .expect("ICE: sret destination local has no stack slot; this is a compiler bug");
         if let Some(def_id) = resolved_def_id {
             emit_direct_call_sret(
                 ctx,

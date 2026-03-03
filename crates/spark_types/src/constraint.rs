@@ -9,7 +9,8 @@ use spark_diagnostics::{Diagnostic, Label};
 use spark_resolve::{DefId, DefinitionTable};
 use spark_span::Span;
 
-use crate::check_expr::{is_compatible, type_name};
+use crate::check_expr::is_compatible;
+use crate::display::display_type as type_name;
 use crate::table::TypeTable;
 use crate::ty::{Constraint, Ty, TypeId};
 

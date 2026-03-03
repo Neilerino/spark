@@ -13,7 +13,7 @@ use rustc_hash::FxHashMap;
 use spark_resolve::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visibility};
 use spark_span::Span;
 use spark_types::substitute::{substitute_mut, SubstMap};
-use spark_types::{TypeId, TypeTable};
+use spark_types::{mangle_type, TypeId, TypeTable};
 
 use crate::mir::{Constant, Mir, MirFunction, Operand, Rvalue, Statement, Terminator};
 
@@ -208,36 +208,9 @@ fn mangle_name(
         if i > 0 {
             name.push('_');
         }
-        let _ = write!(name, "{}", type_name_short(arg, table));
+        let _ = write!(name, "{}", mangle_type(arg, table));
     }
     spark_intern::sym(&name)
-}
-
-/// Returns a short name for a type, used in mangling.
-fn type_name_short(ty_id: TypeId, table: &TypeTable) -> String {
-    use spark_types::Ty;
-    match table.resolve(ty_id) {
-        Ty::Int(w) => format!("{w:?}"),
-        Ty::Float(w) => format!("{w:?}"),
-        Ty::Bool => "Bool".to_owned(),
-        Ty::Char => "Char".to_owned(),
-        Ty::String => "String".to_owned(),
-        Ty::Byte => "Byte".to_owned(),
-        Ty::CPtr => "CPtr".to_owned(),
-        Ty::Void => "Void".to_owned(),
-        Ty::Struct(d) | Ty::Enum(d) => format!("D{}", d.as_u32()),
-        Ty::List(inner) => format!("List_{}", type_name_short(*inner, table)),
-        Ty::Optional(inner) => format!("Opt_{}", type_name_short(*inner, table)),
-        Ty::Applied { base, args } => {
-            let mut s = format!("D{}", base.as_u32());
-            for a in args {
-                s.push('_');
-                s.push_str(&type_name_short(*a, table));
-            }
-            s
-        }
-        _ => format!("T{ty_id:?}"),
-    }
 }
 
 #[cfg(test)]

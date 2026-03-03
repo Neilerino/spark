@@ -12,6 +12,7 @@ use spark_span::Span;
 use crate::builtins::BuiltinTypes;
 use crate::check_stmt::check_stmt;
 use crate::ctx::TypeCheckCtx;
+use crate::display::display_type as type_name;
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
 use crate::ty::{Ty, TypeId};
@@ -1491,71 +1492,6 @@ fn unwrap_optional(ty: TypeId, table: &TypeTable) -> TypeId {
     }
 }
 
-/// Returns a human-readable name for a type.
-#[must_use]
-pub fn type_name(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable) -> String {
-    match table.resolve(ty) {
-        Ty::Int(w) => w.to_string(),
-        Ty::Float(w) => w.to_string(),
-        Ty::Bool => "Bool".to_string(),
-        Ty::Char => "Char".to_string(),
-        Ty::String => "String".to_string(),
-        Ty::Byte => "Byte".to_string(),
-        Ty::CPtr => "CPtr".to_string(),
-        Ty::Void => "Void".to_string(),
-        Ty::Null => "Null".to_string(),
-        Ty::Never => "Never".to_string(),
-        Ty::List(elem) => format!("List[{}]", type_name(*elem, table, definitions)),
-        Ty::Map(k, v) => format!(
-            "Map[{}, {}]",
-            type_name(*k, table, definitions),
-            type_name(*v, table, definitions)
-        ),
-        Ty::Set(elem) => format!("Set[{}]", type_name(*elem, table, definitions)),
-        Ty::Tuple(elems) => {
-            let parts: Vec<_> = elems.iter().map(|e| type_name(*e, table, definitions)).collect();
-            format!("Tup[{}]", parts.join(", "))
-        }
-        Ty::Struct(def_id) => definitions
-            .get(*def_id)
-            .map_or_else(|| "<struct>".to_string(), |info| info.name.to_string()),
-        Ty::Enum(def_id) => definitions
-            .get(*def_id)
-            .map_or_else(|| "<enum>".to_string(), |info| info.name.to_string()),
-        Ty::Union(members) => {
-            let parts: Vec<_> = members.iter().map(|m| type_name(*m, table, definitions)).collect();
-            parts.join(" | ")
-        }
-        Ty::Optional(inner) => format!("{}?", type_name(*inner, table, definitions)),
-        Ty::Mutable(inner) => format!("{}!", type_name(*inner, table, definitions)),
-        Ty::Ref { inner, mutable, .. } => {
-            if *mutable {
-                format!("Ref[{}]!", type_name(*inner, table, definitions))
-            } else {
-                format!("Ref[{}]", type_name(*inner, table, definitions))
-            }
-        }
-        Ty::Function { params, ret, is_async } => {
-            let params_str: Vec<_> = params.iter().map(|p| type_name(*p, table, definitions)).collect();
-            let async_prefix = if *is_async { "async " } else { "" };
-            format!("{}({}): {}", async_prefix, params_str.join(", "), type_name(*ret, table, definitions))
-        }
-        Ty::Param(def_id) => definitions
-            .get(*def_id)
-            .map_or_else(|| "<param>".to_string(), |info| info.name.to_string()),
-        Ty::Applied { base, args } => {
-            let base_name = definitions
-                .get(*base)
-                .map_or_else(|| "<generic>".to_string(), |info| info.name.to_string());
-            let arg_names: Vec<_> = args.iter().map(|a| type_name(*a, table, definitions)).collect();
-            format!("{}[{}]", base_name, arg_names.join(", "))
-        }
-        Ty::Future { inner } => format!("Future[{}]", type_name(*inner, table, definitions)),
-        Ty::Channel { inner } => format!("Channel[{}]", type_name(*inner, table, definitions)),
-        Ty::AsyncState { .. } => "<async-state>".to_string(),
-        Ty::Error => "<error>".to_string(),
-    }
-}
 
 /// Type-checks a method call on a collection, string, or user-defined type receiver.
 fn check_method_call(
@@ -2346,27 +2282,6 @@ mod tests {
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
         assert!(!is_compatible(builtins.int, builtins.string, &table));
-    }
-
-    #[test]
-    fn type_name_primitives() {
-        let mut table = TypeTable::new();
-        let builtins = register_builtins(&mut table);
-        let defs = DefinitionTable::new();
-
-        assert_eq!(type_name(builtins.int, &table, &defs), "Int64");
-        assert_eq!(type_name(builtins.bool_ty, &table, &defs), "Bool");
-        assert_eq!(type_name(builtins.string, &table, &defs), "String");
-        assert_eq!(type_name(builtins.void, &table, &defs), "Void");
-    }
-
-    #[test]
-    fn type_name_optional() {
-        let mut table = TypeTable::new();
-        let builtins = register_builtins(&mut table);
-        let defs = DefinitionTable::new();
-        let opt_int = table.intern(Ty::Optional(builtins.int));
-        assert_eq!(type_name(opt_int, &table, &defs), "Int64?");
     }
 
     #[test]

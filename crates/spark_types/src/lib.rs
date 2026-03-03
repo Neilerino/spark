@@ -59,6 +59,7 @@ pub mod check_stmt;
 pub mod checker;
 pub mod constraint;
 pub mod ctx;
+pub mod display;
 pub mod exhaustive;
 pub mod intern;
 pub mod lower;
@@ -70,7 +71,7 @@ pub mod union;
 use spark_modules::ModuleGraph;
 use spark_resolve::{DefinitionTable, ResolvedAst};
 
-pub use check_expr::type_name;
+pub use display::{display_type, mangle_type};
 pub use checker::TypeCheckerOutput;
 pub use ctx::TypeCheckCtx;
 pub use table::TypeTable;

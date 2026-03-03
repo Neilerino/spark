@@ -231,7 +231,7 @@ fn check_item_body(
                 if ret_type != ctx.builtins.void
                     && !matches!(body_resolved, crate::Ty::Never)
                 {
-                    let ret_name = crate::check_expr::type_name(
+                    let ret_name = crate::display::display_type(
                         ret_type,
                         ctx.table,
                         ctx.definitions,
@@ -256,8 +256,8 @@ fn check_item_body(
             let val_ty = check_expr(&const_def.value, ctx, None);
 
             if !crate::check_expr::is_compatible(val_ty, expected_ty, ctx.table) {
-                let expected = crate::check_expr::type_name(expected_ty, ctx.table, ctx.definitions);
-                let found = crate::check_expr::type_name(val_ty, ctx.table, ctx.definitions);
+                let expected = crate::display::display_type(expected_ty, ctx.table, ctx.definitions);
+                let found = crate::display::display_type(val_ty, ctx.table, ctx.definitions);
                 ctx.diagnostics.push(
                     spark_diagnostics::Diagnostic::error(format!(
                         "constant `{}` type mismatch: expected `{expected}`, found `{found}`",
@@ -307,7 +307,7 @@ fn check_binding_bodies(
                 if ret_type != ctx.builtins.void
                     && !matches!(body_resolved, crate::Ty::Never)
                 {
-                    let ret_name = crate::check_expr::type_name(
+                    let ret_name = crate::display::display_type(
                         ret_type,
                         ctx.table,
                         ctx.definitions,

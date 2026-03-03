@@ -383,7 +383,7 @@ fn find_method_at_offset(
 fn def_type_str(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Option<String> {
     let table = analysis.type_table.as_ref()?;
     let type_id = table.get_def_type(def_id)?;
-    Some(spark_types::type_name(type_id, table, &analysis.definitions))
+    Some(spark_types::display_type(type_id, table, &analysis.definitions))
 }
 
 /// Formats a single generic constraint for display (e.g., `Comparable` or `{ id: Int }`).
@@ -405,7 +405,7 @@ fn format_constraint(
             } else {
                 let args: Vec<_> = type_args
                     .iter()
-                    .map(|tid| spark_types::type_name(*tid, table, definitions))
+                    .map(|tid| spark_types::display_type(*tid, table, definitions))
                     .collect();
                 format!("{name}[{}]", args.join(", "))
             }
@@ -414,7 +414,7 @@ fn format_constraint(
             let parts: Vec<_> = fields
                 .iter()
                 .map(|(sym, tid)| {
-                    let ty = spark_types::type_name(*tid, table, definitions);
+                    let ty = spark_types::display_type(*tid, table, definitions);
                     format!("{sym}: {ty}")
                 })
                 .collect();
@@ -542,7 +542,7 @@ fn format_struct_hover(
                 fields
                     .iter()
                     .map(|(sym, tid)| {
-                        let ty = spark_types::type_name(*tid, table, &analysis.definitions);
+                        let ty = spark_types::display_type(*tid, table, &analysis.definitions);
                         format!("    {sym}: {ty}")
                     })
                     .collect::<Vec<_>>()

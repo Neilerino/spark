@@ -6,7 +6,8 @@
 use spark_ast::{Stmt, StmtKind};
 use spark_diagnostics::{Diagnostic, Label};
 
-use crate::check_expr::{check_expr, check_expr_expected, is_compatible, strip_mutable, strip_ref, type_name};
+use crate::check_expr::{check_expr, check_expr_expected, is_compatible, strip_mutable, strip_ref};
+use crate::display::display_type as type_name;
 use crate::ctx::TypeCheckCtx;
 use crate::lower::lower_type_expr;
 use crate::ty::{Ty, TypeId};
