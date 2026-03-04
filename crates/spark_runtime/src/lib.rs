@@ -672,6 +672,31 @@ pub unsafe extern "C" fn __spark_string_len(ptr: *mut u8) -> i64 {
     s.len as i64
 }
 
+/// Compares two strings for content equality.
+///
+/// Returns `1` if the strings have the same length and identical bytes,
+/// `0` otherwise.
+///
+/// # Safety
+///
+/// Both `a` and `b` must be valid pointers from `__spark_string_new` or
+/// `__spark_string_from_literal`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_eq(a: *mut u8, b: *mut u8) -> i8 {
+    let sa = unsafe { &*(a.cast::<SparkString>()) };
+    let sb = unsafe { &*(b.cast::<SparkString>()) };
+    if sa.len != sb.len {
+        return 0;
+    }
+    if sa.len == 0 {
+        return 1;
+    }
+    let slice_a = unsafe { std::slice::from_raw_parts(sa.data, sa.len) };
+    let slice_b = unsafe { std::slice::from_raw_parts(sb.data, sb.len) };
+    i8::from(slice_a == slice_b)
+}
+
 // =============================================================================
 // List range construction
 // =============================================================================
@@ -1444,6 +1469,50 @@ mod tests {
             let f = __spark_bool_to_string(0);
             assert_eq!(read_spark_string(f), "false");
             __spark_string_rc_dec(f);
+        }
+    }
+
+    #[test]
+    fn string_eq_same_content() {
+        unsafe {
+            let a = __spark_string_from_literal("hello".as_ptr(), 5);
+            let b = __spark_string_from_literal("hello".as_ptr(), 5);
+            assert_eq!(__spark_string_eq(a, b), 1);
+            __spark_string_rc_dec(a);
+            __spark_string_rc_dec(b);
+        }
+    }
+
+    #[test]
+    fn string_eq_different_content() {
+        unsafe {
+            let a = __spark_string_from_literal("hello".as_ptr(), 5);
+            let b = __spark_string_from_literal("world".as_ptr(), 5);
+            assert_eq!(__spark_string_eq(a, b), 0);
+            __spark_string_rc_dec(a);
+            __spark_string_rc_dec(b);
+        }
+    }
+
+    #[test]
+    fn string_eq_different_lengths() {
+        unsafe {
+            let a = __spark_string_from_literal("hi".as_ptr(), 2);
+            let b = __spark_string_from_literal("hello".as_ptr(), 5);
+            assert_eq!(__spark_string_eq(a, b), 0);
+            __spark_string_rc_dec(a);
+            __spark_string_rc_dec(b);
+        }
+    }
+
+    #[test]
+    fn string_eq_both_empty() {
+        unsafe {
+            let a = __spark_string_new();
+            let b = __spark_string_new();
+            assert_eq!(__spark_string_eq(a, b), 1);
+            __spark_string_rc_dec(a);
+            __spark_string_rc_dec(b);
         }
     }
 

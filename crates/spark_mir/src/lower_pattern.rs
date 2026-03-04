@@ -187,10 +187,32 @@ fn compile_pattern(
                         otherwise: fail_bb,
                     });
                 }
-                _ => {
-                    // For String/Float, fall through to match_bb
-                    // (a real compiler would need equality checks; we simplify here)
-                    fb.terminate(Terminator::Goto { target: match_bb });
+                Constant::Float(_) | Constant::String(_) => {
+                    // Emit BinaryOp::Eq(scrutinee, literal) → bool temp → SwitchInt
+                    let eq_temp = fb.fresh_temp(
+                        discriminant_type(type_table),
+                        spark_span::Span::DUMMY,
+                    );
+                    fb.push_assign(
+                        Place::from_local(eq_temp),
+                        Rvalue::BinaryOp(
+                            spark_ast::BinaryOp::Eq,
+                            Operand::Copy(Place::from_local(scrut)),
+                            Operand::Constant(constant.clone()),
+                        ),
+                        spark_span::Span::DUMMY,
+                    );
+                    fb.terminate(Terminator::SwitchInt {
+                        discriminant: Operand::Copy(Place::from_local(eq_temp)),
+                        targets: vec![(1, match_bb)],
+                        otherwise: fail_bb,
+                    });
+                }
+                Constant::FunctionRef(_)
+                | Constant::Void
+                | Constant::IntrinsicRef(_) => {
+                    // These constants cannot appear as literal patterns.
+                    fb.terminate(Terminator::Unreachable);
                 }
             }
         }

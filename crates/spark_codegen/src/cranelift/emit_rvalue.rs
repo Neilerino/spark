@@ -44,8 +44,23 @@ pub fn emit_rvalue<M: Module>(
         Rvalue::BinaryOp(op, lhs, rhs) => {
             let lhs_val = emit_operand(ctx, lhs, table, definitions, func_ids, thunk_ids, module)?;
             let rhs_val = emit_operand(ctx, rhs, table, definitions, func_ids, thunk_ids, module)?;
-            let result_ty = ctx.local_type_id(dest_local);
-            Some(emit_binop(ctx, *op, lhs_val, rhs_val, result_ty, table))
+
+            // String equality/inequality must call the runtime.
+            let lhs_ty = operand_type(lhs, ctx);
+            let (_, lhs_resolved) = clif_types::unwrap_mutable(lhs_ty, table);
+            if matches!(lhs_resolved, Ty::String) && matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+                let func_ref = module.declare_func_in_func(ctx.stubs.string_eq, ctx.builder.func);
+                let call = ctx.builder.ins().call(func_ref, &[lhs_val, rhs_val]);
+                let eq_val = ctx.builder.inst_results(call)[0];
+                if *op == BinaryOp::Ne {
+                    Some(ctx.builder.ins().bxor_imm(eq_val, 1))
+                } else {
+                    Some(eq_val)
+                }
+            } else {
+                let result_ty = ctx.local_type_id(dest_local);
+                Some(emit_binop(ctx, *op, lhs_val, rhs_val, result_ty, table))
+            }
         }
 
         Rvalue::UnaryOp(op, operand) => {

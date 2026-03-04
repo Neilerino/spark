@@ -79,6 +79,8 @@ pub struct RuntimeStubs {
     pub print_float: FuncId,
     /// `__spark_string_concat(ptr, ptr) -> ptr`
     pub string_concat: FuncId,
+    /// `__spark_string_eq(ptr, ptr) -> i8`
+    pub string_eq: FuncId,
     /// `__spark_int_to_string(i64) -> ptr`
     pub int_to_string: FuncId,
     /// `__spark_float_to_string(f64) -> ptr`
@@ -344,6 +346,13 @@ impl RuntimeStubs {
                 "__spark_string_concat",
                 &[ptr_type, ptr_type],
                 Some(ptr_type),
+                call_conv,
+            ),
+            string_eq: declare_fn(
+                module,
+                "__spark_string_eq",
+                &[ptr_type, ptr_type],
+                Some(types::I8),
                 call_conv,
             ),
             int_to_string: declare_fn(
