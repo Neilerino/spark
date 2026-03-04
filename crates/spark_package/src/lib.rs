@@ -57,5 +57,5 @@ pub use manifest::{
 pub use registry::{
     search_index, sync_index, FetchedRegistryDep, PackageMetadata, RegistryConfig, VersionEntry,
 };
-pub use resolve::resolve_path_dep;
+pub use resolve::{resolve_path_dep, ResolvedSource};
 pub use resolver::{resolve_all_deps, ResolvedDeps};

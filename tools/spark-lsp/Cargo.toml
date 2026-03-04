@@ -22,6 +22,7 @@ spark_hir.workspace = true
 spark_mir.workspace = true
 spark_borrow.workspace = true
 spark_stdlib.workspace = true
+spark_package.workspace = true
 
 # LSP framework
 tower-lsp.workspace = true

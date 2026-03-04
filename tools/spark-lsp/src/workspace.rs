@@ -84,6 +84,113 @@ fn stdlib_relative_path(file_path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// A source file from a resolved `Spark.toml` dependency.
+pub struct DependencySource {
+    /// `file://` URI for the source file.
+    pub uri: Url,
+    /// Source text.
+    pub source: String,
+    /// Dep-prefixed relative path for module resolution (e.g., `lib_b/lib_b.spark`).
+    pub module_path: PathBuf,
+}
+
+/// Resolves `Spark.toml` dependencies from a single directory.
+///
+/// Returns resolved sources and any errors encountered during resolution.
+/// If no `Spark.toml` exists, returns empty results (not an error).
+pub fn resolve_dependencies(root: &Path) -> (Vec<DependencySource>, Vec<String>) {
+    let mut errors = Vec::new();
+
+    let manifest = match spark_package::load_manifest(root) {
+        Some(Ok(m)) => m,
+        Some(Err(e)) => {
+            errors.push(format!("failed to parse Spark.toml: {e}"));
+            return (Vec::new(), errors);
+        }
+        None => return (Vec::new(), errors),
+    };
+
+    let resolved = match spark_package::resolve_all_deps(&manifest, root) {
+        Ok(r) => r,
+        Err(e) => {
+            errors.push(format!("dependency resolution failed: {e}"));
+            return (Vec::new(), errors);
+        }
+    };
+
+    let mut dep_sources = Vec::new();
+    for src in &resolved.sources {
+        let Some(uri) = file_path_to_uri(&src.absolute_path) else {
+            errors.push(format!(
+                "could not convert path to URI: {}",
+                src.absolute_path.display()
+            ));
+            continue;
+        };
+        dep_sources.push(DependencySource {
+            uri,
+            source: src.source.clone(),
+            module_path: src.module_path.clone(),
+        });
+    }
+
+    (dep_sources, errors)
+}
+
+/// Resolves `Spark.toml` dependencies for all projects in the workspace.
+///
+/// Scans the workspace for `Spark.toml` files (at the root and in
+/// subdirectories) and resolves dependencies for each one. This supports
+/// monorepo layouts where nested projects have their own manifests.
+pub fn resolve_all_workspace_deps(
+    root: &Path,
+) -> (Vec<DependencySource>, Vec<String>) {
+    let mut all_deps = Vec::new();
+    let mut all_errors = Vec::new();
+    let mut seen_uris = std::collections::HashSet::new();
+
+    // Collect all directories containing Spark.toml.
+    let mut manifest_dirs = Vec::new();
+    discover_manifests(root, &mut manifest_dirs);
+
+    for dir in &manifest_dirs {
+        let (deps, errors) = resolve_dependencies(dir);
+        all_errors.extend(errors);
+        for dep in deps {
+            // Deduplicate across projects (e.g., two projects depend on the same lib).
+            if seen_uris.insert(dep.uri.clone()) {
+                all_deps.push(dep);
+            }
+        }
+    }
+
+    (all_deps, all_errors)
+}
+
+/// Recursively finds directories containing `Spark.toml`.
+fn discover_manifests(dir: &Path, out: &mut Vec<PathBuf>) {
+    if dir.join("Spark.toml").exists() {
+        out.push(dir.to_path_buf());
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // Skip hidden dirs, build output, and package caches.
+            if !name_str.starts_with('.')
+                && name_str != "target"
+                && name_str != "node_modules"
+            {
+                discover_manifests(&path, out);
+            }
+        }
+    }
+}
+
 /// Workspace-level state shared across all documents.
 ///
 /// Tracks the project root, file ID mappings, and source text for
@@ -99,6 +206,8 @@ pub struct WorkspaceState {
     pub disk_sources: HashMap<Url, String>,
     /// Ropes for files NOT open in the editor (for cross-file span→range conversion).
     pub disk_ropes: HashMap<Url, Rope>,
+    /// Sources from resolved `Spark.toml` dependencies.
+    pub dep_sources: Vec<DependencySource>,
 }
 
 impl WorkspaceState {
@@ -111,6 +220,7 @@ impl WorkspaceState {
             uri_to_file_id: HashMap::new(),
             disk_sources: HashMap::new(),
             disk_ropes: HashMap::new(),
+            dep_sources: Vec::new(),
         }
     }
 }
@@ -186,8 +296,14 @@ pub fn file_path_to_uri(path: &Path) -> Option<Url> {
 ///
 /// Phases 1–4 always run and accumulate diagnostics. Phases 5–7 only
 /// run if prior phases produced no errors.
+///
+/// Dependency files from `dep_files` are included in the analysis
+/// alongside workspace files, with deduplication by URI. Their
+/// `module_path` is used for module resolution instead of computing
+/// a relative path from the workspace root.
 pub fn analyze_workspace(
     files: &[(Url, String)],
+    dep_files: &[DependencySource],
     root_path: &Path,
 ) -> WorkspaceAnalysisOutput {
     let mut source_map = SourceMap::new();
@@ -239,6 +355,38 @@ pub fn analyze_workspace(
 
         // Phase 1: Lex
         let tokens = Lexer::new(file_id, source).tokenize();
+
+        // Phase 2: Parse
+        let (ast, parse_diags) = parse(tokens, file_id);
+        all_diagnostics.extend(parse_diags);
+        asts.insert(file_id, ast);
+    }
+
+    // Add dependency files. If a dep file was already discovered via the
+    // workspace directory walk, override its module path with the dep-prefixed
+    // path so imports resolve correctly (e.g., `libs/lib_b/lib_b.spark` →
+    // `lib_b/lib_b.spark`).
+    for dep in dep_files {
+        if let Some(&existing_id) = uri_to_file_id.get(&dep.uri) {
+            // File already lexed/parsed from the directory walk — just fix
+            // its module path so the module resolver sees the dep-prefixed name.
+            file_paths.insert(existing_id, dep.module_path.clone());
+            continue;
+        }
+
+        let file_path = dep.uri
+            .to_file_path()
+            .unwrap_or_else(|()| PathBuf::from("dep.spark"));
+        let file_name = file_path.to_string_lossy();
+
+        let file_id = source_map.add_file(&*file_name, &dep.source);
+        file_id_to_uri.insert(file_id, dep.uri.clone());
+        uri_to_file_id.insert(dep.uri.clone(), file_id);
+        ropes.insert(file_id, Rope::from_str(&dep.source));
+        file_paths.insert(file_id, dep.module_path.clone());
+
+        // Phase 1: Lex
+        let tokens = Lexer::new(file_id, &dep.source).tokenize();
 
         // Phase 2: Parse
         let (ast, parse_diags) = parse(tokens, file_id);
@@ -468,7 +616,7 @@ mod tests {
             })
             .collect();
 
-        analyze_workspace(&files, root)
+        analyze_workspace(&files, &[], root)
     }
 
     #[test]
@@ -641,7 +789,7 @@ mod tests {
         ];
 
         // Analyze with the parent as workspace root (not the project dir).
-        let output = analyze_workspace(&files, root);
+        let output = analyze_workspace(&files, &[], root);
 
         let has_import_error = output.diagnostics_by_uri.values().any(|diags| {
             diags.iter().any(|d| {
@@ -743,5 +891,373 @@ mod tests {
         assert_eq!(roots.len(), 2);
         assert!(roots.iter().any(|r| r.ends_with("proj_a")));
         assert!(roots.iter().any(|r| r.ends_with("proj_b")));
+    }
+
+    #[test]
+    fn path_dependency_resolves_imports() {
+        // Workspace with a Spark.toml path dep.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let lib_dir = tmp.path().join("libs/mylib");
+
+        // Create the dependency library.
+        // File lives at the dep root (not in a subdir) so that resolve_path_dep
+        // produces module_path = "mylib/mylib.spark".
+        fs::create_dir_all(&lib_dir).unwrap();
+        fs::write(
+            lib_dir.join("mylib.spark"),
+            "module mylib\npub fn helper(): Int { return 42 }\n",
+        )
+        .unwrap();
+
+        // Create main project.
+        fs::write(
+            root.join("main.spark"),
+            "import mylib { helper }\nfn main(): Void { helper() }",
+        )
+        .unwrap();
+
+        // Resolve dependencies.
+        let (dep_sources, dep_errors) = resolve_dependencies(root);
+        // No Spark.toml exists yet, so no deps.
+        assert!(dep_sources.is_empty());
+        assert!(dep_errors.is_empty());
+
+        // Write Spark.toml.
+        fs::write(
+            root.join("Spark.toml"),
+            format!(
+                "[project]\nname = \"test\"\nversion = \"0.1.0\"\n\n[dependencies]\nmylib = {{ path = \"{}\" }}\n",
+                lib_dir.display()
+            ),
+        )
+        .unwrap();
+
+        // Now resolve should find the dependency.
+        let (dep_sources, dep_errors) = resolve_dependencies(root);
+        assert!(dep_errors.is_empty(), "unexpected errors: {dep_errors:?}");
+        assert_eq!(dep_sources.len(), 1, "expected 1 dep source file");
+        assert!(
+            dep_sources[0].module_path.display().to_string().contains("mylib"),
+            "expected mylib in module path, got: {}",
+            dep_sources[0].module_path.display()
+        );
+
+        // Build workspace files.
+        let main_path = root.join("main.spark");
+        let main_source = fs::read_to_string(&main_path).unwrap();
+        let files = vec![(
+            Url::from_file_path(&main_path).unwrap(),
+            main_source,
+        )];
+
+        // Analyze with deps — import should resolve.
+        let output = analyze_workspace(&files, &dep_sources, root);
+        let has_import_error = output.diagnostics_by_uri.values().any(|diags| {
+            diags.iter().any(|d| {
+                d.message.contains("cannot find module")
+                    || d.message.contains("not exported")
+            })
+        });
+        assert!(
+            !has_import_error,
+            "Import from path dep should resolve. Diagnostics: {:?}",
+            output.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn transitive_path_deps_resolve() {
+        // Mirrors the transitive_deps e2e test fixture layout:
+        //   root/main.spark            imports lib_b
+        //   root/libs/lib_b/lib_b.spark  imports lib_c
+        //   root/libs/lib_c/lib_c.spark  provides base_value
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let lib_b = tmp.path().join("libs/lib_b");
+        let lib_c = tmp.path().join("libs/lib_c");
+
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&lib_b).unwrap();
+        fs::create_dir_all(&lib_c).unwrap();
+
+        // lib_c: provides `doubled` function.
+        fs::write(
+            lib_c.join("lib_c.spark"),
+            "module lib_c\npub fn doubled(x: Int): Int { return x * 2 }\n",
+        )
+        .unwrap();
+        fs::write(
+            lib_c.join("Spark.toml"),
+            "[project]\nname = \"lib_c\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        // lib_b: imports from lib_c (depends on lib_c).
+        fs::write(
+            lib_b.join("lib_b.spark"),
+            "module lib_b\nimport lib_c { doubled }\npub fn helper(): Int { return doubled(21) }\n",
+        )
+        .unwrap();
+        fs::write(
+            lib_b.join("Spark.toml"),
+            format!(
+                "[project]\nname = \"lib_b\"\nversion = \"0.1.0\"\n\n[dependencies]\nlib_c = {{ path = \"{}\" }}\n",
+                lib_c.display()
+            ),
+        )
+        .unwrap();
+
+        // root: depends on lib_b, uses helper.
+        fs::write(
+            root.join("main.spark"),
+            "import lib_b { helper }\nfn main(): Void { helper() }",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Spark.toml"),
+            format!(
+                "[project]\nname = \"root\"\nversion = \"0.1.0\"\n\n[dependencies]\nlib_b = {{ path = \"{}\" }}\n",
+                lib_b.display()
+            ),
+        )
+        .unwrap();
+
+        // Resolve deps — should find both lib_b and lib_c.
+        let (dep_sources, dep_errors) = resolve_dependencies(&root);
+        assert!(dep_errors.is_empty(), "unexpected errors: {dep_errors:?}");
+        assert_eq!(dep_sources.len(), 2, "expected lib_b + lib_c sources");
+
+        // Analyze.
+        let main_path = root.join("main.spark");
+        let main_source = fs::read_to_string(&main_path).unwrap();
+        let files = vec![(
+            Url::from_file_path(&main_path).unwrap(),
+            main_source,
+        )];
+        let output = analyze_workspace(&files, &dep_sources, &root);
+        let has_import_error = output.diagnostics_by_uri.values().any(|diags| {
+            diags.iter().any(|d| {
+                d.message.contains("cannot find module")
+                    || d.message.contains("not exported")
+            })
+        });
+        assert!(
+            !has_import_error,
+            "Transitive deps should resolve. Diagnostics: {:?}",
+            output.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dep_files_deduplicated() {
+        // When a path dep is inside the workspace root, its files are
+        // already discovered by the directory walk. The dep_files should
+        // be deduplicated so they aren't analyzed twice.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Create a lib inside the workspace root.
+        fs::create_dir_all(root.join("mylib")).unwrap();
+        fs::write(
+            root.join("mylib/mylib.spark"),
+            "module mylib\npub fn helper(): Int { return 1 }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("main.spark"),
+            "fn main(): Void { }",
+        )
+        .unwrap();
+
+        // Discover files (includes mylib from directory walk).
+        let spark_files = discover_spark_files(root);
+        let files: Vec<(Url, String)> = spark_files
+            .iter()
+            .filter_map(|p| {
+                let uri = file_path_to_uri(p)?;
+                let source = fs::read_to_string(p).ok()?;
+                Some((uri, source))
+            })
+            .collect();
+
+        // Create a duplicate dep entry for the same file.
+        let mylib_path = root.join("mylib/mylib.spark");
+        let dep_sources = vec![DependencySource {
+            uri: file_path_to_uri(&mylib_path).unwrap(),
+            source: fs::read_to_string(&mylib_path).unwrap(),
+            module_path: PathBuf::from("mylib/mylib.spark"),
+        }];
+
+        let output = analyze_workspace(&files, &dep_sources, root);
+
+        // Count how many file:// URIs map to the mylib file.
+        let mylib_count = output
+            .file_id_to_uri
+            .values()
+            .filter(|u| u.scheme() == "file" && u.path().contains("mylib"))
+            .count();
+        assert_eq!(
+            mylib_count, 1,
+            "mylib should appear exactly once (deduplicated), got {mylib_count}"
+        );
+    }
+
+    #[test]
+    fn in_workspace_deps_get_module_path_override() {
+        // When dependency source files live inside the workspace directory,
+        // the directory walk discovers them with workspace-relative paths
+        // (e.g., `libs/lib_b/lib_b.spark`). The dep resolution provides the
+        // correct dep-prefixed module paths (e.g., `lib_b/lib_b.spark`).
+        // The override must happen so `import lib_b { ... }` resolves.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Create dep inside the workspace at libs/mylib/mylib.spark.
+        fs::create_dir_all(root.join("libs/mylib")).unwrap();
+        fs::write(
+            root.join("libs/mylib/mylib.spark"),
+            "module mylib\npub fn helper(): Int { return 1 }\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("main.spark"),
+            "import mylib { helper }\nfn main(): Void { helper() }",
+        )
+        .unwrap();
+
+        // Directory walk discovers both main.spark and libs/mylib/mylib.spark.
+        let spark_files = discover_spark_files(root);
+        let files: Vec<(Url, String)> = spark_files
+            .iter()
+            .filter_map(|p| {
+                let uri = file_path_to_uri(p)?;
+                let source = fs::read_to_string(p).ok()?;
+                Some((uri, source))
+            })
+            .collect();
+
+        // Without deps, the import fails (path is libs/mylib/mylib.spark).
+        let output_no_deps = analyze_workspace(&files, &[], root);
+        let has_error_without_deps = output_no_deps.diagnostics_by_uri.values().any(|diags| {
+            diags.iter().any(|d| d.message.contains("cannot find module"))
+        });
+        assert!(
+            has_error_without_deps,
+            "Without dep resolution, import should fail"
+        );
+
+        // With dep resolution providing the correct module path, it resolves.
+        let mylib_path = root.join("libs/mylib/mylib.spark");
+        let dep_sources = vec![DependencySource {
+            uri: file_path_to_uri(&mylib_path).unwrap(),
+            source: fs::read_to_string(&mylib_path).unwrap(),
+            module_path: PathBuf::from("mylib/mylib.spark"),
+        }];
+        let output_with_deps = analyze_workspace(&files, &dep_sources, root);
+        let has_import_error = output_with_deps.diagnostics_by_uri.values().any(|diags| {
+            diags.iter().any(|d| {
+                d.message.contains("cannot find module")
+                    || d.message.contains("not exported")
+            })
+        });
+        assert!(
+            !has_import_error,
+            "With dep resolution, import should resolve. Diagnostics: {:?}",
+            output_with_deps.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn transitive_deps_fixture_layout() {
+        // Exact replica of the transitive_deps e2e fixture.
+        // root/main.spark              imports lib_b
+        // root/libs/lib_b/lib_b.spark  imports lib_c (dep: path = "../lib_c")
+        // root/libs/lib_c/lib_c.spark  provides base_value
+        let tmp = TempDir::new().unwrap();
+        // Canonicalize like the LSP backend does (macOS: /var → /private/var).
+        let root = tmp.path().canonicalize().unwrap();
+
+        fs::create_dir_all(root.join("libs/lib_b")).unwrap();
+        fs::create_dir_all(root.join("libs/lib_c")).unwrap();
+
+        fs::write(
+            root.join("main.spark"),
+            "import lib_b { doubled }\nfn main(): Int {\n    print(doubled())\n    return 0\n}\n",
+        ).unwrap();
+        fs::write(
+            root.join("Spark.toml"),
+            "[project]\nname = \"transitive_test\"\nversion = \"0.1.0\"\n\n[dependencies]\nlib_b = { path = \"libs/lib_b\" }\n",
+        ).unwrap();
+        fs::write(
+            root.join("libs/lib_b/lib_b.spark"),
+            "module lib_b\n\nimport lib_c { base_value }\n\npub fn doubled(): Int {\n    return base_value() * 2\n}\n",
+        ).unwrap();
+        fs::write(
+            root.join("libs/lib_b/Spark.toml"),
+            "[project]\nname = \"lib_b\"\nversion = \"0.1.0\"\n\n[dependencies]\nlib_c = { path = \"../lib_c\" }\n",
+        ).unwrap();
+        fs::write(
+            root.join("libs/lib_c/lib_c.spark"),
+            "module lib_c\n\npub fn base_value(): Int {\n    return 10\n}\n",
+        ).unwrap();
+        fs::write(
+            root.join("libs/lib_c/Spark.toml"),
+            "[project]\nname = \"lib_c\"\nversion = \"0.1.0\"\n",
+        ).unwrap();
+
+        // 1. Resolve dependencies the same way the LSP backend does.
+        let (dep_sources, dep_errors) = resolve_dependencies(&root);
+        assert!(dep_errors.is_empty(), "dep errors: {dep_errors:?}");
+        assert_eq!(dep_sources.len(), 2, "expected lib_b + lib_c");
+
+        // Print for debugging.
+        for ds in &dep_sources {
+            eprintln!("dep: uri={} module_path={}", ds.uri, ds.module_path.display());
+        }
+
+        // 2. Discover files the same way the LSP backend does.
+        let spark_files = discover_spark_files(&root);
+        let files: Vec<(Url, String)> = spark_files
+            .iter()
+            .filter_map(|p| {
+                let uri = file_path_to_uri(p)?;
+                let source = fs::read_to_string(p).ok()?;
+                Some((uri, source))
+            })
+            .collect();
+
+        // Print for debugging.
+        for (uri, _) in &files {
+            eprintln!("discovered: {uri}");
+        }
+
+        // 3. Analyze with deps — all imports should resolve.
+        let output = analyze_workspace(&files, &dep_sources, &root);
+
+        let all_diags: Vec<&str> = output
+            .diagnostics_by_uri
+            .values()
+            .flatten()
+            .map(|d| d.message.as_str())
+            .collect();
+        let has_import_error = all_diags.iter().any(|m| {
+            m.contains("cannot find module")
+                || m.contains("not exported")
+                || m.contains("cannot find value")
+        });
+        assert!(
+            !has_import_error,
+            "All imports should resolve in transitive_deps fixture. Errors: {all_diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_spark_toml_graceful() {
+        // No Spark.toml — resolve_dependencies should return empty, no errors.
+        let tmp = TempDir::new().unwrap();
+        let (deps, errors) = resolve_dependencies(tmp.path());
+        assert!(deps.is_empty());
+        assert!(errors.is_empty());
     }
 }

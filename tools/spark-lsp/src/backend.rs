@@ -106,8 +106,8 @@ impl Backend {
     /// the shared analysis results back to each open document.
     #[allow(clippy::significant_drop_tightening)]
     async fn analyze_and_publish_workspace(&self) {
-        // 1. Collect all file sources (open documents + disk files).
-        let (files, root_path) = {
+        // 1. Collect all file sources (open documents + disk files + dep files).
+        let (files, dep_sources_snapshot, root_path) = {
             let ws_guard = self.workspace.read().unwrap();
             let Some(ws) = ws_guard.as_ref() else {
                 return;
@@ -140,15 +140,26 @@ impl Backend {
             // cross-file references.
             files.sort_by(|a, b| a.0.cmp(&b.0));
 
-            (files, root_path)
+            // Snapshot dependency sources for the analysis.
+            let dep_snapshot: Vec<workspace::DependencySource> = ws
+                .dep_sources
+                .iter()
+                .map(|d| workspace::DependencySource {
+                    uri: d.uri.clone(),
+                    source: d.source.clone(),
+                    module_path: d.module_path.clone(),
+                })
+                .collect();
+
+            (files, dep_snapshot, root_path)
         }; // Release workspace read lock.
 
-        if files.is_empty() {
+        if files.is_empty() && dep_sources_snapshot.is_empty() {
             return;
         }
 
         // 2. Run the analysis pipeline (CPU-bound, no locks held).
-        let output = workspace::analyze_workspace(&files, &root_path);
+        let output = workspace::analyze_workspace(&files, &dep_sources_snapshot, &root_path);
 
         // 3. Wrap shared data in Arc for cheap sharing across documents.
         let resolved = Arc::new(output.resolved);
@@ -745,6 +756,9 @@ impl LanguageServer for Backend {
             });
 
         if let Some(root) = root_path {
+            // Canonicalize so all derived paths and URIs are consistent
+            // (e.g., macOS resolves /var → /private/var).
+            let root = root.canonicalize().unwrap_or(root);
             let mut ws_guard = self.workspace.write().unwrap();
             *ws_guard = Some(WorkspaceState::new(root));
         }
@@ -819,21 +833,51 @@ impl LanguageServer for Backend {
                     }
                 }
 
+                // Resolve Spark.toml dependencies from all projects in the workspace.
+                let (dep_sources, dep_errors) =
+                    workspace::resolve_all_workspace_deps(&root);
+                for err in &dep_errors {
+                    self.client
+                        .log_message(MessageType::WARNING, err)
+                        .await;
+                }
+                if !dep_sources.is_empty() {
+                    self.client
+                        .log_message(
+                            MessageType::INFO,
+                            format!(
+                                "Resolved {} dependency source files",
+                                dep_sources.len()
+                            ),
+                        )
+                        .await;
+                    let mut ws_guard = self.workspace.write().unwrap();
+                    if let Some(ws) = ws_guard.as_mut() {
+                        ws.dep_sources = dep_sources;
+                    }
+                }
+
                 // Run initial workspace analysis.
                 self.analyze_and_publish_workspace().await;
             }
 
-            // Register dynamic file watcher for *.spark files.
+            // Register dynamic file watcher for *.spark files and Spark.toml.
             let watch_kind = WatchKind::Create | WatchKind::Change | WatchKind::Delete;
             let registration = Registration {
                 id: "spark-file-watcher".to_string(),
                 method: "workspace/didChangeWatchedFiles".to_string(),
                 register_options: Some(
                     serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
-                        watchers: vec![FileSystemWatcher {
-                            glob_pattern: GlobPattern::String("**/*.spark".to_string()),
-                            kind: Some(watch_kind),
-                        }],
+                        watchers: vec![
+                            FileSystemWatcher {
+                                glob_pattern: GlobPattern::String("**/*.spark".to_string()),
+                                kind: Some(watch_kind),
+                            },
+                            FileSystemWatcher {
+                                glob_pattern: GlobPattern::String("**/Spark.toml".to_string()),
+                                kind: Some(watch_kind),
+                            },
+                        ],
                     })
                     .unwrap(),
                 ),
@@ -1097,6 +1141,7 @@ impl LanguageServer for Backend {
         }
 
         let mut needs_reanalysis = false;
+        let mut manifest_changed = false;
 
         // Collect changes to apply, then apply under a single write lock.
         let mut to_update: Vec<(Url, String)> = Vec::new();
@@ -1104,6 +1149,12 @@ impl LanguageServer for Backend {
 
         for change in &params.changes {
             let uri = &change.uri;
+
+            // Detect Spark.toml changes.
+            if uri.path().ends_with("Spark.toml") {
+                manifest_changed = true;
+                continue;
+            }
 
             // Skip files that are open in the editor (editor is the source of truth).
             if self.documents.contains_key(uri) {
@@ -1135,6 +1186,28 @@ impl LanguageServer for Backend {
                 for uri in to_delete {
                     ws.disk_sources.remove(&uri);
                     ws.disk_ropes.remove(&uri);
+                }
+                needs_reanalysis = true;
+            }
+        }
+
+        // Re-resolve dependencies when Spark.toml changes.
+        if manifest_changed {
+            let root = {
+                let ws_guard = self.workspace.read().unwrap();
+                ws_guard.as_ref().map(|ws| ws.root_path.clone())
+            };
+            if let Some(root) = root {
+                let (dep_sources, dep_errors) =
+                    workspace::resolve_all_workspace_deps(&root);
+                for err in &dep_errors {
+                    self.client
+                        .log_message(MessageType::WARNING, err)
+                        .await;
+                }
+                let mut ws_guard = self.workspace.write().unwrap();
+                if let Some(ws) = ws_guard.as_mut() {
+                    ws.dep_sources = dep_sources;
                 }
                 needs_reanalysis = true;
             }

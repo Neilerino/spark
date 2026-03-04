@@ -12,13 +12,13 @@ use crate::git::fetch_git_dep;
 use crate::lock::{load_lock_file, LockFile, LockedPackage};
 use crate::manifest::{load_manifest, Dependency, LinkLibrary, Manifest};
 use crate::registry;
-use crate::resolve::resolve_path_dep;
+use crate::resolve::{resolve_path_dep, ResolvedSource};
 
 /// The fully resolved set of dependencies.
 #[derive(Debug)]
 pub struct ResolvedDeps {
-    /// All source files to compile `(relative_path, source_text)`.
-    pub sources: Vec<(PathBuf, String)>,
+    /// All source files from resolved dependencies.
+    pub sources: Vec<ResolvedSource>,
     /// All link libraries collected transitively.
     pub link_libraries: Vec<LinkLibrary>,
     /// All link search paths collected transitively.
@@ -74,7 +74,7 @@ pub fn resolve_all_deps(
 
 /// Internal state for the recursive resolution.
 struct ResolveContext {
-    sources: Vec<(PathBuf, String)>,
+    sources: Vec<ResolvedSource>,
     link_libraries: Vec<LinkLibrary>,
     link_paths: Vec<String>,
     locked_packages: Vec<LockedPackage>,
@@ -115,12 +115,14 @@ fn resolve_deps_recursive(
                 let dep_sources = resolve_path_dep(dep_name, path, project_root)?;
                 ctx.sources.extend(dep_sources);
 
-                // Compute the absolute path to check for sub-Spark.toml.
-                if Path::new(path).is_absolute() {
+                // Compute the canonical absolute path for sub-Spark.toml
+                // loading and transitive dependency resolution.
+                let raw = if Path::new(path).is_absolute() {
                     PathBuf::from(path)
                 } else {
                     project_root.join(path)
-                }
+                };
+                raw.canonicalize().unwrap_or(raw)
             }
             Dependency::Git {
                 git,
@@ -350,7 +352,7 @@ mod tests {
         let names: Vec<String> = resolved
             .sources
             .iter()
-            .map(|(p, _)| p.display().to_string())
+            .map(|s| s.module_path.display().to_string())
             .collect();
         assert!(
             names.iter().any(|n| n.contains("lib_b")),
@@ -455,7 +457,7 @@ mod tests {
         let shared_count = resolved
             .sources
             .iter()
-            .filter(|(p, _)| p.display().to_string().contains("shared"))
+            .filter(|s| s.module_path.display().to_string().contains("shared"))
             .count();
         assert_eq!(shared_count, 1, "shared should be resolved exactly once");
     }

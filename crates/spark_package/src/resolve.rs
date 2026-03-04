@@ -5,11 +5,21 @@
 
 use std::path::{Path, PathBuf};
 
+/// A resolved source file from a dependency.
+#[derive(Debug, Clone)]
+pub struct ResolvedSource {
+    /// Dep-prefixed relative path for module resolution (e.g., `lib_b/lib_b.spark`).
+    pub module_path: PathBuf,
+    /// Absolute path to the source file on disk.
+    pub absolute_path: PathBuf,
+    /// Source text.
+    pub source: String,
+}
+
 /// Discovers all `.spark` source files in a path dependency directory.
 ///
-/// Returns `(relative_path, source_text)` pairs for each file found.
-/// Paths are relative to the dependency root, prefixed with the package name
-/// so that module resolution can distinguish them.
+/// Returns [`ResolvedSource`] entries for each file found, containing both
+/// the dep-prefixed module path and the absolute filesystem path.
 ///
 /// # Errors
 ///
@@ -18,26 +28,35 @@ pub fn resolve_path_dep(
     dep_name: &str,
     dep_path: &str,
     project_root: &Path,
-) -> Result<Vec<(PathBuf, String)>, String> {
-    let abs_dep_path = if Path::new(dep_path).is_absolute() {
+) -> Result<Vec<ResolvedSource>, String> {
+    let raw_dep_path = if Path::new(dep_path).is_absolute() {
         PathBuf::from(dep_path)
     } else {
         project_root.join(dep_path)
     };
 
-    if !abs_dep_path.exists() {
+    if !raw_dep_path.exists() {
         return Err(format!(
             "dependency `{dep_name}` path does not exist: {}",
-            abs_dep_path.display()
+            raw_dep_path.display()
         ));
     }
 
-    if !abs_dep_path.is_dir() {
+    if !raw_dep_path.is_dir() {
         return Err(format!(
             "dependency `{dep_name}` path is not a directory: {}",
-            abs_dep_path.display()
+            raw_dep_path.display()
         ));
     }
+
+    // Canonicalize to resolve `..` and `.` components so that
+    // absolute_path values match paths from directory walks.
+    let abs_dep_path = raw_dep_path.canonicalize().map_err(|e| {
+        format!(
+            "dependency `{dep_name}` path could not be canonicalized: {}; {e}",
+            raw_dep_path.display()
+        )
+    })?;
 
     let mut sources = Vec::new();
     collect_spark_files(&abs_dep_path, &abs_dep_path, dep_name, &mut sources)?;
@@ -49,7 +68,7 @@ fn collect_spark_files(
     dir: &Path,
     dep_root: &Path,
     dep_name: &str,
-    out: &mut Vec<(PathBuf, String)>,
+    out: &mut Vec<ResolvedSource>,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
         format!("could not read directory `{}`: {e}", dir.display())
@@ -66,11 +85,15 @@ fn collect_spark_files(
         } else if path.extension().and_then(|e| e.to_str()) == Some("spark") {
             let relative = path.strip_prefix(dep_root).unwrap_or(&path);
             // Prefix with the dependency name so module paths are namespaced.
-            let prefixed = PathBuf::from(dep_name).join(relative);
+            let module_path = PathBuf::from(dep_name).join(relative);
             let source = std::fs::read_to_string(&path).map_err(|e| {
                 format!("could not read `{}`: {e}", path.display())
             })?;
-            out.push((prefixed, source));
+            out.push(ResolvedSource {
+                module_path,
+                absolute_path: path,
+                source,
+            });
         }
     }
 

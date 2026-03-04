@@ -216,7 +216,11 @@ fn cmd_build(
                 // Resolve all dependencies (path + git + transitive).
                 match spark_package::resolve_all_deps(&manifest, &abs_root) {
                     Ok(resolved) => {
-                        sources.extend(resolved.sources);
+                        sources.extend(
+                            resolved.sources.iter().map(|s| {
+                                (s.module_path.clone(), s.source.clone())
+                            }),
+                        );
 
                         // Collect transitive link info from dependencies.
                         manifest_links.extend(resolved.link_libraries);
