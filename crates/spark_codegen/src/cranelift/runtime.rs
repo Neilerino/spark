@@ -49,6 +49,8 @@ pub struct RuntimeStubs {
     pub list_cow: FuncId,
     /// `__spark_map_cow(ptr) -> ptr`
     pub map_cow: FuncId,
+    /// `__spark_set_cow(ptr) -> ptr`
+    pub set_cow: FuncId,
     /// `__spark_list_len(ptr) -> i64`
     pub list_len: FuncId,
     /// `__spark_list_contains(ptr, ptr) -> i8`
@@ -257,6 +259,13 @@ impl RuntimeStubs {
             map_cow: declare_fn(
                 module,
                 "__spark_map_cow",
+                &[ptr_type],
+                Some(ptr_type),
+                call_conv,
+            ),
+            set_cow: declare_fn(
+                module,
+                "__spark_set_cow",
                 &[ptr_type],
                 Some(ptr_type),
                 call_conv,

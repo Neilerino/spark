@@ -1855,8 +1855,7 @@ fn emit_cow<M: Module>(
             ctx.builder.inst_results(call)[0]
         }
         Ty::Set(_) => {
-            // Set uses list_cow internally
-            let func_ref = module.declare_func_in_func(ctx.stubs.list_cow, ctx.builder.func);
+            let func_ref = module.declare_func_in_func(ctx.stubs.set_cow, ctx.builder.func);
             let call = ctx.builder.ins().call(func_ref, &[recv_ptr]);
             ctx.builder.inst_results(call)[0]
         }

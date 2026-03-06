@@ -250,10 +250,12 @@ fn list_grow(list: &mut SparkList) {
 }
 
 // =============================================================================
-// Map — type-erased linear-scan map with reference counting
+// Map — type-erased open-addressing hash map with reference counting
 // =============================================================================
 
-/// Type-erased linear-scan map. Keys and values are stored as raw bytes.
+/// Type-erased open-addressing hash map. Keys and values are stored as raw
+/// bytes, with an FNV-1a hash per slot for O(1) amortized lookups.
+///
 /// The `rc` field is always at offset 0 for generic RC operations.
 ///
 /// The `key_drop` and `val_drop` fields hold optional destructor function
@@ -266,14 +268,18 @@ struct SparkMap {
     key_drop: usize,
     /// Value destructor function pointer, or 0 if values don't need RC cleanup.
     val_drop: usize,
-    /// Pointer to contiguous key buffer.
+    /// Hash per slot (`HASH_EMPTY` = empty, `HASH_TOMBSTONE` = deleted, `≥ 2` = occupied).
+    hashes: *mut u64,
+    /// Pointer to contiguous key buffer (cap * key_size bytes).
     keys: *mut u8,
-    /// Pointer to contiguous value buffer.
+    /// Pointer to contiguous value buffer (cap * value_size bytes).
     values: *mut u8,
-    /// Number of key-value pairs stored.
+    /// Number of live key-value pairs.
     len: usize,
-    /// Capacity (number of pairs the buffers can hold).
+    /// Total number of slots (always a power of 2).
     cap: usize,
+    /// Number of tombstoned slots (used to decide when to grow).
+    tombstones: usize,
     /// Size of each key in bytes.
     key_size: usize,
     /// Size of each value in bytes.
@@ -300,18 +306,21 @@ pub extern "C" fn __spark_map_new(
         rc: 1,
         key_drop,
         val_drop,
+        hashes: std::ptr::null_mut(),
         keys: std::ptr::null_mut(),
         values: std::ptr::null_mut(),
         len: 0,
         cap: 0,
+        tombstones: 0,
         key_size: key_size as usize,
         value_size: value_size as usize,
     });
     Box::into_raw(map).cast::<u8>()
 }
 
-/// Inserts or updates a key-value pair. Uses linear scan with `memcmp`
-/// to find an existing key; overwrites the value if found, appends if new.
+/// Inserts or updates a key-value pair. Uses FNV-1a hashing with linear
+/// probing for O(1) amortized lookup. Overwrites the value if the key
+/// already exists, inserts a new entry otherwise.
 ///
 /// # Safety
 ///
@@ -327,26 +336,52 @@ pub unsafe extern "C" fn __spark_map_insert(
 ) {
     let map = unsafe { &mut *(map.cast::<SparkMap>()) };
 
-    // Linear scan for existing key.
-    for i in 0..map.len {
-        let existing_key = unsafe { map.keys.add(i * map.key_size) };
-        if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
-            // Overwrite value.
-            let existing_val = unsafe { map.values.add(i * map.value_size) };
-            unsafe { std::ptr::copy_nonoverlapping(value_ptr, existing_val, map.value_size) };
-            return;
-        }
+    // Lazily allocate or grow when load factor exceeds 75%.
+    if map.cap == 0 {
+        map_hash_init(map);
+    } else if (map.len + map.tombstones) * 4 >= map.cap * 3 {
+        map_hash_grow(map);
     }
 
-    // Key not found — append.
-    if map.len == map.cap {
-        map_grow(map);
+    let h = fix_hash(unsafe { fnv1a_hash(key_ptr, map.key_size) });
+    let mask = map.cap - 1;
+    let mut idx = (h as usize) & mask;
+    let mut first_tombstone: Option<usize> = None;
+
+    loop {
+        let slot_hash = unsafe { *map.hashes.add(idx) };
+        if slot_hash == HASH_EMPTY {
+            // Key not found — insert at first tombstone or this empty slot.
+            let insert_idx = first_tombstone.unwrap_or(idx);
+            if first_tombstone.is_some() {
+                map.tombstones -= 1; // Reusing a tombstone slot.
+            }
+            unsafe { *map.hashes.add(insert_idx) = h };
+            let key_dest = unsafe { map.keys.add(insert_idx * map.key_size) };
+            let val_dest = unsafe { map.values.add(insert_idx * map.value_size) };
+            unsafe { std::ptr::copy_nonoverlapping(key_ptr, key_dest, map.key_size) };
+            unsafe { std::ptr::copy_nonoverlapping(value_ptr, val_dest, map.value_size) };
+            map.len += 1;
+            return;
+        }
+        if slot_hash == HASH_TOMBSTONE {
+            if first_tombstone.is_none() {
+                first_tombstone = Some(idx);
+            }
+        } else if slot_hash == h {
+            // Hash match — verify key equality.
+            let existing_key = unsafe { map.keys.add(idx * map.key_size) };
+            if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
+                // Overwrite value.
+                let existing_val = unsafe { map.values.add(idx * map.value_size) };
+                unsafe {
+                    std::ptr::copy_nonoverlapping(value_ptr, existing_val, map.value_size);
+                }
+                return;
+            }
+        }
+        idx = (idx + 1) & mask;
     }
-    let key_dest = unsafe { map.keys.add(map.len * map.key_size) };
-    let val_dest = unsafe { map.values.add(map.len * map.value_size) };
-    unsafe { std::ptr::copy_nonoverlapping(key_ptr, key_dest, map.key_size) };
-    unsafe { std::ptr::copy_nonoverlapping(value_ptr, val_dest, map.value_size) };
-    map.len += 1;
 }
 
 /// Looks up a key and returns a pointer to its value, or null if not found.
@@ -359,65 +394,140 @@ pub unsafe extern "C" fn __spark_map_insert(
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_map_get(map: *mut u8, key_ptr: *const u8) -> *mut u8 {
     let map = unsafe { &*(map.cast::<SparkMap>()) };
+    if map.cap == 0 {
+        return std::ptr::null_mut();
+    }
 
-    for i in 0..map.len {
-        let existing_key = unsafe { map.keys.add(i * map.key_size) };
-        if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
-            return unsafe { map.values.add(i * map.value_size) };
+    let h = fix_hash(unsafe { fnv1a_hash(key_ptr, map.key_size) });
+    let mask = map.cap - 1;
+    let mut idx = (h as usize) & mask;
+
+    loop {
+        let slot_hash = unsafe { *map.hashes.add(idx) };
+        if slot_hash == HASH_EMPTY {
+            return std::ptr::null_mut();
+        }
+        if slot_hash == h {
+            let existing_key = unsafe { map.keys.add(idx * map.key_size) };
+            if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
+                return unsafe { map.values.add(idx * map.value_size) };
+            }
+        }
+        // Skip tombstones — continue probing.
+        idx = (idx + 1) & mask;
+    }
+}
+
+/// Allocates initial hash table storage for a map (capacity = [`MIN_HASH_CAP`]).
+fn map_hash_init(map: &mut SparkMap) {
+    let cap = MIN_HASH_CAP;
+    let align = std::mem::align_of::<u64>();
+
+    let hash_layout =
+        unsafe { std::alloc::Layout::from_size_align_unchecked(cap * size_of::<u64>(), align) };
+    let hashes = unsafe { alloc_zeroed_or_abort(hash_layout) };
+
+    let key_layout =
+        unsafe { std::alloc::Layout::from_size_align_unchecked(cap * map.key_size, align) };
+    let keys = unsafe { alloc_or_abort(key_layout) };
+
+    let val_layout =
+        unsafe { std::alloc::Layout::from_size_align_unchecked(cap * map.value_size, align) };
+    let values = unsafe { alloc_or_abort(val_layout) };
+
+    map.hashes = hashes.cast::<u64>();
+    map.keys = keys;
+    map.values = values;
+    map.cap = cap;
+}
+
+/// Doubles the map's capacity and re-inserts all occupied entries,
+/// cleaning tombstones in the process.
+fn map_hash_grow(map: &mut SparkMap) {
+    let old_cap = map.cap;
+    let old_hashes = map.hashes;
+    let old_keys = map.keys;
+    let old_values = map.values;
+
+    let new_cap = old_cap * 2;
+    let align = std::mem::align_of::<u64>();
+
+    let hash_layout = unsafe {
+        std::alloc::Layout::from_size_align_unchecked(new_cap * size_of::<u64>(), align)
+    };
+    let new_hashes = unsafe { alloc_zeroed_or_abort(hash_layout) };
+
+    let key_layout =
+        unsafe { std::alloc::Layout::from_size_align_unchecked(new_cap * map.key_size, align) };
+    let new_keys = unsafe { alloc_or_abort(key_layout) };
+
+    let val_layout =
+        unsafe { std::alloc::Layout::from_size_align_unchecked(new_cap * map.value_size, align) };
+    let new_values = unsafe { alloc_or_abort(val_layout) };
+
+    let new_hashes_ptr = new_hashes.cast::<u64>();
+    let mask = new_cap - 1;
+
+    // Re-insert occupied entries into the new table.
+    for i in 0..old_cap {
+        let h = unsafe { *old_hashes.add(i) };
+        if is_occupied(h) {
+            let idx = unsafe { probe_empty(new_hashes_ptr, h, mask) };
+            unsafe { *new_hashes_ptr.add(idx) = h };
+            let src_key = unsafe { old_keys.add(i * map.key_size) };
+            let dst_key = unsafe { new_keys.add(idx * map.key_size) };
+            unsafe { std::ptr::copy_nonoverlapping(src_key, dst_key, map.key_size) };
+
+            let src_val = unsafe { old_values.add(i * map.value_size) };
+            let dst_val = unsafe { new_values.add(idx * map.value_size) };
+            unsafe { std::ptr::copy_nonoverlapping(src_val, dst_val, map.value_size) };
         }
     }
 
-    std::ptr::null_mut()
-}
-
-/// Grows the map's backing buffers, doubling capacity (minimum [`MIN_CAP`]).
-fn map_grow(map: &mut SparkMap) {
-    let new_cap = if map.cap == 0 { MIN_CAP } else { map.cap * 2 };
-    let align = std::mem::align_of::<u64>();
-
-    // Grow keys buffer.
-    let new_key_size = new_cap * map.key_size;
-    let new_key_layout =
-        unsafe { std::alloc::Layout::from_size_align_unchecked(new_key_size, align) };
-    let new_keys = if map.keys.is_null() {
-        unsafe { std::alloc::alloc(new_key_layout) }
-    } else {
-        let old_key_size = map.cap * map.key_size;
-        let old_key_layout =
-            unsafe { std::alloc::Layout::from_size_align_unchecked(old_key_size, align) };
-        unsafe { std::alloc::realloc(map.keys, old_key_layout, new_key_size) }
-    };
-
-    // Grow values buffer.
-    let new_val_size = new_cap * map.value_size;
-    let new_val_layout =
-        unsafe { std::alloc::Layout::from_size_align_unchecked(new_val_size, align) };
-    let new_values = if map.values.is_null() {
-        unsafe { std::alloc::alloc(new_val_layout) }
-    } else {
-        let old_val_size = map.cap * map.value_size;
-        let old_val_layout =
-            unsafe { std::alloc::Layout::from_size_align_unchecked(old_val_size, align) };
-        unsafe { std::alloc::realloc(map.values, old_val_layout, new_val_size) }
-    };
-
-    if new_keys.is_null() || new_values.is_null() {
-        eprintln!("spark: out of memory allocating map");
-        std::process::abort();
+    // Free old buffers.
+    unsafe {
+        dealloc_buf(old_hashes.cast::<u8>(), old_cap * size_of::<u64>());
+        dealloc_buf(old_keys, old_cap * map.key_size);
+        dealloc_buf(old_values, old_cap * map.value_size);
     }
 
+    map.hashes = new_hashes_ptr;
     map.keys = new_keys;
     map.values = new_values;
     map.cap = new_cap;
+    map.tombstones = 0;
 }
 
 // =============================================================================
-// Set — type-erased with uniqueness (backed by a list + memcmp dedup)
+// Set — type-erased open-addressing hash set with reference counting
 // =============================================================================
 
-/// Creates a new empty set for elements of the given byte size.
+/// Type-erased open-addressing hash set. Elements are stored as raw bytes,
+/// with an FNV-1a hash per slot for O(1) amortized lookups.
 ///
-/// Internally, a set is stored as a `SparkList` with uniqueness checks on insert.
+/// The `rc` field is always at offset 0 for generic RC operations.
+#[repr(C)]
+struct SparkSet {
+    /// Reference count.
+    rc: usize,
+    /// Element destructor function pointer, or 0 if elements don't need RC cleanup.
+    elem_drop: usize,
+    /// Hash per slot (`HASH_EMPTY` = empty, `HASH_TOMBSTONE` = deleted, `≥ 2` = occupied).
+    hashes: *mut u64,
+    /// Pointer to contiguous element buffer (cap * elem_size bytes).
+    data: *mut u8,
+    /// Number of live elements.
+    len: usize,
+    /// Total number of slots (always a power of 2).
+    cap: usize,
+    /// Number of tombstoned slots.
+    tombstones: usize,
+    /// Size of each element in bytes.
+    elem_size: usize,
+}
+
+/// Creates a new empty set for elements of the given byte size (rc = 1).
+///
 /// `elem_drop` is the element destructor (see [`__spark_list_new`]).
 ///
 /// # Safety
@@ -426,8 +536,17 @@ fn map_grow(map: &mut SparkMap) {
 #[no_mangle]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub extern "C" fn __spark_set_new(elem_size: i64, elem_drop: usize) -> *mut u8 {
-    // A set is just a list with dedup — reuse the same struct.
-    __spark_list_new(elem_size, elem_drop)
+    let set = Box::new(SparkSet {
+        rc: 1,
+        elem_drop,
+        hashes: std::ptr::null_mut(),
+        data: std::ptr::null_mut(),
+        len: 0,
+        cap: 0,
+        tombstones: 0,
+        elem_size: elem_size as usize,
+    });
+    Box::into_raw(set).cast::<u8>()
 }
 
 /// Inserts an element into the set if not already present.
@@ -439,18 +558,108 @@ pub extern "C" fn __spark_set_new(elem_size: i64, elem_drop: usize) -> *mut u8 {
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_set_insert(set: *mut u8, elem_ptr: *const u8) {
-    let list = unsafe { &*(set.cast::<SparkList>()) };
+    let set = unsafe { &mut *(set.cast::<SparkSet>()) };
 
-    // Check for duplicates via linear scan + memcmp.
-    for i in 0..list.len {
-        let existing = unsafe { list.data.add(i * list.elem_size) };
-        if unsafe { libc_memcmp(existing, elem_ptr, list.elem_size) } {
-            return; // Already present.
+    // Lazily allocate or grow when load factor exceeds 75%.
+    if set.cap == 0 {
+        set_hash_init(set);
+    } else if (set.len + set.tombstones) * 4 >= set.cap * 3 {
+        set_hash_grow(set);
+    }
+
+    let h = fix_hash(unsafe { fnv1a_hash(elem_ptr, set.elem_size) });
+    let mask = set.cap - 1;
+    let mut idx = (h as usize) & mask;
+    let mut first_tombstone: Option<usize> = None;
+
+    loop {
+        let slot_hash = unsafe { *set.hashes.add(idx) };
+        if slot_hash == HASH_EMPTY {
+            // Not found — insert at first tombstone or this empty slot.
+            let insert_idx = first_tombstone.unwrap_or(idx);
+            if first_tombstone.is_some() {
+                set.tombstones -= 1;
+            }
+            unsafe { *set.hashes.add(insert_idx) = h };
+            let dest = unsafe { set.data.add(insert_idx * set.elem_size) };
+            unsafe { std::ptr::copy_nonoverlapping(elem_ptr, dest, set.elem_size) };
+            set.len += 1;
+            return;
+        }
+        if slot_hash == HASH_TOMBSTONE {
+            if first_tombstone.is_none() {
+                first_tombstone = Some(idx);
+            }
+        } else if slot_hash == h {
+            let existing = unsafe { set.data.add(idx * set.elem_size) };
+            if unsafe { libc_memcmp(existing, elem_ptr, set.elem_size) } {
+                return; // Already present — dedup.
+            }
+        }
+        idx = (idx + 1) & mask;
+    }
+}
+
+/// Allocates initial hash table storage for a set (capacity = [`MIN_HASH_CAP`]).
+fn set_hash_init(set: &mut SparkSet) {
+    let cap = MIN_HASH_CAP;
+    let align = std::mem::align_of::<u64>();
+
+    let hash_layout =
+        unsafe { std::alloc::Layout::from_size_align_unchecked(cap * size_of::<u64>(), align) };
+    let hashes = unsafe { alloc_zeroed_or_abort(hash_layout) };
+
+    let data_layout =
+        unsafe { std::alloc::Layout::from_size_align_unchecked(cap * set.elem_size, align) };
+    let data = unsafe { alloc_or_abort(data_layout) };
+
+    set.hashes = hashes.cast::<u64>();
+    set.data = data;
+    set.cap = cap;
+}
+
+/// Doubles the set's capacity and re-inserts all occupied entries.
+fn set_hash_grow(set: &mut SparkSet) {
+    let old_cap = set.cap;
+    let old_hashes = set.hashes;
+    let old_data = set.data;
+
+    let new_cap = old_cap * 2;
+    let align = std::mem::align_of::<u64>();
+
+    let hash_layout = unsafe {
+        std::alloc::Layout::from_size_align_unchecked(new_cap * size_of::<u64>(), align)
+    };
+    let new_hashes = unsafe { alloc_zeroed_or_abort(hash_layout) };
+
+    let data_layout =
+        unsafe { std::alloc::Layout::from_size_align_unchecked(new_cap * set.elem_size, align) };
+    let new_data = unsafe { alloc_or_abort(data_layout) };
+
+    let new_hashes_ptr = new_hashes.cast::<u64>();
+    let mask = new_cap - 1;
+
+    for i in 0..old_cap {
+        let h = unsafe { *old_hashes.add(i) };
+        if is_occupied(h) {
+            let idx = unsafe { probe_empty(new_hashes_ptr, h, mask) };
+            unsafe { *new_hashes_ptr.add(idx) = h };
+            let src = unsafe { old_data.add(i * set.elem_size) };
+            let dst = unsafe { new_data.add(idx * set.elem_size) };
+            unsafe { std::ptr::copy_nonoverlapping(src, dst, set.elem_size) };
         }
     }
 
-    // Not found — delegate to list_push.
-    unsafe { __spark_list_push(set, elem_ptr) };
+    // Free old buffers.
+    unsafe {
+        dealloc_buf(old_hashes.cast::<u8>(), old_cap * size_of::<u64>());
+        dealloc_buf(old_data, old_cap * set.elem_size);
+    }
+
+    set.hashes = new_hashes_ptr;
+    set.data = new_data;
+    set.cap = new_cap;
+    set.tombstones = 0;
 }
 
 // =============================================================================
@@ -547,17 +756,10 @@ pub unsafe extern "C" fn __spark_map_len(ptr: *mut u8) -> i64 {
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_map_contains(ptr: *mut u8, key_ptr: *const u8) -> i8 {
-    let map = unsafe { &*(ptr.cast::<SparkMap>()) };
-    for i in 0..map.len {
-        let existing_key = unsafe { map.keys.add(i * map.key_size) };
-        if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
-            return 1;
-        }
-    }
-    0
+    i8::from(!unsafe { __spark_map_get(ptr, key_ptr) }.is_null())
 }
 
-/// Removes the entry with the given key from the map (swap-remove).
+/// Removes the entry with the given key from the map by tombstoning.
 /// Calls `key_drop` / `val_drop` from the header on the removed key/value.
 ///
 /// # Safety
@@ -568,36 +770,42 @@ pub unsafe extern "C" fn __spark_map_contains(ptr: *mut u8, key_ptr: *const u8) 
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_map_remove(ptr: *mut u8, key_ptr: *const u8) {
     let map = unsafe { &mut *(ptr.cast::<SparkMap>()) };
+    if map.cap == 0 {
+        return;
+    }
 
-    for i in 0..map.len {
-        let existing_key = unsafe { map.keys.add(i * map.key_size) };
-        if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
-            // Call destructors on removed key/value.
-            if map.key_drop != 0 {
-                let key_drop_fn: unsafe extern "C" fn(*mut u8) =
-                    unsafe { std::mem::transmute(map.key_drop) };
-                unsafe { key_drop_fn(existing_key) };
-            }
-            if map.val_drop != 0 {
-                let val_addr = unsafe { map.values.add(i * map.value_size) };
-                let val_drop_fn: unsafe extern "C" fn(*mut u8) =
-                    unsafe { std::mem::transmute(map.val_drop) };
-                unsafe { val_drop_fn(val_addr) };
-            }
+    let h = fix_hash(unsafe { fnv1a_hash(key_ptr, map.key_size) });
+    let mask = map.cap - 1;
+    let mut idx = (h as usize) & mask;
 
-            // Swap-remove: move last entry into the hole.
-            let last = map.len - 1;
-            if i != last {
-                let last_key = unsafe { map.keys.add(last * map.key_size) };
-                unsafe { std::ptr::copy_nonoverlapping(last_key, existing_key, map.key_size) };
-
-                let val_addr = unsafe { map.values.add(i * map.value_size) };
-                let last_val = unsafe { map.values.add(last * map.value_size) };
-                unsafe { std::ptr::copy_nonoverlapping(last_val, val_addr, map.value_size) };
-            }
-            map.len -= 1;
-            return;
+    loop {
+        let slot_hash = unsafe { *map.hashes.add(idx) };
+        if slot_hash == HASH_EMPTY {
+            return; // Key not found.
         }
+        if slot_hash == h {
+            let existing_key = unsafe { map.keys.add(idx * map.key_size) };
+            if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
+                // Call destructors on removed key/value.
+                if map.key_drop != 0 {
+                    let key_drop_fn: unsafe extern "C" fn(*mut u8) =
+                        unsafe { std::mem::transmute(map.key_drop) };
+                    unsafe { key_drop_fn(existing_key) };
+                }
+                if map.val_drop != 0 {
+                    let val_addr = unsafe { map.values.add(idx * map.value_size) };
+                    let val_drop_fn: unsafe extern "C" fn(*mut u8) =
+                        unsafe { std::mem::transmute(map.val_drop) };
+                    unsafe { val_drop_fn(val_addr) };
+                }
+                // Tombstone the slot.
+                unsafe { *map.hashes.add(idx) = HASH_TOMBSTONE };
+                map.len -= 1;
+                map.tombstones += 1;
+                return;
+            }
+        }
+        idx = (idx + 1) & mask;
     }
 }
 
@@ -607,10 +815,10 @@ pub unsafe extern "C" fn __spark_map_remove(ptr: *mut u8, key_ptr: *const u8) {
 ///
 /// `ptr` must be a valid pointer from `__spark_set_new`.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment)]
+#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_wrap)]
 pub unsafe extern "C" fn __spark_set_len(ptr: *mut u8) -> i64 {
-    // A set is a SparkList internally.
-    unsafe { __spark_list_len(ptr) }
+    let set = unsafe { &*(ptr.cast::<SparkSet>()) };
+    set.len as i64
 }
 
 /// Returns 1 if the set contains the element, 0 otherwise.
@@ -622,10 +830,31 @@ pub unsafe extern "C" fn __spark_set_len(ptr: *mut u8) -> i64 {
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_set_contains(ptr: *mut u8, elem_ptr: *const u8) -> i8 {
-    unsafe { __spark_list_contains(ptr, elem_ptr) }
+    let set = unsafe { &*(ptr.cast::<SparkSet>()) };
+    if set.cap == 0 {
+        return 0;
+    }
+
+    let h = fix_hash(unsafe { fnv1a_hash(elem_ptr, set.elem_size) });
+    let mask = set.cap - 1;
+    let mut idx = (h as usize) & mask;
+
+    loop {
+        let slot_hash = unsafe { *set.hashes.add(idx) };
+        if slot_hash == HASH_EMPTY {
+            return 0;
+        }
+        if slot_hash == h {
+            let existing = unsafe { set.data.add(idx * set.elem_size) };
+            if unsafe { libc_memcmp(existing, elem_ptr, set.elem_size) } {
+                return 1;
+            }
+        }
+        idx = (idx + 1) & mask;
+    }
 }
 
-/// Removes an element from the set (swap-remove by value).
+/// Removes an element from the set by tombstoning.
 /// Calls `elem_drop` from the header on the removed element.
 ///
 /// # Safety
@@ -635,27 +864,35 @@ pub unsafe extern "C" fn __spark_set_contains(ptr: *mut u8, elem_ptr: *const u8)
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_set_remove(ptr: *mut u8, elem_ptr: *const u8) {
-    let set = unsafe { &mut *(ptr.cast::<SparkList>()) };
+    let set = unsafe { &mut *(ptr.cast::<SparkSet>()) };
+    if set.cap == 0 {
+        return;
+    }
 
-    for i in 0..set.len {
-        let existing = unsafe { set.data.add(i * set.elem_size) };
-        if unsafe { libc_memcmp(existing, elem_ptr, set.elem_size) } {
-            // Call element destructor if registered.
-            if set.elem_drop != 0 {
-                let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
-                    unsafe { std::mem::transmute(set.elem_drop) };
-                unsafe { elem_drop_fn(existing) };
-            }
+    let h = fix_hash(unsafe { fnv1a_hash(elem_ptr, set.elem_size) });
+    let mask = set.cap - 1;
+    let mut idx = (h as usize) & mask;
 
-            // Swap-remove: move last element into the hole.
-            let last_idx = set.len - 1;
-            if i != last_idx {
-                let last_elem = unsafe { set.data.add(last_idx * set.elem_size) };
-                unsafe { std::ptr::copy_nonoverlapping(last_elem, existing, set.elem_size) };
-            }
-            set.len -= 1;
-            return;
+    loop {
+        let slot_hash = unsafe { *set.hashes.add(idx) };
+        if slot_hash == HASH_EMPTY {
+            return; // Not found.
         }
+        if slot_hash == h {
+            let existing = unsafe { set.data.add(idx * set.elem_size) };
+            if unsafe { libc_memcmp(existing, elem_ptr, set.elem_size) } {
+                if set.elem_drop != 0 {
+                    let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
+                        unsafe { std::mem::transmute(set.elem_drop) };
+                    unsafe { elem_drop_fn(existing) };
+                }
+                unsafe { *set.hashes.add(idx) = HASH_TOMBSTONE };
+                set.len -= 1;
+                set.tombstones += 1;
+                return;
+            }
+        }
+        idx = (idx + 1) & mask;
     }
 }
 
@@ -951,6 +1188,101 @@ unsafe fn libc_memcmp(a: *const u8, b: *const u8, len: usize) -> bool {
 }
 
 // =============================================================================
+// Hash infrastructure — FNV-1a for open-addressing hash tables
+// =============================================================================
+
+/// Sentinel value for an empty hash slot.
+const HASH_EMPTY: u64 = 0;
+/// Sentinel value for a tombstoned (deleted) hash slot.
+const HASH_TOMBSTONE: u64 = 1;
+/// Minimum capacity for hash tables (must be a power of 2).
+const MIN_HASH_CAP: usize = 8;
+
+/// FNV-1a hash of `len` bytes starting at `data`.
+///
+/// # Safety
+///
+/// `data` must be valid for `len` bytes.
+unsafe fn fnv1a_hash(data: *const u8, len: usize) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for i in 0..len {
+        hash ^= unsafe { *data.add(i) } as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Maps raw hash values 0 and 1 to 2 so they don't collide with sentinel
+/// values [`HASH_EMPTY`] and [`HASH_TOMBSTONE`].
+const fn fix_hash(h: u64) -> u64 {
+    if h < 2 { 2 } else { h }
+}
+
+/// Returns true if the hash value represents an occupied slot (not empty or tombstone).
+const fn is_occupied(h: u64) -> bool {
+    h >= 2
+}
+
+/// Allocates memory with the given layout, aborting on OOM.
+///
+/// # Safety
+///
+/// `layout` must have non-zero size.
+unsafe fn alloc_or_abort(layout: std::alloc::Layout) -> *mut u8 {
+    let ptr = unsafe { std::alloc::alloc(layout) };
+    if ptr.is_null() {
+        eprintln!("spark: out of memory");
+        std::process::abort();
+    }
+    ptr
+}
+
+/// Allocates zeroed memory with the given layout, aborting on OOM.
+///
+/// # Safety
+///
+/// `layout` must have non-zero size.
+unsafe fn alloc_zeroed_or_abort(layout: std::alloc::Layout) -> *mut u8 {
+    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+    if ptr.is_null() {
+        eprintln!("spark: out of memory");
+        std::process::abort();
+    }
+    ptr
+}
+
+/// Deallocates a buffer if it is non-null and the byte size is non-zero.
+///
+/// # Safety
+///
+/// `ptr` must have been allocated with the same size and 8-byte alignment.
+unsafe fn dealloc_buf(ptr: *mut u8, byte_size: usize) {
+    if !ptr.is_null() && byte_size > 0 {
+        let align = std::mem::align_of::<u64>();
+        let layout =
+            unsafe { std::alloc::Layout::from_size_align_unchecked(byte_size, align) };
+        unsafe { std::alloc::dealloc(ptr, layout) };
+    }
+}
+
+/// Finds an empty slot in a fresh hash table (no tombstones) for the given hash.
+///
+/// # Safety
+///
+/// `hashes` must point to a valid zeroed buffer of at least `mask + 1` u64 values.
+unsafe fn probe_empty(hashes: *mut u64, h: u64, mask: usize) -> usize {
+    let mut idx = (h as usize) & mask;
+    loop {
+        if unsafe { *hashes.add(idx) } == HASH_EMPTY {
+            return idx;
+        }
+        idx = (idx + 1) & mask;
+    }
+}
+
+// =============================================================================
 // Reference counting
 // =============================================================================
 
@@ -1041,7 +1373,7 @@ pub unsafe extern "C" fn __spark_list_rc_dec(ptr: *mut u8) {
 
 /// Decrements the reference count of a `SparkMap`.
 /// When the count reaches zero, calls `key_drop` / `val_drop` (from the
-/// header) on each key/value for recursive cleanup, then frees buffers.
+/// header) on each occupied slot for recursive cleanup, then frees buffers.
 ///
 /// # Safety
 ///
@@ -1055,53 +1387,74 @@ pub unsafe extern "C" fn __spark_map_rc_dec(ptr: *mut u8) {
     let map = unsafe { &mut *(ptr.cast::<SparkMap>()) };
     map.rc -= 1;
     if map.rc == 0 {
-        // Call key destructor on each key.
-        if map.key_drop != 0 && !map.keys.is_null() {
-            let key_drop_fn: unsafe extern "C" fn(*mut u8) =
-                unsafe { std::mem::transmute(map.key_drop) };
-            for i in 0..map.len {
-                let key_loc = unsafe { map.keys.add(i * map.key_size) };
-                unsafe { key_drop_fn(key_loc) };
+        // Scan all cap slots — occupied entries are scattered across the table.
+        if map.cap > 0 && !map.hashes.is_null() {
+            let key_drop_fn: Option<unsafe extern "C" fn(*mut u8)> = if map.key_drop != 0 {
+                Some(unsafe { std::mem::transmute(map.key_drop) })
+            } else {
+                None
+            };
+            let val_drop_fn: Option<unsafe extern "C" fn(*mut u8)> = if map.val_drop != 0 {
+                Some(unsafe { std::mem::transmute(map.val_drop) })
+            } else {
+                None
+            };
+            for i in 0..map.cap {
+                if is_occupied(unsafe { *map.hashes.add(i) }) {
+                    if let Some(f) = key_drop_fn {
+                        unsafe { f(map.keys.add(i * map.key_size)) };
+                    }
+                    if let Some(f) = val_drop_fn {
+                        unsafe { f(map.values.add(i * map.value_size)) };
+                    }
+                }
             }
         }
-        // Call value destructor on each value.
-        if map.val_drop != 0 && !map.values.is_null() {
-            let val_drop_fn: unsafe extern "C" fn(*mut u8) =
-                unsafe { std::mem::transmute(map.val_drop) };
-            for i in 0..map.len {
-                let val_loc = unsafe { map.values.add(i * map.value_size) };
-                unsafe { val_drop_fn(val_loc) };
-            }
-        }
-        // Free key buffer.
-        if !map.keys.is_null() && map.cap > 0 {
-            let align = std::mem::align_of::<u64>();
-            let key_buf_size = map.cap * map.key_size;
-            let layout =
-                unsafe { std::alloc::Layout::from_size_align_unchecked(key_buf_size, align) };
-            unsafe { std::alloc::dealloc(map.keys, layout) };
-        }
-        // Free value buffer.
-        if !map.values.is_null() && map.cap > 0 {
-            let align = std::mem::align_of::<u64>();
-            let val_buf_size = map.cap * map.value_size;
-            let layout =
-                unsafe { std::alloc::Layout::from_size_align_unchecked(val_buf_size, align) };
-            unsafe { std::alloc::dealloc(map.values, layout) };
+        // Free all buffers.
+        unsafe {
+            dealloc_buf(map.hashes.cast::<u8>(), map.cap * size_of::<u64>());
+            dealloc_buf(map.keys, map.cap * map.key_size);
+            dealloc_buf(map.values, map.cap * map.value_size);
         }
         // Free the SparkMap struct itself.
         drop(unsafe { Box::from_raw(ptr.cast::<SparkMap>()) });
     }
 }
 
-/// Decrements the reference count of a set (which is a `SparkList` internally).
+/// Decrements the reference count of a `SparkSet`.
+/// When the count reaches zero, calls `elem_drop` on each occupied slot
+/// for recursive cleanup, then frees all buffers.
 ///
 /// # Safety
 ///
 /// `ptr` must be a valid pointer from `__spark_set_new`.
 #[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_set_rc_dec(ptr: *mut u8) {
-    unsafe { __spark_list_rc_dec(ptr) };
+    if ptr.is_null() {
+        return;
+    }
+    let set = unsafe { &mut *(ptr.cast::<SparkSet>()) };
+    set.rc -= 1;
+    if set.rc == 0 {
+        // Call element destructor on each occupied slot.
+        if set.elem_drop != 0 && set.cap > 0 && !set.hashes.is_null() {
+            let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
+                unsafe { std::mem::transmute(set.elem_drop) };
+            for i in 0..set.cap {
+                if is_occupied(unsafe { *set.hashes.add(i) }) {
+                    unsafe { elem_drop_fn(set.data.add(i * set.elem_size)) };
+                }
+            }
+        }
+        // Free all buffers.
+        unsafe {
+            dealloc_buf(set.hashes.cast::<u8>(), set.cap * size_of::<u64>());
+            dealloc_buf(set.data, set.cap * set.elem_size);
+        }
+        // Free the SparkSet struct itself.
+        drop(unsafe { Box::from_raw(ptr.cast::<SparkSet>()) });
+    }
 }
 
 // =============================================================================
@@ -1206,8 +1559,8 @@ pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8) -> *mut u8 {
     Box::into_raw(new).cast::<u8>()
 }
 
-/// COW for maps. Reads `key_drop` / `val_drop` from the header to
-/// determine whether to `rc_inc` keys/values during the shallow copy.
+/// COW for maps. Copies all three backing arrays (hashes, keys, values)
+/// and `rc_inc`s occupied keys/values if their drop functions are set.
 ///
 /// # Safety
 ///
@@ -1223,65 +1576,143 @@ pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8) -> *mut u8 {
         return ptr;
     }
     let align = std::mem::align_of::<u64>();
-    // Copy keys buffer.
+
+    // Copy hashes buffer (full cap).
+    let new_hashes = if map.cap > 0 && !map.hashes.is_null() {
+        let hash_size = map.cap * size_of::<u64>();
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(hash_size, align) };
+        let buf = unsafe { alloc_or_abort(layout) };
+        unsafe { std::ptr::copy_nonoverlapping(map.hashes.cast::<u8>(), buf, hash_size) };
+        buf.cast::<u64>()
+    } else {
+        std::ptr::null_mut()
+    };
+
+    // Copy keys + values buffers (full cap — entries are scattered across the table).
     let key_buf_size = map.cap * map.key_size;
     let new_keys = if key_buf_size > 0 && !map.keys.is_null() {
         let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(key_buf_size, align) };
-        let buf = unsafe { std::alloc::alloc(layout) };
-        if buf.is_null() {
-            eprintln!("spark: out of memory in map COW copy");
-            std::process::abort();
-        }
-        unsafe { std::ptr::copy_nonoverlapping(map.keys, buf, map.len * map.key_size) };
-        if map.key_drop != 0 {
-            for i in 0..map.len {
-                let loc = unsafe { buf.add(i * map.key_size) };
-                let inner = unsafe { *(loc.cast::<*mut u8>()) };
-                if !inner.is_null() {
-                    unsafe { __spark_rc_inc(inner) };
-                }
-            }
-        }
+        let buf = unsafe { alloc_or_abort(layout) };
+        unsafe { std::ptr::copy_nonoverlapping(map.keys, buf, key_buf_size) };
         buf
     } else {
         std::ptr::null_mut()
     };
-    // Copy values buffer.
+
     let val_buf_size = map.cap * map.value_size;
     let new_values = if val_buf_size > 0 && !map.values.is_null() {
         let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(val_buf_size, align) };
-        let buf = unsafe { std::alloc::alloc(layout) };
-        if buf.is_null() {
-            eprintln!("spark: out of memory in map COW copy");
-            std::process::abort();
-        }
-        unsafe { std::ptr::copy_nonoverlapping(map.values, buf, map.len * map.value_size) };
-        if map.val_drop != 0 {
-            for i in 0..map.len {
-                let loc = unsafe { buf.add(i * map.value_size) };
-                let inner = unsafe { *(loc.cast::<*mut u8>()) };
-                if !inner.is_null() {
-                    unsafe { __spark_rc_inc(inner) };
-                }
-            }
-        }
+        let buf = unsafe { alloc_or_abort(layout) };
+        unsafe { std::ptr::copy_nonoverlapping(map.values, buf, val_buf_size) };
         buf
     } else {
         std::ptr::null_mut()
     };
+
+    // rc_inc occupied keys and values in a single pass.
+    if (map.key_drop != 0 || map.val_drop != 0) && map.cap > 0 && !map.hashes.is_null() {
+        for i in 0..map.cap {
+            if is_occupied(unsafe { *map.hashes.add(i) }) {
+                if map.key_drop != 0 && !new_keys.is_null() {
+                    let inner = unsafe { *(new_keys.add(i * map.key_size).cast::<*mut u8>()) };
+                    if !inner.is_null() {
+                        unsafe { __spark_rc_inc(inner) };
+                    }
+                }
+                if map.val_drop != 0 && !new_values.is_null() {
+                    let inner =
+                        unsafe { *(new_values.add(i * map.value_size).cast::<*mut u8>()) };
+                    if !inner.is_null() {
+                        unsafe { __spark_rc_inc(inner) };
+                    }
+                }
+            }
+        }
+    }
+
     let new = Box::new(SparkMap {
         rc: 1,
         key_drop: map.key_drop,
         val_drop: map.val_drop,
+        hashes: new_hashes,
         keys: new_keys,
         values: new_values,
         len: map.len,
         cap: map.cap,
+        tombstones: map.tombstones,
         key_size: map.key_size,
         value_size: map.value_size,
     });
     // Decrement old rc.
     let old = unsafe { &mut *(ptr.cast::<SparkMap>()) };
+    old.rc -= 1;
+    Box::into_raw(new).cast::<u8>()
+}
+
+/// COW for sets. Copies both backing arrays (hashes, data) and `rc_inc`s
+/// occupied elements if their drop function is set.
+///
+/// # Safety
+///
+/// `ptr` must be a valid `SparkSet` pointer.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_set_cow(ptr: *mut u8) -> *mut u8 {
+    if ptr.is_null() {
+        return ptr;
+    }
+    let set = unsafe { &*(ptr.cast::<SparkSet>()) };
+    if set.rc == 1 {
+        return ptr;
+    }
+    let align = std::mem::align_of::<u64>();
+
+    // Copy hashes buffer (full cap).
+    let new_hashes = if set.cap > 0 && !set.hashes.is_null() {
+        let hash_size = set.cap * size_of::<u64>();
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(hash_size, align) };
+        let buf = unsafe { alloc_or_abort(layout) };
+        unsafe { std::ptr::copy_nonoverlapping(set.hashes.cast::<u8>(), buf, hash_size) };
+        buf.cast::<u64>()
+    } else {
+        std::ptr::null_mut()
+    };
+
+    // Copy data buffer (full cap — entries are scattered across the table).
+    let data_buf_size = set.cap * set.elem_size;
+    let new_data = if data_buf_size > 0 && !set.data.is_null() {
+        let layout =
+            unsafe { std::alloc::Layout::from_size_align_unchecked(data_buf_size, align) };
+        let buf = unsafe { alloc_or_abort(layout) };
+        unsafe { std::ptr::copy_nonoverlapping(set.data, buf, data_buf_size) };
+        // rc_inc occupied elements if they are RC types.
+        if set.elem_drop != 0 {
+            for i in 0..set.cap {
+                if is_occupied(unsafe { *set.hashes.add(i) }) {
+                    let inner = unsafe { *(buf.add(i * set.elem_size).cast::<*mut u8>()) };
+                    if !inner.is_null() {
+                        unsafe { __spark_rc_inc(inner) };
+                    }
+                }
+            }
+        }
+        buf
+    } else {
+        std::ptr::null_mut()
+    };
+
+    let new = Box::new(SparkSet {
+        rc: 1,
+        elem_drop: set.elem_drop,
+        hashes: new_hashes,
+        data: new_data,
+        len: set.len,
+        cap: set.cap,
+        tombstones: set.tombstones,
+        elem_size: set.elem_size,
+    });
+    // Decrement old rc.
+    let old = unsafe { &mut *(ptr.cast::<SparkSet>()) };
     old.rc -= 1;
     Box::into_raw(new).cast::<u8>()
 }
@@ -1652,6 +2083,350 @@ mod tests {
             let ptr = __spark_list_from_range(0, 3, 0, 0);
             assert_eq!(read_list_i64(ptr), vec![0, 1, 2]);
             __spark_list_rc_dec(ptr);
+        }
+    }
+
+    // ========================================================================
+    // Hash infrastructure tests
+    // ========================================================================
+
+    #[test]
+    fn fnv1a_deterministic() {
+        unsafe {
+            let data = b"hello";
+            let h1 = fnv1a_hash(data.as_ptr(), data.len());
+            let h2 = fnv1a_hash(data.as_ptr(), data.len());
+            assert_eq!(h1, h2);
+        }
+    }
+
+    #[test]
+    fn fnv1a_different_inputs_differ() {
+        unsafe {
+            let h1 = fnv1a_hash(b"hello".as_ptr(), 5);
+            let h2 = fnv1a_hash(b"world".as_ptr(), 5);
+            assert_ne!(h1, h2);
+        }
+    }
+
+    #[test]
+    fn fix_hash_avoids_sentinels() {
+        assert_eq!(fix_hash(0), 2);
+        assert_eq!(fix_hash(1), 2);
+        assert_eq!(fix_hash(2), 2);
+        assert_eq!(fix_hash(3), 3);
+        assert_eq!(fix_hash(u64::MAX), u64::MAX);
+    }
+
+    // ========================================================================
+    // Map tests
+    // ========================================================================
+
+    #[test]
+    fn map_insert_and_get() {
+        unsafe {
+            let m = __spark_map_new(8, 8, 0, 0);
+            let key: i64 = 42;
+            let val: i64 = 100;
+            __spark_map_insert(m, &key as *const i64 as *const u8, &val as *const i64 as *const u8);
+
+            let result = __spark_map_get(m, &key as *const i64 as *const u8);
+            assert!(!result.is_null());
+            assert_eq!(*(result.cast::<i64>()), 100);
+
+            __spark_map_rc_dec(m);
+        }
+    }
+
+    #[test]
+    fn map_overwrite() {
+        unsafe {
+            let m = __spark_map_new(8, 8, 0, 0);
+            let key: i64 = 1;
+            let v1: i64 = 10;
+            let v2: i64 = 20;
+            __spark_map_insert(m, &key as *const i64 as *const u8, &v1 as *const i64 as *const u8);
+            __spark_map_insert(m, &key as *const i64 as *const u8, &v2 as *const i64 as *const u8);
+
+            assert_eq!(__spark_map_len(m), 1);
+            let result = __spark_map_get(m, &key as *const i64 as *const u8);
+            assert_eq!(*(result.cast::<i64>()), 20);
+
+            __spark_map_rc_dec(m);
+        }
+    }
+
+    #[test]
+    fn map_get_missing() {
+        unsafe {
+            let m = __spark_map_new(8, 8, 0, 0);
+            let key: i64 = 99;
+            let result = __spark_map_get(m, &key as *const i64 as *const u8);
+            assert!(result.is_null());
+
+            __spark_map_rc_dec(m);
+        }
+    }
+
+    #[test]
+    fn map_contains() {
+        unsafe {
+            let m = __spark_map_new(8, 8, 0, 0);
+            let key: i64 = 5;
+            let val: i64 = 50;
+            assert_eq!(__spark_map_contains(m, &key as *const i64 as *const u8), 0);
+
+            __spark_map_insert(m, &key as *const i64 as *const u8, &val as *const i64 as *const u8);
+            assert_eq!(__spark_map_contains(m, &key as *const i64 as *const u8), 1);
+
+            __spark_map_rc_dec(m);
+        }
+    }
+
+    #[test]
+    fn map_remove() {
+        unsafe {
+            let m = __spark_map_new(8, 8, 0, 0);
+            let key: i64 = 7;
+            let val: i64 = 77;
+            __spark_map_insert(m, &key as *const i64 as *const u8, &val as *const i64 as *const u8);
+            assert_eq!(__spark_map_len(m), 1);
+
+            __spark_map_remove(m, &key as *const i64 as *const u8);
+            assert_eq!(__spark_map_len(m), 0);
+            assert!(
+                __spark_map_get(m, &key as *const i64 as *const u8).is_null()
+            );
+
+            __spark_map_rc_dec(m);
+        }
+    }
+
+    #[test]
+    fn map_remove_and_reinsert() {
+        unsafe {
+            let m = __spark_map_new(8, 8, 0, 0);
+            let key: i64 = 3;
+            let v1: i64 = 30;
+            let v2: i64 = 31;
+            __spark_map_insert(m, &key as *const i64 as *const u8, &v1 as *const i64 as *const u8);
+            __spark_map_remove(m, &key as *const i64 as *const u8);
+            __spark_map_insert(m, &key as *const i64 as *const u8, &v2 as *const i64 as *const u8);
+
+            assert_eq!(__spark_map_len(m), 1);
+            let result = __spark_map_get(m, &key as *const i64 as *const u8);
+            assert_eq!(*(result.cast::<i64>()), 31);
+
+            __spark_map_rc_dec(m);
+        }
+    }
+
+    #[test]
+    fn map_grow_many_entries() {
+        unsafe {
+            let m = __spark_map_new(8, 8, 0, 0);
+            for i in 0..100_i64 {
+                let val = i * 10;
+                __spark_map_insert(
+                    m,
+                    &i as *const i64 as *const u8,
+                    &val as *const i64 as *const u8,
+                );
+            }
+            assert_eq!(__spark_map_len(m), 100);
+
+            for i in 0..100_i64 {
+                let result = __spark_map_get(m, &i as *const i64 as *const u8);
+                assert!(!result.is_null());
+                assert_eq!(*(result.cast::<i64>()), i * 10);
+            }
+
+            __spark_map_rc_dec(m);
+        }
+    }
+
+    #[test]
+    fn map_empty_ops() {
+        unsafe {
+            let m = __spark_map_new(8, 8, 0, 0);
+            assert_eq!(__spark_map_len(m), 0);
+            let key: i64 = 1;
+            assert_eq!(__spark_map_contains(m, &key as *const i64 as *const u8), 0);
+            assert!(__spark_map_get(m, &key as *const i64 as *const u8).is_null());
+            __spark_map_remove(m, &key as *const i64 as *const u8); // no-op
+            __spark_map_rc_dec(m);
+        }
+    }
+
+    #[test]
+    fn map_cow_shared() {
+        unsafe {
+            let m = __spark_map_new(8, 8, 0, 0);
+            let key: i64 = 1;
+            let val: i64 = 10;
+            __spark_map_insert(m, &key as *const i64 as *const u8, &val as *const i64 as *const u8);
+
+            // Simulate shared ownership.
+            __spark_rc_inc(m);
+            let cow = __spark_map_cow(m);
+            assert_ne!(cow, m); // Should be a new allocation.
+
+            // Both should still have the entry.
+            let r1 = __spark_map_get(m, &key as *const i64 as *const u8);
+            let r2 = __spark_map_get(cow, &key as *const i64 as *const u8);
+            assert_eq!(*(r1.cast::<i64>()), 10);
+            assert_eq!(*(r2.cast::<i64>()), 10);
+
+            __spark_map_rc_dec(m);
+            __spark_map_rc_dec(cow);
+        }
+    }
+
+    #[test]
+    fn map_cow_sole_owner() {
+        unsafe {
+            let m = __spark_map_new(8, 8, 0, 0);
+            let key: i64 = 1;
+            let val: i64 = 10;
+            __spark_map_insert(m, &key as *const i64 as *const u8, &val as *const i64 as *const u8);
+
+            // rc == 1 — COW should return same pointer.
+            let cow = __spark_map_cow(m);
+            assert_eq!(cow, m);
+
+            __spark_map_rc_dec(m);
+        }
+    }
+
+    // ========================================================================
+    // Set tests
+    // ========================================================================
+
+    #[test]
+    fn set_insert_and_contains() {
+        unsafe {
+            let s = __spark_set_new(8, 0);
+            let val: i64 = 42;
+            __spark_set_insert(s, &val as *const i64 as *const u8);
+            assert_eq!(__spark_set_contains(s, &val as *const i64 as *const u8), 1);
+            assert_eq!(__spark_set_len(s), 1);
+
+            __spark_set_rc_dec(s);
+        }
+    }
+
+    #[test]
+    fn set_dedup() {
+        unsafe {
+            let s = __spark_set_new(8, 0);
+            let val: i64 = 10;
+            __spark_set_insert(s, &val as *const i64 as *const u8);
+            __spark_set_insert(s, &val as *const i64 as *const u8);
+            __spark_set_insert(s, &val as *const i64 as *const u8);
+            assert_eq!(__spark_set_len(s), 1);
+
+            __spark_set_rc_dec(s);
+        }
+    }
+
+    #[test]
+    fn set_remove() {
+        unsafe {
+            let s = __spark_set_new(8, 0);
+            let val: i64 = 7;
+            __spark_set_insert(s, &val as *const i64 as *const u8);
+            assert_eq!(__spark_set_len(s), 1);
+
+            __spark_set_remove(s, &val as *const i64 as *const u8);
+            assert_eq!(__spark_set_len(s), 0);
+            assert_eq!(__spark_set_contains(s, &val as *const i64 as *const u8), 0);
+
+            __spark_set_rc_dec(s);
+        }
+    }
+
+    #[test]
+    fn set_remove_and_reinsert() {
+        unsafe {
+            let s = __spark_set_new(8, 0);
+            let val: i64 = 3;
+            __spark_set_insert(s, &val as *const i64 as *const u8);
+            __spark_set_remove(s, &val as *const i64 as *const u8);
+            __spark_set_insert(s, &val as *const i64 as *const u8);
+
+            assert_eq!(__spark_set_len(s), 1);
+            assert_eq!(__spark_set_contains(s, &val as *const i64 as *const u8), 1);
+
+            __spark_set_rc_dec(s);
+        }
+    }
+
+    #[test]
+    fn set_grow_many_elements() {
+        unsafe {
+            let s = __spark_set_new(8, 0);
+            for i in 0..100_i64 {
+                __spark_set_insert(s, &i as *const i64 as *const u8);
+            }
+            assert_eq!(__spark_set_len(s), 100);
+
+            for i in 0..100_i64 {
+                assert_eq!(__spark_set_contains(s, &i as *const i64 as *const u8), 1);
+            }
+
+            // Verify element not in the set.
+            let missing: i64 = 200;
+            assert_eq!(
+                __spark_set_contains(s, &missing as *const i64 as *const u8),
+                0
+            );
+
+            __spark_set_rc_dec(s);
+        }
+    }
+
+    #[test]
+    fn set_empty_ops() {
+        unsafe {
+            let s = __spark_set_new(8, 0);
+            assert_eq!(__spark_set_len(s), 0);
+            let val: i64 = 1;
+            assert_eq!(__spark_set_contains(s, &val as *const i64 as *const u8), 0);
+            __spark_set_remove(s, &val as *const i64 as *const u8); // no-op
+            __spark_set_rc_dec(s);
+        }
+    }
+
+    #[test]
+    fn set_cow_shared() {
+        unsafe {
+            let s = __spark_set_new(8, 0);
+            let val: i64 = 42;
+            __spark_set_insert(s, &val as *const i64 as *const u8);
+
+            __spark_rc_inc(s);
+            let cow = __spark_set_cow(s);
+            assert_ne!(cow, s);
+
+            assert_eq!(__spark_set_contains(s, &val as *const i64 as *const u8), 1);
+            assert_eq!(__spark_set_contains(cow, &val as *const i64 as *const u8), 1);
+
+            __spark_set_rc_dec(s);
+            __spark_set_rc_dec(cow);
+        }
+    }
+
+    #[test]
+    fn set_cow_sole_owner() {
+        unsafe {
+            let s = __spark_set_new(8, 0);
+            let val: i64 = 42;
+            __spark_set_insert(s, &val as *const i64 as *const u8);
+
+            let cow = __spark_set_cow(s);
+            assert_eq!(cow, s);
+
+            __spark_set_rc_dec(s);
         }
     }
 }

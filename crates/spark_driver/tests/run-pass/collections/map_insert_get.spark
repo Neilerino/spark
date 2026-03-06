@@ -1,0 +1,5 @@
+fn main(): Int {
+    m: Map[String, Int] = {"a": 10, "b": 20, "c": 30}
+    print(m.len())
+    return 0
+}

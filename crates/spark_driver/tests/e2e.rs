@@ -318,6 +318,16 @@ fn list_range_each() {
     assert_output("run-pass/collections/list_range_each.spark", "0\n1\n2\n3\n4");
 }
 
+#[test]
+fn map_insert_get() {
+    assert_output("run-pass/collections/map_insert_get.spark", "3");
+}
+
+#[test]
+fn map_multiple_sizes() {
+    assert_output("run-pass/collections/map_overwrite.spark", "1\n3");
+}
+
 // ============================================================================
 // Generics
 // ============================================================================
