@@ -10,8 +10,12 @@ use spark_ast::{
 };
 use spark_resolve::{DefId, DefinitionKind, DefinitionTable, ResolutionMap};
 
+use spark_diagnostics::{Diagnostic, Label};
+
 use crate::ctx::TypeCheckCtx;
+use crate::display::display_type as type_name;
 use crate::lower::lower_type_expr;
+use crate::table::InterfaceMethodInfo;
 use crate::ty::{Constraint, Ty, TypeId};
 
 /// Collects type signatures for a single item.
@@ -193,21 +197,50 @@ fn collect_type_def(
 /// Collects an interface's method signatures.
 ///
 /// Registers each method as a `Ty::Function` so that bindings can be
-/// validated against the interface's requirements.
+/// validated against the interface's requirements. Also stores
+/// [`InterfaceMethodInfo`] for each method so that `validate_interface_methods`
+/// can check binding implementations.
 fn collect_interface(
     iface: &InterfaceDef,
     ctx: &mut TypeCheckCtx<'_>,
 ) {
     // Register the interface type itself
-    if let Some(def_id) = find_item_def(iface.name.span, ctx.resolutions) {
-        let iface_type = ctx.table.intern(Ty::Param(def_id));
-        ctx.table.set_def_type(def_id, iface_type);
-    }
+    let Some(def_id) = find_item_def(iface.name.span, ctx.resolutions) else {
+        return;
+    };
+    let iface_type = ctx.table.intern(Ty::Param(def_id));
+    ctx.table.set_def_type(def_id, iface_type);
 
-    // Register method signatures — they don't have separate DefIds currently,
-    // so we just lower them for validation use. Interface methods that don't
-    // have DefIds allocated by the resolver won't be stored here; the critical
-    // path is binding method collection below.
+    // Lower each method's signature and store for later validation.
+    let mut method_infos = Vec::with_capacity(iface.methods.len());
+    for method in &iface.methods {
+        // Interface methods may use `_` as a self-type placeholder (parsed as
+        // Named("_") or Infer). Skip lowering those to avoid spurious diagnostics.
+        let has_placeholder = method.params.iter().any(|p| is_placeholder_type(&p.ty))
+            || is_placeholder_type(&method.ret_type);
+
+        let param_types: Vec<TypeId> = method
+            .params
+            .iter()
+            .map(|p| lower_or_placeholder(&p.ty, ctx))
+            .collect();
+        let ret_type = lower_or_placeholder(&method.ret_type, ctx);
+        let has_generics = has_placeholder
+            || !method.generics.is_empty()
+            || param_types.iter().any(|t| type_involves_param(*t, ctx.table))
+            || type_involves_param(ret_type, ctx.table);
+
+        method_infos.push(InterfaceMethodInfo {
+            name: method.name.name,
+            param_types,
+            ret_type,
+            is_async: method.is_async,
+            has_default: method.body.is_some(),
+            has_generics,
+            span: method.span,
+        });
+    }
+    ctx.table.set_interface_methods(def_id, method_infos);
 }
 
 /// Collects method signatures from an interface binding.
@@ -233,7 +266,7 @@ fn collect_binding(
         let interface_def_id = find_type_def_from_binding_ty(&target.interface, ctx.resolutions);
         if !interface_def_id.is_dummy() {
             ctx.table.add_interface_binding(type_def_id, interface_def_id);
-            validate_interface_methods(interface_def_id, &target.methods, ctx.definitions, ctx.diagnostics);
+            validate_interface_methods(interface_def_id, &target.methods, ctx);
         }
 
         for method in &target.methods {
@@ -330,28 +363,173 @@ fn find_binding_method_def(
 
 /// Validates that a binding provides all required methods from its interface.
 ///
-/// Reports errors for missing methods. Defers signature matching to the
-/// generics phase.
+/// Checks for:
+/// 1. Missing required methods (interface methods without default bodies)
+/// 2. Parameter count mismatch
+/// 3. Return type mismatch (non-generic methods only)
+/// 4. Async/sync mismatch
+/// 5. Parameter type mismatch (non-generic methods only)
 fn validate_interface_methods(
     interface_def_id: DefId,
     binding_methods: &[FunctionDef],
-    definitions: &DefinitionTable,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) {
-    // Find the interface definition info
-    let iface_info = match definitions.get(interface_def_id) {
-        Some(info) if matches!(info.kind, DefinitionKind::Interface) => info,
+    // Look up the interface name for diagnostics.
+    let iface_name = match ctx.definitions.get(interface_def_id) {
+        Some(info) if matches!(info.kind, DefinitionKind::Interface) => info.name,
         _ => return,
     };
 
-    let iface_name = iface_info.name;
-    let iface_span = iface_info.span;
+    // Clone the method infos to avoid borrowing ctx.table while we mutate ctx.
+    let iface_methods = match ctx.table.get_interface_methods(interface_def_id) {
+        Some(methods) => methods.to_vec(),
+        None => return,
+    };
 
-    // We don't have access to the AST interface methods here (they aren't stored
-    // in the definition table), so interface validation is deferred to when we
-    // have both the interface AST and the binding AST available (in checker.rs).
-    // For now, this is a placeholder that can be enhanced later.
-    let _ = (iface_name, iface_span, binding_methods, diagnostics);
+    for iface_method in &iface_methods {
+        // Find the corresponding binding method by name.
+        let binding_method = binding_methods
+            .iter()
+            .find(|m| m.name.name == iface_method.name);
+
+        let Some(binding_method) = binding_method else {
+            // Missing required method (skip methods with default implementations).
+            if !iface_method.has_default {
+                ctx.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "missing required method `{}` from interface `{iface_name}`",
+                        iface_method.name
+                    ))
+                    .with_label(Label::secondary(iface_method.span, "required by this interface method")),
+                );
+            }
+            continue;
+        };
+
+        // Determine parameter offset: binding methods may have an extra receiver
+        // parameter at index 0 (e.g., `fn recv(server: Server)`) that the interface
+        // omits (e.g., `fn recv()`). If the binding has exactly one more param than
+        // the interface, the first param is treated as the receiver and skipped.
+        let binding_params = if binding_method.params.len() == iface_method.param_types.len() + 1 {
+            &binding_method.params[1..]
+        } else {
+            binding_method.params.as_slice()
+        };
+
+        // Check parameter count (after accounting for receiver).
+        if binding_params.len() != iface_method.param_types.len() {
+            ctx.diagnostics.push(
+                Diagnostic::error(format!(
+                    "method `{}` has {} parameter{}, but interface `{iface_name}` expects {}",
+                    iface_method.name,
+                    binding_params.len(),
+                    if binding_params.len() == 1 { "" } else { "s" },
+                    iface_method.param_types.len()
+                ))
+                .with_label(Label::primary(binding_method.span, "wrong number of parameters"))
+                .with_label(Label::secondary(iface_method.span, "interface method defined here")),
+            );
+            continue; // Skip further checks if param count is wrong.
+        }
+
+        // Check async mismatch.
+        if binding_method.is_async != iface_method.is_async {
+            let expected = if iface_method.is_async { "async" } else { "sync" };
+            let found = if binding_method.is_async { "async" } else { "sync" };
+            ctx.diagnostics.push(
+                Diagnostic::error(format!(
+                    "method `{}` is {found}, but interface `{iface_name}` declares it as {expected}",
+                    iface_method.name
+                ))
+                .with_label(Label::primary(binding_method.span, format!("this method is {found}")))
+                .with_label(Label::secondary(iface_method.span, format!("interface declares {expected}"))),
+            );
+        }
+
+        // Skip type-level comparison for generic methods.
+        if iface_method.has_generics {
+            continue;
+        }
+
+        // Check return type mismatch.
+        let binding_ret = lower_type_expr(&binding_method.ret_type, ctx);
+        if !binding_ret.is_error() && !iface_method.ret_type.is_error() && binding_ret != iface_method.ret_type {
+            ctx.diagnostics.push(
+                Diagnostic::error(format!(
+                    "method `{}` returns `{}`, but interface `{iface_name}` expects `{}`",
+                    iface_method.name,
+                    type_name(binding_ret, ctx.table, ctx.definitions),
+                    type_name(iface_method.ret_type, ctx.table, ctx.definitions)
+                ))
+                .with_label(Label::primary(binding_method.ret_type.span, "wrong return type"))
+                .with_label(Label::secondary(iface_method.span, "interface method defined here")),
+            );
+        }
+
+        // Check parameter type mismatches.
+        for (i, param) in binding_params.iter().enumerate() {
+            let binding_param_ty = lower_type_expr(&param.ty, ctx);
+            let iface_param_ty = iface_method.param_types[i];
+            if !binding_param_ty.is_error() && !iface_param_ty.is_error() && binding_param_ty != iface_param_ty {
+                ctx.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "parameter `{}` of method `{}` has type `{}`, but interface `{iface_name}` expects `{}`",
+                        param.name.name,
+                        iface_method.name,
+                        type_name(binding_param_ty, ctx.table, ctx.definitions),
+                        type_name(iface_param_ty, ctx.table, ctx.definitions)
+                    ))
+                    .with_label(Label::primary(param.ty.span, "wrong parameter type"))
+                    .with_label(Label::secondary(iface_method.span, "interface method defined here")),
+                );
+            }
+        }
+    }
+}
+
+/// Lowers a type expression, returning `TypeId::ERROR` for placeholder (`_`) types
+/// without emitting spurious diagnostics.
+fn lower_or_placeholder(ty: &spark_ast::TypeExpr, ctx: &mut TypeCheckCtx<'_>) -> TypeId {
+    if is_placeholder_type(ty) {
+        TypeId::ERROR
+    } else {
+        lower_type_expr(ty, ctx)
+    }
+}
+
+/// Returns `true` if a type expression is the `_` placeholder used in interface
+/// method signatures for the `self` parameter type.
+fn is_placeholder_type(ty: &spark_ast::TypeExpr) -> bool {
+    match &ty.kind {
+        spark_ast::TypeExprKind::Infer => true,
+        spark_ast::TypeExprKind::Named { path, type_args } => {
+            type_args.is_empty()
+                && path.is_simple()
+                && path.segments[0].name == spark_intern::kw::UNDERSCORE
+        }
+        _ => false,
+    }
+}
+
+/// Returns `true` if the type contains any `Ty::Param` (generic type parameter).
+fn type_involves_param(ty: TypeId, table: &crate::table::TypeTable) -> bool {
+    if ty.is_error() {
+        return false;
+    }
+    match table.resolve(ty) {
+        Ty::Param(_) => true,
+        Ty::Optional(inner) | Ty::Mutable(inner) | Ty::List(inner) | Ty::Set(inner)
+        | Ty::Future { inner } | Ty::Channel { inner }
+        | Ty::Ref { inner, .. } => type_involves_param(*inner, table),
+        Ty::Map(k, v) => type_involves_param(*k, table) || type_involves_param(*v, table),
+        Ty::Tuple(elems) => elems.iter().any(|e| type_involves_param(*e, table)),
+        Ty::Union(members) => members.iter().any(|m| type_involves_param(*m, table)),
+        Ty::Function { params, ret, .. } => {
+            params.iter().any(|p| type_involves_param(*p, table)) || type_involves_param(*ret, table)
+        }
+        Ty::Applied { args, .. } => args.iter().any(|a| type_involves_param(*a, table)),
+        _ => false,
+    }
 }
 
 // === Generic parameter collection ===

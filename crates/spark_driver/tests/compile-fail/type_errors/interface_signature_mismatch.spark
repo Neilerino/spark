@@ -1,0 +1,19 @@
+// Tests that a binding method with wrong parameter count produces an error.
+
+interface Adder {
+    fn add(a: Int, b: Int): Int
+}
+
+struct Calculator {
+    name: String
+}
+
+Calculator binds Adder {
+    fn add(a: Int): Int {
+        return a
+    }
+}
+
+fn main(): Int {
+    return 0
+}

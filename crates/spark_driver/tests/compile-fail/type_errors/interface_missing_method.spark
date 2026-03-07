@@ -1,0 +1,21 @@
+// Tests that a binding missing a required interface method produces an error.
+
+interface Greeter {
+    fn greet(): String
+    fn farewell(): String
+}
+
+struct Bot {
+    name: String
+}
+
+Bot binds Greeter {
+    fn greet(): String {
+        return "hi"
+    }
+    // Missing: farewell()
+}
+
+fn main(): Int {
+    return 0
+}

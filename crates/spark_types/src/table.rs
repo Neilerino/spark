@@ -12,6 +12,29 @@ use spark_span::Span;
 use crate::intern::TypeInterner;
 use crate::ty::{Constraint, LifetimeId, Ty, TypeId};
 
+/// Information about an interface method, stored during collection for validation.
+///
+/// Captures the lowered signature of each method declared in an interface
+/// definition so that `validate_interface_methods` can compare binding
+/// implementations against the contract without re-parsing the AST.
+#[derive(Debug, Clone)]
+pub struct InterfaceMethodInfo {
+    /// Method name symbol.
+    pub name: Symbol,
+    /// Lowered parameter types (excluding `self`).
+    pub param_types: Vec<TypeId>,
+    /// Lowered return type.
+    pub ret_type: TypeId,
+    /// Whether the method is async.
+    pub is_async: bool,
+    /// Whether the method has a default body.
+    pub has_default: bool,
+    /// Whether any parameter or return type involves a generic parameter.
+    pub has_generics: bool,
+    /// The span of the method declaration in the interface.
+    pub span: Span,
+}
+
 /// The type table produced by the type checker.
 ///
 /// Contains all type information gathered during type checking:
@@ -59,6 +82,9 @@ pub struct TypeTable {
     /// Populated during declaration collection, consumed during partial
     /// application type checking to resolve named arguments to positions.
     pub(crate) fn_param_names: FxHashMap<DefId, Vec<Symbol>>,
+    /// Maps an interface `DefId` to its method signatures.
+    /// Populated during `collect_interface()`, consumed during `validate_interface_methods()`.
+    pub(crate) interface_methods: FxHashMap<DefId, Vec<InterfaceMethodInfo>>,
 }
 
 impl Default for TypeTable {
@@ -94,6 +120,7 @@ impl TypeTable {
             generic_constraints: FxHashMap::default(),
             type_interface_bindings: FxHashMap::default(),
             fn_param_names: FxHashMap::default(),
+            interface_methods: FxHashMap::default(),
         }
     }
 
@@ -257,6 +284,17 @@ impl TypeTable {
     #[must_use]
     pub fn get_fn_param_names(&self, def_id: DefId) -> Option<&[Symbol]> {
         self.fn_param_names.get(&def_id).map(Vec::as_slice)
+    }
+
+    /// Records the method signatures for an interface.
+    pub fn set_interface_methods(&mut self, def_id: DefId, methods: Vec<InterfaceMethodInfo>) {
+        self.interface_methods.insert(def_id, methods);
+    }
+
+    /// Returns the method signatures for an interface, if any.
+    #[must_use]
+    pub fn get_interface_methods(&self, def_id: DefId) -> Option<&[InterfaceMethodInfo]> {
+        self.interface_methods.get(&def_id).map(Vec::as_slice)
     }
 
     /// Records a monomorphization instance for a generic function call.

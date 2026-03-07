@@ -921,6 +921,16 @@ fn tuple_field_oob() {
     assert_compile_error("compile-fail/type_errors/tuple_field_oob.spark", "out of range");
 }
 
+#[test]
+fn interface_missing_method() {
+    assert_compile_error("compile-fail/type_errors/interface_missing_method.spark", "missing required method");
+}
+
+#[test]
+fn interface_signature_mismatch() {
+    assert_compile_error("compile-fail/type_errors/interface_signature_mismatch.spark", "wrong number of parameters");
+}
+
 // ============================================================================
 // Compile-fail: borrow errors
 // ============================================================================
