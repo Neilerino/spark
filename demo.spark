@@ -27,13 +27,13 @@ fn makeAdder(n: Int): (Int): Int {
 }
 
 // ── 3. Pipeline operators ───────────────────────────────────────────
-// "via" chains whole-collection transforms. Think Unix pipes for data.
+// "to" chains whole-collection transforms. Think Unix pipes for data.
 
 fn topThree(nums: List[Int]): List[Int] {
-    return nums via sort via reverse via take{count: 3}
+    return nums to sort to reverse to take{count: 3}
 }
 
-// "to" pipes a single value through a chain of functions.
+// "to" also pipes a single value through a chain of functions.
 
 fn addTen(x: Int): Int { return x + 10 }
 
@@ -62,13 +62,13 @@ fn main(): Int {
     // Lists & pipeline operators
     scores: List[Int] = [42, 17, 93, 8, 65, 31]
 
-    // via: pipeline the whole list through sort → reverse → take
+    // to: pipeline the whole list through sort → reverse → take
     best: List[Int] = topThree(scores)
-    best each (s: Int): Void { print(s) }            // → 93, 65, 42
+    best each (s: Int) { print(s) }                  // → 93, 65, 42
 
-    // each via: transform every element with a lambda
-    doubled: List[Int] = best each via (n: Int): Int { n * 2 }
-    doubled each (s: Int): Void { print(s) }         // → 186, 130, 84
+    // map: transform every element with a lambda
+    doubled: List[Int] = best map (n: Int): Int { n * 2 }
+    doubled each (s: Int) { print(s) }               // → 186, 130, 84
 
     // to: pipe a single value through functions
     result: Int = 3 to double to addTen              // (3*2)+10

@@ -1,7 +1,7 @@
 fn main(): Int {
     x: Int! = 0
     nums: List[Int] = [1, 2, 3]
-    nums each (n: Int): Void { x = x + n }
+    nums each (n: Int) { x = x + n }
     print(x)
     return 0
 }

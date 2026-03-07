@@ -1439,16 +1439,16 @@ fn is_mutable_ref_param(ty: TypeId, table: &TypeTable) -> bool {
     }
 }
 
-/// Validates the callback type for `each` / `each via`.
+/// Validates the callback type for `each` / `map`.
 ///
 /// For `each`: callback must be `(T) -> Void` (though we don't enforce Void return).
-/// For `each via`: callback must be `(T) -> U`; returns `U`.
+/// For `map`: callback must be `(T) -> U`; returns `U`.
 ///
-/// Returns the callback's return type (used by `each via` to determine `List[U]`).
+/// Returns the callback's return type (used by `map` to determine `List[U]`).
 fn validate_each_callback(
     cb_ty: TypeId,
     elem_ty: TypeId,
-    is_via: bool,
+    is_map: bool,
     span: Span,
     table: &TypeTable,
     definitions: &DefinitionTable,
@@ -1457,13 +1457,13 @@ fn validate_each_callback(
     if cb_ty == TypeId::ERROR || elem_ty == TypeId::ERROR {
         return TypeId::ERROR;
     }
+    let label = if is_map { "map" } else { "each" };
     match table.resolve(cb_ty).clone() {
         Ty::Function { params, ret, .. } => {
             if params.len() != 1 {
                 diagnostics.push(
                     Diagnostic::error(format!(
-                        "`each{}` callback must take exactly 1 parameter, found {}",
-                        if is_via { " via" } else { "" },
+                        "`{label}` callback must take exactly 1 parameter, found {}",
                         params.len()
                     ))
                     .with_label(Label::primary(span, "wrong number of parameters")),
@@ -1476,8 +1476,7 @@ fn validate_each_callback(
                 let found = type_name(param_ty, table, definitions);
                 diagnostics.push(
                     Diagnostic::error(format!(
-                        "`each{}` callback parameter type mismatch: expected `{expected}`, found `{found}`",
-                        if is_via { " via" } else { "" },
+                        "`{label}` callback parameter type mismatch: expected `{expected}`, found `{found}`",
                     ))
                     .with_label(Label::primary(span, "type mismatch")),
                 );
@@ -1488,8 +1487,7 @@ fn validate_each_callback(
             let name = type_name(cb_ty, table, definitions);
             diagnostics.push(
                 Diagnostic::error(format!(
-                    "`each{}` callback must be a function, found `{name}`",
-                    if is_via { " via" } else { "" },
+                    "`{label}` callback must be a function, found `{name}`",
                 ))
                 .with_label(Label::primary(span, "not a function")),
             );
@@ -1498,9 +1496,9 @@ fn validate_each_callback(
     }
 }
 
-/// Validates a partial-application callback in an `each`/`each via` pipeline stage.
+/// Validates a partial-application callback in an `each`/`map` pipeline stage.
 ///
-/// For `list each via func{b: val}`, the element fills the first parameter and the
+/// For `list map func{b: val}`, the element fills the first parameter and the
 /// bound arguments fill the rest. Returns the function's return type and stores a
 /// reduced 1-parameter function type on `callback_expr` so downstream passes can
 /// extract the return type via `extract_fn_ret_ty`.
@@ -1508,7 +1506,7 @@ fn validate_partial_each_callback(
     callee: &Expr,
     args: &[spark_ast::PartialArg],
     elem_ty: TypeId,
-    is_via: bool,
+    is_map: bool,
     callback_expr: &Expr,
     ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
@@ -1523,12 +1521,12 @@ fn validate_partial_each_callback(
         return TypeId::ERROR;
     }
 
+    let label = if is_map { "map" } else { "each" };
     let func_ty = ctx.table.resolve(callee_ty).clone();
     let Ty::Function { params, ret, .. } = func_ty else {
         ctx.diagnostics.push(
             Diagnostic::error(format!(
-                "`each{}` partial callback must be a function",
-                if is_via { " via" } else { "" },
+                "`{label}` partial callback must be a function",
             ))
             .with_label(Label::primary(callee.span, "not a function")),
         );
@@ -1541,8 +1539,7 @@ fn validate_partial_each_callback(
     if total_args != params.len() {
         ctx.diagnostics.push(
             Diagnostic::error(format!(
-                "`each{}` partial callback expected {} parameter{}, found {} (1 element + {} bound)",
-                if is_via { " via" } else { "" },
+                "`{label}` partial callback expected {} parameter{}, found {} (1 element + {} bound)",
                 params.len(),
                 if params.len() == 1 { "" } else { "s" },
                 total_args,
@@ -1560,8 +1557,7 @@ fn validate_partial_each_callback(
         let found = type_name(elem_ty, ctx.table, ctx.definitions);
         ctx.diagnostics.push(
             Diagnostic::error(format!(
-                "`each{}` element type mismatch: expected `{expected}`, found `{found}`",
-                if is_via { " via" } else { "" },
+                "`{label}` element type mismatch: expected `{expected}`, found `{found}`",
             ))
             .with_label(Label::primary(callback_expr.span, "type mismatch")),
         );
@@ -2075,13 +2071,13 @@ fn check_pipeline_stage(
     let label = if stage.parallel {
         match &stage.kind {
             PipelineStageKind::ForEach { .. } => "parallel each",
-            PipelineStageKind::Map { .. } => "parallel each via",
+            PipelineStageKind::Map { .. } => "parallel map",
             PipelineStageKind::Reduce { .. } => "parallel reduce",
         }
     } else {
         match &stage.kind {
             PipelineStageKind::ForEach { .. } => "each",
-            PipelineStageKind::Map { .. } => "each via",
+            PipelineStageKind::Map { .. } => "map",
             PipelineStageKind::Reduce { .. } => "reduce",
         }
     };

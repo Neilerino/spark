@@ -52,7 +52,7 @@ fn lambdas(): Void {
 
     // Lambda usage
     numbers: List[Int] = [1, 2, 3]
-    doubled: List[Int] = numbers.map(fn(x: Int): Int { x * 2 })
+    doubled: List[Int] = numbers.transform(fn(x: Int): Int { x * 2 })
 }
 
 fn type_operations(value: Int | String): Void {
@@ -95,5 +95,5 @@ fn index_and_call(): Void {
     size: Int = list.size()
 
     // Chained calls
-    value: Int = list.map(double).first()
+    value: Int = list.transform(double).first()
 }

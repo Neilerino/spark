@@ -1,6 +1,6 @@
 fn main(): Int {
     items: List[Int] = [1, 2, 3]
-    items each (item: Int): Void {
+    items each (item: Int) {
         print(item)
     }
     return 0

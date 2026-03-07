@@ -1,7 +1,7 @@
 fn main(): Int {
     words: List[String] = ["cherry", "apple", "banana"]
-    sorted: List[String] = words via sort
-    sorted each (item: String): Void {
+    sorted: List[String] = words to sort
+    sorted each (item: String) {
         print(item)
     }
     return 0

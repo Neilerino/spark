@@ -1,6 +1,6 @@
 fn main(): Int {
     nums: List[Int] = [1, 2, 3, 4, 5]
-    first3: List[Int] = nums via take{count: 3}
+    first3: List[Int] = nums to take{count: 3}
     print(first3.len())
     return 0
 }

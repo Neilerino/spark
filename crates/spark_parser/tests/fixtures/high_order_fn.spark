@@ -5,7 +5,7 @@ type Transform[T, U] = (T): U
 type Predicate[T] = (T): Bool
 
 // Function that takes another function as parameter
-fn map[T, U](items: List[T], transform: (T): U): List[U] {
+fn transform[T, U](items: List[T], transform: (T): U): List[U] {
     return items
 }
 
@@ -31,7 +31,7 @@ fn compose[A, B, C](f: (B): C, g: (A): B): (A): C {
 // Using higher-order functions
 fn use_map(): List[Int] {
     numbers: List[Int] = [1, 2, 3, 4, 5]
-    return map(numbers, fn(x: Int): Int { x * 2 })
+    return transform(numbers, fn(x: Int): Int { x * 2 })
 }
 
 fn use_filter(): List[Int] {
@@ -56,7 +56,7 @@ fn triple(x: Int): Int {
 
 fn use_named_functions(): List[Int] {
     numbers: List[Int] = [1, 2, 3]
-    doubled: List[Int] = map(numbers, double)
-    tripled: List[Int] = map(numbers, triple)
+    doubled: List[Int] = transform(numbers, double)
+    tripled: List[Int] = transform(numbers, triple)
     return tripled
 }

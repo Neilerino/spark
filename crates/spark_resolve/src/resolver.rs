@@ -100,7 +100,7 @@ impl Resolver {
         // Store the builtin DefId so it can be added to ribs during resolution
         self.builtin_defs.push((kw::PRINT, def_id, DefinitionKind::BuiltinFunction));
 
-        // Register sort/take/reverse as built-in functions (callable via `via` or directly)
+        // Register sort/take/reverse as built-in functions (callable via `to` or directly)
         for &fn_name in &[kw::SORT, kw::TAKE, kw::REVERSE] {
             let info = DefinitionInfo::new(
                 DefinitionKind::BuiltinFunction,

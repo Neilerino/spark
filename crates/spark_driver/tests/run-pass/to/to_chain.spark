@@ -1,7 +1,7 @@
 fn main(): Int {
     nums: List[Int] = [3, 1, 2, 5, 4]
-    result: List[Int] = nums via sort via take{count: 3}
-    result each (item: Int): Void {
+    result: List[Int] = nums to sort to take{count: 3}
+    result each (item: Int) {
         print(item)
     }
     return 0

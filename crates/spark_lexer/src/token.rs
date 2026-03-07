@@ -129,8 +129,8 @@ pub enum TokenKind {
     Return,
     /// `each`
     Each,
-    /// `via`
-    Via,
+    /// `map`
+    Map,
     /// `to`
     To,
     /// `and`
@@ -304,7 +304,7 @@ impl TokenKind {
                 | Self::Continue
                 | Self::Return
                 | Self::Each
-                | Self::Via
+                | Self::Map
                 | Self::To
                 | Self::And
                 | Self::Or
@@ -378,7 +378,7 @@ impl TokenKind {
             "continue" => Some(Self::Continue),
             "return" => Some(Self::Return),
             "each" => Some(Self::Each),
-            "via" => Some(Self::Via),
+            "map" => Some(Self::Map),
             "to" => Some(Self::To),
             "and" => Some(Self::And),
             "or" => Some(Self::Or),
@@ -434,7 +434,7 @@ impl TokenKind {
             Self::Continue => "continue",
             Self::Return => "return",
             Self::Each => "each",
-            Self::Via => "via",
+            Self::Map => "map",
             Self::To => "to",
             Self::And => "and",
             Self::Or => "or",

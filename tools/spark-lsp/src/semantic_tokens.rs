@@ -125,7 +125,7 @@ const fn token_type_index(kind: TokenKind) -> Option<u32> {
         | TokenKind::Continue
         | TokenKind::Return
         | TokenKind::Each
-        | TokenKind::Via
+        | TokenKind::Map
         | TokenKind::Parallel
         | TokenKind::To
         | TokenKind::And

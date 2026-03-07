@@ -1,7 +1,7 @@
 fn main(): Int {
     nums: List[Int] = [1, 2, 3]
-    rev: List[Int] = nums via reverse
-    rev each (item: Int): Void {
+    rev: List[Int] = nums to reverse
+    rev each (item: Int) {
         print(item)
     }
     return 0

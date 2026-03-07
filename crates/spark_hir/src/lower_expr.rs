@@ -614,7 +614,7 @@ fn lower_single_pipeline_stage(
                 }
             } else {
                 let result_list_ty = table.lookup(&Ty::List(cb_ret_ty)).unwrap_or(TypeId::ERROR);
-                desugar::desugar_each_via(
+                desugar::desugar_map(
                     source_hir, callback_hir, elem_ty, cb_ret_ty,
                     result_list_ty, int_ty, bool_ty, void_ty,
                     span, definitions,
@@ -704,7 +704,7 @@ fn lower_to_narrowing(
     }
 }
 
-/// Lowers a pipeline apply expression (`expr via func{args}` or `expr to func{args}`).
+/// Lowers a pipeline apply expression (`expr to func{args}`).
 #[allow(clippy::too_many_arguments)]
 fn lower_pipeline_apply(
     inner_hir: HirExpr,
@@ -717,7 +717,7 @@ fn lower_pipeline_apply(
     current_fn_ret: Option<TypeId>,
     _span: Span,
 ) -> HirExprKind {
-    // Desugar `expr via func{a: v}` → `func(expr, v)`
+    // Desugar `expr to func{a: v}` → `func(expr, v)`
     let func_def_id = resolutions
         .and_then(|r| r.get_ident(operation.span))
         .unwrap_or(spark_resolve::DefId::DUMMY);

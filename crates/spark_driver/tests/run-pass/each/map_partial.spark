@@ -4,7 +4,7 @@ fn addN(x: Int, n: Int): Int {
 
 fn main(): Int {
     nums: List[Int] = [1, 2, 3]
-    result: List[Int] = nums each via addN{n: 10}
-    result each (item: Int): Void { print(item) }
+    result: List[Int] = nums map addN{n: 10}
+    result each (item: Int) { print(item) }
     return 0
 }

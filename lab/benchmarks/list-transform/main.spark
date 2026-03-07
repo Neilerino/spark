@@ -1,8 +1,8 @@
 fn main(): Int {
     nums: List[Int] = [1..=1000000]
 
-    squared: List[Int] = nums each via (x: Int): Int { x * x }
-    modded: List[Int] = squared each via (x: Int): Int { x % 1000 }
+    squared: List[Int] = nums map (x: Int): Int { x * x }
+    modded: List[Int] = squared map (x: Int): Int { x % 1000 }
 
     total: Int! = 0
     j: Int! = 0

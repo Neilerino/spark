@@ -5,7 +5,7 @@
 //! - `a?.f` → `match a { v -> Some(v.f), Null -> Null }`
 //! - `e!` → `match e { v -> v, err -> return err }`
 //! - `list each (x): Void { ... }` → index loop
-//! - `list each via (x): U { ... }` → index loop building result list
+//! - `list map (x): U { ... }` → index loop building result list
 
 use spark_ast::BinaryOp;
 use spark_intern::Symbol;
@@ -258,7 +258,7 @@ pub fn desugar_each(
 ) -> HirExpr {
     let (stmts, _) = build_each_loop(
         iterable, callback, elem_ty, cb_ret_ty, int_ty, bool_ty, void_ty,
-        None, span, definitions, false,
+        None, span, definitions,
     );
 
     HirExpr::new(
@@ -268,7 +268,7 @@ pub fn desugar_each(
     )
 }
 
-/// Desugars `iterable each via callback` into an index loop that calls the
+/// Desugars `iterable map callback` into an index loop that calls the
 /// callback and builds a result list.
 ///
 /// ```text
@@ -290,7 +290,7 @@ pub fn desugar_each(
 /// ```
 #[must_use]
 #[allow(clippy::too_many_arguments)]
-pub fn desugar_each_via(
+pub fn desugar_map(
     iterable: HirExpr,
     callback: HirExpr,
     elem_ty: TypeId,
@@ -304,11 +304,11 @@ pub fn desugar_each_via(
 ) -> HirExpr {
     let (stmts, result_id) = build_each_loop(
         iterable, callback, elem_ty, cb_ret_ty, int_ty, bool_ty, void_ty,
-        Some(result_list_ty), span, definitions, true,
+        Some(result_list_ty), span, definitions,
     );
 
-    // The result_id is the __result local (always set when via=true)
-    // Safety: build_each_loop always returns Some when via=true.
+    // The result_id is the __result local (always set for map).
+    // Safety: build_each_loop always returns Some when result_list_ty is Some.
     let Some(result_def_id) = result_id else {
         return HirExpr::new(HirExprKind::Error, result_list_ty, span);
     };
@@ -330,10 +330,10 @@ pub fn desugar_each_via(
     )
 }
 
-/// Builds the shared loop structure for both `each` and `each via`.
+/// Builds the shared loop structure for both `each` and `map`.
 ///
 /// The callback is stored as a local and called each iteration with the
-/// current element. Returns the list of statements and, if `via` is true,
+/// current element. Returns the list of statements and, if `map` is true,
 /// the `DefId` of the `__result` local.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn build_each_loop(
@@ -347,7 +347,6 @@ fn build_each_loop(
     result_list_ty: Option<TypeId>,
     span: Span,
     definitions: &mut DefinitionTable,
-    via: bool,
 ) -> (Vec<HirStmt>, Option<spark_resolve::DefId>) {
     let cb_id = definitions.next_synthetic_id(span);
     let iter_id = definitions.next_synthetic_id(span);
@@ -394,8 +393,8 @@ fn build_each_loop(
         ),
     };
 
-    // __result local (only for `each via`)
-    let result_id = if via {
+    // __result local (only for `map`)
+    let result_id = if result_list_ty.is_some() {
         Some(definitions.next_synthetic_id(span))
     } else {
         None
@@ -465,7 +464,7 @@ fn build_each_loop(
     ];
 
     if let Some(rid) = result_id {
-        // each via: let __elem = __cb(__item); __result.append(__elem)
+        // map: let __elem = __cb(__item); __result.append(__elem)
         let elem_id = definitions.next_synthetic_id(span);
         loop_stmts.push(HirStmt::Let {
             def_id: elem_id,
@@ -520,7 +519,7 @@ fn build_each_loop(
 }
 
 
-/// Desugars `iterable reduce initial via callback` into an accumulator loop.
+/// Desugars `iterable reduce initial callback` into an accumulator loop.
 ///
 /// ```text
 /// {

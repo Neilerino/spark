@@ -1,5 +1,5 @@
 fn main(): Int {
     nums: List[Int] = [42]
-    nums parallel each (n: Int): Void { print(n) }
+    nums parallel each (n: Int) { print(n) }
     return 0
 }

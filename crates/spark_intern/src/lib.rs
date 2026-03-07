@@ -390,6 +390,8 @@ impl Interner {
             // Platform conditionals
             "when",
             "platform",
+            // Pipeline map keyword (lowercase, distinct from "Map" collection type)
+            "map",
         ];
 
         for kw in keywords {
@@ -745,6 +747,10 @@ pub mod kw {
     pub const WHEN: Symbol = Symbol(113);
     /// `platform` (contextual identifier, not a keyword)
     pub const PLATFORM: Symbol = Symbol(114);
+
+    // Pipeline map keyword
+    /// `map` (lowercase keyword, distinct from `MAP` which is the `Map` collection type)
+    pub const MAP_KW: Symbol = Symbol(115);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]

@@ -6,7 +6,7 @@ fn main(): Int {
         nums.append(i)
         i = i + 1
     }
-    squared: List[Int] = nums each via (x: Int): Int { x * x }
+    squared: List[Int] = nums map (x: Int): Int { x * x }
     print(squared.len())
     return 0
 }
