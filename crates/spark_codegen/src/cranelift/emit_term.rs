@@ -191,7 +191,7 @@ fn emit_call<M: Module>(
     // Intercept built-in `print` calls and method calls for type-based dispatch.
     // The func operand is typically `Copy(place)` of a local that was assigned
     // a `Constant::FunctionRef(def_id)`, so we resolve the DefId from the MIR.
-    if let Some(callee_def_id) = resolve_callee_def_id(func, ctx) {
+    if let Some(callee_def_id) = ctx.mir_func.resolve_callee_def_id(func) {
         if let Some(info) = definitions.get(callee_def_id) {
             if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::PRINT {
                 emit_builtin_print(
@@ -354,7 +354,7 @@ fn emit_call<M: Module>(
     };
     let resolved_def_id = match func {
         spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(def_id)) => Some(*def_id),
-        _ => resolve_callee_def_id(func, ctx)
+        _ => ctx.mir_func.resolve_callee_def_id(func)
             .filter(|id| func_ids.contains_key(id)),
     }
     .filter(|id| !is_lambda(id));
@@ -417,50 +417,6 @@ fn emit_call<M: Module>(
 
     let target_block = ctx.clif_block(target);
     ctx.builder.ins().jump(target_block, &[]);
-}
-
-/// Resolves the [`DefId`] of a function reference from a call operand.
-///
-/// The MIR typically stores function references as `Copy(Place::from_local(l))`
-/// where `l` was assigned `Rvalue::Use(Operand::Constant(Constant::FunctionRef(def_id)))`.
-/// This scans the MIR blocks to recover the `DefId`.
-fn resolve_callee_def_id(
-    func: &Operand,
-    ctx: &FunctionContext<'_>,
-) -> Option<spark_resolve::DefId> {
-    // Direct constant case (rare but handle it).
-    if let spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(def_id)) = func {
-        return Some(*def_id);
-    }
-
-    // Copy/Move of a local — scan statements for the assignment.
-    let local = match func {
-        spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place) => {
-            if place.projections.is_empty() {
-                place.local
-            } else {
-                return None;
-            }
-        }
-        spark_mir::Operand::Constant(_) => return None,
-    };
-
-    for block in &ctx.mir_func.blocks {
-        for stmt in &block.statements {
-            if let spark_mir::Statement::Assign { place, rvalue, .. } = stmt {
-                if place.local == local && place.projections.is_empty() {
-                    if let spark_mir::Rvalue::Use(spark_mir::Operand::Constant(
-                        spark_mir::Constant::FunctionRef(def_id),
-                    )) = rvalue
-                    {
-                        return Some(*def_id);
-                    }
-                }
-            }
-        }
-    }
-
-    None
 }
 
 /// Resolves an [`Intrinsic`] from a function operand.
