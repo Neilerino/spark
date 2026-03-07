@@ -2392,7 +2392,7 @@ fn check_pipeline_apply(
     let func_ty = ctx.table.resolve(func_ty_id).clone();
     let Ty::Function { params, ret, .. } = func_ty else {
         ctx.diagnostics.push(
-            Diagnostic::error("`via` target must be a function")
+            Diagnostic::error("`to` target must be a function")
                 .with_label(Label::primary(operation.span, "not a function")),
         );
         return TypeId::ERROR;
@@ -2419,7 +2419,7 @@ fn check_pipeline_apply(
     if all_arg_types.len() != params.len() {
         ctx.diagnostics.push(
             Diagnostic::error(format!(
-                "`via {}` expected {} argument{}, found {}",
+                "`to {}` expected {} argument{}, found {}",
                 operation.name,
                 params.len(),
                 if params.len() == 1 { "" } else { "s" },
@@ -2438,7 +2438,7 @@ fn check_pipeline_apply(
             if i == 0 {
                 ctx.diagnostics.push(
                     Diagnostic::error(format!(
-                        "`via {}` first argument type mismatch: expected `{expected_name}`, found `{found_name}`",
+                        "`to {}` first argument type mismatch: expected `{expected_name}`, found `{found_name}`",
                         operation.name
                     ))
                     .with_label(Label::primary(span, format!("expected `{expected_name}`"))),

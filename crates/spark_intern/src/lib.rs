@@ -513,7 +513,7 @@ pub mod kw {
     pub const IF: Symbol = Symbol(12);
     /// `else`
     pub const ELSE: Symbol = Symbol(13);
-    /// `match`
+    /// `match` (reserved — removed in SPARK-089)
     pub const MATCH: Symbol = Symbol(14);
     /// `loop`
     pub const LOOP: Symbol = Symbol(15);
@@ -525,7 +525,7 @@ pub mod kw {
     pub const RETURN: Symbol = Symbol(18);
     /// `each`
     pub const EACH: Symbol = Symbol(19);
-    /// `via`
+    /// `via` (reserved — removed in SPARK-088)
     pub const VIA: Symbol = Symbol(20);
     /// `to`
     pub const TO: Symbol = Symbol(21);

@@ -140,10 +140,10 @@ name2
 fn, struct, enum, interface, type, alias, const, pub, module, using, import
 
 // Control flow
-if, else, match, loop, break, continue, return
+if, else, loop, break, continue, return
 
-// Iteration
-each, via, to
+// Iteration & pipelines
+each, to, map
 
 // Operators
 and, or, not, is, as
@@ -711,54 +711,6 @@ message: String = if count == 0 {
 }
 ```
 
-### Match
-
-Pattern matching with exhaustive checking.
-
-#### Basic Matching
-
-```
-message: String = match count {
-    0 -> "none",
-    1 -> "one",
-    _ -> "many"
-}
-```
-
-#### Enum Variants
-
-```
-action: Action = match status {
-    Status.Pending -> Action.Wait,
-    Status.Active(since) -> Action.Monitor(since),
-    Status.Complete(result) -> Action.Archive(result)
-}
-```
-
-#### Union Type Narrowing
-
-```
-username: String = match result {
-    user: User -> user.name,
-    NotFound -> "anonymous",
-    DbError(e) -> panic("db failed: {e}")
-}
-```
-
-#### Guards
-
-```
-category: String = match age {
-    n if n < 0 -> panic("invalid age"),
-    n if n < 13 -> "child",
-    n if n < 20 -> "teen",
-    n if n < 65 -> "adult",
-    _ -> "senior"
-}
-```
-
-Match expressions must be exhaustive. The compiler enforces that all possible cases are handled.
-
 ### Loop
 
 Infinite loop with explicit control flow.
@@ -799,39 +751,43 @@ items.enumerate() each (pair: Tup[Int, Item]): Void {
 }
 ```
 
-### Via
-
-Applies a function to a value. When used with `each`, transforms each element.
-When used standalone, applies to the whole value (pipeline composition).
-
-```
-// Transform each element (each via)
-doubled: List[Int] = numbers each via (n: Int): Int { n * 2 }
-
-// Chain per-element transformations
-result: List[String] = numbers
-    each via (n: Int): Int { n * 2 }
-    each via (n: Int): String { n.toString() }
-
-// Pipeline: apply whole-collection operations (standalone via)
-result: List[Int] = numbers
-    via sort
-    via take{count: 5}
-
-// Combined: pipeline + per-element transforms
-result: List[String] = numbers
-    via sort
-    each via (n: Int): Int { n * 2 }
-    via take{count: 5}
-    each via (n: Int): String { n.toString() }
-```
-
 ### To
 
-Type narrowing for union types. Handles error/variant cases explicitly.
+Unified pattern matching and pipeline application. The `to` keyword serves two roles:
+
+1. **Pattern matching** — exhaustive match on values, enums, and union types
+2. **Pipeline apply** — apply a named function to a value
+
+#### Basic Matching
 
 ```
-// Type narrowing
+message: String = count to {
+    0 -> "none",
+    1 -> "one",
+    _ -> "many"
+}
+```
+
+#### Enum Variants
+
+```
+action: Action = status to {
+    Status.Pending -> Action.Wait,
+    Status.Active(since) -> Action.Monitor(since),
+    Status.Complete(result) -> Action.Archive(result)
+}
+```
+
+#### Union Type Narrowing
+
+```
+username: String = result to {
+    user: User -> user.name,
+    NotFound -> "anonymous",
+    DbError(e) -> panic("db failed: {e}")
+}
+
+// Narrowing a union return
 user: User = fetchUser(id) to {
     NotFound -> panic("not found"),
     DbError(e) -> panic("db: {e}")
@@ -841,6 +797,52 @@ user: User = fetchUser(id) to {
 content: String = readFile(path) to {
     IoError(e) -> return e.message
 }
+```
+
+#### Guards
+
+```
+category: String = age to {
+    n if n < 0 -> panic("invalid age"),
+    n if n < 13 -> "child",
+    n if n < 20 -> "teen",
+    n if n < 65 -> "adult",
+    _ -> "senior"
+}
+```
+
+Pattern-match expressions must be exhaustive. The compiler enforces that all possible cases are handled.
+
+#### Pipeline Apply
+
+Apply a named function to a value (the value becomes the first argument).
+
+```
+// Apply whole-collection operations
+result: List[Int] = numbers
+    to sort
+    to take{count: 5}
+```
+
+### Map
+
+Transform each element of a collection.
+
+```
+// Transform each element
+doubled: List[Int] = numbers map (n: Int): Int { n * 2 }
+
+// Chain per-element transformations
+result: List[String] = numbers
+    map (n: Int): Int { n * 2 }
+    map (n: Int): String { n.toString() }
+
+// Combined: pipeline + per-element transforms
+result: List[String] = numbers
+    to sort
+    map (n: Int): Int { n * 2 }
+    to take{count: 5}
+    map (n: Int): String { n.toString() }
 ```
 
 ---
@@ -896,7 +898,7 @@ fn bad(): Int {
 }
 ```
 
-> **Note:** Block expressions used in other contexts (if/match branches, variable bindings like `x: Int = { ... }`) still use their trailing expression as the block's value. The explicit-return rule applies only to function bodies.
+> **Note:** Block expressions used in other contexts (if/to branches, variable bindings like `x: Int = { ... }`) still use their trailing expression as the block's value. The explicit-return rule applies only to function bodies.
 
 ### Union Return Types
 
@@ -955,13 +957,13 @@ Anonymous functions for callbacks and pipelines.
 
 ```
 // Full syntax
-numbers each via fn (x: Int): Int { x * 2 }
+numbers map fn (x: Int): Int { x * 2 }
 
 // Shorthand (omit fn keyword)
-numbers each via (x: Int): Int { x * 2 }
+numbers map (x: Int): Int { x * 2 }
 
 // Multi-line
-numbers each via (x: Int): Int {
+numbers map (x: Int): Int {
     doubled: Int = x * 2
     return doubled + 1
 }
@@ -1105,7 +1107,7 @@ enum Direction {
 
 dir: Direction = Direction.North
 
-match dir {
+dir to {
     Direction.North -> print("going up"),
     Direction.South -> print("going down"),
     Direction.East -> print("going right"),
@@ -1137,7 +1139,7 @@ enum Result {
 
 result: Result = Result.Success(42)
 
-match result {
+result to {
     Result.Success(value) -> print("got {value}"),
     Result.Failure(message, code) -> print("error {code}: {message}")
 }
@@ -1160,7 +1162,7 @@ Individual variants can be used as types in unions.
 
 ```
 fn handleResponse(r: ApiResponse): Page | ApiResponse.Error | ApiResponse.Loading {
-    return match r {
+    return r to {
         ApiResponse.Success(body) -> parsePage(body),
         e: ApiResponse.Error -> e,
         l: ApiResponse.Loading -> l
@@ -1186,7 +1188,7 @@ interface IToHex {
 
 Color binds IToHex {
     fn toHex(color: Color): String {
-        match color {
+        color to {
             Color.Red -> "#FF0000",
             Color.Green -> "#00FF00",
             Color.Blue -> "#0000FF",
@@ -1708,14 +1710,14 @@ Wait on multiple channels.
 ch1: Channel[String] = Channel()
 ch2: Channel[Int] = Channel()
 
-match select(ch1, ch2) {
+select(ch1, ch2) to {
     Select.First(msg: String) -> print("ch1: {msg}"),
     Select.Second(num: Int) -> print("ch2: {num}"),
     Select.Closed -> print("a channel closed")
 }
 
 // With timeout
-match select(ch1, ch2, timeout: 5000) {
+select(ch1, ch2, timeout: 5000) to {
     Select.First(msg) -> print(msg),
     Select.Second(num) -> print(num),
     Select.Timeout -> print("timed out")
@@ -1748,14 +1750,14 @@ Managed parallelism for many tasks.
 ```
 pool: ThreadPool = ThreadPool(workers: 4)
 
-results: List[Handle[Int]] = [0..100] each via (i: Int): Handle[Int] {
+results: List[Handle[Int]] = [0..100] map (i: Int): Handle[Int] {
     pool.submit {
         return heavyWork(i)
     }
 }
 
 // Gather results
-values: List[Int] = results each via (h: Handle[Int]): Int {
+values: List[Int] = results map (h: Handle[Int]): Int {
     h.join()!
 }
 ```
@@ -2050,14 +2052,13 @@ a is Type, a as Type
 
 // Control flow
 if cond { } else { }
-match value { patterns }
 loop { }
 
-// Iteration
+// Pattern matching & pipelines
+value to { patterns }
+value to function
 collection each (item): Void { }
-collection each via (item): T { }
-value via function
-value to { narrowing }
+collection map (item): T { }
 
 // Functions
 fn (params): ReturnType { body }
