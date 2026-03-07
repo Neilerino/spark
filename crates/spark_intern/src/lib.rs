@@ -401,6 +401,8 @@ impl Interner {
             "toList",
             "equals",
             "compareTo",
+            // Pipeline map keyword (lowercase, distinct from "Map" collection type)
+            "map",
         ];
 
         for kw in keywords {
@@ -522,7 +524,7 @@ pub mod kw {
     pub const IF: Symbol = Symbol(12);
     /// `else`
     pub const ELSE: Symbol = Symbol(13);
-    /// `match`
+    /// `match` (reserved — removed in SPARK-089)
     pub const MATCH: Symbol = Symbol(14);
     /// `loop`
     pub const LOOP: Symbol = Symbol(15);
@@ -534,7 +536,7 @@ pub mod kw {
     pub const RETURN: Symbol = Symbol(18);
     /// `each`
     pub const EACH: Symbol = Symbol(19);
-    /// `via`
+    /// `via` (reserved — removed in SPARK-088)
     pub const VIA: Symbol = Symbol(20);
     /// `to`
     pub const TO: Symbol = Symbol(21);
@@ -778,6 +780,9 @@ pub mod kw {
     pub const EQUALS: Symbol = Symbol(122);
     /// `compareTo`
     pub const COMPARE_TO: Symbol = Symbol(123);
+    // Pipeline map keyword
+    /// `map` (lowercase keyword, distinct from `MAP` which is the `Map` collection type)
+    pub const MAP_KW: Symbol = Symbol(124);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
@@ -797,7 +802,12 @@ pub mod kw {
     #[must_use]
     pub const fn is_keyword(sym: Symbol) -> bool {
         // Keywords are symbols 1-37 (fn through Never) plus parallel (78) plus extern (91) plus reduce (109) plus link (111) plus when (113)
-        (sym.0 >= 1 && sym.0 <= 37) || sym.0 == 78 || sym.0 == 91 || sym.0 == 109 || sym.0 == 111 || sym.0 == 113
+        (sym.0 >= 1 && sym.0 <= 37)
+            || sym.0 == 78
+            || sym.0 == 91
+            || sym.0 == 109
+            || sym.0 == 111
+            || sym.0 == 113
     }
 
     /// Returns true if the given symbol is a primitive type name.

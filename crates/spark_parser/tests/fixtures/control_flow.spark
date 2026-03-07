@@ -15,7 +15,7 @@ fn if_else_if(n: Int): String {
 }
 
 fn simple_match(n: Int): String {
-    return match n {
+    return n to {
         0 -> "zero",
         1 -> "one",
         _ -> "other",

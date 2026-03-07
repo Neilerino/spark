@@ -12,7 +12,7 @@ fn add_count(s: Ref[Summary], extra: Int): Int {
 }
 
 fn triple(nums: List[Int]): List[Int] {
-    return nums each via (n: Int): Int { n * 3 }
+    return nums map (n: Int): Int { n * 3 }
 }
 
 fn show(item: Int): Void {
@@ -22,23 +22,23 @@ fn show(item: Int): Void {
 fn main(): Int {
     data: List[Int] = [5, 3, 1, 4, 2]
 
-    // Via chain: sort then reverse → descending order
-    desc: List[Int] = data via sort via reverse
+    // To chain: sort then reverse → descending order
+    desc: List[Int] = data to sort to reverse
 
     // Each: print descending items using function reference
     desc each show
 
-    // Via chain: sort then take top 3
-    top3: List[Int] = data via sort via take{count: 3}
+    // To chain: sort then take top 3
+    top3: List[Int] = data to sort to take{count: 3}
 
-    // Each via: triple each value with a lambda
-    tripled: List[Int] = top3 each via (n: Int): Int { n * 3 }
+    // Map: triple each value with a lambda
+    tripled: List[Int] = top3 map (n: Int): Int { n * 3 }
 
-    // Via: user-defined pipeline function (triple again)
-    final: List[Int] = tripled via triple
+    // To: user-defined pipeline function (triple again)
+    final: List[Int] = tripled to triple
 
     // Each: print final transformed values
-    final each (item: Int): Void {
+    final each (item: Int) {
         print(item)
     }
 

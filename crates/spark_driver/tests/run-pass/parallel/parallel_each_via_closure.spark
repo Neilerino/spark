@@ -1,7 +1,0 @@
-fn main(): Int {
-    factor: Int = 10
-    nums: List[Int] = [1, 2, 3]
-    result: List[Int] = nums parallel each via (n: Int): Int { n * factor }
-    result each (item: Int): Void { print(item) }
-    return 0
-}

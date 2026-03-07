@@ -1,6 +1,6 @@
 fn main(): Int {
     x: Bool = true
-    match x {
+    x to {
         true -> print("yes")
     }
     return 0

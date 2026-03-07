@@ -4,8 +4,7 @@ fn double(n: Int): Int {
 
 fn main(): Int {
     nums: List[Int] = [1, 2, 3]
-    result: List[Int] = nums parallel each via double
-    result each (item: Int): Void { print(item) }
-
+    result: List[Int] = nums map double
+    result each (item: Int) { print(item) }
     return 0
 }

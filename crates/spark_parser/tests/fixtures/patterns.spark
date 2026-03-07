@@ -1,7 +1,7 @@
 // Pattern matching examples
 
 fn describe_number(n: Int): String {
-    return match n {
+    return n to {
         0 -> "zero",
         1 -> "one",
         2 -> "two",
@@ -10,7 +10,7 @@ fn describe_number(n: Int): String {
 }
 
 fn classify(value: Int): String {
-    return match value {
+    return value to {
         n if n < 0 -> "negative",
         0 -> "zero",
         n if n > 100 -> "large",
@@ -19,34 +19,34 @@ fn classify(value: Int): String {
 }
 
 fn process_option[T](opt: Option[T]): String {
-    return match opt {
+    return opt to {
         Option.Some(x) -> "has value",
         Option.None -> "empty",
     }
 }
 
 fn handle_result[T, E](result: Result[T, E]): T | E {
-    return match result {
+    return result to {
         Result.Ok(value) -> value,
         Result.Err(error) -> error,
     }
 }
 
 fn destructure_point(point: Point): Float {
-    return match point {
+    return point to {
         Point { x, y } -> x + y,
     }
 }
 
 fn match_tuple(pair: Tup[Int, String]): String {
-    return match pair {
+    return pair to {
         (0, s) -> "zero: " + s,
         (n, s) -> n.toString() + ": " + s,
     }
 }
 
 fn match_list(items: List[Int]): String {
-    return match items {
+    return items to {
         [] -> "empty",
         [x] -> "single: " + x.toString(),
         [first, second] -> "pair",
@@ -55,14 +55,14 @@ fn match_list(items: List[Int]): String {
 }
 
 fn or_pattern(value: Int): Bool {
-    return match value {
+    return value to {
         1 | 2 | 3 -> true,
         _ -> false,
     }
 }
 
 fn type_narrowing(value: Int | String): String {
-    return match value {
+    return value to {
         n: Int -> "number: " + n.toString(),
         s: String -> "string: " + s,
     }

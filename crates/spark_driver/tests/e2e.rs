@@ -16,9 +16,9 @@
 //! │   ├── collections/# list_*, nested_*
 //! │   ├── generics/   # generic_struct_init, generic_identity, constraints
 //! │   ├── lambdas/    # lambda_*, fn_reference, higher_order, closure_*
-//! │   ├── each/       # each_*, each_via_*
+//! │   ├── each/       # each_*, map_*
 //! │   ├── parallel/   # parallel_each_*
-//! │   ├── via/        # via_*
+//! │   ├── to/         # to_*
 //! │   ├── async/      # async_*, spawn_*, coop_*
 //! │   ├── references/ # ref_*
 //! │   ├── stdlib/     # stdlib_*
@@ -246,23 +246,23 @@ fn if_else() {
 }
 
 #[test]
-fn match_bool() {
-    assert_output("run-pass/basics/match_bool.spark", "yes");
+fn to_bool() {
+    assert_output("run-pass/basics/to_bool.spark", "yes");
 }
 
 #[test]
-fn match_string() {
-    assert_output("run-pass/basics/match_string.spark", "correct");
+fn to_string() {
+    assert_output("run-pass/basics/to_string.spark", "correct");
 }
 
 #[test]
-fn match_float() {
-    assert_output("run-pass/basics/match_float.spark", "correct");
+fn to_float() {
+    assert_output("run-pass/basics/to_float.spark", "correct");
 }
 
 #[test]
-fn match_int() {
-    assert_output("run-pass/basics/match_int.spark", "correct");
+fn to_int() {
+    assert_output("run-pass/basics/to_int.spark", "correct");
 }
 
 #[test]
@@ -447,18 +447,18 @@ fn each_lambda_print() {
 }
 
 #[test]
-fn each_via_double() {
-    assert_output("run-pass/each/each_via_double.spark", "3");
+fn map_double() {
+    assert_output("run-pass/each/map_double.spark", "3");
 }
 
 #[test]
-fn each_via_fn_ref() {
-    assert_output("run-pass/each/each_via_fn_ref.spark", "2\n4\n6");
+fn map_fn_ref() {
+    assert_output("run-pass/each/map_fn_ref.spark", "2\n4\n6");
 }
 
 #[test]
-fn each_via_partial() {
-    assert_output("run-pass/each/each_via_partial.spark", "11\n12\n13");
+fn map_partial() {
+    assert_output("run-pass/each/map_partial.spark", "11\n12\n13");
 }
 
 #[test]
@@ -467,8 +467,8 @@ fn standalone_partial() {
 }
 
 #[test]
-fn each_via_lambda_values() {
-    assert_output("run-pass/each/each_via_lambda_values.spark", "20\n40\n60");
+fn map_lambda_values() {
+    assert_output("run-pass/each/map_lambda_values.spark", "20\n40\n60");
 }
 
 #[test]
@@ -477,27 +477,27 @@ fn each_cow() {
 }
 
 // ============================================================================
-// Parallel Each / Parallel Each Via
+// Parallel Each / Parallel Map
 // ============================================================================
 
 #[test]
-fn parallel_each_via_double() {
-    assert_output("run-pass/parallel/parallel_each_via_double.spark", "2\n4\n6");
+fn parallel_map_double() {
+    assert_output("run-pass/parallel/parallel_map_double.spark", "2\n4\n6");
 }
 
 #[test]
-fn parallel_each_via_fn_ref() {
-    assert_output("run-pass/parallel/parallel_each_via_fn_ref.spark", "2\n4\n6");
+fn parallel_map_fn_ref() {
+    assert_output("run-pass/parallel/parallel_map_fn_ref.spark", "2\n4\n6");
 }
 
 #[test]
-fn parallel_each_via_closure() {
-    assert_output("run-pass/parallel/parallel_each_via_closure.spark", "10\n20\n30");
+fn parallel_map_closure() {
+    assert_output("run-pass/parallel/parallel_map_closure.spark", "10\n20\n30");
 }
 
 #[test]
-fn parallel_each_via_len() {
-    assert_output("run-pass/parallel/parallel_each_via_len.spark", "5");
+fn parallel_map_len() {
+    assert_output("run-pass/parallel/parallel_map_len.spark", "5");
 }
 
 #[test]
@@ -511,57 +511,57 @@ fn parallel_each_single() {
 }
 
 // ============================================================================
-// Via (pipeline operator)
+// To (pipeline operator)
 // ============================================================================
 
 #[test]
-fn via_sort() {
-    assert_output("run-pass/via/via_sort.spark", "1\n2\n3");
+fn to_sort() {
+    assert_output("run-pass/to/to_sort.spark", "1\n2\n3");
 }
 
 #[test]
-fn via_sort_float() {
-    assert_output("run-pass/via/via_sort_float.spark", "-4\n-1.2\n0\n2.7\n3.5");
+fn to_sort_float() {
+    assert_output("run-pass/to/to_sort_float.spark", "-4\n-1.2\n0\n2.7\n3.5");
 }
 
 #[test]
-fn via_sort_string() {
-    assert_output("run-pass/via/via_sort_string.spark", "apple\nbanana\ncherry");
+fn to_sort_string() {
+    assert_output("run-pass/to/to_sort_string.spark", "apple\nbanana\ncherry");
 }
 
 #[test]
-fn via_sort_bool() {
-    assert_output("run-pass/via/via_sort_bool.spark", "false\nfalse\ntrue\ntrue");
+fn to_sort_bool() {
+    assert_output("run-pass/to/to_sort_bool.spark", "false\nfalse\ntrue\ntrue");
 }
 
 #[test]
-fn via_take() {
-    assert_output("run-pass/via/via_take.spark", "3");
+fn to_take() {
+    assert_output("run-pass/to/to_take.spark", "3");
 }
 
 #[test]
-fn via_reverse() {
-    assert_output("run-pass/via/via_reverse.spark", "3\n2\n1");
+fn to_reverse() {
+    assert_output("run-pass/to/to_reverse.spark", "3\n2\n1");
 }
 
 #[test]
-fn via_chain() {
-    assert_output("run-pass/via/via_chain.spark", "1\n2\n3");
+fn to_chain() {
+    assert_output("run-pass/to/to_chain.spark", "1\n2\n3");
 }
 
 #[test]
-fn via_user_fn() {
-    assert_output("run-pass/via/via_user_fn.spark", "11\n12\n13");
+fn to_user_fn() {
+    assert_output("run-pass/to/to_user_fn.spark", "11\n12\n13");
 }
 
 #[test]
-fn via_reverse_string() {
-    assert_output("run-pass/via/via_reverse_string.spark", "charlie\nbob\nalice");
+fn to_reverse_string() {
+    assert_output("run-pass/to/to_reverse_string.spark", "charlie\nbob\nalice");
 }
 
 #[test]
-fn via_take_string() {
-    assert_output("run-pass/via/via_take_string.spark", "2");
+fn to_take_string() {
+    assert_output("run-pass/to/to_take_string.spark", "2");
 }
 
 // ============================================================================
@@ -882,13 +882,13 @@ fn immutable_append_error() {
 }
 
 #[test]
-fn match_nonexhaustive_bool() {
-    assert_compile_error("compile-fail/type_errors/match_nonexhaustive_bool.spark", "non-exhaustive");
+fn to_nonexhaustive_bool() {
+    assert_compile_error("compile-fail/type_errors/to_nonexhaustive_bool.spark", "non-exhaustive");
 }
 
 #[test]
-fn match_nonexhaustive_int() {
-    assert_compile_error("compile-fail/type_errors/match_nonexhaustive_int.spark", "non-exhaustive");
+fn to_nonexhaustive_int() {
+    assert_compile_error("compile-fail/type_errors/to_nonexhaustive_int.spark", "non-exhaustive");
 }
 
 #[test]
@@ -933,7 +933,7 @@ fn generic_constraint_structural_fail() {
 
 #[test]
 fn to_non_union_error() {
-    assert_compile_error("compile-fail/type_errors/to_non_union_error.spark", "requires a union type");
+    assert_compile_error("compile-fail/type_errors/to_non_union_error.spark", "non-exhaustive");
 }
 
 #[test]

@@ -214,14 +214,6 @@ pub enum ExprKind {
         else_branch: Option<Box<Expr>>,
     },
 
-    /// Match expression
-    Match {
-        /// The value to match on.
-        scrutinee: Box<Expr>,
-        /// The match arms.
-        arms: Vec<MatchArm>,
-    },
-
     /// Loop expression: `loop { }`
     Loop {
         /// The loop body.
@@ -584,12 +576,12 @@ pub enum PipelineStageKind {
         /// The callback (lambda or function reference).
         callback: Box<Expr>,
     },
-    /// `each via callback` — map/transform.
+    /// `map callback` — map/transform.
     Map {
         /// The callback (lambda or function reference).
         callback: Box<Expr>,
     },
-    /// `reduce initial via callback` — fold/accumulate.
+    /// `reduce initial callback` — fold/accumulate.
     Reduce {
         /// The initial accumulator value.
         initial: Box<Expr>,

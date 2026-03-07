@@ -437,14 +437,14 @@ mod tests {
         assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
-    // ── Match exhaustiveness (full pipeline) ────────────────────
+    // ── To exhaustiveness (full pipeline) ────────────────────
 
     #[test]
-    fn match_enum_with_wildcard() {
+    fn to_enum_with_wildcard() {
         let output = check_source(
             "enum Color { Red, Green, Blue }\n\
              fn f(c: Color): Int {\n\
-                 return match c {\n\
+                 return c to {\n\
                      Color.Red -> 1,\n\
                      _ -> 0,\n\
                  }\n\
@@ -454,11 +454,11 @@ mod tests {
     }
 
     #[test]
-    fn match_enum_all_variants_exhaustive() {
+    fn to_enum_all_variants_exhaustive() {
         let output = check_source(
             "enum Color { Red, Green, Blue }\n\
              fn f(c: Color): Int {\n\
-                 return match c {\n\
+                 return c to {\n\
                      Color.Red -> 1,\n\
                      Color.Green -> 2,\n\
                      Color.Blue -> 3,\n\
@@ -469,11 +469,11 @@ mod tests {
     }
 
     #[test]
-    fn match_enum_missing_variant_error() {
+    fn to_enum_missing_variant_error() {
         let output = check_source(
             "enum Color { Red, Green, Blue }\n\
              fn f(c: Color): Int {\n\
-                 return match c {\n\
+                 return c to {\n\
                      Color.Red -> 1,\n\
                      Color.Green -> 2,\n\
                  }\n\
@@ -488,10 +488,10 @@ mod tests {
     }
 
     #[test]
-    fn match_optional_with_wildcard() {
+    fn to_optional_with_wildcard() {
         let output = check_source(
             "fn f(x: Int?): Int {\n\
-                 return match x {\n\
+                 return x to {\n\
                      _ -> 0,\n\
                  }\n\
              }",
@@ -500,10 +500,10 @@ mod tests {
     }
 
     #[test]
-    fn match_bool_exhaustive() {
+    fn to_bool_exhaustive() {
         let output = check_source(
             "fn f(x: Bool): Int {\n\
-                 return match x {\n\
+                 return x to {\n\
                      true -> 1,\n\
                      false -> 0,\n\
                  }\n\
@@ -513,10 +513,10 @@ mod tests {
     }
 
     #[test]
-    fn match_bool_non_exhaustive() {
+    fn to_bool_non_exhaustive() {
         let output = check_source(
             "fn f(x: Bool): Int {\n\
-                 return match x {\n\
+                 return x to {\n\
                      true -> 1,\n\
                  }\n\
              }",
@@ -530,10 +530,10 @@ mod tests {
     }
 
     #[test]
-    fn match_int_without_wildcard_error() {
+    fn to_int_without_wildcard_error() {
         let output = check_source(
             "fn f(x: Int): Int {\n\
-                 return match x {\n\
+                 return x to {\n\
                      1 -> 10,\n\
                      2 -> 20,\n\
                  }\n\

@@ -278,31 +278,6 @@ fn check_expr_inner(
                 })
         }
 
-        // === Match expression ===
-        ExprKind::Match { scrutinee, arms } => {
-            let scrutinee_ty = check_expr(scrutinee, ctx, current_fn_ret);
-
-            let mut arm_types = Vec::with_capacity(arms.len());
-            for arm in arms {
-                // Pattern checking is simplified — we just check the body
-                let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
-                arm_types.push(body_ty);
-            }
-
-            // Check exhaustiveness
-            crate::exhaustive::check_exhaustiveness(scrutinee_ty, arms, expr.span, ctx);
-
-            if arm_types.is_empty() {
-                ctx.builtins.never
-            } else {
-                let mut result = arm_types[0];
-                for &ty in &arm_types[1..] {
-                    result = unify_branches(result, ty, ctx.table, ctx.builtins);
-                }
-                result
-            }
-        }
-
         // === Loop ===
         ExprKind::Loop { body } => {
             let _ = check_expr(body, ctx, current_fn_ret);
@@ -1454,16 +1429,16 @@ fn is_mutable_ref_param(ty: TypeId, table: &TypeTable) -> bool {
     }
 }
 
-/// Validates the callback type for `each` / `each via`.
+/// Validates the callback type for `each` / `map`.
 ///
 /// For `each`: callback must be `(T) -> Void` (though we don't enforce Void return).
-/// For `each via`: callback must be `(T) -> U`; returns `U`.
+/// For `map`: callback must be `(T) -> U`; returns `U`.
 ///
-/// Returns the callback's return type (used by `each via` to determine `List[U]`).
+/// Returns the callback's return type (used by `map` to determine `List[U]`).
 fn validate_each_callback(
     cb_ty: TypeId,
     elem_ty: TypeId,
-    is_via: bool,
+    is_map: bool,
     span: Span,
     table: &TypeTable,
     definitions: &DefinitionTable,
@@ -1472,13 +1447,13 @@ fn validate_each_callback(
     if cb_ty == TypeId::ERROR || elem_ty == TypeId::ERROR {
         return TypeId::ERROR;
     }
+    let label = if is_map { "map" } else { "each" };
     match table.resolve(cb_ty).clone() {
         Ty::Function { params, ret, .. } => {
             if params.len() != 1 {
                 diagnostics.push(
                     Diagnostic::error(format!(
-                        "`each{}` callback must take exactly 1 parameter, found {}",
-                        if is_via { " via" } else { "" },
+                        "`{label}` callback must take exactly 1 parameter, found {}",
                         params.len()
                     ))
                     .with_label(Label::primary(span, "wrong number of parameters")),
@@ -1491,8 +1466,7 @@ fn validate_each_callback(
                 let found = type_name(param_ty, table, definitions);
                 diagnostics.push(
                     Diagnostic::error(format!(
-                        "`each{}` callback parameter type mismatch: expected `{expected}`, found `{found}`",
-                        if is_via { " via" } else { "" },
+                        "`{label}` callback parameter type mismatch: expected `{expected}`, found `{found}`",
                     ))
                     .with_label(Label::primary(span, "type mismatch")),
                 );
@@ -1503,8 +1477,7 @@ fn validate_each_callback(
             let name = type_name(cb_ty, table, definitions);
             diagnostics.push(
                 Diagnostic::error(format!(
-                    "`each{}` callback must be a function, found `{name}`",
-                    if is_via { " via" } else { "" },
+                    "`{label}` callback must be a function, found `{name}`",
                 ))
                 .with_label(Label::primary(span, "not a function")),
             );
@@ -1513,9 +1486,9 @@ fn validate_each_callback(
     }
 }
 
-/// Validates a partial-application callback in an `each`/`each via` pipeline stage.
+/// Validates a partial-application callback in an `each`/`map` pipeline stage.
 ///
-/// For `list each via func{b: val}`, the element fills the first parameter and the
+/// For `list map func{b: val}`, the element fills the first parameter and the
 /// bound arguments fill the rest. Returns the function's return type and stores a
 /// reduced 1-parameter function type on `callback_expr` so downstream passes can
 /// extract the return type via `extract_fn_ret_ty`.
@@ -1523,7 +1496,7 @@ fn validate_partial_each_callback(
     callee: &Expr,
     args: &[spark_ast::PartialArg],
     elem_ty: TypeId,
-    is_via: bool,
+    is_map: bool,
     callback_expr: &Expr,
     ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
@@ -1538,12 +1511,12 @@ fn validate_partial_each_callback(
         return TypeId::ERROR;
     }
 
+    let label = if is_map { "map" } else { "each" };
     let func_ty = ctx.table.resolve(callee_ty).clone();
     let Ty::Function { params, ret, .. } = func_ty else {
         ctx.diagnostics.push(
             Diagnostic::error(format!(
-                "`each{}` partial callback must be a function",
-                if is_via { " via" } else { "" },
+                "`{label}` partial callback must be a function",
             ))
             .with_label(Label::primary(callee.span, "not a function")),
         );
@@ -1556,8 +1529,7 @@ fn validate_partial_each_callback(
     if total_args != params.len() {
         ctx.diagnostics.push(
             Diagnostic::error(format!(
-                "`each{}` partial callback expected {} parameter{}, found {} (1 element + {} bound)",
-                if is_via { " via" } else { "" },
+                "`{label}` partial callback expected {} parameter{}, found {} (1 element + {} bound)",
                 params.len(),
                 if params.len() == 1 { "" } else { "s" },
                 total_args,
@@ -1575,8 +1547,7 @@ fn validate_partial_each_callback(
         let found = type_name(elem_ty, ctx.table, ctx.definitions);
         ctx.diagnostics.push(
             Diagnostic::error(format!(
-                "`each{}` element type mismatch: expected `{expected}`, found `{found}`",
-                if is_via { " via" } else { "" },
+                "`{label}` element type mismatch: expected `{expected}`, found `{found}`",
             ))
             .with_label(Label::primary(callback_expr.span, "type mismatch")),
         );
@@ -2090,13 +2061,13 @@ fn check_pipeline_stage(
     let label = if stage.parallel {
         match &stage.kind {
             PipelineStageKind::ForEach { .. } => "parallel each",
-            PipelineStageKind::Map { .. } => "parallel each via",
+            PipelineStageKind::Map { .. } => "parallel map",
             PipelineStageKind::Reduce { .. } => "parallel reduce",
         }
     } else {
         match &stage.kind {
             PipelineStageKind::ForEach { .. } => "each",
-            PipelineStageKind::Map { .. } => "each via",
+            PipelineStageKind::Map { .. } => "map",
             PipelineStageKind::Reduce { .. } => "reduce",
         }
     };
@@ -2321,12 +2292,11 @@ fn validate_reduce_callback(
     ret
 }
 
-/// Checks a `to` narrowing expression (`to { Pattern -> ... }`).
+/// Checks a `to` expression (`expr to { Pattern -> ... }`).
 ///
-/// - The inner expression must be a union type
-/// - Each handler arm handles one or more union members
-/// - Unhandled members pass through
-/// - Result is the unified handler body types + unhandled member types
+/// Behaviour depends on the scrutinee type:
+/// - **Union/Optional**: pass-through mode — unhandled members included in result type
+/// - **Non-union** (Int, Bool, Enum, etc.): exhaustive mode — all cases must be covered
 fn check_to_narrowing(
     inner_ty: TypeId,
     arms: &[spark_ast::MatchArm],
@@ -2334,66 +2304,73 @@ fn check_to_narrowing(
     ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
-    let members = crate::union::union_members(inner_ty, ctx.table);
+    let is_union = matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_));
 
-    if members.len() <= 1 && !matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_))
-    {
-        ctx.diagnostics.push(
-            Diagnostic::error("'to' expression requires a union type")
-                .with_label(Label::primary(span, "not a union type")),
-        );
-    }
+    if is_union {
+        // === Union/Optional pass-through mode ===
+        let members = crate::union::union_members(inner_ty, ctx.table);
 
-    let mut body_types = Vec::with_capacity(arms.len());
-    let mut handled_types = Vec::new();
+        let mut body_types = Vec::with_capacity(arms.len());
+        let mut handled_types = Vec::new();
 
-    for arm in arms {
-        // Check the pattern — for type narrowing patterns, resolve the type
-        if let spark_ast::PatternKind::TypeNarrowing { ty: pat_ty, .. } = &arm.pattern.kind {
-            let narrowed_ty = crate::lower::lower_type_expr(pat_ty, ctx);
-            handled_types.push(narrowed_ty);
-        } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
-            // Enum variant pattern — resolve it
-            let variant_ty = ctx
-                .resolutions
-                .and_then(|res| res.get_path(path.span))
-                .and_then(|def_id| ctx.table.get_def_type(def_id))
-                .unwrap_or(TypeId::ERROR);
-            if !variant_ty.is_error() {
-                handled_types.push(variant_ty);
+        for arm in arms {
+            if let spark_ast::PatternKind::TypeNarrowing { ty: pat_ty, .. } = &arm.pattern.kind {
+                let narrowed_ty = crate::lower::lower_type_expr(pat_ty, ctx);
+                handled_types.push(narrowed_ty);
+            } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
+                let variant_ty = ctx
+                    .resolutions
+                    .and_then(|res| res.get_path(path.span))
+                    .and_then(|def_id| ctx.table.get_def_type(def_id))
+                    .unwrap_or(TypeId::ERROR);
+                if !variant_ty.is_error() {
+                    handled_types.push(variant_ty);
+                }
             }
+
+            let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
+            body_types.push(body_ty);
         }
 
-        let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
-        body_types.push(body_ty);
-    }
+        let unhandled: Vec<TypeId> = members
+            .iter()
+            .copied()
+            .filter(|m| !handled_types.contains(m))
+            .collect();
 
-    // Determine unhandled member types
-    let unhandled: Vec<TypeId> = members
-        .iter()
-        .copied()
-        .filter(|m| !handled_types.contains(m))
-        .collect();
+        let mut result_ty = unify_type_list(&body_types, ctx.builtins.void, ctx.table, ctx.builtins);
 
-    // Unify all body types
-    let mut result_ty = if let Some(&first) = body_types.first() {
-        first
-    } else {
-        ctx.builtins.void
-    };
-    for &bty in &body_types[1..] {
-        result_ty = unify_branches(result_ty, bty, ctx.table, ctx.builtins);
-    }
-
-    // If there are unhandled types, the result includes them
-    if unhandled.is_empty() {
-        result_ty
-    } else {
-        // Result is union of handler body types + unhandled types
+        // Fold in unhandled member types
         for &u in &unhandled {
             result_ty = unify_branches(result_ty, u, ctx.table, ctx.builtins);
         }
         result_ty
+    } else {
+        // === Non-union exhaustive mode ===
+        let mut arm_types = Vec::with_capacity(arms.len());
+        for arm in arms {
+            let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
+            arm_types.push(body_ty);
+        }
+
+        crate::exhaustive::check_exhaustiveness(inner_ty, arms, span, ctx);
+
+        unify_type_list(&arm_types, ctx.builtins.never, ctx.table, ctx.builtins)
+    }
+}
+
+/// Unifies a list of types via `unify_branches`, returning `empty_fallback` for empty lists.
+fn unify_type_list(
+    types: &[TypeId],
+    empty_fallback: TypeId,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+) -> TypeId {
+    match types.first() {
+        None => empty_fallback,
+        Some(&first) => types[1..].iter().copied().fold(first, |acc, ty| {
+            unify_branches(acc, ty, table, builtins)
+        }),
     }
 }
 
@@ -2470,7 +2447,7 @@ fn check_pipeline_apply(
     let func_ty = ctx.table.resolve(func_ty_id).clone();
     let Ty::Function { params, ret, .. } = func_ty else {
         ctx.diagnostics.push(
-            Diagnostic::error("`via` target must be a function")
+            Diagnostic::error("`to` target must be a function")
                 .with_label(Label::primary(operation.span, "not a function")),
         );
         return TypeId::ERROR;
@@ -2497,7 +2474,7 @@ fn check_pipeline_apply(
     if all_arg_types.len() != params.len() {
         ctx.diagnostics.push(
             Diagnostic::error(format!(
-                "`via {}` expected {} argument{}, found {}",
+                "`to {}` expected {} argument{}, found {}",
                 operation.name,
                 params.len(),
                 if params.len() == 1 { "" } else { "s" },
@@ -2516,7 +2493,7 @@ fn check_pipeline_apply(
             if i == 0 {
                 ctx.diagnostics.push(
                     Diagnostic::error(format!(
-                        "`via {}` first argument type mismatch: expected `{expected_name}`, found `{found_name}`",
+                        "`to {}` first argument type mismatch: expected `{expected_name}`, found `{found_name}`",
                         operation.name
                     ))
                     .with_label(Label::primary(span, format!("expected `{expected_name}`"))),

@@ -119,13 +119,12 @@ const fn token_type_index(kind: TokenKind) -> Option<u32> {
         | TokenKind::Import
         | TokenKind::If
         | TokenKind::Else
-        | TokenKind::Match
         | TokenKind::Loop
         | TokenKind::Break
         | TokenKind::Continue
         | TokenKind::Return
         | TokenKind::Each
-        | TokenKind::Via
+        | TokenKind::Map
         | TokenKind::Parallel
         | TokenKind::To
         | TokenKind::And

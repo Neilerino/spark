@@ -1,6 +1,0 @@
-fn main(): Int {
-    nums: List[Int] = [10, 20, 30]
-    doubled: List[Int] = nums each via (n: Int): Int { n * 2 }
-    doubled each (item: Int): Void { print(item) }
-    return 0
-}

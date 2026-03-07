@@ -248,14 +248,14 @@ See [docs/compiler-architecture.md](docs/compiler-architecture.md) section "Phas
 
 ### Token Kinds
 
-92 total: 8 literals, 37 keywords, 15 punctuation, 28 operators, 4 special.  
+94 total: 8 literals, 39 keywords, 17 punctuation, 26 operators, 4 special.  
 **See**: [spark_lexer/src/token.rs](crates/spark_lexer/src/token.rs) for complete enum
 
 ### AST Structure
 
 - **Ast** - Top level (file)
 - **Item** - 8 variants (Function, Struct, Enum, Interface, TypeAlias, TypeDef, Const, Binding)
-- **Expr** - 41 variants (see [spark_ast/src/expr.rs](crates/spark_ast/src/expr.rs))
+- **Expr** - 40 variants (see [spark_ast/src/expr.rs](crates/spark_ast/src/expr.rs))
 - **Pattern** - 11 variants (see [spark_ast/src/pattern.rs](crates/spark_ast/src/pattern.rs))
 
 ### Naming Conventions

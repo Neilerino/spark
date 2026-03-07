@@ -1,6 +1,6 @@
 fn main(): Int {
     x: Int = 42
-    match x {
+    x to {
         1 -> print("one"),
         2 -> print("two")
     }

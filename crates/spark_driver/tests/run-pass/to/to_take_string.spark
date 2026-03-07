@@ -1,6 +1,6 @@
 fn main(): Int {
     names: List[String] = ["alice", "bob", "charlie", "dave"]
-    first2: List[String] = names via take{count: 2}
+    first2: List[String] = names to take{count: 2}
     print(first2.len())
     return 0
 }

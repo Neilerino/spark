@@ -1,6 +1,6 @@
 fn main(): Int {
     nums: List[Int] = [10, 20, 30, 40, 50]
-    doubled: List[Int] = nums parallel each via (n: Int): Int { n * 2 }
+    doubled: List[Int] = nums parallel map (n: Int): Int { n * 2 }
     print(doubled.len())
     return 0
 }

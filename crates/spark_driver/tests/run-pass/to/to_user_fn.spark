@@ -1,5 +1,5 @@
 fn add_ten(nums: List[Int]): List[Int] {
-    result: List[Int] = nums each via (n: Int): Int {
+    result: List[Int] = nums map (n: Int): Int {
         n + 10
     }
     return result
@@ -7,8 +7,8 @@ fn add_ten(nums: List[Int]): List[Int] {
 
 fn main(): Int {
     nums: List[Int] = [1, 2, 3]
-    transformed: List[Int] = nums via add_ten
-    transformed each (item: Int): Void {
+    transformed: List[Int] = nums to add_ten
+    transformed each (item: Int) {
         print(item)
     }
     return 0

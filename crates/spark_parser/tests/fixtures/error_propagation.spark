@@ -69,9 +69,9 @@ fn complex_error_handling(): Int | ComputeError | ProcessError {
     return x + y
 }
 
-// In match arms
+// In to arms
 fn match_with_propagation(value: Int | ParseError): String | ParseError | FormatError {
-    result: String = match value {
+    result: String = value to {
         n: Int -> format_number(n)!,  // Propagate FormatError
         e: ParseError -> return e
     }
