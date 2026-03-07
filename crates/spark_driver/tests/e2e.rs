@@ -24,6 +24,7 @@
 //! │   ├── stdlib/     # stdlib_*
 //! │   ├── channels/   # channel_*
 //! │   ├── type_narrowing/ # to_*, propagate_*
+//! │   ├── protocols/  # displayable, equatable, comparable, iterable
 //! │   ├── io/         # io_stderr
 //! │   └── multifile/  # multi-file project dirs
 //! ├── compile-fail/   # Programs that should fail compilation
@@ -845,6 +846,30 @@ fn multimod_using_import() {
         "hello\nhelper",
         "stdout mismatch for multimod project"
     );
+}
+
+// ============================================================================
+// Standard protocol interfaces
+// ============================================================================
+
+#[test]
+fn displayable_print() {
+    assert_output("run-pass/protocols/displayable_print.spark", "hello");
+}
+
+#[test]
+fn equatable() {
+    assert_output("run-pass/protocols/equatable.spark", "true\ntrue");
+}
+
+#[test]
+fn comparable() {
+    assert_output("run-pass/protocols/comparable.spark", "true\ntrue\ntrue\nfalse");
+}
+
+#[test]
+fn iterable_each() {
+    assert_output("run-pass/protocols/iterable.spark", "10\n20");
 }
 
 // ============================================================================

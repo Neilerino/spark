@@ -78,6 +78,9 @@ impl Resolver {
         // Pass 1: Collect all top-level definitions
         self.collect_definitions();
 
+        // Inject core protocol interfaces as prelude imports for all non-core files
+        self.inject_core_prelude();
+
         // Pass 2: Resolve all references
         self.resolve_references();
     }
@@ -497,6 +500,59 @@ impl Resolver {
         }
 
         None
+    }
+
+    /// Injects standard protocol interfaces from `spark.core` as prelude imports.
+    ///
+    /// After the collection pass, this finds the `DefId`s for `Displayable`,
+    /// `Iterable`, `Equatable`, and `Comparable` in the `spark.core` module
+    /// and adds them as synthetic imports to every non-core file. This makes
+    /// the core interfaces available for `binds` declarations without explicit
+    /// `import spark.core { ... }`.
+    fn inject_core_prelude(&mut self) {
+        let core_path = ModulePath::new(vec![kw::SPARK, kw::CORE]);
+
+        // Find the DefIds for the core interfaces
+        let protocol_names = [kw::DISPLAYABLE, kw::ITERABLE, kw::EQUATABLE, kw::COMPARABLE];
+        let mut protocol_defs: Vec<(Symbol, DefId, DefinitionKind)> = Vec::new();
+
+        if let Some(defs) = self.module_defs.get(&core_path) {
+            for &name in &protocol_names {
+                for (def_name, def_id, kind) in defs {
+                    if *def_name == name && matches!(kind, DefinitionKind::Interface) {
+                        protocol_defs.push((name, *def_id, kind.clone()));
+                        break;
+                    }
+                }
+            }
+        }
+
+        if protocol_defs.is_empty() {
+            return;
+        }
+
+        // Collect FileIds that belong to the core module
+        let core_files: std::collections::HashSet<FileId> = self.graph.modules
+            .get(&core_path)
+            .map(|m| m.files.iter().copied().collect())
+            .unwrap_or_default();
+
+        // Inject into every non-core file's imports
+        for (file_id, _ast) in &self.asts {
+            // Skip files that belong to the core module itself
+            if core_files.contains(file_id) {
+                continue;
+            }
+
+            let imports = self.file_imports.entry(*file_id).or_default();
+            for (name, def_id, kind) in &protocol_defs {
+                // Don't inject if the file already imports this name
+                if imports.iter().any(|(n, _, _, _)| *n == *name) {
+                    continue;
+                }
+                imports.push((*name, *def_id, kind.clone(), Span::DUMMY));
+            }
+        }
     }
 
     // ========================================================================

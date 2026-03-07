@@ -1,0 +1,13 @@
+struct Pair { a: Int, b: Int }
+
+Pair binds Iterable[Int] {
+    fn toList(p: Pair): List[Int] {
+        return [p.a, p.b]
+    }
+}
+
+fn main(): Int {
+    p: Pair = Pair { a: 10, b: 20 }
+    p each (i: Int): Void { print(i) }
+    return 0
+}

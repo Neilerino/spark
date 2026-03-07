@@ -1,0 +1,17 @@
+struct Score { value: Int }
+
+Score binds Comparable[Score] {
+    fn compareTo(a: Score, b: Score): Int {
+        return a.value - b.value
+    }
+}
+
+fn main(): Int {
+    s1: Score = Score { value: 10 }
+    s2: Score = Score { value: 20 }
+    print(s1 < s2)
+    print(s2 > s1)
+    print(s1 <= s1)
+    print(s1 >= s2)
+    return 0
+}

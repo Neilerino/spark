@@ -1,0 +1,98 @@
+module core
+
+/// Enables custom string representation for `print()` and string interpolation.
+///
+/// When a struct binds `Displayable`, `print(myStruct)` calls `toString()`
+/// instead of printing the memory address, and `"{myStruct}"` in string
+/// interpolation uses the result of `toString()`.
+///
+/// ## Example
+///
+/// ```spark
+/// struct Point { x: Int, y: Int }
+///
+/// Point binds Displayable {
+///     fn toString(p: Point): String {
+///         return "({p.x}, {p.y})"
+///     }
+/// }
+///
+/// p: Point = Point { x: 3, y: 4 }
+/// print(p)        // prints: (3, 4)
+/// ```
+pub interface Displayable {
+    fn toString(): String
+}
+
+/// Enables `each` iteration over custom types.
+///
+/// When a struct binds `Iterable[E]`, it can be used with `each` and
+/// `each via` pipelines. The `toList()` method is called to get the
+/// elements.
+///
+/// ## Example
+///
+/// ```spark
+/// struct Pair { a: Int, b: Int }
+///
+/// Pair binds Iterable[Int] {
+///     fn toList(p: Pair): List[Int] {
+///         return [p.a, p.b]
+///     }
+/// }
+///
+/// p: Pair = Pair { a: 10, b: 20 }
+/// p each (i: Int): Void { print(i) }
+/// ```
+pub interface Iterable[E] {
+    fn toList(): List[E]
+}
+
+/// Enables custom equality comparison with `==` and `!=`.
+///
+/// When a struct binds `Equatable[T]`, the `==` and `!=` operators use the
+/// `equals()` method instead of raw memory comparison.
+///
+/// ## Example
+///
+/// ```spark
+/// struct UserId { id: Int }
+///
+/// UserId binds Equatable[UserId] {
+///     fn equals(a: UserId, b: UserId): Bool {
+///         return a.id == b.id
+///     }
+/// }
+///
+/// a: UserId = UserId { id: 1 }
+/// b: UserId = UserId { id: 1 }
+/// print(a == b)   // prints: true
+/// ```
+pub interface Equatable[T] {
+    fn equals(other: T): Bool
+}
+
+/// Enables custom ordering with `<`, `>`, `<=`, `>=` and `sort()`.
+///
+/// When a struct binds `Comparable[T]`, comparison operators use the
+/// `compareTo()` method. Returns a negative Int if `a < b`, zero if
+/// `a == b`, and a positive Int if `a > b`.
+///
+/// ## Example
+///
+/// ```spark
+/// struct Score { value: Int }
+///
+/// Score binds Comparable[Score] {
+///     fn compareTo(a: Score, b: Score): Int {
+///         return a.value - b.value
+///     }
+/// }
+///
+/// s1: Score = Score { value: 10 }
+/// s2: Score = Score { value: 20 }
+/// print(s1 < s2)   // prints: true
+/// ```
+pub interface Comparable[T] {
+    fn compareTo(other: T): Int
+}

@@ -1,0 +1,16 @@
+struct UserId { id: Int }
+
+UserId binds Equatable[UserId] {
+    fn equals(a: UserId, b: UserId): Bool {
+        return a.id == b.id
+    }
+}
+
+fn main(): Int {
+    a: UserId = UserId { id: 1 }
+    b: UserId = UserId { id: 1 }
+    c: UserId = UserId { id: 2 }
+    print(a == b)
+    print(a != c)
+    return 0
+}

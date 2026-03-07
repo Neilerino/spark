@@ -390,6 +390,17 @@ impl Interner {
             // Platform conditionals
             "when",
             "platform",
+            // Standard protocol interface names
+            "core",
+            "Displayable",
+            "Iterable",
+            "Equatable",
+            "Comparable",
+            // Standard protocol method names
+            "toString",
+            "toList",
+            "equals",
+            "compareTo",
         ];
 
         for kw in keywords {
@@ -745,6 +756,28 @@ pub mod kw {
     pub const WHEN: Symbol = Symbol(113);
     /// `platform` (contextual identifier, not a keyword)
     pub const PLATFORM: Symbol = Symbol(114);
+
+    // Standard protocol interface names
+    /// `core`
+    pub const CORE: Symbol = Symbol(115);
+    /// `Displayable`
+    pub const DISPLAYABLE: Symbol = Symbol(116);
+    /// `Iterable`
+    pub const ITERABLE: Symbol = Symbol(117);
+    /// `Equatable`
+    pub const EQUATABLE: Symbol = Symbol(118);
+    /// `Comparable`
+    pub const COMPARABLE: Symbol = Symbol(119);
+
+    // Standard protocol method names
+    /// `toString`
+    pub const TO_STRING: Symbol = Symbol(120);
+    /// `toList`
+    pub const TO_LIST: Symbol = Symbol(121);
+    /// `equals`
+    pub const EQUALS: Symbol = Symbol(122);
+    /// `compareTo`
+    pub const COMPARE_TO: Symbol = Symbol(123);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]

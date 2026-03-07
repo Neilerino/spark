@@ -3,9 +3,10 @@
 //! Converts AST [`Expr`] nodes into HIR [`HirExpr`] nodes, resolving
 //! identifiers to [`DefId`]s and looking up types from the [`TypeTable`].
 
-use spark_ast::{Expr, ExprKind, LiteralKind, PipelineStageKind, StringPart};
+use spark_ast::{BinaryOp, Expr, ExprKind, LiteralKind, PipelineStageKind, StringPart};
 use spark_diagnostics::Diagnostics;
-use spark_resolve::{DefinitionTable, ResolutionMap};
+use spark_intern::kw;
+use spark_resolve::{DefinitionKind, DefinitionTable, ResolutionMap};
 use spark_span::Span;
 use spark_types::ty::Ty;
 use spark_types::{TypeId, TypeTable};
@@ -102,6 +103,14 @@ fn lower_expr_kind(
         ExprKind::Binary { op, lhs, rhs } => {
             let lhs_hir = auto_deref_ref(lower_expr(lhs, table, definitions, resolutions, diagnostics, current_fn_ret), table);
             let rhs_hir = auto_deref_ref(lower_expr(rhs, table, definitions, resolutions, diagnostics, current_fn_ret), table);
+            // Equatable: desugar `a == b` / `a != b` to method calls
+            if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && should_desugar_equatable(&lhs_hir, table) {
+                return desugar_equatable(*op, lhs_hir, rhs_hir, table);
+            }
+            // Comparable: desugar `a < b` etc. to compareTo() calls
+            if matches!(op, BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) && should_desugar_comparable(&lhs_hir, table) {
+                return desugar_comparable(*op, lhs_hir, rhs_hir, table);
+            }
             HirExprKind::BinaryOp {
                 op: *op,
                 lhs: Box::new(lhs_hir),
@@ -144,10 +153,15 @@ fn lower_expr_kind(
         ExprKind::Call { callee, args } => {
             let callee_hir = lower_expr(callee, table, definitions, resolutions, diagnostics, current_fn_ret);
             let param_types = extract_param_types(callee_hir.ty, table);
+            let is_print = is_print_call(callee, resolutions, definitions);
             let lowered_args: Vec<HirExpr> = args.iter().enumerate().map(|(i, a)| {
                 let mut arg = lower_expr(&a.value, table, definitions, resolutions, diagnostics, current_fn_ret);
                 if let Some(&param_ty) = param_types.get(i) {
                     arg = coerce_ref(arg, param_ty, a.value.span, table);
+                }
+                // Displayable: wrap struct args in print() with toString()
+                if is_print {
+                    arg = maybe_wrap_displayable(arg, table);
                 }
                 arg
             }).collect();
@@ -579,6 +593,9 @@ fn lower_single_pipeline_stage(
     let bool_ty = find_bool_type(table);
     let void_ty = find_void_type(table);
 
+    // Iterable: if source is a struct binding Iterable, wrap with .toList()
+    let source_hir = maybe_wrap_iterable(source_hir, table);
+
     match &stage.kind {
         PipelineStageKind::ForEach { callback } => {
             let callback_hir = lower_partial_or_plain(
@@ -805,7 +822,8 @@ fn lower_literal_expr(
                         let lowered = lower_expr(
                             sub_expr, table, definitions, resolutions, diagnostics, current_fn_ret,
                         );
-                        Some(lowered)
+                        // Displayable: wrap struct values in toString()
+                        Some(maybe_wrap_displayable(lowered, table))
                     }
                 })
                 .collect();
@@ -1066,4 +1084,190 @@ fn coerce_ref(mut arg: HirExpr, param_ty: TypeId, span: Span, table: &TypeTable)
     }
 
     arg
+}
+
+// ============================================================================
+// Standard protocol helpers
+// ============================================================================
+
+/// Returns the struct `DefId` if `ty` is a struct type, otherwise `None`.
+fn struct_def_id(ty: TypeId, table: &TypeTable) -> Option<spark_resolve::DefId> {
+    let inner = strip_mutable_ty(ty, table);
+    match table.resolve(inner) {
+        Ty::Struct(def_id) => Some(*def_id),
+        _ => None,
+    }
+}
+
+/// Returns `true` if the callee expression is a call to `print`.
+fn is_print_call(
+    callee: &Expr,
+    resolutions: Option<&ResolutionMap>,
+    definitions: &DefinitionTable,
+) -> bool {
+    let def_id = find_callee_def_id(callee.span, resolutions);
+    def_id.map_or(false, |id| {
+        definitions
+            .get(id)
+            .map_or(false, |info| {
+                info.name == kw::PRINT && matches!(info.kind, DefinitionKind::BuiltinFunction)
+            })
+    })
+}
+
+/// Finds the DefId of a binding method by struct DefId and method name.
+fn find_binding_method(struct_def: spark_resolve::DefId, method_name: spark_intern::Symbol, table: &TypeTable) -> Option<spark_resolve::DefId> {
+    table.get_type_methods(struct_def)
+        .and_then(|methods| methods.iter().find(|(name, _)| *name == method_name))
+        .map(|(_, def_id)| *def_id)
+}
+
+/// If `expr` is a struct that binds `Displayable`, wraps it with a
+/// call to the binding's `toString(receiver)` method. Otherwise returns `expr` unchanged.
+fn maybe_wrap_displayable(expr: HirExpr, table: &TypeTable) -> HirExpr {
+    let Some(displayable_id) = table.well_known.displayable else {
+        return expr;
+    };
+    let Some(sdef) = struct_def_id(expr.ty, table) else {
+        return expr;
+    };
+    if !table.type_binds_interface(sdef, displayable_id) {
+        return expr;
+    }
+    let Some(method_def) = find_binding_method(sdef, kw::TO_STRING, table) else {
+        return expr;
+    };
+    let string_ty = table.lookup(&Ty::String).unwrap_or(TypeId::ERROR);
+    let fn_ty = table.get_def_type(method_def).unwrap_or(TypeId::ERROR);
+    let span = expr.span;
+    let callee = HirExpr::new(HirExprKind::Local(method_def), fn_ty, span);
+    HirExpr::new(
+        HirExprKind::Call {
+            callee: Box::new(callee),
+            args: vec![expr],
+        },
+        string_ty,
+        span,
+    )
+}
+
+/// If `source` is a struct that binds `Iterable[E]`, wraps it with a
+/// call to the binding's `toList(receiver)` method. Otherwise returns `source` unchanged.
+fn maybe_wrap_iterable(source: HirExpr, table: &TypeTable) -> HirExpr {
+    let Some(iterable_id) = table.well_known.iterable else {
+        return source;
+    };
+    let Some(sdef) = struct_def_id(source.ty, table) else {
+        return source;
+    };
+    if !table.type_binds_interface(sdef, iterable_id) {
+        return source;
+    }
+    let Some(method_def) = find_binding_method(sdef, kw::TO_LIST, table) else {
+        return source;
+    };
+    let fn_ty = table.get_def_type(method_def).unwrap_or(TypeId::ERROR);
+    // Extract the return type (List[E]) from the method's function type
+    let list_ty = match table.resolve(fn_ty) {
+        Ty::Function { ret, .. } => *ret,
+        _ => TypeId::ERROR,
+    };
+    let span = source.span;
+    let callee = HirExpr::new(HirExprKind::Local(method_def), fn_ty, span);
+    HirExpr::new(
+        HirExprKind::Call {
+            callee: Box::new(callee),
+            args: vec![source],
+        },
+        list_ty,
+        span,
+    )
+}
+
+/// Returns `true` if the lhs operand is a struct binding `Equatable`.
+fn should_desugar_equatable(lhs: &HirExpr, table: &TypeTable) -> bool {
+    let Some(equatable_id) = table.well_known.equatable else { return false };
+    let Some(sdef) = struct_def_id(lhs.ty, table) else { return false };
+    table.type_binds_interface(sdef, equatable_id)
+}
+
+/// Desugars `a == b` to `equals(a, b)` and `a != b` to `!equals(a, b)`.
+/// Caller must verify `should_desugar_equatable` first.
+fn desugar_equatable(
+    op: BinaryOp,
+    lhs: HirExpr,
+    rhs: HirExpr,
+    table: &TypeTable,
+) -> HirExprKind {
+    let bool_ty = find_bool_type(table);
+    let span = lhs.span;
+    let Some(sdef) = struct_def_id(lhs.ty, table) else {
+        return HirExprKind::BinaryOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+    };
+    let Some(method_def) = find_binding_method(sdef, kw::EQUALS, table) else {
+        return HirExprKind::BinaryOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+    };
+    let fn_ty = table.get_def_type(method_def).unwrap_or(TypeId::ERROR);
+    let callee = HirExpr::new(HirExprKind::Local(method_def), fn_ty, span);
+    let equals_call = HirExpr::new(
+        HirExprKind::Call {
+            callee: Box::new(callee),
+            args: vec![lhs, rhs],
+        },
+        bool_ty,
+        span,
+    );
+    if op == BinaryOp::Ne {
+        HirExprKind::UnaryOp {
+            op: spark_ast::UnaryOp::Not,
+            operand: Box::new(equals_call),
+        }
+    } else {
+        equals_call.kind
+    }
+}
+
+/// Returns `true` if the lhs operand is a struct binding `Comparable`.
+fn should_desugar_comparable(lhs: &HirExpr, table: &TypeTable) -> bool {
+    let Some(comparable_id) = table.well_known.comparable else { return false };
+    let Some(sdef) = struct_def_id(lhs.ty, table) else { return false };
+    table.type_binds_interface(sdef, comparable_id)
+}
+
+/// Desugars `a < b` to `compareTo(a, b) < 0`, etc.
+/// Caller must verify `should_desugar_comparable` first.
+fn desugar_comparable(
+    op: BinaryOp,
+    lhs: HirExpr,
+    rhs: HirExpr,
+    table: &TypeTable,
+) -> HirExprKind {
+    let int_ty = find_int_type(table);
+    let span = lhs.span;
+    let Some(sdef) = struct_def_id(lhs.ty, table) else {
+        return HirExprKind::BinaryOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+    };
+    let Some(method_def) = find_binding_method(sdef, kw::COMPARE_TO, table) else {
+        return HirExprKind::BinaryOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+    };
+    let fn_ty = table.get_def_type(method_def).unwrap_or(TypeId::ERROR);
+    let callee = HirExpr::new(HirExprKind::Local(method_def), fn_ty, span);
+    let cmp_call = HirExpr::new(
+        HirExprKind::Call {
+            callee: Box::new(callee),
+            args: vec![lhs, rhs],
+        },
+        int_ty,
+        span,
+    );
+    let zero = HirExpr::new(
+        HirExprKind::Literal(HirLiteral::Int(0)),
+        int_ty,
+        span,
+    );
+    HirExprKind::BinaryOp {
+        op,
+        lhs: Box::new(cmp_call),
+        rhs: Box::new(zero),
+    }
 }

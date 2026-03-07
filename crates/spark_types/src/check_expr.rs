@@ -957,16 +957,31 @@ fn check_call(
 
             diagnostics::expect_args(params.len(), arg_tys.len(), call_span, ctx.diagnostics);
 
+            // Check if the callee is print — Displayable structs are accepted
+            let is_print_callee = callee_def_id.map_or(false, |did| {
+                ctx.definitions
+                    .get(did)
+                    .map_or(false, |info| {
+                        info.name == spark_intern::kw::PRINT
+                            && matches!(info.kind, DefinitionKind::BuiltinFunction)
+                    })
+            });
+
             for (i, (arg, &arg_ty)) in args.iter().zip(arg_tys.iter()).enumerate() {
                 if let Some(&expected) = params.get(i) {
                     if !is_compatible(arg_ty, expected, ctx.table) {
-                        let expected_name = type_name(expected, ctx.table, ctx.definitions);
-                        let found_name = type_name(arg_ty, ctx.table, ctx.definitions);
-                        ctx.diagnostics.push(diagnostics::arg_type_mismatch(
-                            &expected_name,
-                            &found_name,
-                            arg.value.span,
-                        ));
+                        // Allow Displayable structs as print arguments
+                        let is_displayable_struct = is_print_callee
+                            && is_displayable_type(arg_ty, ctx.table);
+                        if !is_displayable_struct {
+                            let expected_name = type_name(expected, ctx.table, ctx.definitions);
+                            let found_name = type_name(arg_ty, ctx.table, ctx.definitions);
+                            ctx.diagnostics.push(diagnostics::arg_type_mismatch(
+                                &expected_name,
+                                &found_name,
+                                arg.value.span,
+                            ));
+                        }
                     } else if is_mutable_ref_param(expected, ctx.table)
                         && !matches!(ctx.table.resolve(arg_ty), Ty::Mutable(_))
                     {
@@ -2177,7 +2192,8 @@ fn check_pipeline_stage(
     }
 }
 
-/// Extracts the element type from a `List[T]`, reporting an error if not a list.
+/// Extracts the element type from a `List[T]` or an `Iterable[E]` struct,
+/// reporting an error if neither.
 fn extract_list_elem(
     base_ty: TypeId,
     operation: &str,
@@ -2189,11 +2205,38 @@ fn extract_list_elem(
     match table.resolve(base_ty).clone() {
         Ty::List(elem) => elem,
         Ty::Error => TypeId::ERROR,
+        Ty::Struct(def_id) => {
+            // Check if the struct binds Iterable[E]
+            if let Some(iterable_id) = table.well_known.iterable {
+                if table.type_binds_interface(def_id, iterable_id) {
+                    // Extract E from the toList method's return type List[E]
+                    if let Some(methods) = table.get_type_methods(def_id) {
+                        for (name, method_def) in methods {
+                            if *name == spark_intern::kw::TO_LIST {
+                                if let Some(fn_ty) = table.get_def_type(*method_def) {
+                                    if let Ty::Function { ret, .. } = table.resolve(fn_ty) {
+                                        if let Ty::List(elem) = table.resolve(*ret) {
+                                            return *elem;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let name = type_name(base_ty, table, definitions);
+            diagnostics.push(
+                Diagnostic::error(format!("`{operation}` requires a List or Iterable, found `{name}`"))
+                    .with_label(Label::primary(span, "not a List or Iterable")),
+            );
+            TypeId::ERROR
+        }
         _ => {
             let name = type_name(base_ty, table, definitions);
             diagnostics.push(
-                Diagnostic::error(format!("`{operation}` requires a List, found `{name}`"))
-                    .with_label(Label::primary(span, "not a List")),
+                Diagnostic::error(format!("`{operation}` requires a List or Iterable, found `{name}`"))
+                    .with_label(Label::primary(span, "not a List or Iterable")),
             );
             TypeId::ERROR
         }
@@ -2351,6 +2394,18 @@ fn check_to_narrowing(
             result_ty = unify_branches(result_ty, u, ctx.table, ctx.builtins);
         }
         result_ty
+    }
+}
+
+/// Returns `true` if the given type is a struct that binds the `Displayable` protocol.
+fn is_displayable_type(ty: TypeId, table: &TypeTable) -> bool {
+    let Some(displayable_id) = table.well_known.displayable else {
+        return false;
+    };
+    let stripped = strip_mutable(ty, table);
+    match table.resolve(stripped) {
+        Ty::Struct(def_id) => table.type_binds_interface(*def_id, displayable_id),
+        _ => false,
     }
 }
 

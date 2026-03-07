@@ -1,0 +1,13 @@
+struct Greeter { name: String }
+
+Greeter binds Displayable {
+    fn toString(g: Greeter): String {
+        return g.name
+    }
+}
+
+fn main(): Int {
+    g: Greeter = Greeter { name: "hello" }
+    print(g)
+    return 0
+}

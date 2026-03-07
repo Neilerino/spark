@@ -35,6 +35,26 @@ pub struct InterfaceMethodInfo {
     pub span: Span,
 }
 
+/// `DefId`s for standard protocol interfaces from `spark.core`.
+///
+/// These are populated after all interfaces are collected and allow the
+/// type checker, HIR lowering, and codegen to check if a type binds one of
+/// the standard protocols (e.g., `Displayable`, `Iterable`).
+///
+/// Adding a new protocol requires only adding a field here and populating
+/// it in `resolve_well_known_interfaces()`.
+#[derive(Debug, Clone, Default)]
+pub struct WellKnownInterfaces {
+    /// `Displayable` — enables `print()` and string interpolation for structs.
+    pub displayable: Option<DefId>,
+    /// `Iterable[E]` — enables `each` iteration on custom types.
+    pub iterable: Option<DefId>,
+    /// `Equatable` — enables `==` and `!=` for structs.
+    pub equatable: Option<DefId>,
+    /// `Comparable` — enables `<`, `>`, `<=`, `>=` and `sort()` for structs.
+    pub comparable: Option<DefId>,
+}
+
 /// The type table produced by the type checker.
 ///
 /// Contains all type information gathered during type checking:
@@ -85,6 +105,9 @@ pub struct TypeTable {
     /// Maps an interface `DefId` to its method signatures.
     /// Populated during `collect_interface()`, consumed during `validate_interface_methods()`.
     pub(crate) interface_methods: FxHashMap<DefId, Vec<InterfaceMethodInfo>>,
+    /// Standard protocol interface `DefId`s from `spark.core`.
+    /// Populated after declaration collection via `resolve_well_known_interfaces()`.
+    pub well_known: WellKnownInterfaces,
 }
 
 impl Default for TypeTable {
@@ -121,6 +144,7 @@ impl TypeTable {
             type_interface_bindings: FxHashMap::default(),
             fn_param_names: FxHashMap::default(),
             interface_methods: FxHashMap::default(),
+            well_known: WellKnownInterfaces::default(),
         }
     }
 
@@ -295,6 +319,14 @@ impl TypeTable {
     #[must_use]
     pub fn get_interface_methods(&self, def_id: DefId) -> Option<&[InterfaceMethodInfo]> {
         self.interface_methods.get(&def_id).map(Vec::as_slice)
+    }
+
+    /// Returns `true` if a type binds a specific interface.
+    #[must_use]
+    pub fn type_binds_interface(&self, type_def_id: DefId, interface_def_id: DefId) -> bool {
+        self.type_interface_bindings
+            .get(&type_def_id)
+            .map_or(false, |bindings| bindings.contains(&interface_def_id))
     }
 
     /// Records a monomorphization instance for a generic function call.

@@ -65,6 +65,7 @@ impl<'a> TypeChecker<'a> {
     #[must_use]
     pub fn check(mut self) -> TypeCheckerOutput {
         self.collect_signatures();
+        self.resolve_well_known_interfaces();
         self.register_builtin_functions();
         self.check_bodies();
 
@@ -90,6 +91,29 @@ impl<'a> TypeChecker<'a> {
             };
             for item in &ast.items {
                 collect_item(item, &mut ctx);
+            }
+        }
+    }
+
+    /// Populates `well_known` in the type table by finding the `DefId`s of
+    /// standard protocol interfaces (`Displayable`, `Iterable`, `Equatable`,
+    /// `Comparable`) from the definition table.
+    ///
+    /// Called after `collect_signatures()` so that interface `DefId`s have been
+    /// registered.
+    fn resolve_well_known_interfaces(&mut self) {
+        for (def_id, info) in self.definitions.iter() {
+            if !matches!(info.kind, DefinitionKind::Interface) {
+                continue;
+            }
+            if info.name == kw::DISPLAYABLE {
+                self.table.well_known.displayable = Some(def_id);
+            } else if info.name == kw::ITERABLE {
+                self.table.well_known.iterable = Some(def_id);
+            } else if info.name == kw::EQUATABLE {
+                self.table.well_known.equatable = Some(def_id);
+            } else if info.name == kw::COMPARABLE {
+                self.table.well_known.comparable = Some(def_id);
             }
         }
     }
