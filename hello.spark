@@ -34,11 +34,11 @@ fn fizzbuzz(n: Int): Int {
     count: Int! = 0
     loop {
         if i > n { break }
-        match i % 15 == 0 {
+        (i % 15 == 0) to {
             true -> print("FizzBuzz"),
-            false -> match i % 3 == 0 {
+            false -> (i % 3 == 0) to {
                 true -> print("Fizz"),
-                false -> match i % 5 == 0 {
+                false -> (i % 5 == 0) to {
                     true -> print("Buzz"),
                     false -> print(i)
                 }

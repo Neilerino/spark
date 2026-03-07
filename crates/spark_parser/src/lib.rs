@@ -297,7 +297,6 @@ impl Parser {
                 TokenKind::Semicolon
                 | TokenKind::RBrace
                 | TokenKind::If
-                | TokenKind::Match
                 | TokenKind::Loop
                 | TokenKind::Return
                 | TokenKind::Break
@@ -386,7 +385,6 @@ impl Parser {
                 | TokenKind::Tilde
                 // Control flow
                 | TokenKind::If
-                | TokenKind::Match
                 | TokenKind::Loop
                 | TokenKind::Return
                 | TokenKind::Break

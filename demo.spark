@@ -83,9 +83,9 @@ fn main(): Int {
     }
     print(counter)                                   // → 5
 
-    // Match expressions
+    // Pattern matching with to
     done: Bool = true
-    match done {
+    done to {
         true -> print(1),                            // → 1
         false -> print(0)
     }

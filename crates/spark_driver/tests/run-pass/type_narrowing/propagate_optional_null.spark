@@ -12,7 +12,7 @@ fn caller(): Int? {
 
 fn main(): Int {
     result: Int? = caller()
-    match result {
+    result to {
         i: Int -> print(i),
         Null -> print(0)
     }

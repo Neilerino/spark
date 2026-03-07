@@ -756,7 +756,7 @@ impl Parser {
 
         if self.check(TokenKind::LBrace) {
             // Narrowing block: to { Pattern -> Expr, ... }
-            let arms = self.parse_match_arms();
+            let arms = self.parse_to_arms();
             let span = self.span_from(start);
             Expr::new(ExprKind::To { expr: Box::new(expr), arms }, span)
         } else {
@@ -836,7 +836,6 @@ impl Parser {
 
             // Control flow
             TokenKind::If => self.parse_if_expr(),
-            TokenKind::Match => self.parse_match_expr(),
             TokenKind::Loop => self.parse_loop_expr(),
 
             // Flow control
@@ -1356,26 +1355,8 @@ impl Parser {
         )
     }
 
-    fn parse_match_expr(&mut self) -> Expr {
-        let start = self.current_span();
-        self.expect(TokenKind::Match);
-
-        // Use parse_expr_no_struct so `match x { }` doesn't parse x { } as struct init
-        let scrutinee = self.parse_expr_no_struct();
-        let arms = self.parse_match_arms();
-
-        let span = self.span_from(start);
-        Expr::new(
-            ExprKind::Match {
-                scrutinee: Box::new(scrutinee),
-                arms,
-            },
-            span,
-        )
-    }
-
-    /// Parses match arms: { pattern -> expr, ... }
-    pub(crate) fn parse_match_arms(&mut self) -> Vec<MatchArm> {
+    /// Parses `to` arms: `{ pattern -> expr, ... }`
+    pub(crate) fn parse_to_arms(&mut self) -> Vec<MatchArm> {
         let mut arms = Vec::new();
 
         self.expect(TokenKind::LBrace);
@@ -1708,13 +1689,13 @@ mod tests {
     }
 
     #[test]
-    fn match_expr() {
-        let (expr, diags) = parse_expr_str("match x { 0 -> a, _ -> b }");
+    fn to_arms_expr() {
+        let (expr, diags) = parse_expr_str("x to { 0 -> a, _ -> b }");
         assert!(!diags.has_errors());
-        if let ExprKind::Match { arms, .. } = expr.kind {
+        if let ExprKind::To { arms, .. } = expr.kind {
             assert_eq!(arms.len(), 2);
         } else {
-            panic!("expected match");
+            panic!("expected to expression");
         }
     }
 

@@ -214,14 +214,6 @@ pub enum ExprKind {
         else_branch: Option<Box<Expr>>,
     },
 
-    /// Match expression
-    Match {
-        /// The value to match on.
-        scrutinee: Box<Expr>,
-        /// The match arms.
-        arms: Vec<MatchArm>,
-    },
-
     /// Loop expression: `loop { }`
     Loop {
         /// The loop body.

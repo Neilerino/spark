@@ -63,7 +63,7 @@ pub fn null(): JsonValue { return JsonValue { handle: __spark_json_new_null() } 
 
 /// Creates a JSON boolean value.
 pub fn bool(v: Bool): JsonValue {
-    return match v {
+    return v to {
         true -> JsonValue { handle: __spark_json_new_bool(1) },
         false -> JsonValue { handle: __spark_json_new_bool(0) }
     }

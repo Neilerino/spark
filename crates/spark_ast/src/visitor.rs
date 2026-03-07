@@ -341,13 +341,6 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
                 v.visit_expr(e);
             }
         }
-        ExprKind::Match { scrutinee, arms } => {
-            v.visit_expr(scrutinee);
-            for arm in arms {
-                v.visit_pattern(&arm.pattern);
-                v.visit_expr(&arm.body);
-            }
-        }
         ExprKind::Loop { body } => v.visit_expr(body),
         ExprKind::Break(e) | ExprKind::Return(e) => {
             if let Some(e) = e {

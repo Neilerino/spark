@@ -1,6 +1,6 @@
 fn main(): Int {
     x: Int = 42
-    match x {
+    x to {
         0 -> print("wrong"),
         42 -> print("correct"),
         _ -> print("fallback")

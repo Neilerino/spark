@@ -245,23 +245,23 @@ fn if_else() {
 }
 
 #[test]
-fn match_bool() {
-    assert_output("run-pass/basics/match_bool.spark", "yes");
+fn to_bool() {
+    assert_output("run-pass/basics/to_bool.spark", "yes");
 }
 
 #[test]
-fn match_string() {
-    assert_output("run-pass/basics/match_string.spark", "correct");
+fn to_string() {
+    assert_output("run-pass/basics/to_string.spark", "correct");
 }
 
 #[test]
-fn match_float() {
-    assert_output("run-pass/basics/match_float.spark", "correct");
+fn to_float() {
+    assert_output("run-pass/basics/to_float.spark", "correct");
 }
 
 #[test]
-fn match_int() {
-    assert_output("run-pass/basics/match_int.spark", "correct");
+fn to_int() {
+    assert_output("run-pass/basics/to_int.spark", "correct");
 }
 
 #[test]
@@ -857,13 +857,13 @@ fn immutable_append_error() {
 }
 
 #[test]
-fn match_nonexhaustive_bool() {
-    assert_compile_error("compile-fail/type_errors/match_nonexhaustive_bool.spark", "non-exhaustive");
+fn to_nonexhaustive_bool() {
+    assert_compile_error("compile-fail/type_errors/to_nonexhaustive_bool.spark", "non-exhaustive");
 }
 
 #[test]
-fn match_nonexhaustive_int() {
-    assert_compile_error("compile-fail/type_errors/match_nonexhaustive_int.spark", "non-exhaustive");
+fn to_nonexhaustive_int() {
+    assert_compile_error("compile-fail/type_errors/to_nonexhaustive_int.spark", "non-exhaustive");
 }
 
 #[test]
@@ -908,7 +908,7 @@ fn generic_constraint_structural_fail() {
 
 #[test]
 fn to_non_union_error() {
-    assert_compile_error("compile-fail/type_errors/to_non_union_error.spark", "requires a union type");
+    assert_compile_error("compile-fail/type_errors/to_non_union_error.spark", "non-exhaustive");
 }
 
 #[test]

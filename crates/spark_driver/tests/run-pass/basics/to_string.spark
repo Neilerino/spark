@@ -1,6 +1,6 @@
 fn main(): Int {
     x: String = "hello"
-    match x {
+    x to {
         "goodbye" -> print("wrong"),
         "hello" -> print("correct"),
         _ -> print("fallback")

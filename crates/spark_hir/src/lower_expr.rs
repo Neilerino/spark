@@ -238,22 +238,6 @@ fn lower_expr_kind(
             else_: else_branch.as_ref().map(|e| Box::new(lower_expr(e, table, definitions, resolutions, diagnostics, current_fn_ret))),
         },
 
-        ExprKind::Match { scrutinee, arms } => HirExprKind::Match {
-            scrutinee: Box::new(lower_expr(scrutinee, table, definitions, resolutions, diagnostics, current_fn_ret)),
-            arms: arms
-                .iter()
-                .map(|arm| {
-                    let (pattern, guard) = lower_pattern_with_guard(&arm.pattern, resolutions, diagnostics, table, definitions, current_fn_ret);
-                    HirMatchArm {
-                        pattern,
-                        guard,
-                        body: lower_expr(&arm.body, table, definitions, resolutions, diagnostics, current_fn_ret),
-                        span: arm.span,
-                    }
-                })
-                .collect(),
-        },
-
         ExprKind::Loop { body } => HirExprKind::Loop {
             body: Box::new(lower_expr(body, table, definitions, resolutions, diagnostics, current_fn_ret)),
         },
@@ -372,9 +356,32 @@ fn lower_expr_kind(
         }
 
         ExprKind::To { expr: inner, arms } => {
+            let inner_ty = expr_type(inner.id, table);
+            let is_union = matches!(table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_));
             let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let ty = expr_type(expr.id, table);
-            lower_to_narrowing(inner_hir, arms, ty, table, definitions, resolutions, diagnostics, current_fn_ret, expr.span)
+
+            if is_union {
+                // Union/optional: use narrowing lowering (adds passthrough arms)
+                let ty = expr_type(expr.id, table);
+                lower_to_narrowing(inner_hir, arms, ty, table, definitions, resolutions, diagnostics, current_fn_ret, expr.span)
+            } else {
+                // Non-union: lower directly to HirExprKind::Match (exhaustive, no passthrough)
+                HirExprKind::Match {
+                    scrutinee: Box::new(inner_hir),
+                    arms: arms
+                        .iter()
+                        .map(|arm| {
+                            let (pattern, guard) = lower_pattern_with_guard(&arm.pattern, resolutions, diagnostics, table, definitions, current_fn_ret);
+                            HirMatchArm {
+                                pattern,
+                                guard,
+                                body: lower_expr(&arm.body, table, definitions, resolutions, diagnostics, current_fn_ret),
+                                span: arm.span,
+                            }
+                        })
+                        .collect(),
+                }
+            }
         }
 
         ExprKind::PipelineApply { expr: inner, operation, args } => {

@@ -278,31 +278,6 @@ fn check_expr_inner(
                 })
         }
 
-        // === Match expression ===
-        ExprKind::Match { scrutinee, arms } => {
-            let scrutinee_ty = check_expr(scrutinee, ctx, current_fn_ret);
-
-            let mut arm_types = Vec::with_capacity(arms.len());
-            for arm in arms {
-                // Pattern checking is simplified — we just check the body
-                let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
-                arm_types.push(body_ty);
-            }
-
-            // Check exhaustiveness
-            crate::exhaustive::check_exhaustiveness(scrutinee_ty, arms, expr.span, ctx);
-
-            if arm_types.is_empty() {
-                ctx.builtins.never
-            } else {
-                let mut result = arm_types[0];
-                for &ty in &arm_types[1..] {
-                    result = unify_branches(result, ty, ctx.table, ctx.builtins);
-                }
-                result
-            }
-        }
-
         // === Loop ===
         ExprKind::Loop { body } => {
             let _ = check_expr(body, ctx, current_fn_ret);
@@ -2274,12 +2249,11 @@ fn validate_reduce_callback(
     ret
 }
 
-/// Checks a `to` narrowing expression (`to { Pattern -> ... }`).
+/// Checks a `to` expression (`expr to { Pattern -> ... }`).
 ///
-/// - The inner expression must be a union type
-/// - Each handler arm handles one or more union members
-/// - Unhandled members pass through
-/// - Result is the unified handler body types + unhandled member types
+/// Behaviour depends on the scrutinee type:
+/// - **Union/Optional**: pass-through mode — unhandled members included in result type
+/// - **Non-union** (Int, Bool, Enum, etc.): exhaustive mode — all cases must be covered
 fn check_to_narrowing(
     inner_ty: TypeId,
     arms: &[spark_ast::MatchArm],
@@ -2287,66 +2261,73 @@ fn check_to_narrowing(
     ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
-    let members = crate::union::union_members(inner_ty, ctx.table);
+    let is_union = matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_));
 
-    if members.len() <= 1 && !matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_))
-    {
-        ctx.diagnostics.push(
-            Diagnostic::error("'to' expression requires a union type")
-                .with_label(Label::primary(span, "not a union type")),
-        );
-    }
+    if is_union {
+        // === Union/Optional pass-through mode ===
+        let members = crate::union::union_members(inner_ty, ctx.table);
 
-    let mut body_types = Vec::with_capacity(arms.len());
-    let mut handled_types = Vec::new();
+        let mut body_types = Vec::with_capacity(arms.len());
+        let mut handled_types = Vec::new();
 
-    for arm in arms {
-        // Check the pattern — for type narrowing patterns, resolve the type
-        if let spark_ast::PatternKind::TypeNarrowing { ty: pat_ty, .. } = &arm.pattern.kind {
-            let narrowed_ty = crate::lower::lower_type_expr(pat_ty, ctx);
-            handled_types.push(narrowed_ty);
-        } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
-            // Enum variant pattern — resolve it
-            let variant_ty = ctx
-                .resolutions
-                .and_then(|res| res.get_path(path.span))
-                .and_then(|def_id| ctx.table.get_def_type(def_id))
-                .unwrap_or(TypeId::ERROR);
-            if !variant_ty.is_error() {
-                handled_types.push(variant_ty);
+        for arm in arms {
+            if let spark_ast::PatternKind::TypeNarrowing { ty: pat_ty, .. } = &arm.pattern.kind {
+                let narrowed_ty = crate::lower::lower_type_expr(pat_ty, ctx);
+                handled_types.push(narrowed_ty);
+            } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
+                let variant_ty = ctx
+                    .resolutions
+                    .and_then(|res| res.get_path(path.span))
+                    .and_then(|def_id| ctx.table.get_def_type(def_id))
+                    .unwrap_or(TypeId::ERROR);
+                if !variant_ty.is_error() {
+                    handled_types.push(variant_ty);
+                }
             }
+
+            let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
+            body_types.push(body_ty);
         }
 
-        let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
-        body_types.push(body_ty);
-    }
+        let unhandled: Vec<TypeId> = members
+            .iter()
+            .copied()
+            .filter(|m| !handled_types.contains(m))
+            .collect();
 
-    // Determine unhandled member types
-    let unhandled: Vec<TypeId> = members
-        .iter()
-        .copied()
-        .filter(|m| !handled_types.contains(m))
-        .collect();
+        let mut result_ty = unify_type_list(&body_types, ctx.builtins.void, ctx.table, ctx.builtins);
 
-    // Unify all body types
-    let mut result_ty = if let Some(&first) = body_types.first() {
-        first
-    } else {
-        ctx.builtins.void
-    };
-    for &bty in &body_types[1..] {
-        result_ty = unify_branches(result_ty, bty, ctx.table, ctx.builtins);
-    }
-
-    // If there are unhandled types, the result includes them
-    if unhandled.is_empty() {
-        result_ty
-    } else {
-        // Result is union of handler body types + unhandled types
+        // Fold in unhandled member types
         for &u in &unhandled {
             result_ty = unify_branches(result_ty, u, ctx.table, ctx.builtins);
         }
         result_ty
+    } else {
+        // === Non-union exhaustive mode ===
+        let mut arm_types = Vec::with_capacity(arms.len());
+        for arm in arms {
+            let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
+            arm_types.push(body_ty);
+        }
+
+        crate::exhaustive::check_exhaustiveness(inner_ty, arms, span, ctx);
+
+        unify_type_list(&arm_types, ctx.builtins.never, ctx.table, ctx.builtins)
+    }
+}
+
+/// Unifies a list of types via `unify_branches`, returning `empty_fallback` for empty lists.
+fn unify_type_list(
+    types: &[TypeId],
+    empty_fallback: TypeId,
+    table: &mut TypeTable,
+    builtins: &BuiltinTypes,
+) -> TypeId {
+    match types.first() {
+        None => empty_fallback,
+        Some(&first) => types[1..].iter().copied().fold(first, |acc, ty| {
+            unify_branches(acc, ty, table, builtins)
+        }),
     }
 }
 

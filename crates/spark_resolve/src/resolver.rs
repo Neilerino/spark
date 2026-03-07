@@ -917,17 +917,6 @@ impl Resolver {
                 }
             }
 
-            ExprKind::Match { scrutinee, arms } => {
-                self.resolve_expr(scrutinee);
-                for arm in arms {
-                    // Each arm gets its own scope for pattern bindings
-                    self.rib_stack.push_rib(RibKind::Normal);
-                    self.resolve_pattern(&arm.pattern);
-                    self.resolve_expr(&arm.body);
-                    self.rib_stack.pop_rib();
-                }
-            }
-
             ExprKind::Loop { body } => self.resolve_expr(body),
 
             ExprKind::Break(e) | ExprKind::Return(e) => {
@@ -1627,11 +1616,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_match_pattern_bindings() {
+    fn resolve_to_pattern_bindings() {
         let output = resolve_source(
             r#"
             fn test(x: Int): Int {
-                match x {
+                x to {
                     n if n > 0 -> n,
                     _ -> 0
                 }

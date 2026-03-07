@@ -117,8 +117,6 @@ pub enum TokenKind {
     If,
     /// `else`
     Else,
-    /// `match`
-    Match,
     /// `loop`
     Loop,
     /// `break`
@@ -298,7 +296,6 @@ impl TokenKind {
                 | Self::Import
                 | Self::If
                 | Self::Else
-                | Self::Match
                 | Self::Loop
                 | Self::Break
                 | Self::Continue
@@ -372,7 +369,6 @@ impl TokenKind {
             "import" => Some(Self::Import),
             "if" => Some(Self::If),
             "else" => Some(Self::Else),
-            "match" => Some(Self::Match),
             "loop" => Some(Self::Loop),
             "break" => Some(Self::Break),
             "continue" => Some(Self::Continue),
@@ -428,7 +424,6 @@ impl TokenKind {
             Self::Import => "import",
             Self::If => "if",
             Self::Else => "else",
-            Self::Match => "match",
             Self::Loop => "loop",
             Self::Break => "break",
             Self::Continue => "continue",

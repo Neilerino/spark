@@ -12,7 +12,7 @@ fn caller(): Int | String {
 
 fn main(): Int {
     result: Int | String = caller()
-    match result {
+    result to {
         i: Int -> print(i),
         s: String -> print(s)
     }
