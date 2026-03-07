@@ -365,12 +365,38 @@ pub(super) fn emit_place_addr<M: Module>(
                             }
                         }
                     }
+                    Ty::Enum(_) => {
+                        panic!(
+                            "ICE: Projection::Field on enum type; \
+                             use Projection::EnumField instead"
+                        );
+                    }
                     _ => {
-                        // For enums or other types with field access, we'd handle
-                        // similarly. For now, just offset by 0.
                         let _ = unwrapped_id;
                     }
                 }
+            }
+            Projection::EnumField { variant, index } => {
+                let (_, unwrapped_ty) = clif_types::unwrap_mutable(current_ty, table);
+                let Ty::Enum(enum_def_id) = unwrapped_ty else {
+                    panic!(
+                        "ICE: Projection::EnumField on non-enum type {unwrapped_ty:?}; \
+                         this is a compiler bug"
+                    );
+                };
+                let enum_def_id = *enum_def_id;
+                let field_index = *index as usize;
+                let variant_fields = table
+                    .get_variant_fields(*variant)
+                    .expect("ICE: missing variant fields for enum variant");
+                let offset = ctx.layouts.variant_field_offset(
+                    enum_def_id,
+                    *variant,
+                    field_index,
+                    table,
+                );
+                addr = ctx.builder.ins().iadd_imm(addr, i64::from(offset));
+                current_ty = variant_fields[field_index].1;
             }
             Projection::Index(idx_local) => {
                 let idx_val = ctx.read_local(*idx_local);
@@ -497,6 +523,12 @@ pub(super) fn resolve_place_type(ctx: &FunctionContext<'_>, place: &Place, table
             }
             Projection::UnionPayload(member_ty) => {
                 current_ty = *member_ty;
+            }
+            Projection::EnumField { variant, index } => {
+                let variant_fields = table
+                    .get_variant_fields(*variant)
+                    .expect("ICE: missing variant fields for enum variant");
+                current_ty = variant_fields[*index as usize].1;
             }
         }
     }
@@ -779,25 +811,20 @@ fn emit_aggregate<M: Module>(
             }
 
             // Store variant fields at payload offset.
-            // Look up variant fields from the variant's DefId.
-            if let Some(variants) = table.get_enum_variants(*def_id) {
-                if let Some((_, variant_def_id)) = variants.iter().find(|(n, _)| *n == *variant) {
-                    if let Some(variant_fields) = table.get_variant_fields(*variant_def_id) {
-                        let mut field_offset = el.payload_offset;
-                        for (i, operand) in operands.iter().enumerate() {
-                            if i < variant_fields.len() {
-                                let (_, field_ty) = variant_fields[i];
-                                let field_layout = ctx.layouts.layout_of(field_ty, table);
-                                field_offset = align_to(field_offset, field_layout.align);
+            let variant_def_id = table
+                .get_enum_variants(*def_id)
+                .and_then(|vs| vs.iter().find(|(n, _)| *n == *variant).map(|(_, id)| *id))
+                .expect("ICE: enum variant not found; this is a compiler bug");
 
-                                if let Some(val) = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module) {
-                                    ctx.store(val, dest_addr, i32::try_from(field_offset).unwrap_or(0));
-                                }
-
-                                field_offset += field_layout.size;
-                            }
-                        }
-                    }
+            for (i, operand) in operands.iter().enumerate() {
+                let offset = ctx.layouts.variant_field_offset(
+                    *def_id,
+                    variant_def_id,
+                    i,
+                    table,
+                );
+                if let Some(val) = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module) {
+                    ctx.store(val, dest_addr, i32::try_from(offset).unwrap_or(0));
                 }
             }
 

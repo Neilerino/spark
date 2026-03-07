@@ -419,6 +419,10 @@ fn remap_projection(proj: &Projection, local_off: u32) -> Projection {
         Projection::Index(local) => Projection::Index(remap_local(*local, local_off)),
         Projection::Deref => Projection::Deref,
         Projection::UnionPayload(ty) => Projection::UnionPayload(*ty),
+        Projection::EnumField { variant, index } => Projection::EnumField {
+            variant: *variant,
+            index: *index,
+        },
     }
 }
 

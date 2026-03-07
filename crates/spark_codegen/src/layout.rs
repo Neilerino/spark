@@ -530,6 +530,39 @@ impl LayoutCache {
         0
     }
 
+    /// Computes the byte offset of a field within an enum variant payload.
+    ///
+    /// The returned offset is absolute (includes the enum's `payload_offset`).
+    pub fn variant_field_offset(
+        &mut self,
+        enum_def_id: DefId,
+        variant_def_id: DefId,
+        field_index: usize,
+        table: &TypeTable,
+    ) -> u32 {
+        let el = self.enum_layout_of(enum_def_id, table);
+        let variant_fields = table
+            .get_variant_fields(variant_def_id)
+            .expect("ICE: missing variant fields for enum variant");
+        debug_assert!(
+            field_index < variant_fields.len(),
+            "ICE: variant field index {field_index} out of range for {}-field variant",
+            variant_fields.len()
+        );
+        let mut offset = el.payload_offset;
+        for (i, (_, field_ty)) in variant_fields.iter().enumerate() {
+            let field_layout = self.layout_of(*field_ty, table);
+            offset = align_to(offset, field_layout.align);
+            if i == field_index {
+                return offset;
+            }
+            offset += field_layout.size;
+        }
+        // debug_assert above ensures field_index < variant_fields.len(),
+        // so the loop always finds i == field_index and returns early.
+        0
+    }
+
     fn compute_tuple_layout(&mut self, elems: &[TypeId], table: &TypeTable) -> TypeLayout {
         if elems.is_empty() {
             return TypeLayout { size: 0, align: 1 };
