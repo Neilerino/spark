@@ -93,6 +93,45 @@ pub struct MirFunction {
     pub span: Span,
 }
 
+impl MirFunction {
+    /// Resolves the [`DefId`] of a callee from a function call operand.
+    ///
+    /// Handles two cases:
+    /// 1. The operand is a direct `FunctionRef` constant.
+    /// 2. The operand is a `Copy`/`Move` of a local that was assigned a
+    ///    `FunctionRef` — scans all blocks' statements to find the assignment.
+    pub fn resolve_callee_def_id(&self, operand: &Operand) -> Option<DefId> {
+        // Direct constant case.
+        if let Operand::Constant(Constant::FunctionRef(def_id)) = operand {
+            return Some(*def_id);
+        }
+
+        // Copy/Move of a local — scan for the assignment.
+        let local = match operand {
+            Operand::Copy(place) | Operand::Move(place) if place.projections.is_empty() => {
+                place.local
+            }
+            _ => return None,
+        };
+
+        for block in &self.blocks {
+            for stmt in &block.statements {
+                if let Statement::Assign { place, rvalue, .. } = stmt {
+                    if place.local == local && place.projections.is_empty() {
+                        if let Rvalue::Use(Operand::Constant(Constant::FunctionRef(def_id))) =
+                            rvalue
+                        {
+                            return Some(*def_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+}
+
 /// Declaration of a local variable or temporary.
 #[derive(Debug, Clone)]
 pub struct LocalDecl {

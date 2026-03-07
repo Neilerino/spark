@@ -196,7 +196,7 @@ fn find_await_points(func: &MirFunction, definitions: &DefinitionTable) -> Vec<A
         } = &block.terminator
         {
             // Check if the callee is __spark_await by tracing through FunctionRef.
-            let callee_def_id = extract_callee_def_id(callee_op, func);
+            let callee_def_id = func.resolve_callee_def_id(callee_op);
             if let Some(def_id) = callee_def_id {
                 if let Some(info) = definitions.get(def_id) {
                     if info.name == kw::SPARK_AWAIT {
@@ -223,33 +223,6 @@ fn find_await_points(func: &MirFunction, definitions: &DefinitionTable) -> Vec<A
     }
 
     points
-}
-
-/// Extracts the DefId from a callee operand by tracing FunctionRef assignments.
-fn extract_callee_def_id(callee: &Operand, func: &MirFunction) -> Option<DefId> {
-    match callee {
-        Operand::Constant(Constant::FunctionRef(def_id)) => Some(*def_id),
-        Operand::Copy(place) | Operand::Move(place) if place.projections.is_empty() => {
-            // Search backwards for the FunctionRef assignment to this local.
-            let local = place.local;
-            for block in &func.blocks {
-                for stmt in &block.statements {
-                    if let Statement::Assign {
-                        place: assign_place,
-                        rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(def_id))),
-                        ..
-                    } = stmt
-                    {
-                        if assign_place.local == local && assign_place.projections.is_empty() {
-                            return Some(*def_id);
-                        }
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
 }
 
 // ── Liveness Analysis ───────────────────────────────────────────────────

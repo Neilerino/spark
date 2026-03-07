@@ -282,7 +282,7 @@ fn analyze_consumers(
                 ..
             } => {
                 // Check if an alias is passed as an argument to a known function.
-                let callee_def = resolve_callee_from_operand(func_op, func);
+                let callee_def = func.resolve_callee_def_id(func_op);
 
                 if let Some(callee) = callee_def {
                     // Check if this is a len call on our list.
@@ -559,39 +559,6 @@ fn find_builtin_fn(
             |(_, info)| matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == name,
         )
         .map(|(id, _)| id)
-}
-
-/// Resolves the `DefId` of a callee from a function operand.
-fn resolve_callee_from_operand(
-    func_op: &Operand,
-    func: &MirFunction,
-) -> Option<spark_resolve::DefId> {
-    // Direct constant case.
-    if let Operand::Constant(Constant::FunctionRef(def_id)) = func_op {
-        return Some(*def_id);
-    }
-
-    // Copy/Move of a local — scan for the assignment.
-    let local = match func_op {
-        Operand::Copy(place) | Operand::Move(place) if place.projections.is_empty() => {
-            place.local
-        }
-        _ => return None,
-    };
-
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            if let Statement::Assign { place, rvalue, .. } = stmt {
-                if place.local == local && place.projections.is_empty() {
-                    if let Rvalue::Use(Operand::Constant(Constant::FunctionRef(def_id))) = rvalue {
-                        return Some(*def_id);
-                    }
-                }
-            }
-        }
-    }
-
-    None
 }
 
 #[cfg(test)]

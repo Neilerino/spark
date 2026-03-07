@@ -146,19 +146,11 @@ fn inline_one_round(
             span,
         } = &block.terminator
         {
-            // Try to resolve as a direct FunctionRef first.
-            let resolved = match func {
-                Operand::Constant(Constant::FunctionRef(id)) => {
-                    Some((*id, Vec::new()))
-                }
-                _ => {
-                    // Try FunctionRef local, then Closure local.
-                    if let Some(id) = resolve_func_ref_local(func, caller) {
-                        Some((id, Vec::new()))
-                    } else {
-                        resolve_closure_local(func, caller)
-                    }
-                }
+            // Try to resolve as a FunctionRef first, then as a Closure.
+            let resolved = if let Some(id) = caller.resolve_callee_def_id(func) {
+                Some((id, Vec::new()))
+            } else {
+                resolve_closure_local(func, caller)
             };
 
             if let Some((def_id, captures)) = resolved {
@@ -203,31 +195,6 @@ struct InlineSite {
     destination: Place,
     target: BlockId,
     span: Span,
-}
-
-/// Resolves a function operand that is Copy/Move of a local back to its
-/// `FunctionRef` DefId by scanning the caller's statements.
-fn resolve_func_ref_local(func_op: &Operand, caller: &MirFunction) -> Option<DefId> {
-    let local = match func_op {
-        Operand::Copy(place) | Operand::Move(place) if place.projections.is_empty() => {
-            place.local
-        }
-        _ => return None,
-    };
-
-    for block in &caller.blocks {
-        for stmt in &block.statements {
-            if let Statement::Assign { place, rvalue, .. } = stmt {
-                if place.local == local && place.projections.is_empty() {
-                    if let Rvalue::Use(Operand::Constant(Constant::FunctionRef(def_id))) = rvalue {
-                        return Some(*def_id);
-                    }
-                }
-            }
-        }
-    }
-
-    None
 }
 
 /// Resolves a function operand that is Copy/Move of a local back to a
