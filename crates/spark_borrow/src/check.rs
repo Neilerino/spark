@@ -462,6 +462,10 @@ fn projections_equal(a: &Projection, b: &Projection) -> bool {
         (Projection::Deref, Projection::Deref)
         | (Projection::Index(_), Projection::Index(_)) => true,
         (Projection::UnionPayload(t1), Projection::UnionPayload(t2)) => t1 == t2,
+        (
+            Projection::EnumField { variant: v1, index: i1 },
+            Projection::EnumField { variant: v2, index: i2 },
+        ) => v1 == v2 && i1 == i2,
         _ => false,
     }
 }

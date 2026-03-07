@@ -179,6 +179,7 @@ impl fmt::Display for Place {
                 Projection::Index(local) => write!(f, "[{local}]")?,
                 Projection::Deref => write!(f, ".*")?,
                 Projection::UnionPayload(_) => write!(f, ".union_payload")?,
+                Projection::EnumField { index, .. } => write!(f, ".enum_field({index})")?,
             }
         }
         Ok(())
@@ -196,6 +197,13 @@ pub enum Projection {
     Deref,
     /// Extract the payload from a union value, narrowed to the given type.
     UnionPayload(TypeId),
+    /// Access a positional field of an enum variant payload.
+    EnumField {
+        /// The variant's [`DefId`] (for looking up field types).
+        variant: DefId,
+        /// Zero-based field index within the variant.
+        index: u32,
+    },
 }
 
 // ── Rvalues ──────────────────────────────────────────────────────────────

@@ -236,9 +236,10 @@ fn compile_pattern(
                 let field_temp =
                     fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
                 let mut place = Place::from_local(scrut);
-                place.projections.push(Projection::Field(
-                    spark_intern::sym(&idx.to_string()),
-                ));
+                place.projections.push(Projection::EnumField {
+                    variant: *def_id,
+                    index: idx as u32,
+                });
                 fb.push_assign(
                     Place::from_local(field_temp),
                     Rvalue::Use(Operand::Copy(place)),
