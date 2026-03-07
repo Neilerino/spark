@@ -519,6 +519,21 @@ fn via_sort() {
 }
 
 #[test]
+fn via_sort_float() {
+    assert_output("run-pass/via/via_sort_float.spark", "-4\n-1.2\n0\n2.7\n3.5");
+}
+
+#[test]
+fn via_sort_string() {
+    assert_output("run-pass/via/via_sort_string.spark", "apple\nbanana\ncherry");
+}
+
+#[test]
+fn via_sort_bool() {
+    assert_output("run-pass/via/via_sort_bool.spark", "false\nfalse\ntrue\ntrue");
+}
+
+#[test]
 fn via_take() {
     assert_output("run-pass/via/via_take.spark", "3");
 }

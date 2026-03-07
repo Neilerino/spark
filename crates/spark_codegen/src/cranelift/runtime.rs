@@ -396,7 +396,7 @@ impl RuntimeStubs {
             list_sort: declare_fn(
                 module,
                 "__spark_list_sort",
-                &[ptr_type],
+                &[ptr_type, types::I64],
                 Some(ptr_type),
                 call_conv,
             ),
