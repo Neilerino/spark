@@ -1,0 +1,8 @@
+fn main(): Int {
+    nums: List[Float] = [3.5, -1.2, 0.0, 2.7, -4.0]
+    sorted: List[Float] = nums via sort
+    sorted each (item: Float): Void {
+        print(item)
+    }
+    return 0
+}

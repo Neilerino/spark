@@ -824,8 +824,27 @@ fn emit_builtin_list_fn<M: Module>(
     };
 
     if fn_name == kw::SORT {
+        // Determine the sort type tag from the list's element type.
+        let tag: i64 = if let Some(Operand::Copy(place) | Operand::Move(place)) = args.first() {
+            let list_ty_id = ctx.local_type_id(place.local);
+            let (_, stripped) = clif_types::unwrap_mutable(list_ty_id, table);
+            if let Ty::List(elem) = stripped {
+                let (_, inner) = clif_types::unwrap_mutable(*elem, table);
+                match inner {
+                    Ty::Float(_) => 1,
+                    Ty::String => 2,
+                    Ty::Bool => 3,
+                    _ => 0, // Int and fallback
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        let tag_val = ctx.builder.ins().iconst(types::I64, tag);
         let func_ref = module.declare_func_in_func(ctx.stubs.list_sort, ctx.builder.func);
-        let call = ctx.builder.ins().call(func_ref, &[list_ptr]);
+        let call = ctx.builder.ins().call(func_ref, &[list_ptr, tag_val]);
         let result = ctx.builder.inst_results(call)[0];
         if destination.projections.is_empty() {
             ctx.write_local(destination.local, result);

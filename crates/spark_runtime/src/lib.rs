@@ -1007,38 +1007,98 @@ pub extern "C" fn __spark_list_from_range(start: i64, end: i64, inclusive: i8, s
 
 // =============================================================================
 // List pipeline operations — sort, take, reverse
+
+/// Sort type tags passed from codegen to `__spark_list_sort`.
+const SORT_TAG_INT: i64 = 0;
+const SORT_TAG_FLOAT: i64 = 1;
+const SORT_TAG_STRING: i64 = 2;
+const SORT_TAG_BOOL: i64 = 3;
 // =============================================================================
 
-/// Sorts a list of i64 elements in ascending order, returning a new list.
+/// Sorts a list in ascending order, returning a new list.
+///
+/// `type_tag` selects the comparison strategy:
+/// - `0` (Int): compare elements as `i64`
+/// - `1` (Float): compare elements as `f64` using total ordering
+/// - `2` (String): compare `SparkString` contents lexicographically
+/// - `3` (Bool): compare elements as `i8` (false < true)
 ///
 /// The original list is not modified (functional semantics).
 ///
 /// # Safety
 ///
-/// `ptr` must be a valid pointer from `__spark_list_new` containing i64 elements.
+/// `ptr` must be a valid pointer from `__spark_list_new`.
+/// Elements must match the type indicated by `type_tag`.
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
-pub unsafe extern "C" fn __spark_list_sort(ptr: *mut u8) -> *mut u8 {
+pub unsafe extern "C" fn __spark_list_sort(ptr: *mut u8, type_tag: i64) -> *mut u8 {
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
-    let new_list = __spark_list_new(list.elem_size as i64, 0); // sort is Int-only
+    let new_list = __spark_list_new(list.elem_size as i64, list.elem_drop);
 
     if list.len == 0 {
         return new_list;
     }
 
-    // Copy all elements into a Vec<i64> for sorting
-    let mut values: Vec<i64> = Vec::with_capacity(list.len);
-    for i in 0..list.len {
-        let elem = unsafe { list.data.add(i * list.elem_size) };
-        let val = unsafe { *(elem.cast::<i64>()) };
-        values.push(val);
-    }
-    values.sort_unstable();
+    // Sort by index to avoid moving data until we build the result.
+    let mut indices: Vec<usize> = (0..list.len).collect();
 
-    // Push sorted values into the new list
-    for val in &values {
-        let ptr_to_val = (val as *const i64).cast::<u8>();
-        unsafe { __spark_list_push(new_list, ptr_to_val) };
+    match type_tag {
+        SORT_TAG_FLOAT => {
+            indices.sort_unstable_by(|&a, &b| {
+                let va = unsafe { *(list.data.add(a * list.elem_size).cast::<f64>()) };
+                let vb = unsafe { *(list.data.add(b * list.elem_size).cast::<f64>()) };
+                va.total_cmp(&vb)
+            });
+        }
+        SORT_TAG_STRING => {
+            indices.sort_unstable_by(|&a, &b| {
+                let pa = unsafe { *(list.data.add(a * list.elem_size).cast::<*mut u8>()) };
+                let pb = unsafe { *(list.data.add(b * list.elem_size).cast::<*mut u8>()) };
+                let sa = unsafe { &*(pa.cast::<SparkString>()) };
+                let sb = unsafe { &*(pb.cast::<SparkString>()) };
+                let slice_a = if sa.len == 0 {
+                    &[]
+                } else {
+                    unsafe { std::slice::from_raw_parts(sa.data, sa.len) }
+                };
+                let slice_b = if sb.len == 0 {
+                    &[]
+                } else {
+                    unsafe { std::slice::from_raw_parts(sb.data, sb.len) }
+                };
+                slice_a.cmp(slice_b)
+            });
+        }
+        SORT_TAG_BOOL => {
+            indices.sort_unstable_by(|&a, &b| {
+                let va = unsafe { *(list.data.add(a * list.elem_size).cast::<i8>()) };
+                let vb = unsafe { *(list.data.add(b * list.elem_size).cast::<i8>()) };
+                va.cmp(&vb)
+            });
+        }
+        // SORT_TAG_INT and unknown tags: compare as i64.
+        _ => {
+            // Suppress unused-constant warning; SORT_TAG_INT is the semantic default.
+            let _ = SORT_TAG_INT;
+            indices.sort_unstable_by(|&a, &b| {
+                let va = unsafe { *(list.data.add(a * list.elem_size).cast::<i64>()) };
+                let vb = unsafe { *(list.data.add(b * list.elem_size).cast::<i64>()) };
+                va.cmp(&vb)
+            });
+        }
+    }
+
+    // Push sorted elements into the new list.
+    for &idx in &indices {
+        let elem = unsafe { list.data.add(idx * list.elem_size) };
+        // For RC types (strings, nested collections), increment the reference count.
+        if list.elem_drop != 0 {
+            let inner = unsafe { *(elem.cast::<*mut u8>()) };
+            if !inner.is_null() {
+                unsafe { __spark_rc_inc(inner) };
+            }
+        }
+        unsafe { __spark_list_push(new_list, elem) };
     }
 
     new_list
@@ -2083,6 +2143,133 @@ mod tests {
             let ptr = __spark_list_from_range(0, 3, 0, 0);
             assert_eq!(read_list_i64(ptr), vec![0, 1, 2]);
             __spark_list_rc_dec(ptr);
+        }
+    }
+
+    // ========================================================================
+    // Sort tests
+    // ========================================================================
+
+    /// Helper: push i64 values into a list.
+    unsafe fn push_i64_list(values: &[i64]) -> *mut u8 {
+        let list = __spark_list_new(8, 0);
+        for val in values {
+            let ptr = (val as *const i64).cast::<u8>();
+            unsafe { __spark_list_push(list, ptr) };
+        }
+        list
+    }
+
+    /// Helper: read f64 elements from a SparkList.
+    unsafe fn read_list_f64(ptr: *mut u8) -> Vec<f64> {
+        let list = unsafe { &*(ptr.cast::<SparkList>()) };
+        let mut result = Vec::with_capacity(list.len);
+        for i in 0..list.len {
+            let elem = unsafe { list.data.add(i * list.elem_size).cast::<f64>() };
+            result.push(unsafe { *elem });
+        }
+        result
+    }
+
+    #[test]
+    fn sort_int_basic() {
+        unsafe {
+            let list = push_i64_list(&[3, 1, 2]);
+            let sorted = __spark_list_sort(list, SORT_TAG_INT);
+            assert_eq!(read_list_i64(sorted), vec![1, 2, 3]);
+            __spark_list_rc_dec(list);
+            __spark_list_rc_dec(sorted);
+        }
+    }
+
+    #[test]
+    fn sort_int_empty() {
+        unsafe {
+            let list = push_i64_list(&[]);
+            let sorted = __spark_list_sort(list, SORT_TAG_INT);
+            assert_eq!(read_list_i64(sorted), Vec::<i64>::new());
+            __spark_list_rc_dec(list);
+            __spark_list_rc_dec(sorted);
+        }
+    }
+
+    #[test]
+    fn sort_float_with_negatives() {
+        unsafe {
+            let values: Vec<f64> = vec![3.5, -1.2, 0.0, 2.7, -4.0];
+            let list = __spark_list_new(8, 0);
+            for val in &values {
+                let ptr = (val as *const f64).cast::<u8>();
+                __spark_list_push(list, ptr);
+            }
+            let sorted = __spark_list_sort(list, SORT_TAG_FLOAT);
+            assert_eq!(read_list_f64(sorted), vec![-4.0, -1.2, 0.0, 2.7, 3.5]);
+            __spark_list_rc_dec(list);
+            __spark_list_rc_dec(sorted);
+        }
+    }
+
+    #[test]
+    fn sort_float_empty() {
+        unsafe {
+            let list = __spark_list_new(8, 0);
+            let sorted = __spark_list_sort(list, SORT_TAG_FLOAT);
+            assert_eq!(read_list_f64(sorted), Vec::<f64>::new());
+            __spark_list_rc_dec(list);
+            __spark_list_rc_dec(sorted);
+        }
+    }
+
+    #[test]
+    fn sort_string_lexicographic() {
+        unsafe {
+            // elem_size for strings is pointer-sized
+            let list = __spark_list_new(std::mem::size_of::<*mut u8>() as i64, 0);
+            let cherry = __spark_string_from_literal("cherry".as_ptr(), 6);
+            let apple = __spark_string_from_literal("apple".as_ptr(), 5);
+            let banana = __spark_string_from_literal("banana".as_ptr(), 6);
+            __spark_list_push(list, std::ptr::addr_of!(cherry).cast::<u8>());
+            __spark_list_push(list, std::ptr::addr_of!(apple).cast::<u8>());
+            __spark_list_push(list, std::ptr::addr_of!(banana).cast::<u8>());
+
+            let sorted = __spark_list_sort(list, SORT_TAG_STRING);
+            let sorted_list = &*(sorted.cast::<SparkList>());
+            assert_eq!(sorted_list.len, 3);
+
+            let s0 = *(sorted_list.data.cast::<*mut u8>());
+            let s1 = *(sorted_list.data.add(sorted_list.elem_size).cast::<*mut u8>());
+            let s2 = *(sorted_list.data.add(2 * sorted_list.elem_size).cast::<*mut u8>());
+            assert_eq!(read_spark_string(s0), "apple");
+            assert_eq!(read_spark_string(s1), "banana");
+            assert_eq!(read_spark_string(s2), "cherry");
+
+            __spark_list_rc_dec(sorted);
+            __spark_list_rc_dec(list);
+            __spark_string_rc_dec(cherry);
+            __spark_string_rc_dec(apple);
+            __spark_string_rc_dec(banana);
+        }
+    }
+
+    #[test]
+    fn sort_bool() {
+        unsafe {
+            let list = __spark_list_new(1, 0);
+            let vals: [i8; 4] = [1, 0, 1, 0];
+            for val in &vals {
+                let ptr = (val as *const i8).cast::<u8>();
+                __spark_list_push(list, ptr);
+            }
+            let sorted = __spark_list_sort(list, SORT_TAG_BOOL);
+            let sorted_list = &*(sorted.cast::<SparkList>());
+            assert_eq!(sorted_list.len, 4);
+            let mut result = Vec::new();
+            for i in 0..4 {
+                result.push(*(sorted_list.data.add(i * sorted_list.elem_size).cast::<i8>()));
+            }
+            assert_eq!(result, vec![0, 0, 1, 1]);
+            __spark_list_rc_dec(list);
+            __spark_list_rc_dec(sorted);
         }
     }
 

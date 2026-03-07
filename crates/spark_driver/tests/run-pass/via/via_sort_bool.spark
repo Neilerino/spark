@@ -1,0 +1,8 @@
+fn main(): Int {
+    flags: List[Bool] = [true, false, true, false]
+    sorted: List[Bool] = flags via sort
+    sorted each (item: Bool): Void {
+        print(item)
+    }
+    return 0
+}
