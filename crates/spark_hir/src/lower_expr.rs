@@ -383,11 +383,7 @@ fn lower_expr_kind(
         }
 
         ExprKind::Partial { callee, args } => {
-            let _ = lower_expr(callee, table, definitions, resolutions, diagnostics, current_fn_ret);
-            for arg in args {
-                let _ = lower_expr(&arg.value, table, definitions, resolutions, diagnostics, current_fn_ret);
-            }
-            HirExprKind::Error
+            lower_standalone_partial(callee, args, expr, table, definitions, resolutions, diagnostics, current_fn_ret)
         }
 
         ExprKind::Range { start, end, .. } => {
@@ -911,6 +907,72 @@ fn lower_partial_or_plain(
     }
 }
 
+/// Lowers a standalone partial application (`func{a: v1, c: v3}`) into a lambda.
+///
+/// Synthesizes `fn(unbound_params...) { func(all_args_in_order...) }` where
+/// bound parameters use the pre-evaluated values and unbound parameters
+/// become lambda parameters.
+#[allow(clippy::too_many_arguments)]
+fn lower_standalone_partial(
+    callee: &Expr,
+    args: &[spark_ast::PartialArg],
+    partial_expr: &Expr,
+    table: &TypeTable,
+    definitions: &mut DefinitionTable,
+    resolutions: Option<&ResolutionMap>,
+    diagnostics: &mut Diagnostics,
+    current_fn_ret: Option<TypeId>,
+) -> HirExprKind {
+    let callee_hir = lower_expr(callee, table, definitions, resolutions, diagnostics, current_fn_ret);
+    let full_param_types = extract_param_types(callee_hir.ty, table);
+    let void_ty = find_void_type(table);
+    let ret_ty = extract_fn_ret_ty(callee_hir.ty, table, void_ty);
+
+    // The type checker stored the reduced function type on this expression
+    let lambda_ty = table.get_expr_type(partial_expr.id).unwrap_or(TypeId::ERROR);
+    if lambda_ty.is_error() {
+        return HirExprKind::Error;
+    }
+
+    // Look up parameter names to map named args to positions
+    let callee_def_id = find_callee_def_id(callee.span, resolutions);
+    let param_names = callee_def_id.and_then(|did| table.get_fn_param_names(did));
+    let Some(param_names) = param_names else {
+        // Type checker already reported this error
+        return HirExprKind::Error;
+    };
+
+    // Build lambda params (unbound) and call args (all in original order)
+    let mut lambda_params = Vec::new();
+    let mut call_args = Vec::new();
+
+    for (i, &name) in param_names.iter().enumerate() {
+        let param_ty = full_param_types.get(i).copied().unwrap_or(TypeId::ERROR);
+
+        // Check if this parameter is bound by one of the partial args
+        let bound_arg = args.iter().find(|a| a.name.name == name);
+
+        if let Some(bound) = bound_arg {
+            let mut arg_hir = lower_expr(&bound.value, table, definitions, resolutions, diagnostics, current_fn_ret);
+            arg_hir = coerce_ref(arg_hir, param_ty, bound.value.span, table);
+            call_args.push(arg_hir);
+        } else {
+            // Unbound parameter — becomes a lambda parameter
+            let param_id = definitions.next_synthetic_id(partial_expr.span);
+            lambda_params.push(HirParam { def_id: param_id, ty: param_ty, span: partial_expr.span });
+            call_args.push(HirExpr::new(HirExprKind::Local(param_id), param_ty, partial_expr.span));
+        }
+    }
+
+    let body = HirExpr::new(
+        HirExprKind::Call { callee: Box::new(callee_hir), args: call_args },
+        ret_ty,
+        partial_expr.span,
+    );
+
+    HirExprKind::Lambda { params: lambda_params, body: Box::new(body) }
+}
+
 /// Extracts parameter types from a function type.
 fn extract_param_types(fn_ty: TypeId, table: &TypeTable) -> Vec<TypeId> {
     if let Ty::Function { params, .. } = table.resolve(fn_ty) {
@@ -927,6 +989,15 @@ fn strip_mutable_ty(ty: TypeId, table: &TypeTable) -> TypeId {
     } else {
         ty
     }
+}
+
+/// Tries to find the `DefId` for a callee expression.
+///
+/// Mirrors `find_callee_def_id` in `spark_types::check_expr`.
+fn find_callee_def_id(callee_span: Span, resolutions: Option<&ResolutionMap>) -> Option<spark_resolve::DefId> {
+    let res = resolutions?;
+    res.get_path(callee_span)
+        .or_else(|| res.get_ident(callee_span))
 }
 
 /// Looks up the `Int` (i64) type in the table.

@@ -461,6 +461,11 @@ fn each_via_partial() {
 }
 
 #[test]
+fn standalone_partial() {
+    assert_output("run-pass/partial/standalone_partial.spark", "15\n30\n50\n100");
+}
+
+#[test]
 fn each_via_lambda_values() {
     assert_output("run-pass/each/each_via_lambda_values.spark", "20\n40\n60");
 }

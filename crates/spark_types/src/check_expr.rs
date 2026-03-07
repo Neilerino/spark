@@ -651,11 +651,7 @@ fn check_expr_inner(
         }
 
         ExprKind::Partial { callee, args } => {
-            let _ = check_expr(callee, ctx, current_fn_ret);
-            for arg in args {
-                let _ = check_expr(&arg.value, ctx, current_fn_ret);
-            }
-            TypeId::ERROR
+            check_partial(callee, args, ctx, current_fn_ret)
         }
 
         ExprKind::Error => TypeId::ERROR,
@@ -1598,6 +1594,110 @@ fn validate_partial_each_callback(
     ctx.table.set_expr_type(callback_expr.id, reduced_ty);
 
     ret
+}
+
+/// Type-checks a standalone partial application expression.
+///
+/// For `func{a: v1, c: v3}` where `func(a: A, b: B, c: C): R`:
+/// 1. Validates the callee is a function.
+/// 2. Resolves named arguments to parameter positions.
+/// 3. Validates argument types against parameter types.
+/// 4. Returns a new function type with only the unbound parameters: `(B): R`.
+fn check_partial(
+    callee: &Expr,
+    args: &[spark_ast::PartialArg],
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let callee_ty = check_expr(callee, ctx, current_fn_ret);
+    // Check all arg values for diagnostics even if we bail early
+    let arg_types: Vec<TypeId> = args
+        .iter()
+        .map(|a| check_expr(&a.value, ctx, current_fn_ret))
+        .collect();
+
+    if callee_ty.is_error() {
+        return TypeId::ERROR;
+    }
+
+    let callee_resolved = ctx.table.resolve(callee_ty).clone();
+    let Ty::Function { params, ret, is_async } = callee_resolved else {
+        ctx.diagnostics.push(
+            Diagnostic::error("partial application requires a function")
+                .with_label(Label::primary(callee.span, "not a function")),
+        );
+        return TypeId::ERROR;
+    };
+
+    // Look up parameter names via the callee's DefId
+    let callee_def_id = find_callee_def_id(callee.span, ctx.resolutions);
+    let param_names = callee_def_id.and_then(|did| ctx.table.get_fn_param_names(did));
+    let Some(param_names) = param_names else {
+        ctx.diagnostics.push(
+            Diagnostic::error("cannot resolve parameter names for partial application")
+                .with_label(Label::primary(callee.span, "parameter names unavailable")),
+        );
+        return TypeId::ERROR;
+    };
+    let param_names = param_names.to_vec();
+
+    // Resolve each named arg to a parameter index and validate
+    let mut bound: Vec<bool> = vec![false; params.len()];
+
+    for (arg_idx, arg) in args.iter().enumerate() {
+        let name = arg.name.name;
+
+        // Find matching parameter by name
+        let pos = param_names.iter().position(|&n| n == name);
+        let Some(pos) = pos else {
+            ctx.diagnostics.push(
+                Diagnostic::error(format!(
+                    "unknown parameter `{}` in partial application",
+                    name.as_str(),
+                ))
+                .with_label(Label::primary(arg.name.span, "no such parameter")),
+            );
+            continue;
+        };
+
+        // Check for duplicate binding
+        if bound[pos] {
+            ctx.diagnostics.push(
+                Diagnostic::error(format!(
+                    "parameter `{}` is already bound",
+                    name.as_str(),
+                ))
+                .with_label(Label::primary(arg.name.span, "duplicate binding")),
+            );
+            continue;
+        }
+
+        bound[pos] = true;
+
+        // Validate argument type against parameter type
+        let param_ty = params[pos];
+        let actual_ty = arg_types[arg_idx];
+        if !actual_ty.is_error() && !is_compatible(actual_ty, param_ty, ctx.table) {
+            let expected = type_name(param_ty, ctx.table, ctx.definitions);
+            let found = type_name(actual_ty, ctx.table, ctx.definitions);
+            ctx.diagnostics
+                .push(diagnostics::arg_type_mismatch(&expected, &found, arg.value.span));
+        }
+    }
+
+    // Build the reduced function type with only unbound parameters
+    let unbound_params: Vec<TypeId> = params
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !bound[*i])
+        .map(|(_, &ty)| ty)
+        .collect();
+
+    ctx.table.intern(Ty::Function {
+        params: unbound_params,
+        ret,
+        is_async,
+    })
 }
 
 /// Strips the `Ref` wrapper if present.

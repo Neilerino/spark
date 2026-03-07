@@ -1,0 +1,26 @@
+fn add(a: Int, b: Int): Int {
+    return a + b
+}
+
+fn clamp(min: Int, value: Int, max: Int): Int {
+    if value < min { return min }
+    if value > max { return max }
+    return value
+}
+
+fn main(): Int {
+    // Bind the second parameter
+    addFive: (Int): Int = add{b: 5}
+    print(addFive(10))
+
+    // Bind the first parameter
+    addTen: (Int): Int = add{a: 10}
+    print(addTen(20))
+
+    // Bind first and last, leave middle unbound
+    clampPercent: (Int): Int = clamp{min: 0, max: 100}
+    print(clampPercent(50))
+    print(clampPercent(150))
+
+    return 0
+}

@@ -75,6 +75,11 @@ fn collect_function(
                 ctx.table.set_def_type(param_def, param_types[i]);
             }
         }
+
+        // Store parameter names for partial application resolution
+        let param_names: Vec<spark_intern::Symbol> =
+            func.params.iter().map(|p| p.name.name).collect();
+        ctx.table.set_fn_param_names(def_id, param_names);
     }
 }
 
@@ -271,6 +276,11 @@ fn collect_binding(
                         ctx.table.set_def_type(param_def, param_types[i]);
                     }
                 }
+
+                // Store parameter names for partial application resolution
+                let param_names: Vec<spark_intern::Symbol> =
+                    method.params.iter().map(|p| p.name.name).collect();
+                ctx.table.set_fn_param_names(method_def_id, param_names);
 
                 all_methods.push((method.name.name, method_def_id));
             }

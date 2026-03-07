@@ -55,6 +55,10 @@ pub struct TypeTable {
     /// Maps a type `DefId` (struct/enum) to the interface `DefId`s it binds.
     /// Populated during `collect_binding()`, consumed during constraint validation.
     pub(crate) type_interface_bindings: FxHashMap<DefId, Vec<DefId>>,
+    /// Maps a function (or method) `DefId` to its ordered parameter names.
+    /// Populated during declaration collection, consumed during partial
+    /// application type checking to resolve named arguments to positions.
+    pub(crate) fn_param_names: FxHashMap<DefId, Vec<Symbol>>,
 }
 
 impl Default for TypeTable {
@@ -89,6 +93,7 @@ impl TypeTable {
             mono_instances: FxHashMap::default(),
             generic_constraints: FxHashMap::default(),
             type_interface_bindings: FxHashMap::default(),
+            fn_param_names: FxHashMap::default(),
         }
     }
 
@@ -243,6 +248,17 @@ impl TypeTable {
         self.type_interface_bindings.get(&type_def_id).map(Vec::as_slice)
     }
 
+    /// Records the ordered parameter names for a function or method.
+    pub fn set_fn_param_names(&mut self, def_id: DefId, names: Vec<Symbol>) {
+        self.fn_param_names.insert(def_id, names);
+    }
+
+    /// Returns the ordered parameter names for a function or method.
+    #[must_use]
+    pub fn get_fn_param_names(&self, def_id: DefId) -> Option<&[Symbol]> {
+        self.fn_param_names.get(&def_id).map(Vec::as_slice)
+    }
+
     /// Records a monomorphization instance for a generic function call.
     ///
     /// Keyed by the call expression `Span`, stores the callee `DefId` and
@@ -315,6 +331,17 @@ mod tests {
 
         table.set_expr_type(id, type_id);
         assert_eq!(table.get_expr_type(id), Some(type_id));
+    }
+
+    #[test]
+    fn table_fn_param_names() {
+        let mut table = TypeTable::new();
+        let def_id = DefId::new(5);
+        let names = vec![spark_intern::sym("x"), spark_intern::sym("y")];
+        table.set_fn_param_names(def_id, names.clone());
+        let stored = table.get_fn_param_names(def_id).unwrap();
+        assert_eq!(stored, &names);
+        assert!(table.get_fn_param_names(DefId::new(999)).is_none());
     }
 
     #[test]
