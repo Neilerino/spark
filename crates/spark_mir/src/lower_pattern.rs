@@ -137,13 +137,6 @@ fn compile_pattern(
 
         HirPattern::Literal(lit) => {
             let constant = literal_to_constant(lit);
-            let disc_ty = discriminant_type(type_table);
-            let lit_temp = fb.fresh_temp(disc_ty, spark_span::Span::DUMMY);
-            fb.push_assign(
-                Place::from_local(lit_temp),
-                Rvalue::Use(Operand::Constant(constant.clone())),
-                spark_span::Span::DUMMY,
-            );
 
             // Compare scrutinee to literal
             match &constant {
@@ -175,7 +168,7 @@ fn compile_pattern(
                 Constant::Null => {
                     // For Optional types, null means discriminant tag == 0.
                     let disc_temp =
-                        fb.fresh_temp(disc_ty, spark_span::Span::DUMMY);
+                        fb.fresh_temp(discriminant_type(type_table), spark_span::Span::DUMMY);
                     fb.push_assign(
                         Place::from_local(disc_temp),
                         Rvalue::Discriminant(Place::from_local(scrut)),

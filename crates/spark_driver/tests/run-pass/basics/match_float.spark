@@ -1,0 +1,9 @@
+fn main(): Int {
+    x: Float = 3.14
+    match x {
+        2.71 -> print("wrong"),
+        3.14 -> print("correct"),
+        _ -> print("fallback")
+    }
+    return 0
+}

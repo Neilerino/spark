@@ -250,8 +250,28 @@ fn match_bool() {
 }
 
 #[test]
+fn match_string() {
+    assert_output("run-pass/basics/match_string.spark", "correct");
+}
+
+#[test]
+fn match_float() {
+    assert_output("run-pass/basics/match_float.spark", "correct");
+}
+
+#[test]
+fn match_int() {
+    assert_output("run-pass/basics/match_int.spark", "correct");
+}
+
+#[test]
 fn struct_field_access() {
     assert_output("run-pass/basics/struct_field.spark", "10\n20");
+}
+
+#[test]
+fn tuple_field_access() {
+    assert_output("run-pass/basics/tuple_field_access.spark", "10\n20\nalice\n30\ntrue");
 }
 
 #[test]
@@ -889,6 +909,11 @@ fn propagate_return_mismatch() {
 #[test]
 fn propagate_union_return_mismatch() {
     assert_compile_error("compile-fail/type_errors/propagate_union_return_mismatch.spark", "does not include it");
+}
+
+#[test]
+fn tuple_field_oob() {
+    assert_compile_error("compile-fail/type_errors/tuple_field_oob.spark", "out of range");
 }
 
 // ============================================================================

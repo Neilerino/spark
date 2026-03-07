@@ -314,6 +314,18 @@ fn lower_builtin_generic(
         return ctx.table.intern(Ty::Set(elem));
     }
 
+    if name == kw::TUP {
+        if type_args.is_empty() {
+            ctx.diagnostics.push(
+                Diagnostic::error("Tup requires at least one type argument")
+                    .with_label(Label::primary(type_expr.span, "expected Tup[A, B, ...]")),
+            );
+            return TypeId::ERROR;
+        }
+        let elems: Vec<TypeId> = type_args.iter().map(|t| lower_type_expr(t, ctx)).collect();
+        return ctx.table.intern(Ty::Tuple(elems));
+    }
+
     if name == kw::FUTURE {
         if type_args.len() != 1 {
             ctx.diagnostics.push(

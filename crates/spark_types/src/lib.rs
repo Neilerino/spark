@@ -59,6 +59,7 @@ pub mod check_stmt;
 pub mod checker;
 pub mod constraint;
 pub mod ctx;
+pub(crate) mod diagnostics;
 pub mod display;
 pub mod exhaustive;
 pub mod intern;

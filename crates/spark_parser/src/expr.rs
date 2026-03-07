@@ -422,9 +422,18 @@ impl Parser {
 
             TokenKind::Dot => {
                 self.advance();
-                let field = self
-                    .expect_ident()
-                    .unwrap_or_else(|| Ident::dummy(sym("_")));
+                // Accept either an identifier or an integer literal (for tuple field access: t.0, t.1)
+                let field = if self.check(TokenKind::IntLiteral) {
+                    let span = self.current_span();
+                    let name = self.current().value.as_ref()
+                        .and_then(spark_lexer::TokenValue::as_int)
+                        .map_or_else(|| sym("0"), |v| sym(&v.to_string()));
+                    self.advance();
+                    Ident::new(name, span)
+                } else {
+                    self.expect_ident()
+                        .unwrap_or_else(|| Ident::dummy(sym("_")))
+                };
 
                 // Check for method call
                 if self.check(TokenKind::LParen) {

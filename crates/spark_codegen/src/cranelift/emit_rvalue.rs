@@ -355,6 +355,16 @@ pub(super) fn emit_place_addr<M: Module>(
                             current_ty = *field_ty;
                         }
                     }
+                    Ty::Tuple(elems) => {
+                        let elems = elems.clone();
+                        if let Ok(index) = field_name.as_str().parse::<usize>() {
+                            if index < elems.len() {
+                                let offset = ctx.layouts.tuple_field_offset(&elems, index, table);
+                                addr = ctx.builder.ins().iadd_imm(addr, i64::from(offset));
+                                current_ty = elems[index];
+                            }
+                        }
+                    }
                     _ => {
                         // For enums or other types with field access, we'd handle
                         // similarly. For now, just offset by 0.
@@ -461,6 +471,13 @@ pub(super) fn resolve_place_type(ctx: &FunctionContext<'_>, place: &Place, table
                     Ty::AsyncState { fields, .. } => {
                         if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
                             current_ty = *field_ty;
+                        }
+                    }
+                    Ty::Tuple(elems) => {
+                        if let Ok(index) = field_name.as_str().parse::<usize>() {
+                            if index < elems.len() {
+                                current_ty = elems[index];
+                            }
                         }
                     }
                     _ => {}

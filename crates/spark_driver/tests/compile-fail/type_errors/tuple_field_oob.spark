@@ -1,0 +1,5 @@
+fn main(): Int {
+    point: Tup[Int, Int] = (10, 20)
+    print(point.5)
+    return 0
+}

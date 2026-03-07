@@ -64,7 +64,7 @@ pub struct LayoutCache {
     enum_layouts: FxHashMap<DefId, EnumLayout>,
     /// Cached struct layouts for instantiated generic types (`Ty::Applied`).
     applied_struct_layouts: FxHashMap<TypeId, StructLayout>,
-    /// Cached union layouts (keyed by the union TypeId).
+    /// Cached union layouts (keyed by the union `TypeId`).
     union_layouts: FxHashMap<TypeId, UnionLayout>,
 }
 
@@ -177,7 +177,11 @@ impl LayoutCache {
     ///
     /// For `Ty::Applied { base, args }`, builds a substitution map from the base
     /// type's generic params and computes the layout using substituted field types.
-    pub fn applied_struct_layout_of(&mut self, applied_ty_id: TypeId, table: &TypeTable) -> StructLayout {
+    pub fn applied_struct_layout_of(
+        &mut self,
+        applied_ty_id: TypeId,
+        table: &TypeTable,
+    ) -> StructLayout {
         if let Some(cached) = self.applied_struct_layouts.get(&applied_ty_id) {
             return cached.clone();
         }
@@ -204,7 +208,8 @@ impl LayoutCache {
                 layout: TypeLayout { size: 0, align: 1 },
                 field_offsets: Vec::new(),
             };
-            self.applied_struct_layouts.insert(applied_ty_id, layout.clone());
+            self.applied_struct_layouts
+                .insert(applied_ty_id, layout.clone());
             return layout;
         }
 
@@ -236,7 +241,8 @@ impl LayoutCache {
             },
             field_offsets,
         };
-        self.applied_struct_layouts.insert(applied_ty_id, layout.clone());
+        self.applied_struct_layouts
+            .insert(applied_ty_id, layout.clone());
         layout
     }
 
@@ -503,6 +509,27 @@ impl LayoutCache {
         }
     }
 
+    /// Computes the byte offset of a field within a tuple by index.
+    pub fn tuple_field_offset(&mut self, elems: &[TypeId], index: usize, table: &TypeTable) -> u32 {
+        debug_assert!(
+            index < elems.len(),
+            "tuple field index {index} out of range for {}-element tuple",
+            elems.len()
+        );
+        let mut offset = 0u32;
+        for (i, elem_ty) in elems.iter().enumerate() {
+            let elem_layout = self.layout_of(*elem_ty, table);
+            offset = align_to(offset, elem_layout.align);
+            if i == index {
+                return offset;
+            }
+            offset += elem_layout.size;
+        }
+        // The debug_assert above ensures index < elems.len(), so the loop always
+        // finds i == index and returns early. This line is unreachable.
+        0
+    }
+
     fn compute_tuple_layout(&mut self, elems: &[TypeId], table: &TypeTable) -> TypeLayout {
         if elems.is_empty() {
             return TypeLayout { size: 0, align: 1 };
@@ -605,10 +632,22 @@ mod tests {
         let i32_ty = table.intern(Ty::Int(IntWidth::I32));
         let i64_ty = table.intern(Ty::Int(IntWidth::I64));
 
-        assert_eq!(cache.layout_of(i8_ty, &table), TypeLayout { size: 1, align: 1 });
-        assert_eq!(cache.layout_of(i16_ty, &table), TypeLayout { size: 2, align: 2 });
-        assert_eq!(cache.layout_of(i32_ty, &table), TypeLayout { size: 4, align: 4 });
-        assert_eq!(cache.layout_of(i64_ty, &table), TypeLayout { size: 8, align: 8 });
+        assert_eq!(
+            cache.layout_of(i8_ty, &table),
+            TypeLayout { size: 1, align: 1 }
+        );
+        assert_eq!(
+            cache.layout_of(i16_ty, &table),
+            TypeLayout { size: 2, align: 2 }
+        );
+        assert_eq!(
+            cache.layout_of(i32_ty, &table),
+            TypeLayout { size: 4, align: 4 }
+        );
+        assert_eq!(
+            cache.layout_of(i64_ty, &table),
+            TypeLayout { size: 8, align: 8 }
+        );
     }
 
     #[test]
@@ -617,8 +656,14 @@ mod tests {
         let f32_ty = table.intern(Ty::Float(FloatWidth::F32));
         let f64_ty = table.intern(Ty::Float(FloatWidth::F64));
 
-        assert_eq!(cache.layout_of(f32_ty, &table), TypeLayout { size: 4, align: 4 });
-        assert_eq!(cache.layout_of(f64_ty, &table), TypeLayout { size: 8, align: 8 });
+        assert_eq!(
+            cache.layout_of(f32_ty, &table),
+            TypeLayout { size: 4, align: 4 }
+        );
+        assert_eq!(
+            cache.layout_of(f64_ty, &table),
+            TypeLayout { size: 8, align: 8 }
+        );
     }
 
     #[test]
@@ -628,9 +673,18 @@ mod tests {
         let byte_ty = table.intern(Ty::Byte);
         let char_ty = table.intern(Ty::Char);
 
-        assert_eq!(cache.layout_of(bool_ty, &table), TypeLayout { size: 1, align: 1 });
-        assert_eq!(cache.layout_of(byte_ty, &table), TypeLayout { size: 1, align: 1 });
-        assert_eq!(cache.layout_of(char_ty, &table), TypeLayout { size: 4, align: 4 });
+        assert_eq!(
+            cache.layout_of(bool_ty, &table),
+            TypeLayout { size: 1, align: 1 }
+        );
+        assert_eq!(
+            cache.layout_of(byte_ty, &table),
+            TypeLayout { size: 1, align: 1 }
+        );
+        assert_eq!(
+            cache.layout_of(char_ty, &table),
+            TypeLayout { size: 4, align: 4 }
+        );
     }
 
     #[test]
@@ -640,9 +694,18 @@ mod tests {
         let null_ty = table.intern(Ty::Null);
         let never_ty = table.intern(Ty::Never);
 
-        assert_eq!(cache.layout_of(void_ty, &table), TypeLayout { size: 0, align: 1 });
-        assert_eq!(cache.layout_of(null_ty, &table), TypeLayout { size: 0, align: 1 });
-        assert_eq!(cache.layout_of(never_ty, &table), TypeLayout { size: 0, align: 1 });
+        assert_eq!(
+            cache.layout_of(void_ty, &table),
+            TypeLayout { size: 0, align: 1 }
+        );
+        assert_eq!(
+            cache.layout_of(null_ty, &table),
+            TypeLayout { size: 0, align: 1 }
+        );
+        assert_eq!(
+            cache.layout_of(never_ty, &table),
+            TypeLayout { size: 0, align: 1 }
+        );
     }
 
     #[test]
@@ -652,8 +715,14 @@ mod tests {
         let int_ty = table.intern(Ty::Int(IntWidth::I64));
         let list_ty = table.intern(Ty::List(int_ty));
 
-        assert_eq!(cache.layout_of(string_ty, &table), TypeLayout { size: 8, align: 8 });
-        assert_eq!(cache.layout_of(list_ty, &table), TypeLayout { size: 8, align: 8 });
+        assert_eq!(
+            cache.layout_of(string_ty, &table),
+            TypeLayout { size: 8, align: 8 }
+        );
+        assert_eq!(
+            cache.layout_of(list_ty, &table),
+            TypeLayout { size: 8, align: 8 }
+        );
     }
 
     #[test]
@@ -685,7 +754,10 @@ mod tests {
         let i64_ty = table.intern(Ty::Int(IntWidth::I64));
         let mut_ty = table.intern(Ty::Mutable(i64_ty));
 
-        assert_eq!(cache.layout_of(mut_ty, &table), cache.layout_of(i64_ty, &table));
+        assert_eq!(
+            cache.layout_of(mut_ty, &table),
+            cache.layout_of(i64_ty, &table)
+        );
     }
 
     #[test]
@@ -693,7 +765,10 @@ mod tests {
         let (mut table, mut cache) = make_table_and_cache();
         let empty_tuple = table.intern(Ty::Tuple(vec![]));
 
-        assert_eq!(cache.layout_of(empty_tuple, &table), TypeLayout { size: 0, align: 1 });
+        assert_eq!(
+            cache.layout_of(empty_tuple, &table),
+            TypeLayout { size: 0, align: 1 }
+        );
     }
 
     #[test]

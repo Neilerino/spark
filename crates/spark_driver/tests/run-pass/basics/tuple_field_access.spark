@@ -1,0 +1,12 @@
+fn main(): Int {
+    point: Tup[Int, Int] = (10, 20)
+    print(point.0)
+    print(point.1)
+
+    record: Tup[String, Int, Bool] = ("alice", 30, true)
+    print(record.0)
+    print(record.1)
+    print(record.2)
+
+    return 0
+}

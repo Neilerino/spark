@@ -3,7 +3,9 @@
 //! Walks expression trees and returns the type of each expression,
 //! recording the result in the type table's `expr_types` map.
 
-use spark_ast::{BinaryOp, Block, Expr, ExprKind, LiteralKind, PipelineStageKind, StringPart, UnaryOp};
+use spark_ast::{
+    BinaryOp, Block, Expr, ExprKind, LiteralKind, PipelineStageKind, StringPart, UnaryOp,
+};
 use spark_diagnostics::{Diagnostic, Label};
 use spark_intern::{kw, Symbol};
 use spark_resolve::{DefId, DefinitionKind, DefinitionTable, ResolutionMap};
@@ -12,6 +14,7 @@ use spark_span::Span;
 use crate::builtins::BuiltinTypes;
 use crate::check_stmt::check_stmt;
 use crate::ctx::TypeCheckCtx;
+use crate::diagnostics;
 use crate::display::display_type as type_name;
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
@@ -61,9 +64,7 @@ fn check_expr_inner(
                 // Type-check each interpolated sub-expression.
                 for part in &s.parts {
                     if let StringPart::Interpolation(sub_expr) = part {
-                        let sub_ty = check_expr(
-                            sub_expr, ctx, current_fn_ret,
-                        );
+                        let sub_ty = check_expr(sub_expr, ctx, current_fn_ret);
                         // Verify the type supports string conversion.
                         let resolved = ctx.table.resolve(sub_ty);
                         let ok = matches!(
@@ -127,7 +128,15 @@ fn check_expr_inner(
         // === Unary operators ===
         ExprKind::Unary { op, operand } => {
             let operand_ty = check_expr(operand, ctx, current_fn_ret);
-            check_unary_op(*op, operand_ty, expr.span, operand.span, ctx.table, ctx.builtins, ctx.diagnostics)
+            check_unary_op(
+                *op,
+                operand_ty,
+                expr.span,
+                operand.span,
+                ctx.table,
+                ctx.builtins,
+                ctx.diagnostics,
+            )
         }
 
         // === Function call ===
@@ -139,14 +148,28 @@ fn check_expr_inner(
         // === Field access ===
         ExprKind::Field { base, field } => {
             let base_ty = check_expr(base, ctx, current_fn_ret);
-            check_field_access(base_ty, field.name, field.span, ctx.table, ctx.definitions, ctx.diagnostics)
+            check_field_access(
+                base_ty,
+                field.name,
+                field.span,
+                ctx.table,
+                ctx.definitions,
+                ctx.diagnostics,
+            )
         }
 
         // === Optional field access ===
         ExprKind::OptionalField { base, field } => {
             let base_ty = check_expr(base, ctx, current_fn_ret);
             let inner_ty = unwrap_optional(base_ty, ctx.table);
-            let field_ty = check_field_access(inner_ty, field.name, field.span, ctx.table, ctx.definitions, ctx.diagnostics);
+            let field_ty = check_field_access(
+                inner_ty,
+                field.name,
+                field.span,
+                ctx.table,
+                ctx.definitions,
+                ctx.diagnostics,
+            );
             if field_ty.is_error() {
                 return TypeId::ERROR;
             }
@@ -162,8 +185,30 @@ fn check_expr_inner(
                 Ty::List(elem) => ctx.table.intern(Ty::Optional(elem)),
                 Ty::Map(_, value) => ctx.table.intern(Ty::Optional(value)),
                 Ty::Tuple(elems) => {
-                    // For now, return the first element type or Error
-                    elems.first().copied().unwrap_or(TypeId::ERROR)
+                    if let ExprKind::Literal(spark_ast::Literal {
+                        kind: LiteralKind::Int(val),
+                        ..
+                    }) = &index.kind
+                    {
+                        let idx = *val as usize;
+                        if idx >= elems.len() {
+                            ctx.diagnostics.push(diagnostics::tuple_oob(
+                                idx,
+                                elems.len(),
+                                index.span,
+                            ));
+                            TypeId::ERROR
+                        } else {
+                            elems[idx]
+                        }
+                    } else {
+                        ctx.diagnostics.push(
+                            Diagnostic::error("tuple index must be an integer literal").with_label(
+                                Label::primary(index.span, "expected an integer literal"),
+                            ),
+                        );
+                        TypeId::ERROR
+                    }
                 }
                 Ty::Error => TypeId::ERROR,
                 _ => {
@@ -177,26 +222,43 @@ fn check_expr_inner(
         }
 
         // === Struct initialization ===
-        ExprKind::StructInit { path, type_args, fields, spread } => {
+        ExprKind::StructInit {
+            path,
+            type_args,
+            fields,
+            spread,
+        } => {
             // Intercept Channel[T]() constructor
             if path.is_simple() && path.segments[0].name == kw::CHANNEL {
                 return check_channel_constructor(type_args, fields, expr.span, ctx);
             }
-            check_struct_init(path, type_args, fields, spread.as_deref(), expr.span, ctx, current_fn_ret)
+            check_struct_init(
+                path,
+                type_args,
+                fields,
+                spread.as_deref(),
+                expr.span,
+                ctx,
+                current_fn_ret,
+            )
         }
 
         // === Enum variant ===
-        ExprKind::EnumVariant { path, variant, fields } => {
-            check_enum_variant(path, variant, fields, expr.span, ctx, current_fn_ret)
-        }
+        ExprKind::EnumVariant {
+            path,
+            variant,
+            fields,
+        } => check_enum_variant(path, variant, fields, expr.span, ctx, current_fn_ret),
 
         // === Block ===
-        ExprKind::Block(block) => {
-            check_block(block, ctx, current_fn_ret)
-        }
+        ExprKind::Block(block) => check_block(block, ctx, current_fn_ret),
 
         // === If expression ===
-        ExprKind::If { condition, then_branch, else_branch } => {
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
             let cond_ty = check_expr(condition, ctx, current_fn_ret);
 
             if !is_compatible(cond_ty, ctx.builtins.bool_ty, ctx.table) {
@@ -208,10 +270,12 @@ fn check_expr_inner(
 
             let then_ty = check_expr(then_branch, ctx, current_fn_ret);
 
-            else_branch.as_ref().map_or(ctx.builtins.void, |else_branch| {
-                let else_ty = check_expr(else_branch, ctx, current_fn_ret);
-                unify_branches(then_ty, else_ty, ctx.table, ctx.builtins)
-            })
+            else_branch
+                .as_ref()
+                .map_or(ctx.builtins.void, |else_branch| {
+                    let else_ty = check_expr(else_branch, ctx, current_fn_ret);
+                    unify_branches(then_ty, else_ty, ctx.table, ctx.builtins)
+                })
         }
 
         // === Match expression ===
@@ -278,11 +342,13 @@ fn check_expr_inner(
         }
 
         // === Lambda ===
-        ExprKind::Lambda { params, ret_type, body } => {
-            let param_types: Vec<TypeId> = params
-                .iter()
-                .map(|p| lower_type_expr(&p.ty, ctx))
-                .collect();
+        ExprKind::Lambda {
+            params,
+            ret_type,
+            body,
+        } => {
+            let param_types: Vec<TypeId> =
+                params.iter().map(|p| lower_type_expr(&p.ty, ctx)).collect();
 
             // Register param types
             for (i, param) in params.iter().enumerate() {
@@ -293,9 +359,7 @@ fn check_expr_inner(
                 }
             }
 
-            let declared_ret = ret_type
-                .as_ref()
-                .map(|rt| lower_type_expr(rt, ctx));
+            let declared_ret = ret_type.as_ref().map(|rt| lower_type_expr(rt, ctx));
 
             let body_ty = check_expr(body, ctx, declared_ret);
             let ret = declared_ret.unwrap_or(body_ty);
@@ -321,7 +385,11 @@ fn check_expr_inner(
             }
 
             // The result is the non-optional inner type unified with rhs
-            if inner.is_error() { rhs_ty } else { unify_branches(inner, rhs_ty, ctx.table, ctx.builtins) }
+            if inner.is_error() {
+                rhs_ty
+            } else {
+                unify_branches(inner, rhs_ty, ctx.table, ctx.builtins)
+            }
         }
 
         // === Propagate (!) ===
@@ -343,10 +411,8 @@ fn check_expr_inner(
                         );
                     }
                 } else {
-                    ctx.diagnostics.push(
-                        Diagnostic::error("`!` can only be used inside a function")
-                            .with_label(Label::primary(expr.span, "not inside a function")),
-                    );
+                    ctx.diagnostics
+                        .push(diagnostics::propagation_outside_fn(expr.span));
                 }
                 return success;
             }
@@ -372,10 +438,8 @@ fn check_expr_inner(
                             }
                         }
                     } else {
-                        ctx.diagnostics.push(
-                            Diagnostic::error("`!` can only be used inside a function")
-                                .with_label(Label::primary(expr.span, "not inside a function")),
-                        );
+                        ctx.diagnostics
+                            .push(diagnostics::propagation_outside_fn(expr.span));
                     }
                     return success_ty;
                 }
@@ -396,24 +460,28 @@ fn check_expr_inner(
                         );
                     }
                 } else {
-                    ctx.diagnostics.push(
-                        Diagnostic::error("`!` can only be used inside a function")
-                            .with_label(Label::primary(expr.span, "not inside a function")),
-                    );
+                    ctx.diagnostics
+                        .push(diagnostics::propagation_outside_fn(expr.span));
                 }
             }
             result
         }
 
         // === Is ===
-        ExprKind::Is { expr: inner_expr, ty } => {
+        ExprKind::Is {
+            expr: inner_expr,
+            ty,
+        } => {
             let _ = check_expr(inner_expr, ctx, current_fn_ret);
             let _ = lower_type_expr(ty, ctx);
             ctx.builtins.bool_ty
         }
 
         // === As ===
-        ExprKind::As { expr: inner_expr, ty } => {
+        ExprKind::As {
+            expr: inner_expr,
+            ty,
+        } => {
             let _ = check_expr(inner_expr, ctx, current_fn_ret);
             lower_type_expr(ty, ctx)
         }
@@ -467,9 +535,7 @@ fn check_expr_inner(
         }
 
         // === Paren ===
-        ExprKind::Paren(inner) => {
-            check_expr(inner, ctx, current_fn_ret)
-        }
+        ExprKind::Paren(inner) => check_expr(inner, ctx, current_fn_ret),
 
         // === Await ===
         ExprKind::Await(inner) | ExprKind::BlockAwait(inner) => {
@@ -504,20 +570,32 @@ fn check_expr_inner(
         }
 
         // === Method calls on collections and strings ===
-        ExprKind::MethodCall { receiver, method, args } => {
+        ExprKind::MethodCall {
+            receiver,
+            method,
+            args,
+        } => {
             let recv_ty = check_expr(receiver, ctx, current_fn_ret);
             let arg_tys: Vec<TypeId> = args
                 .iter()
                 .map(|a| check_expr(&a.value, ctx, current_fn_ret))
                 .collect();
 
-            check_method_call(recv_ty, method.name, &arg_tys, receiver.span, expr.span, ctx)
+            check_method_call(
+                recv_ty,
+                method.name,
+                &arg_tys,
+                receiver.span,
+                expr.span,
+                ctx,
+            )
         }
 
         ExprKind::Pipeline { source, stages } => {
             let mut current_ty = check_expr(source, ctx, current_fn_ret);
             for stage in stages {
-                current_ty = check_pipeline_stage(stage, current_ty, source.span, ctx, current_fn_ret);
+                current_ty =
+                    check_pipeline_stage(stage, current_ty, source.span, ctx, current_fn_ret);
             }
             current_ty
         }
@@ -527,7 +605,11 @@ fn check_expr_inner(
             check_to_narrowing(inner_ty, arms, expr.span, ctx, current_fn_ret)
         }
 
-        ExprKind::PipelineApply { expr: inner, operation, args } => {
+        ExprKind::PipelineApply {
+            expr: inner,
+            operation,
+            args,
+        } => {
             let inner_ty = check_expr(inner, ctx, current_fn_ret);
             check_pipeline_apply(inner_ty, operation, args, expr.span, ctx, current_fn_ret)
         }
@@ -539,7 +621,9 @@ fn check_expr_inner(
             TypeId::ERROR
         }
 
-        ExprKind::ListRange { start, end, step, .. } => {
+        ExprKind::ListRange {
+            start, end, step, ..
+        } => {
             let start_ty = check_expr(start, ctx, current_fn_ret);
             let end_ty = check_expr(end, ctx, current_fn_ret);
             if let Some(s) = step {
@@ -618,8 +702,11 @@ fn check_binary_op(
         let lhs_resolved = ctx.table.resolve(lhs_base);
         if !lhs_resolved.is_numeric() {
             ctx.diagnostics.push(
-                Diagnostic::error(format!("operator `{}` requires numeric operands", op.as_str()))
-                    .with_label(Label::primary(lhs_span, "not numeric")),
+                Diagnostic::error(format!(
+                    "operator `{}` requires numeric operands",
+                    op.as_str()
+                ))
+                .with_label(Label::primary(lhs_span, "not numeric")),
             );
             return TypeId::ERROR;
         }
@@ -627,9 +714,12 @@ fn check_binary_op(
             let l = type_name(lhs_base, ctx.table, &DefinitionTable::new());
             let r = type_name(rhs_base, ctx.table, &DefinitionTable::new());
             ctx.diagnostics.push(
-                Diagnostic::error(format!("mismatched types for `{}`: `{l}` and `{r}`", op.as_str()))
-                    .with_label(Label::primary(lhs_span, format!("`{l}`")))
-                    .with_label(Label::secondary(rhs_span, format!("`{r}`"))),
+                Diagnostic::error(format!(
+                    "mismatched types for `{}`: `{l}` and `{r}`",
+                    op.as_str()
+                ))
+                .with_label(Label::primary(lhs_span, format!("`{l}`")))
+                .with_label(Label::secondary(rhs_span, format!("`{r}`"))),
             );
             return TypeId::ERROR;
         }
@@ -673,8 +763,11 @@ fn check_binary_op(
         let lhs_resolved = ctx.table.resolve(lhs_base);
         if !lhs_resolved.is_integer() {
             ctx.diagnostics.push(
-                Diagnostic::error(format!("operator `{}` requires integer operands", op.as_str()))
-                    .with_label(Label::primary(lhs_span, "not integer")),
+                Diagnostic::error(format!(
+                    "operator `{}` requires integer operands",
+                    op.as_str()
+                ))
+                .with_label(Label::primary(lhs_span, "not integer")),
             );
             return TypeId::ERROR;
         }
@@ -761,68 +854,76 @@ fn check_call(
 
     let callee_resolved = ctx.table.resolve(callee_ty).clone();
     match callee_resolved {
-        Ty::Function { params, ret, is_async } => {
+        Ty::Function {
+            params,
+            ret,
+            is_async,
+        } => {
             // Check if this is a generic function by finding its DefId.
             let callee_def_id = find_callee_def_id(callee_span, ctx.resolutions);
-            let generic_params = callee_def_id
-                .and_then(|did| ctx.table.get_generic_params(did).map(<[_]>::to_vec));
+            let generic_params =
+                callee_def_id.and_then(|did| ctx.table.get_generic_params(did).map(<[_]>::to_vec));
 
             if let Some(gparams) = generic_params.filter(|p| !p.is_empty()) {
                 // Generic function — type-check args first, then infer type params.
-                let arg_types: Vec<TypeId> = args.iter()
+                let arg_types: Vec<TypeId> = args
+                    .iter()
                     .map(|a| check_expr(&a.value, ctx, current_fn_ret))
                     .collect();
 
                 if args.len() != params.len() {
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "expected {} argument{}, found {}",
-                            params.len(),
-                            if params.len() == 1 { "" } else { "s" },
-                            args.len()
-                        ))
-                        .with_label(Label::primary(call_span, "wrong number of arguments")),
-                    );
+                    diagnostics::expect_args(params.len(), args.len(), call_span, ctx.diagnostics);
                     return TypeId::ERROR;
                 }
 
-                if let Some(subst) = crate::substitute::infer_type_args(&gparams, &params, &arg_types, ctx.table) {
+                if let Some(subst) =
+                    crate::substitute::infer_type_args(&gparams, &params, &arg_types, ctx.table)
+                {
                     // Validate generic constraints before proceeding
                     crate::constraint::validate_constraints(
-                        &gparams, &subst, ctx.table, ctx.definitions, call_span, ctx.diagnostics,
+                        &gparams,
+                        &subst,
+                        ctx.table,
+                        ctx.definitions,
+                        call_span,
+                        ctx.diagnostics,
                     );
 
                     // Re-check args against substituted param types
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(&declared) = params.get(i) {
-                            let expected = crate::substitute::substitute_mut(declared, &subst, ctx.table);
+                            let expected =
+                                crate::substitute::substitute_mut(declared, &subst, ctx.table);
                             if !is_compatible(arg_types[i], expected, ctx.table) {
                                 let expected_name = type_name(expected, ctx.table, ctx.definitions);
-                                let found_name = type_name(arg_types[i], ctx.table, ctx.definitions);
-                                ctx.diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
-                                    ))
-                                    .with_label(Label::primary(arg.value.span, format!("expected `{expected_name}`"))),
-                                );
-                            } else if is_mutable_ref_param(expected, ctx.table) && !matches!(ctx.table.resolve(arg_types[i]), Ty::Mutable(_)) {
-                                ctx.diagnostics.push(
-                                    Diagnostic::error("cannot pass immutable value as mutable reference")
-                                        .with_label(Label::primary(arg.value.span, "value is not mutable")),
-                                );
+                                let found_name =
+                                    type_name(arg_types[i], ctx.table, ctx.definitions);
+                                ctx.diagnostics.push(diagnostics::arg_type_mismatch(
+                                    &expected_name,
+                                    &found_name,
+                                    arg.value.span,
+                                ));
+                            } else if is_mutable_ref_param(expected, ctx.table)
+                                && !matches!(ctx.table.resolve(arg_types[i]), Ty::Mutable(_))
+                            {
+                                ctx.diagnostics
+                                    .push(diagnostics::mutable_ref_required(arg.value.span));
                             }
                         }
                     }
 
                     // Record this mono instance for MIR monomorphization.
                     if let Some(def_id) = callee_def_id {
-                        ctx.table.set_mono_instance(call_span, def_id, subst.clone());
+                        ctx.table
+                            .set_mono_instance(call_span, def_id, subst.clone());
                     }
 
                     // Return the substituted return type
                     let substituted_ret = crate::substitute::substitute_mut(ret, &subst, ctx.table);
                     return if is_async {
-                        ctx.table.intern(Ty::Future { inner: substituted_ret })
+                        ctx.table.intern(Ty::Future {
+                            inner: substituted_ret,
+                        })
                     } else {
                         substituted_ret
                     };
@@ -838,45 +939,43 @@ fn check_call(
 
             // Non-generic function call — check all arg types first,
             // then adapt builtin list function types if needed.
-            let arg_tys: Vec<TypeId> = args.iter()
+            let arg_tys: Vec<TypeId> = args
+                .iter()
                 .map(|a| check_expr(&a.value, ctx, current_fn_ret))
                 .collect();
 
             // Adapt builtin list function types to match actual element type
             let (params, ret) = if let Some(did) = callee_def_id {
-                adapt_builtin_list_fn(did, arg_tys.first().copied().unwrap_or(TypeId::ERROR), params, ret, ctx.table, ctx.builtins, ctx.definitions)
+                adapt_builtin_list_fn(
+                    did,
+                    arg_tys.first().copied().unwrap_or(TypeId::ERROR),
+                    params,
+                    ret,
+                    ctx.table,
+                    ctx.builtins,
+                    ctx.definitions,
+                )
             } else {
                 (params, ret)
             };
 
-            if arg_tys.len() != params.len() {
-                ctx.diagnostics.push(
-                    Diagnostic::error(format!(
-                        "expected {} argument{}, found {}",
-                        params.len(),
-                        if params.len() == 1 { "" } else { "s" },
-                        arg_tys.len()
-                    ))
-                    .with_label(Label::primary(call_span, "wrong number of arguments")),
-                );
-            }
+            diagnostics::expect_args(params.len(), arg_tys.len(), call_span, ctx.diagnostics);
 
             for (i, (arg, &arg_ty)) in args.iter().zip(arg_tys.iter()).enumerate() {
                 if let Some(&expected) = params.get(i) {
                     if !is_compatible(arg_ty, expected, ctx.table) {
                         let expected_name = type_name(expected, ctx.table, ctx.definitions);
                         let found_name = type_name(arg_ty, ctx.table, ctx.definitions);
-                        ctx.diagnostics.push(
-                            Diagnostic::error(format!(
-                                "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
-                            ))
-                            .with_label(Label::primary(arg.value.span, format!("expected `{expected_name}`"))),
-                        );
-                    } else if is_mutable_ref_param(expected, ctx.table) && !matches!(ctx.table.resolve(arg_ty), Ty::Mutable(_)) {
-                        ctx.diagnostics.push(
-                            Diagnostic::error("cannot pass immutable value as mutable reference")
-                                .with_label(Label::primary(arg.value.span, "value is not mutable")),
-                        );
+                        ctx.diagnostics.push(diagnostics::arg_type_mismatch(
+                            &expected_name,
+                            &found_name,
+                            arg.value.span,
+                        ));
+                    } else if is_mutable_ref_param(expected, ctx.table)
+                        && !matches!(ctx.table.resolve(arg_ty), Ty::Mutable(_))
+                    {
+                        ctx.diagnostics
+                            .push(diagnostics::mutable_ref_required(arg.value.span));
                     }
                 }
             }
@@ -908,13 +1007,11 @@ fn check_call(
 }
 
 /// Tries to find the `DefId` for a callee expression (for generic function lookup).
-fn find_callee_def_id(
-    callee_span: Span,
-    resolutions: Option<&ResolutionMap>,
-) -> Option<DefId> {
+fn find_callee_def_id(callee_span: Span, resolutions: Option<&ResolutionMap>) -> Option<DefId> {
     let res = resolutions?;
     // Try both path and ident resolution (callee could be either)
-    res.get_path(callee_span).or_else(|| res.get_ident(callee_span))
+    res.get_path(callee_span)
+        .or_else(|| res.get_ident(callee_span))
 }
 
 /// Checks struct field access.
@@ -934,13 +1031,17 @@ fn check_field_access(
     // from the field type — an immutable struct's fields are not assignable.
     let base_is_mutable = matches!(table.resolve(base_ty), Ty::Mutable(_));
 
-    let resolved = table.resolve(strip_ref(strip_mutable(base_ty, table), table)).clone();
+    let resolved = table
+        .resolve(strip_ref(strip_mutable(base_ty, table), table))
+        .clone();
     match resolved {
         Ty::Struct(def_id) => {
             if let Some(fields) = table.get_struct_fields(def_id) {
                 for &(name, ty) in fields {
                     if name == field_name {
-                        if let Some(field_def) = crate::check_decl::find_field_def(field_name, def_id, definitions) {
+                        if let Some(field_def) =
+                            crate::check_decl::find_field_def(field_name, def_id, definitions)
+                        {
                             table.set_field_resolution(field_span, field_def);
                         }
                         if !base_is_mutable {
@@ -950,23 +1051,27 @@ fn check_field_access(
                     }
                 }
             }
-            let type_name = definitions
+            let tn = definitions
                 .get(def_id)
                 .map_or("<unknown>", |info| info.name.as_str());
-            diagnostics.push(
-                Diagnostic::error(format!("no field `{field_name}` on type `{type_name}`"))
-                    .with_label(Label::primary(field_span, "unknown field")),
-            );
+            diagnostics.push(crate::diagnostics::field_not_found(
+                field_name, tn, field_span,
+            ));
             TypeId::ERROR
         }
         Ty::Applied { base, args } => {
             if let Some(fields) = table.get_struct_fields(base) {
                 let fields = fields.to_vec();
-                let params = table.get_generic_params(base).map(<[_]>::to_vec).unwrap_or_default();
+                let params = table
+                    .get_generic_params(base)
+                    .map(<[_]>::to_vec)
+                    .unwrap_or_default();
                 let subst = crate::substitute::build_subst_map(&params, &args);
                 for (name, ty) in fields {
                     if name == field_name {
-                        if let Some(field_def) = crate::check_decl::find_field_def(field_name, base, definitions) {
+                        if let Some(field_def) =
+                            crate::check_decl::find_field_def(field_name, base, definitions)
+                        {
                             table.set_field_resolution(field_span, field_def);
                         }
                         let field_ty = crate::substitute::substitute_mut(ty, &subst, table);
@@ -977,20 +1082,42 @@ fn check_field_access(
                     }
                 }
             }
-            let type_name = definitions
+            let tn = definitions
                 .get(base)
                 .map_or("<unknown>", |info| info.name.as_str());
-            diagnostics.push(
-                Diagnostic::error(format!("no field `{field_name}` on type `{type_name}`"))
-                    .with_label(Label::primary(field_span, "unknown field")),
-            );
+            diagnostics.push(crate::diagnostics::field_not_found(
+                field_name, tn, field_span,
+            ));
             TypeId::ERROR
         }
         Ty::Tuple(elems) => {
-            // Tuple field access via numeric name (e.g., .0, .1)
-            // For now, just return Error
-            let _ = elems;
-            TypeId::ERROR
+            let field_str = field_name.as_str();
+            match field_str.parse::<usize>() {
+                Ok(index) => {
+                    if index >= elems.len() {
+                        diagnostics.push(crate::diagnostics::tuple_oob(
+                            index,
+                            elems.len(),
+                            field_span,
+                        ));
+                        TypeId::ERROR
+                    } else {
+                        let field_ty = elems[index];
+                        if !base_is_mutable {
+                            strip_mutable(field_ty, table)
+                        } else {
+                            field_ty
+                        }
+                    }
+                }
+                Err(_) => {
+                    diagnostics.push(
+                        Diagnostic::error("tuple fields must be accessed with numeric indices")
+                            .with_label(Label::primary(field_span, "expected a numeric index")),
+                    );
+                    TypeId::ERROR
+                }
+            }
         }
         Ty::Error => TypeId::ERROR,
         _ => {
@@ -1014,7 +1141,8 @@ fn check_struct_init(
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
     // Resolve the struct path
-    let def_id = ctx.resolutions
+    let def_id = ctx
+        .resolutions
         .and_then(|res| res.get_path(path.span))
         .unwrap_or(DefId::DUMMY);
 
@@ -1042,7 +1170,10 @@ fn check_struct_init(
 
         for field in fields {
             let val_ty = check_expr(&field.value, ctx, current_fn_ret);
-            if let Some((_, expected_ty)) = struct_fields.iter().find(|(name, _)| *name == field.name.name) {
+            if let Some((_, expected_ty)) = struct_fields
+                .iter()
+                .find(|(name, _)| *name == field.name.name)
+            {
                 field_val_types.push((field.name.name, val_ty));
 
                 // For generic structs, defer compatibility check until after inference.
@@ -1059,8 +1190,9 @@ fn check_struct_init(
                 }
             } else {
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!("unknown field `{}`", field.name.name))
-                        .with_label(Label::primary(field.name.span, "not a field of this struct")),
+                    Diagnostic::error(format!("unknown field `{}`", field.name.name)).with_label(
+                        Label::primary(field.name.span, "not a field of this struct"),
+                    ),
                 );
             }
         }
@@ -1094,19 +1226,27 @@ fn check_struct_init(
                 let mut declared_types = Vec::new();
                 let mut actual_types = Vec::new();
                 for (field_name, val_ty) in &field_val_types {
-                    if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| n == field_name) {
+                    if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| n == field_name)
+                    {
                         declared_types.push(*field_ty);
                         actual_types.push(*val_ty);
                     }
                 }
-                crate::substitute::infer_type_args(params, &declared_types, &actual_types, ctx.table)
+                crate::substitute::infer_type_args(
+                    params,
+                    &declared_types,
+                    &actual_types,
+                    ctx.table,
+                )
             };
 
             if let Some(subst) = subst {
                 // Re-check fields with substituted types
                 for (field_name, val_ty) in &field_val_types {
-                    if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| n == field_name) {
-                        let substituted = crate::substitute::substitute_mut(*field_ty, &subst, ctx.table);
+                    if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| n == field_name)
+                    {
+                        let substituted =
+                            crate::substitute::substitute_mut(*field_ty, &subst, ctx.table);
                         if !is_compatible(*val_ty, substituted, ctx.table) {
                             let expected_name = type_name(substituted, ctx.table, ctx.definitions);
                             let found_name = type_name(*val_ty, ctx.table, ctx.definitions);
@@ -1147,7 +1287,8 @@ fn check_enum_variant(
     ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
-    let def_id = ctx.resolutions
+    let def_id = ctx
+        .resolutions
         .and_then(|res| res.get_path(path.span))
         .unwrap_or(DefId::DUMMY);
 
@@ -1217,7 +1358,10 @@ pub fn is_compatible(actual: TypeId, expected: TypeId, table: &TypeTable) -> boo
         (actual_ty, expected_ty)
     {
         if b1 == b2 && a1.len() == a2.len() {
-            return a1.iter().zip(a2.iter()).all(|(a, e)| is_compatible(*a, *e, table));
+            return a1
+                .iter()
+                .zip(a2.iter())
+                .all(|(a, e)| is_compatible(*a, *e, table));
         }
     }
 
@@ -1331,10 +1475,7 @@ fn validate_each_callback(
                 return TypeId::ERROR;
             }
             let param_ty = params[0];
-            if param_ty != elem_ty
-                && param_ty != TypeId::ERROR
-                && elem_ty != TypeId::ERROR
-            {
+            if param_ty != elem_ty && param_ty != TypeId::ERROR && elem_ty != TypeId::ERROR {
                 let expected = type_name(elem_ty, table, definitions);
                 let found = type_name(param_ty, table, definitions);
                 diagnostics.push(
@@ -1432,17 +1573,19 @@ fn validate_partial_each_callback(
 
     // Validate bound arg types against remaining params
     for (i, arg) in args.iter().enumerate() {
-        let arg_ty = ctx.table.get_expr_type(arg.value.id).unwrap_or(TypeId::ERROR);
+        let arg_ty = ctx
+            .table
+            .get_expr_type(arg.value.id)
+            .unwrap_or(TypeId::ERROR);
         let param_ty = params[i + 1];
         if !is_compatible(arg_ty, param_ty, ctx.table) {
             let expected = type_name(param_ty, ctx.table, ctx.definitions);
             let found = type_name(arg_ty, ctx.table, ctx.definitions);
-            ctx.diagnostics.push(
-                Diagnostic::error(format!(
-                    "argument type mismatch: expected `{expected}`, found `{found}`"
-                ))
-                .with_label(Label::primary(arg.value.span, format!("expected `{expected}`"))),
-            );
+            ctx.diagnostics.push(diagnostics::arg_type_mismatch(
+                &expected,
+                &found,
+                arg.value.span,
+            ));
         }
     }
 
@@ -1492,7 +1635,6 @@ fn unwrap_optional(ty: TypeId, table: &TypeTable) -> TypeId {
     }
 }
 
-
 /// Type-checks a method call on a collection, string, or user-defined type receiver.
 fn check_method_call(
     recv_ty: TypeId,
@@ -1518,11 +1660,23 @@ fn check_method_call(
     };
 
     match stripped {
-        Ty::List(elem) => check_list_method(method, elem, is_mutable, arg_tys, call_span, recv_span, ctx),
+        Ty::List(elem) => {
+            check_list_method(method, elem, is_mutable, arg_tys, call_span, recv_span, ctx)
+        }
         Ty::Map(_k, _v) => check_map_method(method, is_mutable, arg_tys, call_span, recv_span, ctx),
         Ty::Set(_elem) => check_set_method(method, is_mutable, arg_tys, call_span, recv_span, ctx),
-        Ty::String => check_string_method(method, arg_tys, call_span, ctx.builtins, ctx.diagnostics),
-        Ty::Channel { inner } => check_channel_method(method, inner, arg_tys, call_span, ctx.table, ctx.builtins, ctx.diagnostics),
+        Ty::String => {
+            check_string_method(method, arg_tys, call_span, ctx.builtins, ctx.diagnostics)
+        }
+        Ty::Channel { inner } => check_channel_method(
+            method,
+            inner,
+            arg_tys,
+            call_span,
+            ctx.table,
+            ctx.builtins,
+            ctx.diagnostics,
+        ),
         Ty::Struct(def_id) | Ty::Enum(def_id) => {
             check_user_method_call(def_id, method, arg_tys, recv_span, call_span, ctx)
         }
@@ -1531,8 +1685,9 @@ fn check_method_call(
         }
         _ => {
             ctx.diagnostics.push(
-                Diagnostic::error(format!("type has no method `{method}`"))
-                    .with_label(Label::primary(recv_span, "no methods available on this type")),
+                Diagnostic::error(format!("type has no method `{method}`")).with_label(
+                    Label::primary(recv_span, "no methods available on this type"),
+                ),
             );
             TypeId::ERROR
         }
@@ -1550,11 +1705,11 @@ fn check_list_method(
     ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     if method == kw::LEN {
-        expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
         ctx.builtins.int
     } else if method == kw::APPEND {
-        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        require_mutable("List", is_mutable, recv_span, ctx.diagnostics);
+        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::require_mutable("List", is_mutable, recv_span, ctx.diagnostics);
         if !arg_tys.is_empty() && !is_compatible(arg_tys[0], elem, ctx.table) {
             ctx.diagnostics.push(
                 Diagnostic::error("argument type does not match list element type")
@@ -1563,7 +1718,7 @@ fn check_list_method(
         }
         ctx.builtins.void
     } else if method == kw::CONTAINS {
-        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
         if !arg_tys.is_empty() && !is_compatible(arg_tys[0], elem, ctx.table) {
             ctx.diagnostics.push(
                 Diagnostic::error("argument type does not match list element type")
@@ -1572,14 +1727,12 @@ fn check_list_method(
         }
         ctx.builtins.bool_ty
     } else if method == kw::REMOVE {
-        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        require_mutable("List", is_mutable, recv_span, ctx.diagnostics);
+        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::require_mutable("List", is_mutable, recv_span, ctx.diagnostics);
         ctx.builtins.void
     } else {
-        ctx.diagnostics.push(
-            Diagnostic::error(format!("List has no method `{method}`"))
-                .with_label(Label::primary(call_span, "unknown method")),
-        );
+        ctx.diagnostics
+            .push(diagnostics::no_method("List", method, call_span));
         TypeId::ERROR
     }
 }
@@ -1594,20 +1747,18 @@ fn check_map_method(
     ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     if method == kw::LEN {
-        expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
         ctx.builtins.int
     } else if method == kw::CONTAINS {
-        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
         ctx.builtins.bool_ty
     } else if method == kw::REMOVE {
-        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        require_mutable("Map", is_mutable, recv_span, ctx.diagnostics);
+        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::require_mutable("Map", is_mutable, recv_span, ctx.diagnostics);
         ctx.builtins.void
     } else {
-        ctx.diagnostics.push(
-            Diagnostic::error(format!("Map has no method `{method}`"))
-                .with_label(Label::primary(call_span, "unknown method")),
-        );
+        ctx.diagnostics
+            .push(diagnostics::no_method("Map", method, call_span));
         TypeId::ERROR
     }
 }
@@ -1622,24 +1773,22 @@ fn check_set_method(
     ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     if method == kw::LEN {
-        expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
         ctx.builtins.int
     } else if method == kw::ADD {
-        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        require_mutable("Set", is_mutable, recv_span, ctx.diagnostics);
+        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::require_mutable("Set", is_mutable, recv_span, ctx.diagnostics);
         ctx.builtins.void
     } else if method == kw::CONTAINS {
-        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
         ctx.builtins.bool_ty
     } else if method == kw::REMOVE {
-        expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        require_mutable("Set", is_mutable, recv_span, ctx.diagnostics);
+        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+        diagnostics::require_mutable("Set", is_mutable, recv_span, ctx.diagnostics);
         ctx.builtins.void
     } else {
-        ctx.diagnostics.push(
-            Diagnostic::error(format!("Set has no method `{method}`"))
-                .with_label(Label::primary(call_span, "unknown method")),
-        );
+        ctx.diagnostics
+            .push(diagnostics::no_method("Set", method, call_span));
         TypeId::ERROR
     }
 }
@@ -1653,13 +1802,10 @@ fn check_string_method(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) -> TypeId {
     if method == kw::LEN {
-        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        crate::diagnostics::expect_args(0, arg_tys.len(), call_span, diagnostics);
         builtins.int
     } else {
-        diagnostics.push(
-            Diagnostic::error(format!("String has no method `{method}`"))
-                .with_label(Label::primary(call_span, "unknown method")),
-        );
+        diagnostics.push(crate::diagnostics::no_method("String", method, call_span));
         TypeId::ERROR
     }
 }
@@ -1708,7 +1854,7 @@ fn check_channel_method(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) -> TypeId {
     if method == kw::SEND {
-        expect_args(1, arg_tys.len(), call_span, diagnostics);
+        crate::diagnostics::expect_args(1, arg_tys.len(), call_span, diagnostics);
         if !arg_tys.is_empty() && !is_compatible(arg_tys[0], inner, table) {
             diagnostics.push(
                 Diagnostic::error("send argument type does not match channel element type")
@@ -1717,19 +1863,16 @@ fn check_channel_method(
         }
         builtins.void
     } else if method == kw::RECV {
-        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        crate::diagnostics::expect_args(0, arg_tys.len(), call_span, diagnostics);
         inner
     } else if method == kw::TRY_RECV {
-        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        crate::diagnostics::expect_args(0, arg_tys.len(), call_span, diagnostics);
         table.intern(Ty::Optional(inner))
     } else if method == kw::CLOSE {
-        expect_args(0, arg_tys.len(), call_span, diagnostics);
+        crate::diagnostics::expect_args(0, arg_tys.len(), call_span, diagnostics);
         builtins.void
     } else {
-        diagnostics.push(
-            Diagnostic::error(format!("Channel has no method `{method}`"))
-                .with_label(Label::primary(call_span, "unknown method")),
-        );
+        diagnostics.push(crate::diagnostics::no_method("Channel", method, call_span));
         TypeId::ERROR
     }
 }
@@ -1748,7 +1891,10 @@ fn check_user_method_call(
     ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     // Look up available methods for this type
-    let methods = ctx.table.get_type_methods(type_def_id).map(<[(spark_intern::Symbol, DefId)]>::to_vec);
+    let methods = ctx
+        .table
+        .get_type_methods(type_def_id)
+        .map(<[(spark_intern::Symbol, DefId)]>::to_vec);
 
     if let Some(methods) = methods {
         // Search for the method by name
@@ -1768,17 +1914,12 @@ fn check_user_method_call(
                     };
 
                     // Check argument count (excluding receiver)
-                    if arg_tys.len() != call_params.len() {
-                        ctx.diagnostics.push(
-                            Diagnostic::error(format!(
-                                "expected {} argument{}, found {}",
-                                call_params.len(),
-                                if call_params.len() == 1 { "" } else { "s" },
-                                arg_tys.len()
-                            ))
-                            .with_label(Label::primary(call_span, "wrong number of arguments")),
-                        );
-                    }
+                    diagnostics::expect_args(
+                        call_params.len(),
+                        arg_tys.len(),
+                        call_span,
+                        ctx.diagnostics,
+                    );
 
                     // Check argument types
                     for (i, arg_ty) in arg_tys.iter().enumerate() {
@@ -1786,12 +1927,11 @@ fn check_user_method_call(
                             if !is_compatible(*arg_ty, expected, ctx.table) {
                                 let expected_name = type_name(expected, ctx.table, ctx.definitions);
                                 let found_name = type_name(*arg_ty, ctx.table, ctx.definitions);
-                                ctx.diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
-                                    ))
-                                    .with_label(Label::primary(call_span, format!("expected `{expected_name}`"))),
-                                );
+                                ctx.diagnostics.push(diagnostics::arg_type_mismatch(
+                                    &expected_name,
+                                    &found_name,
+                                    call_span,
+                                ));
                             }
                         }
                     }
@@ -1809,32 +1949,15 @@ fn check_user_method_call(
     }
 
     // No method found
-    let type_name_str = ctx.definitions
+    let tn = ctx
+        .definitions
         .get(type_def_id)
         .map_or("<unknown>", |info| info.name.as_str());
     ctx.diagnostics.push(
-        Diagnostic::error(format!("type `{type_name_str}` has no method `{method}`"))
+        Diagnostic::error(format!("type `{tn}` has no method `{method}`"))
             .with_label(Label::primary(recv_span, "no such method")),
     );
     TypeId::ERROR
-}
-
-/// Reports an error if expected != actual argument count.
-fn expect_args(
-    expected: usize,
-    actual: usize,
-    span: Span,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
-) {
-    if actual != expected {
-        diagnostics.push(
-            Diagnostic::error(format!(
-                "expected {expected} argument{}, found {actual}",
-                if expected == 1 { "" } else { "s" }
-            ))
-            .with_label(Label::primary(span, "wrong number of arguments")),
-        );
-    }
 }
 
 /// Type-checks a `to` expression.
@@ -1865,36 +1988,91 @@ fn check_pipeline_stage(
 
     match &stage.kind {
         PipelineStageKind::ForEach { callback } => {
-            let elem_ty = extract_list_elem(base_ty, label, source_span, ctx.table, ctx.definitions, ctx.diagnostics);
+            let elem_ty = extract_list_elem(
+                base_ty,
+                label,
+                source_span,
+                ctx.table,
+                ctx.definitions,
+                ctx.diagnostics,
+            );
             if let ExprKind::Partial { callee, args } = &callback.kind {
                 validate_partial_each_callback(
-                    callee, args, elem_ty, false, callback,
-                    ctx, current_fn_ret,
+                    callee,
+                    args,
+                    elem_ty,
+                    false,
+                    callback,
+                    ctx,
+                    current_fn_ret,
                 );
             } else {
                 let cb_ty = check_expr(callback, ctx, current_fn_ret);
-                validate_each_callback(cb_ty, elem_ty, false, callback.span, ctx.table, ctx.definitions, ctx.diagnostics);
+                validate_each_callback(
+                    cb_ty,
+                    elem_ty,
+                    false,
+                    callback.span,
+                    ctx.table,
+                    ctx.definitions,
+                    ctx.diagnostics,
+                );
             }
             ctx.builtins.void
         }
         PipelineStageKind::Map { callback } => {
-            let elem_ty = extract_list_elem(base_ty, label, source_span, ctx.table, ctx.definitions, ctx.diagnostics);
+            let elem_ty = extract_list_elem(
+                base_ty,
+                label,
+                source_span,
+                ctx.table,
+                ctx.definitions,
+                ctx.diagnostics,
+            );
             let ret_ty = if let ExprKind::Partial { callee, args } = &callback.kind {
                 validate_partial_each_callback(
-                    callee, args, elem_ty, true, callback,
-                    ctx, current_fn_ret,
+                    callee,
+                    args,
+                    elem_ty,
+                    true,
+                    callback,
+                    ctx,
+                    current_fn_ret,
                 )
             } else {
                 let cb_ty = check_expr(callback, ctx, current_fn_ret);
-                validate_each_callback(cb_ty, elem_ty, true, callback.span, ctx.table, ctx.definitions, ctx.diagnostics)
+                validate_each_callback(
+                    cb_ty,
+                    elem_ty,
+                    true,
+                    callback.span,
+                    ctx.table,
+                    ctx.definitions,
+                    ctx.diagnostics,
+                )
             };
             ctx.table.intern(Ty::List(ret_ty))
         }
         PipelineStageKind::Reduce { initial, callback } => {
-            let elem_ty = extract_list_elem(base_ty, label, source_span, ctx.table, ctx.definitions, ctx.diagnostics);
+            let elem_ty = extract_list_elem(
+                base_ty,
+                label,
+                source_span,
+                ctx.table,
+                ctx.definitions,
+                ctx.diagnostics,
+            );
             let init_ty = check_expr(initial, ctx, current_fn_ret);
             let cb_ty = check_expr(callback, ctx, current_fn_ret);
-            validate_reduce_callback(cb_ty, init_ty, elem_ty, callback.span, ctx.table, ctx.definitions, ctx.diagnostics)
+            validate_reduce_callback(
+                cb_ty,
+                init_ty,
+                elem_ty,
+                callback.span,
+                ctx.table,
+                ctx.definitions,
+                ctx.diagnostics,
+            )
         }
     }
 }
@@ -2015,7 +2193,8 @@ fn check_to_narrowing(
 ) -> TypeId {
     let members = crate::union::union_members(inner_ty, ctx.table);
 
-    if members.len() <= 1 && !matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_)) {
+    if members.len() <= 1 && !matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_))
+    {
         ctx.diagnostics.push(
             Diagnostic::error("'to' expression requires a union type")
                 .with_label(Label::primary(span, "not a union type")),
@@ -2032,7 +2211,8 @@ fn check_to_narrowing(
             handled_types.push(narrowed_ty);
         } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
             // Enum variant pattern — resolve it
-            let variant_ty = ctx.resolutions
+            let variant_ty = ctx
+                .resolutions
                 .and_then(|res| res.get_path(path.span))
                 .and_then(|def_id| ctx.table.get_def_type(def_id))
                 .unwrap_or(TypeId::ERROR);
@@ -2088,8 +2268,12 @@ fn adapt_builtin_list_fn(
     builtins: &BuiltinTypes,
     definitions: &DefinitionTable,
 ) -> (Vec<TypeId>, TypeId) {
-    let Some(info) = definitions.get(def_id) else { return (params, ret) };
-    if info.kind != DefinitionKind::BuiltinFunction { return (params, ret) }
+    let Some(info) = definitions.get(def_id) else {
+        return (params, ret);
+    };
+    if info.kind != DefinitionKind::BuiltinFunction {
+        return (params, ret);
+    }
 
     // Extract the actual element type from the first argument
     let actual_elem = match table.resolve(first_arg_ty).clone() {
@@ -2139,7 +2323,13 @@ fn check_pipeline_apply(
 
     // Adapt builtin list function types to match actual input type
     let (params, ret) = adapt_builtin_list_fn(
-        def_id, inner_ty, params, ret, ctx.table, ctx.builtins, ctx.definitions,
+        def_id,
+        inner_ty,
+        params,
+        ret,
+        ctx.table,
+        ctx.builtins,
+        ctx.definitions,
     );
 
     // Build full arg list: [inner_ty, partial_arg_types...]
@@ -2164,9 +2354,7 @@ fn check_pipeline_apply(
     }
 
     // Type-check each argument against function params
-    for (i, (&arg_ty, &param_ty)) in
-        all_arg_types.iter().zip(params.iter()).enumerate()
-    {
+    for (i, (&arg_ty, &param_ty)) in all_arg_types.iter().zip(params.iter()).enumerate() {
         if !is_compatible(arg_ty, param_ty, ctx.table) {
             let expected_name = type_name(param_ty, ctx.table, ctx.definitions);
             let found_name = type_name(arg_ty, ctx.table, ctx.definitions);
@@ -2180,32 +2368,16 @@ fn check_pipeline_apply(
                 );
             } else {
                 let arg_span = args[i - 1].value.span;
-                ctx.diagnostics.push(
-                    Diagnostic::error(format!(
-                        "argument type mismatch: expected `{expected_name}`, found `{found_name}`"
-                    ))
-                    .with_label(Label::primary(arg_span, format!("expected `{expected_name}`"))),
-                );
+                ctx.diagnostics.push(diagnostics::arg_type_mismatch(
+                    &expected_name,
+                    &found_name,
+                    arg_span,
+                ));
             }
         }
     }
 
     ret
-}
-
-/// Reports an error when calling a mutating method on an immutable receiver.
-fn require_mutable(
-    type_name: &str,
-    is_mutable: bool,
-    recv_span: Span,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
-) {
-    if !is_mutable {
-        diagnostics.push(
-            Diagnostic::error(format!("cannot mutate immutable {type_name}"))
-                .with_label(Label::primary(recv_span, "value is not mutable")),
-        );
-    }
 }
 
 #[cfg(test)]
@@ -2288,15 +2460,24 @@ mod tests {
     fn unify_same() {
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
-        assert_eq!(unify_branches(builtins.int, builtins.int, &mut table, &builtins), builtins.int);
+        assert_eq!(
+            unify_branches(builtins.int, builtins.int, &mut table, &builtins),
+            builtins.int
+        );
     }
 
     #[test]
     fn unify_with_never() {
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
-        assert_eq!(unify_branches(builtins.never, builtins.int, &mut table, &builtins), builtins.int);
-        assert_eq!(unify_branches(builtins.int, builtins.never, &mut table, &builtins), builtins.int);
+        assert_eq!(
+            unify_branches(builtins.never, builtins.int, &mut table, &builtins),
+            builtins.int
+        );
+        assert_eq!(
+            unify_branches(builtins.int, builtins.never, &mut table, &builtins),
+            builtins.int
+        );
     }
 
     #[test]
