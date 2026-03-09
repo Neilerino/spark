@@ -59,6 +59,10 @@ pub fn stdlib_sources() -> Vec<StdlibSource> {
             path: "spark/http.spark",
             source: include_str!("../spark/http.spark"),
         },
+        StdlibSource {
+            path: "spark/sys.spark",
+            source: include_str!("../spark/sys.spark"),
+        },
     ]
 }
 
@@ -106,7 +110,8 @@ mod tests {
     #[test]
     fn has_math_source() {
         let sources = stdlib_sources();
-        assert_eq!(sources[1].path, "spark/math.spark");
+        assert_eq!(sources.len(), 7);
+        assert_eq!(sources[0].path, "spark/math.spark");
     }
 
     #[test]
@@ -244,7 +249,9 @@ mod tests {
     #[test]
     fn net_source_contains_extern_fns() {
         let sources = stdlib_sources();
-        assert!(sources[5].source.contains("extern fn __spark_net_tcp_listen"));
+        assert!(sources[5]
+            .source
+            .contains("extern fn __spark_net_tcp_listen"));
     }
 
     #[test]
@@ -293,5 +300,53 @@ mod tests {
     fn http_source_contains_respond() {
         let sources = stdlib_sources();
         assert!(sources[6].source.contains("Request binds IRequest"));
+    }
+
+    #[test]
+    fn has_sys_source() {
+        let sources = stdlib_sources();
+        assert_eq!(sources[6].path, "spark/sys.spark");
+    }
+
+    #[test]
+    fn sys_source_contains_module_decl() {
+        let sources = stdlib_sources();
+        assert!(sources[6].source.contains("module sys"));
+    }
+
+    #[test]
+    fn sys_source_contains_args() {
+        let sources = stdlib_sources();
+        assert!(sources[6].source.contains("pub fn args"));
+    }
+
+    #[test]
+    fn sys_source_contains_get_env() {
+        let sources = stdlib_sources();
+        assert!(sources[6].source.contains("pub fn getEnv"));
+    }
+
+    #[test]
+    fn sys_source_contains_extern_fns() {
+        let sources = stdlib_sources();
+        assert!(sources[6].source.contains("extern fn __spark_sys_args"));
+    }
+
+    #[test]
+    fn sys_source_contains_has_env() {
+        let sources = stdlib_sources();
+        assert!(sources[6].source.contains("pub fn hasEnv"));
+    }
+
+    #[test]
+    fn sys_source_contains_set_env() {
+        let sources = stdlib_sources();
+        assert!(sources[6].source.contains("pub fn setEnv"));
+    }
+
+    #[test]
+    fn sys_source_contains_env_keys() {
+        let sources = stdlib_sources();
+        assert!(sources[6].source.contains("pub fn envKeys"));
     }
 }

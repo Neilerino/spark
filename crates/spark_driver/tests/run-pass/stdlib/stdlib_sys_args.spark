@@ -1,0 +1,7 @@
+import spark.sys { args }
+
+fn main(): Int {
+    argv: List[String] = args()
+    print(argv.len())
+    return 0
+}

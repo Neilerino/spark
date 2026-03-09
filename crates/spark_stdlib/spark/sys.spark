@@ -1,0 +1,47 @@
+module sys
+
+// =============================================================================
+// Extern FFI declarations (private — not exported)
+// =============================================================================
+
+extern fn __spark_sys_args(): List[String]
+extern fn __spark_sys_get_env(name: String): String
+extern fn __spark_sys_has_env(name: String): Int
+extern fn __spark_sys_set_env(name: String, value: String): Void
+extern fn __spark_sys_remove_env(name: String): Void
+extern fn __spark_sys_env_keys(): List[String]
+
+// =============================================================================
+// Module-level functions
+// =============================================================================
+
+/// Returns the command-line arguments as a list of strings.
+/// The first element is the program name.
+pub fn args(): List[String] {
+    return __spark_sys_args()
+}
+
+/// Returns the value of an environment variable, or empty string if not set.
+pub fn getEnv(name: String): String {
+    return __spark_sys_get_env(name)
+}
+
+/// Returns true if the environment variable exists.
+pub fn hasEnv(name: String): Bool {
+    return __spark_sys_has_env(name) != 0
+}
+
+/// Sets an environment variable for the current process.
+pub fn setEnv(name: String, value: String): Void {
+    __spark_sys_set_env(name, value)
+}
+
+/// Removes an environment variable from the current process.
+pub fn removeEnv(name: String): Void {
+    __spark_sys_remove_env(name)
+}
+
+/// Returns all environment variable names.
+pub fn envKeys(): List[String] {
+    return __spark_sys_env_keys()
+}

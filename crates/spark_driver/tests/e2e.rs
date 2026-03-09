@@ -226,6 +226,42 @@ fn assert_output_with_stdin(fixture: &str, stdin_input: &str, expected_stdout: &
     );
 }
 
+/// Runs `spark run <fixture>` with extra environment variables set.
+fn run_spark_with_env(fixture: &str, env: &[(&str, &str)]) -> SparkOutput {
+    let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join(fixture);
+
+    assert!(
+        fixture_path.exists(),
+        "fixture not found: {}",
+        fixture_path.display()
+    );
+
+    let spark_bin = env!("CARGO_BIN_EXE_spark");
+
+    let runtime_dir = Path::new(spark_bin)
+        .parent()
+        .expect("spark binary has no parent dir");
+
+    let mut cmd = Command::new(spark_bin);
+    cmd.arg("run")
+        .arg(&fixture_path)
+        .env("SPARK_RUNTIME_DIR", runtime_dir);
+
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+
+    let output = cmd.output().expect("failed to run spark binary");
+
+    SparkOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into(),
+        stderr: String::from_utf8_lossy(&output.stderr).into(),
+        exit_code: output.status.code().unwrap_or(-1),
+    }
+}
+
 // ============================================================================
 // Basic functionality
 // ============================================================================
@@ -727,6 +763,38 @@ fn stdlib_io_dir() {
     assert_output("run-pass/stdlib/stdlib_io_dir.spark", "a.txt\nb.txt");
     // Clean up the directory after test
     let _ = std::fs::remove_dir_all("/tmp/spark_e2e_io_dir_test");
+}
+
+#[test]
+fn stdlib_sys_args() {
+    // args() returns at least 1 element (the program name)
+    let result = run_spark("run-pass/stdlib/stdlib_sys_args.spark");
+    assert_eq!(
+        result.exit_code, 0,
+        "stdlib_sys_args exited with code {}:\n{}",
+        result.exit_code, result.stderr
+    );
+    // The output should be "1" (just the program name, no extra args)
+    let count: i64 = result.stdout.trim().parse().expect("expected integer output");
+    assert!(count >= 1, "args() should return at least the program name, got {count}");
+}
+
+#[test]
+fn stdlib_sys_env() {
+    let result = run_spark_with_env(
+        "run-pass/stdlib/stdlib_sys_env.spark",
+        &[("SPARK_TEST_ENV_VAR", "test_value_123")],
+    );
+    assert_eq!(
+        result.exit_code, 0,
+        "stdlib_sys_env exited with code {}:\n{}",
+        result.exit_code, result.stderr
+    );
+    assert_eq!(
+        result.stdout.trim(),
+        "test_value_123\ntrue\ndynamic_value\nfalse",
+        "stdout mismatch for stdlib_sys_env"
+    );
 }
 
 // ============================================================================
