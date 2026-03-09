@@ -35,7 +35,7 @@ pub(crate) struct LowerCtx<'a> {
 }
 
 /// Lowers an expression from the AST to HIR.
-pub fn lower_expr(
+pub(crate) fn lower_expr(
     expr: &Expr,
     ctx: &mut LowerCtx<'_>,
 ) -> HirExpr {
@@ -48,7 +48,7 @@ pub fn lower_expr(
 }
 
 /// Lowers a block expression.
-pub fn lower_block(
+pub(crate) fn lower_block(
     block: &spark_ast::Block,
     ctx: &mut LowerCtx<'_>,
 ) -> HirExpr {
@@ -161,8 +161,8 @@ fn lower_expr_kind(
         ExprKind::Field { base, field } => {
             let mut base_hir = lower_expr(base, ctx);
             // Auto-deref through Ref (and Mutable(Ref))
-            let base_ty = strip_mutable_ty(base_hir.ty, table);
-            if let Ty::Ref { inner, .. } = table.resolve(base_ty) {
+            let base_ty = strip_mutable_ty(base_hir.ty, ctx.table);
+            if let Ty::Ref { inner, .. } = ctx.table.resolve(base_ty) {
                 let inner_ty = *inner;
                 base_hir =
                     HirExpr::new(HirExprKind::Deref(Box::new(base_hir)), inner_ty, base.span);
@@ -181,19 +181,19 @@ fn lower_expr_kind(
         // === Calls ===
         ExprKind::Call { callee, args } => {
             let callee_hir = lower_expr(callee, ctx);
-            let param_types = extract_param_types(callee_hir.ty, table);
-            let is_print = is_print_call(callee, resolutions, definitions);
+            let param_types = extract_param_types(callee_hir.ty, ctx.table);
+            let is_print = is_print_call(callee, ctx.resolutions, ctx.definitions);
             let lowered_args: Vec<HirExpr> = args
                 .iter()
                 .enumerate()
                 .map(|(i, a)| {
                     let mut arg = lower_expr(&a.value, ctx);
                     if let Some(&param_ty) = param_types.get(i) {
-                        arg = coerce_ref(arg, param_ty, a.value.span, table);
+                        arg = coerce_ref(arg, param_ty, a.value.span, ctx.table);
                     }
                     // Displayable: wrap struct args in print() with toString()
                     if is_print {
-                        arg = maybe_wrap_displayable(arg, table);
+                        arg = maybe_wrap_displayable(arg, ctx.table);
                     }
                     arg
                 })
@@ -211,8 +211,8 @@ fn lower_expr_kind(
         } => {
             let mut recv_hir = lower_expr(receiver, ctx);
             // Auto-deref through Ref (and Mutable(Ref))
-            let recv_ty = strip_mutable_ty(recv_hir.ty, table);
-            if let Ty::Ref { inner, .. } = table.resolve(recv_ty) {
+            let recv_ty = strip_mutable_ty(recv_hir.ty, ctx.table);
+            if let Ty::Ref { inner, .. } = ctx.table.resolve(recv_ty) {
                 let inner_ty = *inner;
                 recv_hir = HirExpr::new(
                     HirExprKind::Deref(Box::new(recv_hir)),
@@ -239,7 +239,7 @@ fn lower_expr_kind(
             fields,
             spread: _,
         } => {
-            let def_id = resolutions
+            let def_id = ctx.resolutions
                 .and_then(|res| res.get_path(path.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             HirExprKind::StructInit {
@@ -261,7 +261,7 @@ fn lower_expr_kind(
             variant,
             fields,
         } => {
-            let def_id = resolutions
+            let def_id = ctx.resolutions
                 .and_then(|res| res.get_path(path.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             HirExprKind::EnumVariant {
@@ -316,14 +316,7 @@ fn lower_expr_kind(
 
         // === Control flow ===
         ExprKind::Block(block) => {
-            let lowered = lower_block(
-                block,
-                table,
-                definitions,
-                resolutions,
-                diagnostics,
-                current_fn_ret,
-            );
+            let lowered = lower_block(block, ctx);
             lowered.kind
         }
 
@@ -351,16 +344,16 @@ fn lower_expr_kind(
 
         ExprKind::Return(value) => HirExprKind::Return(value.as_ref().map(|v| {
             let mut lowered = lower_expr(v, ctx);
-            if let Some(ret_ty) = current_fn_ret {
-                let ret_stripped = strip_mutable_ty(ret_ty, table);
+            if let Some(ret_ty) = ctx.current_fn_ret {
+                let ret_stripped = strip_mutable_ty(ret_ty, ctx.table);
                 // Auto-borrow: if function returns Ref[T] and value is T,
                 // wrap in Borrow so the borrow checker can detect dangling refs.
                 if let Ty::Ref {
                     mutable: ref_mut, ..
-                } = table.resolve(ret_stripped)
+                } = ctx.table.resolve(ret_stripped)
                 {
-                    let val_stripped = strip_mutable_ty(lowered.ty, table);
-                    if !matches!(table.resolve(val_stripped), Ty::Ref { .. })
+                    let val_stripped = strip_mutable_ty(lowered.ty, ctx.table);
+                    if !matches!(ctx.table.resolve(val_stripped), Ty::Ref { .. })
                         && !lowered.ty.is_error()
                     {
                         lowered = HirExpr::new(
@@ -375,9 +368,9 @@ fn lower_expr_kind(
                 }
                 // Auto-deref: if function returns T and value is Ref[T],
                 // wrap in Deref.
-                if !matches!(table.resolve(ret_stripped), Ty::Ref { .. }) {
-                    let val_stripped = strip_mutable_ty(lowered.ty, table);
-                    if let Ty::Ref { inner, .. } = table.resolve(val_stripped) {
+                if !matches!(ctx.table.resolve(ret_stripped), Ty::Ref { .. }) {
+                    let val_stripped = strip_mutable_ty(lowered.ty, ctx.table);
+                    if let Ty::Ref { inner, .. } = ctx.table.resolve(val_stripped) {
                         let inner_ty = *inner;
                         lowered =
                             HirExpr::new(HirExprKind::Deref(Box::new(lowered)), inner_ty, v.span);
@@ -396,10 +389,10 @@ fn lower_expr_kind(
             let hir_params: Vec<HirParam> = params
                 .iter()
                 .map(|p| {
-                    let def_id = resolutions
+                    let def_id = ctx.resolutions
                         .and_then(|res| res.get_binding(p.name.span))
                         .unwrap_or(spark_resolve::DefId::DUMMY);
-                    let ty = table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
+                    let ty = ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
                     HirParam {
                         def_id,
                         ty,
@@ -416,12 +409,12 @@ fn lower_expr_kind(
         // === Type operations ===
         ExprKind::Is { expr: inner, ty } => HirExprKind::Is {
             expr: Box::new(lower_expr(inner, ctx)),
-            target_ty: lower_type_expr(ty, table),
+            target_ty: lower_type_expr(ty, ctx.table),
         },
 
         ExprKind::As { expr: inner, ty } => HirExprKind::As {
             expr: Box::new(lower_expr(inner, ctx)),
-            target_ty: lower_type_expr(ty, table),
+            target_ty: lower_type_expr(ty, ctx.table),
         },
 
         // === Async ===
@@ -432,35 +425,28 @@ fn lower_expr_kind(
         ExprKind::Spawn(inner) => HirExprKind::Spawn(Box::new(lower_expr(inner, ctx))),
 
         // === Desugared: Paren ===
-        ExprKind::Paren(inner) => lower_expr_kind(
-            inner,
-            table,
-            definitions,
-            resolutions,
-            diagnostics,
-            current_fn_ret,
-        ),
+        ExprKind::Paren(inner) => lower_expr_kind(inner, ctx),
 
         // === Desugared: Coalesce (??) ===
         ExprKind::Coalesce { lhs, rhs } => {
             let lhs_hir = lower_expr(lhs, ctx);
             let rhs_hir = lower_expr(rhs, ctx);
-            let ty = expr_type(expr.id, table);
-            desugar::desugar_coalesce(lhs_hir, rhs_hir, expr.span, ty, definitions).kind
+            let ty = expr_type(expr.id, ctx.table);
+            desugar::desugar_coalesce(lhs_hir, rhs_hir, expr.span, ty, ctx.definitions).kind
         }
 
         // === Desugared: OptionalField (?.) ===
         ExprKind::OptionalField { base, field } => {
             let base_hir = lower_expr(base, ctx);
-            let ty = expr_type(expr.id, table);
-            let inner_ty = spark_types::union::strip_null(base_hir.ty, table);
+            let ty = expr_type(expr.id, ctx.table);
+            let inner_ty = spark_types::union::strip_null(base_hir.ty, ctx.table);
             desugar::desugar_optional_field(
                 base_hir,
                 field.name,
                 expr.span,
                 ty,
                 inner_ty,
-                definitions,
+                ctx.definitions,
             )
             .kind
         }
@@ -468,50 +454,33 @@ fn lower_expr_kind(
         // === Desugared: Propagate (!) ===
         ExprKind::Propagate(inner) => {
             let inner_hir = lower_expr(inner, ctx);
-            let ty = expr_type(expr.id, table);
+            let ty = expr_type(expr.id, ctx.table);
             let inner_ty = inner_hir.ty;
             desugar_propagate_expr(
                 inner_hir,
                 inner_ty,
                 ty,
-                current_fn_ret,
+                ctx.current_fn_ret,
                 expr.span,
-                table,
-                definitions,
+                ctx.table,
+                ctx.definitions,
             )
         }
 
         // === Unified Pipeline ===
         ExprKind::Pipeline { source, stages } => lower_pipeline(
-            source,
-            stages,
-            expr,
-            table,
-            definitions,
-            resolutions,
-            diagnostics,
-            current_fn_ret,
+            source, stages, expr, ctx,
         ),
 
         ExprKind::To { expr: inner, arms } => {
-            let inner_ty = expr_type(inner.id, table);
-            let is_union = matches!(table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_));
+            let inner_ty = expr_type(inner.id, ctx.table);
+            let is_union = matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_));
             let inner_hir = lower_expr(inner, ctx);
 
             if is_union {
                 // Union/optional: use narrowing lowering (adds passthrough arms)
-                let ty = expr_type(expr.id, table);
-                lower_to_narrowing(
-                    inner_hir,
-                    arms,
-                    ty,
-                    table,
-                    definitions,
-                    resolutions,
-                    diagnostics,
-                    current_fn_ret,
-                    expr.span,
-                )
+                let ty = expr_type(expr.id, ctx.table);
+                lower_to_narrowing(inner_hir, arms, ty, ctx, expr.span)
             } else {
                 // Non-union: lower directly to HirExprKind::Match (exhaustive, no passthrough)
                 HirExprKind::Match {
@@ -520,12 +489,7 @@ fn lower_expr_kind(
                         .iter()
                         .map(|arm| {
                             let (pattern, guard) = lower_pattern_with_guard(
-                                &arm.pattern,
-                                resolutions,
-                                diagnostics,
-                                table,
-                                definitions,
-                                current_fn_ret,
+                                &arm.pattern, ctx,
                             );
                             HirMatchArm {
                                 pattern,
@@ -545,28 +509,11 @@ fn lower_expr_kind(
             args,
         } => {
             let inner_hir = lower_expr(inner, ctx);
-            lower_pipeline_apply(
-                inner_hir,
-                operation,
-                args,
-                table,
-                definitions,
-                resolutions,
-                diagnostics,
-                current_fn_ret,
-                expr.span,
-            )
+            lower_pipeline_apply(inner_hir, operation, args, ctx, expr.span)
         }
 
         ExprKind::Partial { callee, args } => lower_standalone_partial(
-            callee,
-            args,
-            expr,
-            table,
-            definitions,
-            resolutions,
-            diagnostics,
-            current_fn_ret,
+            callee, args, expr, ctx,
         ),
 
         ExprKind::Range { start, end, .. } => {
@@ -662,11 +609,7 @@ fn lower_pipeline(
     source: &Expr,
     stages: &[spark_ast::PipelineStage],
     pipeline_expr: &Expr,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
 ) -> HirExprKind {
     let span = pipeline_expr.span;
 
@@ -692,10 +635,10 @@ fn lower_pipeline(
             let mapper_hir = lower_expr(mapper, ctx);
             let combiner_hir = lower_expr(combiner, ctx);
             let initial_hir = lower_expr(initial, ctx);
-            let elem_ty = extract_list_elem_ty(source_hir.ty, table);
-            let void_ty = find_void_type(table);
-            let mapped_ty = extract_fn_ret_ty(mapper_hir.ty, table, void_ty);
-            let result_ty = extract_fn_ret_ty(combiner_hir.ty, table, void_ty);
+            let elem_ty = extract_list_elem_ty(source_hir.ty, ctx.table);
+            let void_ty = find_void_type(ctx.table);
+            let mapped_ty = extract_fn_ret_ty(mapper_hir.ty, ctx.table, void_ty);
+            let result_ty = extract_fn_ret_ty(combiner_hir.ty, ctx.table, void_ty);
             return HirExprKind::ParallelMapReduce {
                 list: Box::new(source_hir),
                 mapper: Box::new(mapper_hir),
@@ -712,16 +655,7 @@ fn lower_pipeline(
     // For single-stage pipelines, emit directly; for multi-stage, chain via let bindings
     if stages.len() == 1 {
         let source_hir = lower_expr(source, ctx);
-        return lower_single_pipeline_stage(
-            &stages[0],
-            source_hir,
-            span,
-            table,
-            definitions,
-            resolutions,
-            diagnostics,
-            current_fn_ret,
-        );
+        return lower_single_pipeline_stage(&stages[0], source_hir, span, ctx);
     }
 
     // Multi-stage: build a block that chains stages via let bindings
@@ -731,17 +665,10 @@ fn lower_pipeline(
     for (i, stage) in stages.iter().enumerate() {
         if i < stages.len() - 1 {
             // Intermediate stage: wrap in a let binding
-            let stage_result_ty = infer_stage_output_ty(stage, current_hir.ty, table);
-            let temp_id = definitions.next_synthetic_id(stage.span);
+            let stage_result_ty = infer_stage_output_ty(stage, current_hir.ty, ctx.table);
+            let temp_id = ctx.definitions.next_synthetic_id(stage.span);
             let stage_hir_kind = lower_single_pipeline_stage(
-                stage,
-                current_hir,
-                stage.span,
-                table,
-                definitions,
-                resolutions,
-                diagnostics,
-                current_fn_ret,
+                stage, current_hir, stage.span, ctx,
             );
             let stage_hir = HirExpr::new(stage_hir_kind, stage_result_ty, stage.span);
             stmts.push(HirStmt::Let {
@@ -753,16 +680,9 @@ fn lower_pipeline(
         } else {
             // Last stage: produce the final expression
             let final_kind = lower_single_pipeline_stage(
-                stage,
-                current_hir,
-                span,
-                table,
-                definitions,
-                resolutions,
-                diagnostics,
-                current_fn_ret,
+                stage, current_hir, span, ctx,
             );
-            let result_ty = expr_type(pipeline_expr.id, table);
+            let result_ty = expr_type(pipeline_expr.id, ctx.table);
             let trailing = HirExpr::new(final_kind, result_ty, span);
             return HirExprKind::Block {
                 stmts,
@@ -800,17 +720,13 @@ fn infer_stage_output_ty(
 }
 
 /// Lowers a single pipeline stage to HIR, given the already-lowered source.
-#[allow(clippy::too_many_arguments)]
 fn lower_single_pipeline_stage(
     stage: &spark_ast::PipelineStage,
     source_hir: HirExpr,
     span: Span,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
 ) -> HirExprKind {
+    let table = ctx.table;
     let int_ty = find_int_type(table);
     let bool_ty = find_bool_type(table);
     let void_ty = find_void_type(table);
@@ -820,15 +736,7 @@ fn lower_single_pipeline_stage(
 
     match &stage.kind {
         PipelineStageKind::ForEach { callback } => {
-            let callback_hir = lower_partial_or_plain(
-                callback,
-                table,
-                definitions,
-                resolutions,
-                diagnostics,
-                current_fn_ret,
-                void_ty,
-            );
+            let callback_hir = lower_partial_or_plain(callback, ctx, void_ty);
             let elem_ty = extract_list_elem_ty(source_hir.ty, table);
             if stage.parallel {
                 HirExprKind::ParallelForEach {
@@ -847,21 +755,13 @@ fn lower_single_pipeline_stage(
                     bool_ty,
                     void_ty,
                     span,
-                    definitions,
+                    ctx.definitions,
                 )
                 .kind
             }
         }
         PipelineStageKind::Map { callback } => {
-            let callback_hir = lower_partial_or_plain(
-                callback,
-                table,
-                definitions,
-                resolutions,
-                diagnostics,
-                current_fn_ret,
-                void_ty,
-            );
+            let callback_hir = lower_partial_or_plain(callback, ctx, void_ty);
             let elem_ty = extract_list_elem_ty(source_hir.ty, table);
             let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
             if stage.parallel {
@@ -883,7 +783,7 @@ fn lower_single_pipeline_stage(
                     bool_ty,
                     void_ty,
                     span,
-                    definitions,
+                    ctx.definitions,
                 )
                 .kind
             }
@@ -906,7 +806,7 @@ fn lower_single_pipeline_stage(
                 bool_ty,
                 void_ty,
                 span,
-                definitions,
+                ctx.definitions,
             )
             .kind
         }
@@ -914,22 +814,17 @@ fn lower_single_pipeline_stage(
 }
 
 /// Lowers a `to` narrowing expression into a match.
-#[allow(clippy::too_many_arguments)]
 fn lower_to_narrowing(
     inner_hir: HirExpr,
     arms: &[spark_ast::MatchArm],
     ty: TypeId,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
     span: Span,
 ) -> HirExprKind {
     let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len() + 1);
 
     for arm in arms {
-        let pattern = lower_to_pattern(&arm.pattern, definitions, resolutions, table);
+        let pattern = lower_to_pattern(&arm.pattern, ctx.definitions, ctx.resolutions, ctx.table);
         let body = lower_expr(&arm.body, ctx);
         hir_arms.push(HirMatchArm {
             pattern,
@@ -941,7 +836,7 @@ fn lower_to_narrowing(
 
     // Add passthrough arms for unhandled union members using TypeNarrow
     // so the MIR pattern compiler extracts payloads properly.
-    let inner_resolved = table.resolve(inner_hir.ty);
+    let inner_resolved = ctx.table.resolve(inner_hir.ty);
     if let Ty::Union(members) = inner_resolved {
         let members = members.clone();
         // Collect types already handled by explicit arms
@@ -955,7 +850,7 @@ fn lower_to_narrowing(
 
         for &member_ty in &members {
             if !handled.contains(&member_ty) {
-                let pass_id = definitions.next_synthetic_id(span);
+                let pass_id = ctx.definitions.next_synthetic_id(span);
                 hir_arms.push(HirMatchArm {
                     pattern: HirPattern::TypeNarrow {
                         def_id: pass_id,
@@ -969,7 +864,7 @@ fn lower_to_narrowing(
         }
     } else {
         // Non-union: fall back to binding passthrough
-        let pass_id = definitions.next_synthetic_id(span);
+        let pass_id = ctx.definitions.next_synthetic_id(span);
         hir_arms.push(HirMatchArm {
             pattern: HirPattern::Binding { def_id: pass_id },
             guard: None,
@@ -985,32 +880,27 @@ fn lower_to_narrowing(
 }
 
 /// Lowers a pipeline apply expression (`expr to func{args}`).
-#[allow(clippy::too_many_arguments)]
 fn lower_pipeline_apply(
     inner_hir: HirExpr,
     operation: &spark_ast::Ident,
     args: &[spark_ast::PartialArg],
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
     _span: Span,
 ) -> HirExprKind {
     // Desugar `expr to func{a: v}` → `func(expr, v)`
-    let func_def_id = resolutions
+    let func_def_id = ctx.resolutions
         .and_then(|r| r.get_ident(operation.span))
         .unwrap_or(spark_resolve::DefId::DUMMY);
-    let func_ty = table.get_def_type(func_def_id).unwrap_or(TypeId::ERROR);
+    let func_ty = ctx.table.get_def_type(func_def_id).unwrap_or(TypeId::ERROR);
 
     let callee = HirExpr::new(HirExprKind::Local(func_def_id), func_ty, operation.span);
 
-    let param_types = extract_param_types(func_ty, table);
+    let param_types = extract_param_types(func_ty, ctx.table);
     let mut call_args = vec![inner_hir];
     for (i, arg) in args.iter().enumerate() {
         let mut arg_hir = lower_expr(&arg.value, ctx);
         if let Some(&param_ty) = param_types.get(i + 1) {
-            arg_hir = coerce_ref(arg_hir, param_ty, arg.value.span, table);
+            arg_hir = coerce_ref(arg_hir, param_ty, arg.value.span, ctx.table);
         }
         call_args.push(arg_hir);
     }
@@ -1064,20 +954,15 @@ fn lower_to_pattern(
 
 /// Lowers a literal expression, producing either a simple `HirExprKind::Literal`
 /// or a `HirExprKind::StringInterp` for interpolated strings.
-#[allow(clippy::too_many_arguments)]
 fn lower_literal_expr(
     kind: &LiteralKind,
     expr: &Expr,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
 ) -> HirExprKind {
     match kind {
         LiteralKind::String(s) if !s.is_simple() => {
             // Interpolated string: produce StringInterp with parts.
-            let string_ty = expr_type(expr.id, table);
+            let string_ty = expr_type(expr.id, ctx.table);
             let parts = s
                 .parts
                 .iter()
@@ -1090,7 +975,7 @@ fn lower_literal_expr(
                     StringPart::Interpolation(sub_expr) => {
                         let lowered = lower_expr(sub_expr, ctx);
                         // Displayable: wrap struct values in toString()
-                        Some(maybe_wrap_displayable(lowered, table))
+                        Some(maybe_wrap_displayable(lowered, ctx.table))
                     }
                 })
                 .collect();
@@ -1141,30 +1026,25 @@ pub(crate) fn auto_deref_ref(expr: HirExpr, table: &TypeTable) -> HirExpr {
 /// 1-parameter lambda that calls the full function with the element as the first
 /// argument and the bound args filling the rest:
 /// `func{n: 10}` becomes `fn(elem) { func(elem, 10) }`.
-#[allow(clippy::too_many_arguments)]
 fn lower_partial_or_plain(
     callback: &Expr,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
     void_ty: TypeId,
 ) -> HirExpr {
     if let ExprKind::Partial { callee, args } = &callback.kind {
         let callee_hir = lower_expr(callee, ctx);
-        let param_types = extract_param_types(callee_hir.ty, table);
-        let ret_ty = extract_fn_ret_ty(callee_hir.ty, table, void_ty);
+        let param_types = extract_param_types(callee_hir.ty, ctx.table);
+        let ret_ty = extract_fn_ret_ty(callee_hir.ty, ctx.table, void_ty);
 
         // The type checker stored a reduced 1-param function type on the callback
-        let lambda_ty = table.get_expr_type(callback.id).unwrap_or(TypeId::ERROR);
-        let elem_ty = if let Ty::Function { params, .. } = table.resolve(lambda_ty) {
+        let lambda_ty = ctx.table.get_expr_type(callback.id).unwrap_or(TypeId::ERROR);
+        let elem_ty = if let Ty::Function { params, .. } = ctx.table.resolve(lambda_ty) {
             params.first().copied().unwrap_or(TypeId::ERROR)
         } else {
             TypeId::ERROR
         };
 
-        let param_id = definitions.next_synthetic_id(callback.span);
+        let param_id = ctx.definitions.next_synthetic_id(callback.span);
         let param = HirParam {
             def_id: param_id,
             ty: elem_ty,
@@ -1179,7 +1059,7 @@ fn lower_partial_or_plain(
         for (i, arg) in args.iter().enumerate() {
             let mut arg_hir = lower_expr(&arg.value, ctx);
             if let Some(&pty) = param_types.get(i + 1) {
-                arg_hir = coerce_ref(arg_hir, pty, arg.value.span, table);
+                arg_hir = coerce_ref(arg_hir, pty, arg.value.span, ctx.table);
             }
             call_args.push(arg_hir);
         }
@@ -1211,24 +1091,19 @@ fn lower_partial_or_plain(
 /// Synthesizes `fn(unbound_params...) { func(all_args_in_order...) }` where
 /// bound parameters use the pre-evaluated values and unbound parameters
 /// become lambda parameters.
-#[allow(clippy::too_many_arguments)]
 fn lower_standalone_partial(
     callee: &Expr,
     args: &[spark_ast::PartialArg],
     partial_expr: &Expr,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
 ) -> HirExprKind {
     let callee_hir = lower_expr(callee, ctx);
-    let full_param_types = extract_param_types(callee_hir.ty, table);
-    let void_ty = find_void_type(table);
-    let ret_ty = extract_fn_ret_ty(callee_hir.ty, table, void_ty);
+    let full_param_types = extract_param_types(callee_hir.ty, ctx.table);
+    let void_ty = find_void_type(ctx.table);
+    let ret_ty = extract_fn_ret_ty(callee_hir.ty, ctx.table, void_ty);
 
     // The type checker stored the reduced function type on this expression
-    let lambda_ty = table
+    let lambda_ty = ctx.table
         .get_expr_type(partial_expr.id)
         .unwrap_or(TypeId::ERROR);
     if lambda_ty.is_error() {
@@ -1236,8 +1111,8 @@ fn lower_standalone_partial(
     }
 
     // Look up parameter names to map named args to positions
-    let callee_def_id = find_callee_def_id(callee.span, resolutions);
-    let param_names = callee_def_id.and_then(|did| table.get_fn_param_names(did));
+    let callee_def_id = find_callee_def_id(callee.span, ctx.resolutions);
+    let param_names = callee_def_id.and_then(|did| ctx.table.get_fn_param_names(did));
     let Some(param_names) = param_names else {
         // Type checker already reported this error
         return HirExprKind::Error;
@@ -1255,11 +1130,11 @@ fn lower_standalone_partial(
 
         if let Some(bound) = bound_arg {
             let mut arg_hir = lower_expr(&bound.value, ctx);
-            arg_hir = coerce_ref(arg_hir, param_ty, bound.value.span, table);
+            arg_hir = coerce_ref(arg_hir, param_ty, bound.value.span, ctx.table);
             call_args.push(arg_hir);
         } else {
             // Unbound parameter — becomes a lambda parameter
-            let param_id = definitions.next_synthetic_id(partial_expr.span);
+            let param_id = ctx.definitions.next_synthetic_id(partial_expr.span);
             lambda_params.push(HirParam {
                 def_id: param_id,
                 ty: param_ty,

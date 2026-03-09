@@ -4,43 +4,31 @@
 //! Guard expressions are extracted into the [`HirMatchArm`] guard field.
 
 use spark_ast::{LiteralKind, Pattern, PatternKind};
-use spark_diagnostics::Diagnostics;
-use spark_resolve::{DefinitionTable, ResolutionMap};
-use spark_types::{TypeId, TypeTable};
+use spark_resolve::ResolutionMap;
+use spark_types::TypeTable;
 
 use crate::hir::{HirExpr, HirLiteral, HirPattern};
-use crate::lower_expr::lower_expr;
+use crate::lower_expr::{lower_expr, LowerCtx};
 
 /// Lowers a pattern, extracting any guard expression.
 ///
 /// AST `Guard { pattern, guard }` is flattened: the inner pattern
 /// is lowered normally, and the guard expression is returned separately
 /// for placement in `HirMatchArm.guard`.
-pub fn lower_pattern_with_guard(
+pub(crate) fn lower_pattern_with_guard(
     pattern: &Pattern,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
 ) -> (HirPattern, Option<HirExpr>) {
     match &pattern.kind {
         PatternKind::Guard {
             pattern: inner,
             guard,
         } => {
-            let hir_pattern = lower_pattern(inner, resolutions, table);
-            let guard_expr = lower_expr(
-                guard,
-                table,
-                definitions,
-                resolutions,
-                diagnostics,
-                current_fn_ret,
-            );
+            let hir_pattern = lower_pattern(inner, ctx.resolutions, ctx.table);
+            let guard_expr = lower_expr(guard, ctx);
             (hir_pattern, Some(guard_expr))
         }
-        _ => (lower_pattern(pattern, resolutions, table), None),
+        _ => (lower_pattern(pattern, ctx.resolutions, ctx.table), None),
     }
 }
 

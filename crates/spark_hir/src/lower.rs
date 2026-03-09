@@ -12,7 +12,7 @@ use spark_span::FileId;
 use spark_types::{TypeId, TypeTable};
 
 use crate::hir::{Hir, HirFunction, HirParam, HirStatic};
-use crate::lower_expr::lower_expr;
+use crate::lower_expr::{lower_block, lower_expr, LowerCtx};
 
 /// The HIR lowerer.
 ///
@@ -121,14 +121,14 @@ impl<'a> Lowerer<'a> {
             .unwrap_or(TypeId::ERROR);
 
         // Lower body
-        let hir_body = crate::lower_expr::lower_block(
-            body,
-            self.table,
-            &mut *self.definitions,
+        let mut ctx = LowerCtx {
+            table: self.table,
+            definitions: &mut *self.definitions,
             resolutions,
-            &mut self.diagnostics,
-            Some(ret_type),
-        );
+            diagnostics: &mut self.diagnostics,
+            current_fn_ret: Some(ret_type),
+        };
+        let hir_body = lower_block(body, &mut ctx);
 
         hir.functions.insert(def_id, HirFunction {
             def_id,
@@ -158,14 +158,14 @@ impl<'a> Lowerer<'a> {
 
         let ty = self.table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
 
-        let value = lower_expr(
-            &const_def.value,
-            self.table,
-            &mut *self.definitions,
+        let mut ctx = LowerCtx {
+            table: self.table,
+            definitions: &mut *self.definitions,
             resolutions,
-            &mut self.diagnostics,
-            None,
-        );
+            diagnostics: &mut self.diagnostics,
+            current_fn_ret: None,
+        };
+        let value = lower_expr(&const_def.value, &mut ctx);
 
         hir.statics.insert(def_id, HirStatic {
             def_id,
@@ -213,14 +213,14 @@ impl<'a> Lowerer<'a> {
                         .unwrap_or(TypeId::ERROR);
 
                     // Lower body
-                    let hir_body = crate::lower_expr::lower_block(
-                        body,
-                        self.table,
-                        &mut *self.definitions,
+                    let mut ctx = LowerCtx {
+                        table: self.table,
+                        definitions: &mut *self.definitions,
                         resolutions,
-                        &mut self.diagnostics,
-                        Some(ret_type),
-                    );
+                        diagnostics: &mut self.diagnostics,
+                        current_fn_ret: Some(ret_type),
+                    };
+                    let hir_body = lower_block(body, &mut ctx);
 
                     hir.functions.insert(def_id, HirFunction {
                         def_id,

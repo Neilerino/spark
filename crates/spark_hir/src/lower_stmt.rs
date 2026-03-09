@@ -4,31 +4,25 @@
 //! `CompoundAssign` is desugared into `Assign` + `BinaryOp`.
 
 use spark_ast::{BinaryOp, CompoundOp, Stmt, StmtKind};
-use spark_diagnostics::Diagnostics;
-use spark_resolve::{DefinitionTable, ResolutionMap};
 use spark_types::ty::Ty;
 use spark_types::{TypeId, TypeTable};
 
 use crate::hir::{HirExpr, HirExprKind, HirStmt};
-use crate::lower_expr::{auto_deref_ref, lower_expr};
+use crate::lower_expr::{auto_deref_ref, lower_expr, LowerCtx};
 
 /// Lowers a statement from the AST to HIR.
-#[allow(clippy::too_many_arguments)]
-pub fn lower_stmt(
+pub(crate) fn lower_stmt(
     stmt: &Stmt,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
 ) -> HirStmt {
+    let table = ctx.table;
     match &stmt.kind {
         StmtKind::Let { name, ty: _, mutable, value } => {
-            let def_id = resolutions
+            let def_id = ctx.resolutions
                 .and_then(|res| res.get_binding(name.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
 
-            let mut lowered_value = lower_expr(value, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let mut lowered_value = lower_expr(value, ctx);
 
             // Auto-borrow: if declared type is Ref[T] and value is T, wrap in Borrow
             if let Some(declared_ty) = table.get_def_type(def_id) {
@@ -73,8 +67,8 @@ pub fn lower_stmt(
         }
 
         StmtKind::Assign { target, value } => {
-            let mut target_hir = lower_expr(target, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let mut value_hir = lower_expr(value, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let mut target_hir = lower_expr(target, ctx);
+            let mut value_hir = lower_expr(value, ctx);
 
             let target_inner = strip_mutable(target_hir.ty, table);
             let value_ty = value_hir.ty;
@@ -110,11 +104,11 @@ pub fn lower_stmt(
 
         StmtKind::CompoundAssign { target, op, value } => {
             // Desugar: `x += y` -> `x = x + y`
-            let target_hir = lower_expr(target, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let value_hir = lower_expr(value, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let target_hir = lower_expr(target, ctx);
+            let value_hir = lower_expr(value, ctx);
 
             // Re-lower target for the RHS (we need two copies)
-            let target_for_rhs = lower_expr(target, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let target_for_rhs = lower_expr(target, ctx);
 
             // Auto-deref operands for the binary op (so Ref[Int] + Int works)
             let target_rhs_deref = auto_deref_ref(target_for_rhs, table);
@@ -150,7 +144,7 @@ pub fn lower_stmt(
         }
 
         StmtKind::Expr(expr) => {
-            HirStmt::Expr(lower_expr(expr, table, definitions, resolutions, diagnostics, current_fn_ret))
+            HirStmt::Expr(lower_expr(expr, ctx))
         }
     }
 }
@@ -243,7 +237,14 @@ mod tests {
             Span::DUMMY,
         );
 
-        let hir = lower_stmt(&stmt, &table, &mut defs, Some(&res), &mut diags, None);
+        let mut ctx = LowerCtx {
+            table: &table,
+            definitions: &mut defs,
+            resolutions: Some(&res),
+            diagnostics: &mut diags,
+            current_fn_ret: None,
+        };
+        let hir = lower_stmt(&stmt, &mut ctx);
 
         // The result should be an Assign with a Deref target (write through ref)
         match &hir {
@@ -297,7 +298,14 @@ mod tests {
             Span::DUMMY,
         );
 
-        let hir = lower_stmt(&stmt, &table, &mut defs, Some(&res), &mut diags, None);
+        let mut ctx = LowerCtx {
+            table: &table,
+            definitions: &mut defs,
+            resolutions: Some(&res),
+            diagnostics: &mut diags,
+            current_fn_ret: None,
+        };
+        let hir = lower_stmt(&stmt, &mut ctx);
 
         // Target should NOT be wrapped in Deref (it's a plain Mutable(Int))
         match &hir {
