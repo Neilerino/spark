@@ -27,10 +27,7 @@ pub struct Region {
 /// This is the NLL approach: the borrow is active as long as the reference
 /// it produced might still be used.
 #[must_use]
-pub fn compute_regions(
-    facts: &BorrowFacts,
-    liveness: &LivenessResult,
-) -> Vec<Region> {
+pub fn compute_regions(facts: &BorrowFacts, liveness: &LivenessResult) -> Vec<Region> {
     facts
         .loans
         .iter()
@@ -44,13 +41,9 @@ pub fn compute_regions(
 /// where the ref local is live. We check successor liveness rather than
 /// current-point liveness to handle the case where a ref is moved from
 /// a temp to a user variable (e.g. `_3 = Ref(...); _4 = Move(_3)`).
-/// At the move point, the ref_local (_4) is assigned (killed in live_in)
+/// At the move point, the `ref_local` (_4) is assigned (killed in `live_in`)
 /// but alive afterward, so we check if it's live at the successor.
-fn compute_loan_region(
-    loan: &Loan,
-    facts: &BorrowFacts,
-    liveness: &LivenessResult,
-) -> Region {
+fn compute_loan_region(loan: &Loan, facts: &BorrowFacts, liveness: &LivenessResult) -> Region {
     let ref_local = loan.ref_local;
     let mut points = FxHashSet::default();
     let mut worklist = vec![loan.issued_at];
@@ -109,10 +102,38 @@ mod tests {
             param_count: 0,
             return_type: TypeId::ERROR,
             locals: vec![
-                LocalDecl { local: Local(0), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: TypeId::ERROR, name: Some(spark_intern::sym("x")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(2), ty: TypeId::ERROR, name: Some(spark_intern::sym("r")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(3), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: TypeId::ERROR,
+                    name: Some(spark_intern::sym("x")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(2),
+                    ty: TypeId::ERROR,
+                    name: Some(spark_intern::sym("r")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(3),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![
@@ -123,7 +144,10 @@ mod tests {
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: false,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {

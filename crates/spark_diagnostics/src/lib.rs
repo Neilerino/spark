@@ -701,7 +701,10 @@ mod tests {
 
         assert!(diag.is_error());
         assert_eq!(diag.message, "test error");
-        assert_eq!(diag.code.as_ref().map(|c| c.as_str()), Some("E0001"));
+        assert_eq!(
+            diag.code.as_ref().map(super::DiagnosticCode::as_str),
+            Some("E0001")
+        );
         assert_eq!(diag.labels.len(), 1);
         assert_eq!(diag.notes.len(), 1);
     }

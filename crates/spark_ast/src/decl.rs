@@ -169,8 +169,18 @@ pub struct LinkDecl {
 impl LinkDecl {
     /// Creates a new link declaration.
     #[must_use]
-    pub fn new(library: Symbol, search_path: Option<Symbol>, condition: Option<LinkCondition>, span: Span) -> Self {
-        Self { library, search_path, condition, span }
+    pub const fn new(
+        library: Symbol,
+        search_path: Option<Symbol>,
+        condition: Option<LinkCondition>,
+        span: Span,
+    ) -> Self {
+        Self {
+            library,
+            search_path,
+            condition,
+            span,
+        }
     }
 }
 

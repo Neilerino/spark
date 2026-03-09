@@ -12,7 +12,11 @@ use spark_types::{FloatWidth, IntWidth, Ty, TypeId, TypeTable};
 /// Returns `None` for zero-sized types (`Void`, `Null`, `Never`, `Error`)
 /// that have no runtime representation.
 #[must_use]
-pub fn spark_type_to_clif(ty_id: TypeId, table: &TypeTable, ptr_type: ClifType) -> Option<ClifType> {
+pub fn spark_type_to_clif(
+    ty_id: TypeId,
+    table: &TypeTable,
+    ptr_type: ClifType,
+) -> Option<ClifType> {
     let ty = table.resolve(ty_id);
     match ty {
         // Integer types
@@ -24,9 +28,6 @@ pub fn spark_type_to_clif(ty_id: TypeId, table: &TypeTable, ptr_type: ClifType) 
         // Float types
         Ty::Float(FloatWidth::F32) => Some(types::F32),
         Ty::Float(FloatWidth::F64) => Some(types::F64),
-
-        // CPtr is an opaque C pointer, pointer-sized
-        Ty::CPtr => Some(ptr_type),
 
         // Zero-sized types — no runtime value
         Ty::Void | Ty::Null | Ty::Never | Ty::Error => None,
@@ -45,16 +46,11 @@ pub fn spark_type_to_clif(ty_id: TypeId, table: &TypeTable, ptr_type: ClifType) 
         | Ty::Optional(_)
         | Ty::Union(_)
         | Ty::Param(_)
+        | Ty::AsyncState { .. } // Async state struct — always an aggregate, passed by pointer
+        | Ty::Channel { .. } // Channel[T] is an opaque heap pointer (SparkChannel*)
+        | Ty::Future { .. } // Future[T] is an opaque heap pointer (SparkFuture*)
+        | Ty::CPtr // CPtr is an opaque C pointer, pointer-sized
         | Ty::Applied { .. } => Some(ptr_type),
-
-        // Future[T] is an opaque heap pointer (SparkFuture*)
-        Ty::Future { .. } => Some(ptr_type),
-
-        // Channel[T] is an opaque heap pointer (SparkChannel*)
-        Ty::Channel { .. } => Some(ptr_type),
-
-        // Async state struct — always an aggregate, passed by pointer
-        Ty::AsyncState { .. } => Some(ptr_type),
 
         // Mutable wrapping is transparent at runtime
         Ty::Mutable(inner) => spark_type_to_clif(*inner, table, ptr_type),
@@ -88,8 +84,8 @@ pub fn is_scalar(ty_id: TypeId, table: &TypeTable) -> bool {
             | Ty::Set(_)
             | Ty::Ref { .. }
     ) || matches!(ty, Ty::Future { .. })
-      || matches!(ty, Ty::Channel { .. })
-      || matches!(ty, Ty::Mutable(inner) if is_scalar(*inner, table))
+        || matches!(ty, Ty::Channel { .. })
+        || matches!(ty, Ty::Mutable(inner) if is_scalar(*inner, table))
 }
 
 /// Returns true if this type is an aggregate that needs sret (struct return pointer)
@@ -105,7 +101,10 @@ pub fn needs_sret(ty_id: TypeId, table: &TypeTable) -> bool {
 /// Returns true if a type is signed for integer comparisons/division.
 #[must_use]
 pub const fn int_is_signed(w: IntWidth) -> bool {
-    matches!(w, IntWidth::I8 | IntWidth::I16 | IntWidth::I32 | IntWidth::I64)
+    matches!(
+        w,
+        IntWidth::I8 | IntWidth::I16 | IntWidth::I32 | IntWidth::I64
+    )
 }
 
 #[cfg(test)]

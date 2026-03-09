@@ -16,7 +16,6 @@ use crate::lower_expr::lower_expr;
 /// AST `Guard { pattern, guard }` is flattened: the inner pattern
 /// is lowered normally, and the guard expression is returned separately
 /// for placement in `HirMatchArm.guard`.
-#[allow(clippy::too_many_arguments)]
 pub fn lower_pattern_with_guard(
     pattern: &Pattern,
     resolutions: Option<&ResolutionMap>,
@@ -26,9 +25,19 @@ pub fn lower_pattern_with_guard(
     current_fn_ret: Option<TypeId>,
 ) -> (HirPattern, Option<HirExpr>) {
     match &pattern.kind {
-        PatternKind::Guard { pattern: inner, guard } => {
+        PatternKind::Guard {
+            pattern: inner,
+            guard,
+        } => {
             let hir_pattern = lower_pattern(inner, resolutions, table);
-            let guard_expr = lower_expr(guard, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let guard_expr = lower_expr(
+                guard,
+                table,
+                definitions,
+                resolutions,
+                diagnostics,
+                current_fn_ret,
+            );
             (hir_pattern, Some(guard_expr))
         }
         _ => (lower_pattern(pattern, resolutions, table), None),
@@ -60,7 +69,10 @@ pub fn lower_pattern(
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             HirPattern::Variant {
                 def_id,
-                fields: fields.iter().map(|f| lower_pattern(f, resolutions, table)).collect(),
+                fields: fields
+                    .iter()
+                    .map(|f| lower_pattern(f, resolutions, table))
+                    .collect(),
             }
         }
 
@@ -73,19 +85,16 @@ pub fn lower_pattern(
                 fields: fields
                     .iter()
                     .map(|f| {
-                        let pat = f
-                            .pattern
-                            .as_ref()
-                            .map_or_else(
-                                || {
-                                    // Shorthand: `name` binds to same-named local
-                                    let def_id = resolutions
-                                        .and_then(|res| res.get_binding(f.name.span))
-                                        .unwrap_or(spark_resolve::DefId::DUMMY);
-                                    HirPattern::Binding { def_id }
-                                },
-                                |p| lower_pattern(p, resolutions, table),
-                            );
+                        let pat = f.pattern.as_ref().map_or_else(
+                            || {
+                                // Shorthand: `name` binds to same-named local
+                                let def_id = resolutions
+                                    .and_then(|res| res.get_binding(f.name.span))
+                                    .unwrap_or(spark_resolve::DefId::DUMMY);
+                                HirPattern::Binding { def_id }
+                            },
+                            |p| lower_pattern(p, resolutions, table),
+                        );
                         (f.name.name, pat)
                     })
                     .collect(),
@@ -93,13 +102,18 @@ pub fn lower_pattern(
             }
         }
 
-        PatternKind::Tuple(elems) => {
-            HirPattern::Tuple(elems.iter().map(|p| lower_pattern(p, resolutions, table)).collect())
-        }
+        PatternKind::Tuple(elems) => HirPattern::Tuple(
+            elems
+                .iter()
+                .map(|p| lower_pattern(p, resolutions, table))
+                .collect(),
+        ),
 
-        PatternKind::Or(alts) => {
-            HirPattern::Or(alts.iter().map(|p| lower_pattern(p, resolutions, table)).collect())
-        }
+        PatternKind::Or(alts) => HirPattern::Or(
+            alts.iter()
+                .map(|p| lower_pattern(p, resolutions, table))
+                .collect(),
+        ),
 
         // Guard is handled in lower_pattern_with_guard
         PatternKind::Guard { pattern: inner, .. } => lower_pattern(inner, resolutions, table),
@@ -108,14 +122,17 @@ pub fn lower_pattern(
             let def_id = resolutions
                 .and_then(|res| res.get_binding(name.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
-            let narrowed_ty = table.get_expr_type(ty.id).unwrap_or(spark_types::TypeId::ERROR);
-            HirPattern::TypeNarrow { def_id, ty: narrowed_ty }
+            let narrowed_ty = table
+                .get_expr_type(ty.id)
+                .unwrap_or(spark_types::TypeId::ERROR);
+            HirPattern::TypeNarrow {
+                def_id,
+                ty: narrowed_ty,
+            }
         }
 
         // Deferred / error
-        PatternKind::List { .. } | PatternKind::Error => {
-            HirPattern::Error
-        }
+        PatternKind::List { .. } | PatternKind::Error => HirPattern::Error,
     }
 }
 

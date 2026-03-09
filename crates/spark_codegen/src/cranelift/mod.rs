@@ -113,9 +113,9 @@ impl CraneliftBackend {
 
         for (def_id, mir_func) in &mir.functions {
             let name = function_name(*def_id, definitions);
-            let is_lambda = definitions
-                .get(*def_id)
-                .map_or(false, |info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
+            let is_lambda = definitions.get(*def_id).map_or(false, |info| {
+                matches!(info.kind, spark_resolve::DefinitionKind::Lambda)
+            });
 
             // Build signature from parameter types and return type.
             let param_types: Vec<_> = mir_func.locals[1..=mir_func.param_count as usize]
@@ -134,8 +134,13 @@ impl CraneliftBackend {
             // Lambda functions get a hidden env_ptr parameter.
             // If sret is present (aggregate return), env_ptr goes after sret.
             if is_lambda {
-                let insert_pos = if abi::needs_sret(mir_func.return_type, table) { 1 } else { 0 };
-                sig.params.insert(insert_pos, cranelift_codegen::ir::AbiParam::new(ptr_type));
+                let insert_pos = if abi::needs_sret(mir_func.return_type, table) {
+                    1
+                } else {
+                    0
+                };
+                sig.params
+                    .insert(insert_pos, cranelift_codegen::ir::AbiParam::new(ptr_type));
             }
 
             let linkage = if name == "main" {
@@ -181,11 +186,13 @@ impl CraneliftBackend {
         let call_conv = self.module.isa().default_call_conv();
 
         // Collect non-lambda functions to generate thunks for.
-        let targets: Vec<_> = mir.functions.iter()
+        let targets: Vec<_> = mir
+            .functions
+            .iter()
             .filter(|(def_id, _)| {
-                definitions
-                    .get(**def_id)
-                    .map_or(false, |info| !matches!(info.kind, spark_resolve::DefinitionKind::Lambda))
+                definitions.get(**def_id).map_or(false, |info| {
+                    !matches!(info.kind, spark_resolve::DefinitionKind::Lambda)
+                })
             })
             .map(|(def_id, mir_func)| (*def_id, mir_func.clone()))
             .collect();
@@ -213,16 +220,23 @@ impl CraneliftBackend {
                 call_conv,
             );
             // Insert env_ptr after sret (if present) or at position 0.
-            let env_insert_pos = if sret { 1 } else { 0 };
-            thunk_sig.params.insert(env_insert_pos, cranelift_codegen::ir::AbiParam::new(ptr_type));
+            let env_insert_pos = usize::from(sret);
+            thunk_sig.params.insert(
+                env_insert_pos,
+                cranelift_codegen::ir::AbiParam::new(ptr_type),
+            );
 
-            let thunk_func_id = match self.module.declare_function(&thunk_name, Linkage::Local, &thunk_sig) {
-                Ok(fid) => fid,
-                Err(e) => {
-                    diagnostics.error(format!("failed to declare thunk '{thunk_name}': {e}"));
-                    continue;
-                }
-            };
+            let thunk_func_id =
+                match self
+                    .module
+                    .declare_function(&thunk_name, Linkage::Local, &thunk_sig)
+                {
+                    Ok(fid) => fid,
+                    Err(e) => {
+                        diagnostics.error(format!("failed to declare thunk '{thunk_name}': {e}"));
+                        continue;
+                    }
+                };
 
             // Define the thunk body: call the real function with all params except env.
             let real_sig = types::build_signature(
@@ -307,14 +321,19 @@ impl CraneliftBackend {
         let call_conv = self.module.isa().default_call_conv();
 
         // Collect lambdas that have at least one RC/droppable capture.
-        let targets: Vec<_> = mir.functions.iter()
+        let targets: Vec<_> = mir
+            .functions
+            .iter()
             .filter(|(def_id, mir_func)| {
-                let is_lambda = definitions.get(**def_id)
-                    .map_or(false, |info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
-                is_lambda && !mir_func.captures.is_empty()
+                let is_lambda = definitions
+                    .get(**def_id)
+                    .is_some_and(|info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
+                is_lambda
+                    && !mir_func.captures.is_empty()
                     && mir_func.captures.iter().any(|(_, cap_ty)| {
                         let (_, unwrapped) = clif_types::unwrap_mutable(*cap_ty, table);
-                        spark_drop::needs_drop(*cap_ty, table) || matches!(unwrapped, spark_types::Ty::Function { .. })
+                        spark_drop::needs_drop(*cap_ty, table)
+                            || matches!(unwrapped, spark_types::Ty::Function { .. })
                     })
             })
             .map(|(def_id, mir_func)| (*def_id, mir_func.clone()))
@@ -325,15 +344,23 @@ impl CraneliftBackend {
 
             // Signature: (env_ptr: ptr) -> void
             let mut dtor_sig = cranelift_codegen::ir::Signature::new(call_conv);
-            dtor_sig.params.push(cranelift_codegen::ir::AbiParam::new(ptr_type));
+            dtor_sig
+                .params
+                .push(cranelift_codegen::ir::AbiParam::new(ptr_type));
 
-            let dtor_func_id = match self.module.declare_function(&dtor_name, Linkage::Local, &dtor_sig) {
-                Ok(fid) => fid,
-                Err(e) => {
-                    diagnostics.error(format!("failed to declare env destructor '{dtor_name}': {e}"));
-                    continue;
-                }
-            };
+            let dtor_func_id =
+                match self
+                    .module
+                    .declare_function(&dtor_name, Linkage::Local, &dtor_sig)
+                {
+                    Ok(fid) => fid,
+                    Err(e) => {
+                        diagnostics.error(format!(
+                            "failed to declare env destructor '{dtor_name}': {e}"
+                        ));
+                        continue;
+                    }
+                };
 
             // Build the destructor body.
             let mut func = Function::with_name_signature(
@@ -360,16 +387,15 @@ impl CraneliftBackend {
 
                     let (_, unwrapped_ty) = clif_types::unwrap_mutable(*cap_ty, table);
 
-                    if spark_drop::needs_drop(*cap_ty, table) || matches!(unwrapped_ty, spark_types::Ty::Function { .. }) {
+                    if spark_drop::needs_drop(*cap_ty, table)
+                        || matches!(unwrapped_ty, spark_types::Ty::Function { .. })
+                    {
                         // Function fat pointers are aggregates: emit_typed_drop
                         // expects the ADDRESS of the fat pointer so it can load
                         // the env_ptr from the second slot. For all other types,
                         // we load the value (the RC pointer) and pass it directly.
                         if matches!(unwrapped_ty, spark_types::Ty::Function { .. }) {
-                            let addr = builder.ins().iadd_imm(
-                                env_ptr,
-                                i64::from(offset),
-                            );
+                            let addr = builder.ins().iadd_imm(env_ptr, i64::from(offset));
                             drop_glue::emit_typed_drop(
                                 &mut builder,
                                 addr,
@@ -380,7 +406,12 @@ impl CraneliftBackend {
                                 ptr_type,
                             );
                         } else {
-                            let val = builder.ins().load(ptr_type, MemFlags::new(), env_ptr, i32::try_from(offset).unwrap_or(0));
+                            let val = builder.ins().load(
+                                ptr_type,
+                                MemFlags::new(),
+                                env_ptr,
+                                i32::try_from(offset).unwrap_or(0),
+                            );
                             drop_glue::emit_typed_drop(
                                 &mut builder,
                                 val,
@@ -404,11 +435,15 @@ impl CraneliftBackend {
             let mut clif_ctx = ClifContext::for_function(func);
             #[allow(clippy::default_trait_access)]
             if let Err(e) = clif_ctx.compile(self.module.isa(), &mut Default::default()) {
-                diagnostics.error(format!("codegen error in env destructor '{dtor_name}': {e:?}"));
+                diagnostics.error(format!(
+                    "codegen error in env destructor '{dtor_name}': {e:?}"
+                ));
                 continue;
             }
             if let Err(e) = self.module.define_function(dtor_func_id, &mut clif_ctx) {
-                diagnostics.error(format!("failed to define env destructor '{dtor_name}': {e}"));
+                diagnostics.error(format!(
+                    "failed to define env destructor '{dtor_name}': {e}"
+                ));
                 continue;
             }
 
@@ -429,7 +464,7 @@ impl CraneliftBackend {
         let mut gen = drop_glue::DropGlueGenerator::new();
         let mut result = FxHashMap::default();
 
-        for (_, mir_func) in &mir.functions {
+        for mir_func in mir.functions.values() {
             for local_decl in &mir_func.locals {
                 self.collect_elem_dtors(local_decl.ty, table, stubs, &mut gen, &mut result);
             }
@@ -451,7 +486,9 @@ impl CraneliftBackend {
         match ty {
             Ty::List(elem) | Ty::Set(elem) => {
                 let elem = *elem;
-                if let Some(fid) = gen.get_or_generate_elem_dtor(elem, table, stubs, &mut self.module) {
+                if let Some(fid) =
+                    gen.get_or_generate_elem_dtor(elem, table, stubs, &mut self.module)
+                {
                     result.insert(elem, fid);
                 }
                 self.collect_elem_dtors(elem, table, stubs, gen, result);
@@ -459,10 +496,12 @@ impl CraneliftBackend {
             Ty::Map(k, v) => {
                 let k = *k;
                 let v = *v;
-                if let Some(fid) = gen.get_or_generate_elem_dtor(k, table, stubs, &mut self.module) {
+                if let Some(fid) = gen.get_or_generate_elem_dtor(k, table, stubs, &mut self.module)
+                {
                     result.insert(k, fid);
                 }
-                if let Some(fid) = gen.get_or_generate_elem_dtor(v, table, stubs, &mut self.module) {
+                if let Some(fid) = gen.get_or_generate_elem_dtor(v, table, stubs, &mut self.module)
+                {
                     result.insert(v, fid);
                 }
                 self.collect_elem_dtors(k, table, stubs, gen, result);
@@ -492,7 +531,7 @@ impl CraneliftBackend {
         let ptr_type = self.module.target_config().pointer_type();
         let is_lambda = definitions
             .get(mir_func.def_id)
-            .map_or(false, |info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
+            .is_some_and(|info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
 
         // Create the Cranelift function.
         let param_types: Vec<_> = mir_func.locals[1..=mir_func.param_count as usize]
@@ -513,8 +552,9 @@ impl CraneliftBackend {
         // Lambda functions have a hidden env_ptr parameter.
         // If sret is present (aggregate return), env_ptr goes after sret.
         if is_lambda {
-            let insert_pos = if sret { 1 } else { 0 };
-            sig.params.insert(insert_pos, cranelift_codegen::ir::AbiParam::new(ptr_type));
+            let insert_pos = usize::from(sret);
+            sig.params
+                .insert(insert_pos, cranelift_codegen::ir::AbiParam::new(ptr_type));
         }
 
         let mut func = Function::with_name_signature(
@@ -531,14 +571,12 @@ impl CraneliftBackend {
 
         // Set up the entry block with parameters.
         let entry_block = fctx.clif_block(spark_mir::BlockId::ENTRY);
-        fctx.builder.append_block_params_for_function_params(entry_block);
+        fctx.builder
+            .append_block_params_for_function_params(entry_block);
         fctx.builder.switch_to_block(entry_block);
 
         // Map function parameters to locals.
-        let entry_params: Vec<_> = fctx
-            .builder
-            .block_params(entry_block)
-            .to_vec();
+        let entry_params: Vec<_> = fctx.builder.block_params(entry_block).to_vec();
 
         // Hidden params come first: sret (if aggregate return), then env_ptr (if lambda).
         // param_start tracks where user params begin.
@@ -558,18 +596,13 @@ impl CraneliftBackend {
         for i in 1..=mir_func.param_count {
             let local = Local(i);
             let ty_id = fctx.local_type_id(local);
-            if !abi::is_zero_sized(ty_id, table)
-                && param_idx < entry_params.len()
-            {
+            if !abi::is_zero_sized(ty_id, table) && param_idx < entry_params.len() {
                 let param_val = entry_params[param_idx];
 
                 // Aggregate params arrive as pointers — copy caller data into
                 // the callee's stack slot so field accesses read correct values.
-                if let LocalStorage::StackSlot(slot, size) =
-                    fctx.local_storage(local)
-                {
-                    let dest_addr =
-                        fctx.builder.ins().stack_addr(fctx.ptr_type, slot, 0);
+                if let LocalStorage::StackSlot(slot, size) = fctx.local_storage(local) {
+                    let dest_addr = fctx.builder.ins().stack_addr(fctx.ptr_type, slot, 0);
                     let config = self.module.target_config();
                     fctx.builder.emit_small_memory_copy(
                         config,
@@ -602,7 +635,8 @@ impl CraneliftBackend {
                     offset = align_to_u32(offset, cap_layout.align);
 
                     if abi::is_scalar(*cap_ty, table) {
-                        if let Some(clif_ty) = clif_types::local_clif_type(*cap_ty, table, ptr_type) {
+                        if let Some(clif_ty) = clif_types::local_clif_type(*cap_ty, table, ptr_type)
+                        {
                             let val = fctx.builder.ins().load(
                                 clif_ty,
                                 MemFlags::new(),
@@ -611,19 +645,20 @@ impl CraneliftBackend {
                             );
                             fctx.write_local(local, val);
                         }
-                    } else if let LocalStorage::StackSlot(slot, size) =
-                        fctx.local_storage(local)
-                    {
+                    } else if let LocalStorage::StackSlot(slot, size) = fctx.local_storage(local) {
                         // Aggregate capture — memcpy from env to local's stack slot.
-                        let src = fctx.builder.ins().iadd_imm(
-                            env_ptr_val,
-                            i64::from(offset),
-                        );
+                        let src = fctx.builder.ins().iadd_imm(env_ptr_val, i64::from(offset));
                         let dest = fctx.builder.ins().stack_addr(fctx.ptr_type, slot, 0);
                         let config = self.module.target_config();
                         fctx.builder.emit_small_memory_copy(
-                            config, dest, src, u64::from(size),
-                            1, 1, true, MemFlags::new(),
+                            config,
+                            dest,
+                            src,
+                            u64::from(size),
+                            1,
+                            1,
+                            true,
+                            MemFlags::new(),
                         );
                     }
 
@@ -654,17 +689,23 @@ impl CraneliftBackend {
                 fctx.builder.switch_to_block(clif_block);
             }
 
+            let ecx = context::EmitCtx {
+                table,
+                definitions,
+                func_ids,
+                thunk_ids,
+                dtor_ids,
+                elem_dtor_ids,
+                poll_fn_map,
+                lambda_to_async,
+            };
+
             // Emit statements.
             for stmt in &mir_block.statements {
                 emit_stmt::emit_statement(
                     &mut fctx,
                     stmt,
-                    table,
-                    definitions,
-                    func_ids,
-                    thunk_ids,
-                    dtor_ids,
-                    elem_dtor_ids,
+                    &ecx,
                     &mut self.module,
                     diagnostics,
                 );
@@ -674,15 +715,8 @@ impl CraneliftBackend {
             emit_term::emit_terminator(
                 &mut fctx,
                 &mir_block.terminator,
-                table,
-                definitions,
-                func_ids,
-                thunk_ids,
-                dtor_ids,
-                elem_dtor_ids,
+                &ecx,
                 &mut self.module,
-                poll_fn_map,
-                lambda_to_async,
                 diagnostics,
             );
         }
@@ -733,13 +767,15 @@ impl CodegenBackend for CraneliftBackend {
         // For each lambda that calls an async function with a poll entry,
         // record the mapping so emit_spawn_call can use the cooperative path.
         let mut lambda_to_async: FxHashMap<DefId, DefId> = FxHashMap::default();
-        for (_, mir_func) in &mir.functions {
+        for mir_func in mir.functions.values() {
             for block in &mir_func.blocks {
-                if let spark_mir::Terminator::Call { func, .. } = &block.terminator {
-                    if let spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(callee)) = func {
-                        if poll_fn_map.contains_key(callee) {
-                            lambda_to_async.insert(mir_func.def_id, *callee);
-                        }
+                if let spark_mir::Terminator::Call {
+                    func: spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(callee)),
+                    ..
+                } = &block.terminator
+                {
+                    if poll_fn_map.contains_key(callee) {
+                        lambda_to_async.insert(mir_func.def_id, *callee);
                     }
                 }
             }
@@ -810,28 +846,26 @@ const fn align_to_u32(offset: u32, align: u32) -> u32 {
 /// Binding methods are mangled as `TypeName$method_name` to avoid clashing
 /// with free functions that share the same name in the same module.
 fn function_name(def_id: DefId, definitions: &DefinitionTable) -> String {
-    definitions
-        .get(def_id)
-        .map_or_else(
-            || format!("__spark_fn_{}", def_id.as_u32()),
-            |info| {
-                let name = info.name.as_str();
-                if let spark_resolve::DefinitionKind::BindingMethod(type_def_id) = info.kind {
-                    let type_name = definitions
-                        .get(type_def_id)
-                        .map_or("?", |t| t.name.as_str());
-                    if info.module.is_root() {
-                        format!("{type_name}${name}")
-                    } else {
-                        format!("{}::{type_name}${name}", info.module)
-                    }
-                } else if name == "main" {
-                    "main".to_string()
-                } else if info.module.is_root() {
-                    name.to_string()
+    definitions.get(def_id).map_or_else(
+        || format!("__spark_fn_{}", def_id.as_u32()),
+        |info| {
+            let name = info.name.as_str();
+            if let spark_resolve::DefinitionKind::BindingMethod(type_def_id) = info.kind {
+                let type_name = definitions
+                    .get(type_def_id)
+                    .map_or("?", |t| t.name.as_str());
+                if info.module.is_root() {
+                    format!("{type_name}${name}")
                 } else {
-                    format!("{}::{name}", info.module)
+                    format!("{}::{type_name}${name}", info.module)
                 }
-            },
-        )
+            } else if name == "main" {
+                "main".to_string()
+            } else if info.module.is_root() {
+                name.to_string()
+            } else {
+                format!("{}::{name}", info.module)
+            }
+        },
+    )
 }

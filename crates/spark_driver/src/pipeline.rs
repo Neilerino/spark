@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use spark_ast::Ast;
-use spark_package::{LinkKind, LinkLibrary};
 use spark_borrow::BorrowInput;
 use spark_codegen::{CodegenInput, TargetSpec};
 use spark_diagnostics::Diagnostics;
@@ -17,6 +16,7 @@ use spark_hir::HirInput;
 use spark_lexer::Lexer;
 use spark_mir::MirInput;
 use spark_modules::ModuleResolverInput;
+use spark_package::{LinkKind, LinkLibrary};
 use spark_parser::parse;
 use spark_resolve::ResolverInput;
 use spark_span::{FileId, SourceMap};
@@ -72,7 +72,11 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     // Inject standard library sources first so they're available as modules.
     for stdlib_src in spark_stdlib::stdlib_sources() {
         let file_id = source_map.add_file(stdlib_src.path, stdlib_src.source);
-        file_entries.push((file_id, PathBuf::from(stdlib_src.path), stdlib_src.source.to_string()));
+        file_entries.push((
+            file_id,
+            PathBuf::from(stdlib_src.path),
+            stdlib_src.source.to_string(),
+        ));
     }
 
     for (rel_path, source) in sources {
@@ -215,13 +219,12 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     emit_warnings(&borrow_output.diagnostics, &source_map);
 
     // -- Phase 10.25: Async state machine transform ----------------------------
-    let async_output = spark_mir::async_transform::transform(
-        spark_mir::async_transform::AsyncTransformInput {
+    let async_output =
+        spark_mir::async_transform::transform(spark_mir::async_transform::AsyncTransformInput {
             mir: borrow_output.mir,
             table: borrow_output.table,
-            definitions: definitions.clone(),
-        },
-    );
+            definitions,
+        });
     emit_warnings(&async_output.diagnostics, &source_map);
     let definitions = async_output.definitions;
 
@@ -259,7 +262,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
 }
 
 /// Returns the current target OS name for platform conditional evaluation.
-fn current_target_os() -> &'static str {
+const fn current_target_os() -> &'static str {
     if cfg!(target_os = "linux") {
         "linux"
     } else if cfg!(target_os = "macos") {

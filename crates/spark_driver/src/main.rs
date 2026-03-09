@@ -191,7 +191,7 @@ fn cmd_build(
         .to_path_buf();
 
     let files = if single_file {
-        vec![abs_input.clone()]
+        vec![abs_input]
     } else {
         discover_project_files(&abs_input, &abs_root)?
     };
@@ -217,9 +217,10 @@ fn cmd_build(
                 match spark_package::resolve_all_deps(&manifest, &abs_root) {
                     Ok(resolved) => {
                         sources.extend(
-                            resolved.sources.iter().map(|s| {
-                                (s.module_path.clone(), s.source.clone())
-                            }),
+                            resolved
+                                .sources
+                                .iter()
+                                .map(|s| (s.module_path.clone(), s.source.clone())),
                         );
 
                         // Collect transitive link info from dependencies.
@@ -344,12 +345,15 @@ fn cmd_init(name: Option<&str>) -> Result<(), ()> {
         return Err(());
     }
 
-    let project_name = name.map(String::from).unwrap_or_else(|| {
-        cwd.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("spark-project")
-            .to_string()
-    });
+    let project_name = name.map_or_else(
+        || {
+            cwd.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("spark-project")
+                .to_string()
+        },
+        String::from,
+    );
 
     let contents = format!(
         "[project]\nname = \"{project_name}\"\nversion = \"0.1.0\"\nentry = \"main.spark\"\n\n[dependencies]\n\n[build]\nlinks = []\nlink-paths = []\n"
@@ -408,9 +412,14 @@ fn cmd_deps() -> Result<(), ()> {
     );
 
     if !resolved.lock.packages.is_empty() {
-        println!("Wrote Spark.lock with {} git package{}.",
+        println!(
+            "Wrote Spark.lock with {} git package{}.",
             resolved.lock.packages.len(),
-            if resolved.lock.packages.len() == 1 { "" } else { "s" },
+            if resolved.lock.packages.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
         );
     }
 
@@ -451,18 +460,18 @@ fn cmd_publish(token: Option<&str>) -> Result<(), ()> {
 
     println!("Packaging {name} v{version}...");
 
-    let (tarball, checksum) =
-        spark_package::publish::package_project(&cwd).map_err(|e| {
-            eprintln!("error: {e}");
-        })?;
+    let (tarball, checksum) = spark_package::publish::package_project(&cwd).map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
 
     println!("Uploading to GitHub Releases...");
 
-    let download_url =
-        spark_package::publish::upload_release(&tarball, repo_url, name, version, token)
-            .map_err(|e| {
-                eprintln!("error: {e}");
-            })?;
+    let download_url = spark_package::publish::upload_release(
+        &tarball, repo_url, name, version, token,
+    )
+    .map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
 
     // Clean up local tarball.
     let _ = fs::remove_file(&tarball);
@@ -549,10 +558,10 @@ fn cmd_search(query: &str) -> Result<(), ()> {
     );
 
     for pkg in &results {
-        let latest = pkg.versions.last().map_or_else(
-            || "—".to_string(),
-            |v| v.version.to_string(),
-        );
+        let latest = pkg
+            .versions
+            .last()
+            .map_or_else(|| "—".to_string(), |v| v.version.to_string());
         println!("  {} v{}  — {}", pkg.name, latest, pkg.description);
     }
 
@@ -577,21 +586,17 @@ fn cmd_add(package: &str, version: Option<&str>) -> Result<(), ()> {
         eprintln!("error: {e}");
     })?;
 
-    let metadata =
-        spark_package::registry::lookup_package(&index_path, package).map_err(|e| {
-            eprintln!("error: {e}");
-        })?;
+    let metadata = spark_package::registry::lookup_package(&index_path, package).map_err(|e| {
+        eprintln!("error: {e}");
+    })?;
 
     let version_str = if let Some(v) = version {
         v.to_string()
     } else {
         // Use the latest version as a bare version constraint.
-        let latest = metadata
-            .versions
-            .last()
-            .ok_or_else(|| {
-                eprintln!("error: package `{package}` has no published versions");
-            })?;
+        let latest = metadata.versions.last().ok_or_else(|| {
+            eprintln!("error: package `{package}` has no published versions");
+        })?;
         latest.version.to_string()
     };
 
@@ -601,9 +606,11 @@ fn cmd_add(package: &str, version: Option<&str>) -> Result<(), ()> {
     })?;
 
     // Add to Spark.toml.
-    spark_package::manifest::add_dependency(&manifest_path, package, &version_str).map_err(|e| {
-        eprintln!("error: {e}");
-    })?;
+    spark_package::manifest::add_dependency(&manifest_path, package, &version_str).map_err(
+        |e| {
+            eprintln!("error: {e}");
+        },
+    )?;
 
     println!("Added `{package} = \"{version_str}\"` to Spark.toml");
 
@@ -770,10 +777,7 @@ fn link_object(
 
     // Write object to a unique temp file (avoid races when multiple spark
     // processes link concurrently, e.g. during parallel test execution).
-    let tmp_obj = std::env::temp_dir().join(format!(
-        "spark_output_{}.o",
-        std::process::id()
-    ));
+    let tmp_obj = std::env::temp_dir().join(format!("spark_output_{}.o", std::process::id()));
     if fs::write(&tmp_obj, object_bytes).is_err() {
         eprintln!("error: could not write object file");
         return Err(());

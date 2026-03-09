@@ -117,7 +117,7 @@ pub fn extract_facts(func: &MirFunction) -> BorrowFacts {
     facts
 }
 
-/// Resolves move chains for loan ref_locals.
+/// Resolves move chains for loan `ref_locals`.
 ///
 /// When the MIR lowering creates `_tmp = Ref(...)` followed by
 /// `_user = Move(_tmp)`, the loan's `ref_local` should be the user variable
@@ -283,8 +283,12 @@ fn collect_rvalue_uses(rvalue: &Rvalue, point: Point, facts: &mut BorrowFacts) {
                 collect_operand_uses(op, point, facts);
             }
         }
-        Rvalue::ListRange { start, end, step, .. }
-        | Rvalue::RangeLen { start, end, step, .. } => {
+        Rvalue::ListRange {
+            start, end, step, ..
+        }
+        | Rvalue::RangeLen {
+            start, end, step, ..
+        } => {
             collect_operand_uses(start, point, facts);
             collect_operand_uses(end, point, facts);
             collect_operand_uses(step, point, facts);
@@ -292,9 +296,9 @@ fn collect_rvalue_uses(rvalue: &Rvalue, point: Point, facts: &mut BorrowFacts) {
         Rvalue::Discriminant(place) => {
             facts.uses.push((point, place.local));
         }
-        Rvalue::Use(operand)
-        | Rvalue::UnaryOp(_, operand)
-        | Rvalue::Cast { operand, .. } => collect_operand_uses(operand, point, facts),
+        Rvalue::Use(operand) | Rvalue::UnaryOp(_, operand) | Rvalue::Cast { operand, .. } => {
+            collect_operand_uses(operand, point, facts);
+        }
     }
 }
 
@@ -373,9 +377,7 @@ mod tests {
                 statements: vec![
                     Statement::Assign {
                         place: Place::from_local(Local(1)),
-                        rvalue: Rvalue::Use(Operand::Constant(
-                            spark_mir::Constant::Int(42),
-                        )),
+                        rvalue: Rvalue::Use(Operand::Constant(spark_mir::Constant::Int(42))),
                         span: Span::DUMMY,
                     },
                     Statement::Assign {

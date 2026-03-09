@@ -45,8 +45,7 @@ fn check_conflicting_borrows(
     }
 
     // Build a map from LoanId to the loan.
-    let loan_map: FxHashMap<LoanId, &Loan> =
-        facts.loans.iter().map(|l| (l.id, l)).collect();
+    let loan_map: FxHashMap<LoanId, &Loan> = facts.loans.iter().map(|l| (l.id, l)).collect();
 
     // Build inverted index: point -> [active loan ids].
     // This replaces the O(P×R) scan with O(total_region_points) construction.
@@ -86,9 +85,7 @@ fn check_conflicting_borrows(
                     && (first_loan.mutable || second_loan.mutable)
                 {
                     reported.insert(pair);
-                    errors::emit_conflicting_borrows(
-                        diagnostics, first_loan, second_loan, func,
-                    );
+                    errors::emit_conflicting_borrows(diagnostics, first_loan, second_loan, func);
                 }
             }
         }
@@ -97,19 +94,25 @@ fn check_conflicting_borrows(
 
 /// Returns a canonically ordered pair of loan IDs (smaller first).
 const fn ordered_pair(a: LoanId, b: LoanId) -> (LoanId, LoanId) {
-    if a.0 < b.0 { (a, b) } else { (b, a) }
+    if a.0 < b.0 {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 /// Collects the set of locals used as arguments at each call-site point.
 ///
-/// Returns a map from the terminator point (block, stmt_count) to the set of
+/// Returns a map from the terminator point (block, `stmt_count`) to the set of
 /// locals that appear as operands in the `Call` terminator's arguments (including
 /// the function operand itself).
-#[allow(clippy::cast_possible_truncation)]
 fn collect_call_arg_locals(func: &MirFunction) -> FxHashMap<Point, FxHashSet<Local>> {
     let mut result = FxHashMap::default();
     for (block_idx, block) in func.blocks.iter().enumerate() {
-        if let Terminator::Call { func: fn_op, args, .. } = &block.terminator {
+        if let Terminator::Call {
+            func: fn_op, args, ..
+        } = &block.terminator
+        {
             let point = Point::new(
                 spark_mir::BlockId(block_idx as u32),
                 block.statements.len() as u32,
@@ -292,10 +295,7 @@ fn check_mutation_through_immutable_ref(
         for (stmt_idx, stmt) in block.statements.iter().enumerate() {
             if let Statement::Assign { place, .. } = stmt {
                 if is_deref_of_immutable(place, &immutable_ref_locals) {
-                    let point = Point::new(
-                        spark_mir::BlockId(block_idx as u32),
-                        stmt_idx as u32,
-                    );
+                    let point = Point::new(spark_mir::BlockId(block_idx as u32), stmt_idx as u32);
                     errors::emit_mutation_through_immutable_ref(diagnostics, point, func);
                 }
             }
@@ -327,10 +327,7 @@ fn check_dangling_returns(
                 if place.projections.is_empty() {
                     if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rvalue {
                         if src.projections.is_empty() {
-                            sources_of
-                                .entry(place.local)
-                                .or_default()
-                                .push(src.local);
+                            sources_of.entry(place.local).or_default().push(src.local);
                         }
                     }
                 }
@@ -399,9 +396,7 @@ fn check_aliasing_call_args(
             let mut seen: FxHashMap<Local, usize> = FxHashMap::default();
             for (i, arg) in args.iter().enumerate() {
                 let local = match arg {
-                    Operand::Copy(place) | Operand::Move(place)
-                        if place.projections.is_empty() =>
-                    {
+                    Operand::Copy(place) | Operand::Move(place) if place.projections.is_empty() => {
                         place.local
                     }
                     _ => continue,
@@ -422,7 +417,10 @@ fn check_aliasing_call_args(
 /// Returns true if a place writes through an immutable-ref deref.
 fn is_deref_of_immutable(place: &Place, immutable_ref_locals: &FxHashSet<Local>) -> bool {
     // Check if the place has a Deref projection and the root local is an immutable ref.
-    if place.projections.iter().any(|p| matches!(p, Projection::Deref))
+    if place
+        .projections
+        .iter()
+        .any(|p| matches!(p, Projection::Deref))
         && immutable_ref_locals.contains(&place.local)
     {
         return true;
@@ -459,12 +457,19 @@ fn places_overlap(a: &Place, b: &Place) -> bool {
 fn projections_equal(a: &Projection, b: &Projection) -> bool {
     match (a, b) {
         (Projection::Field(f1), Projection::Field(f2)) => f1 == f2,
-        (Projection::Deref, Projection::Deref)
-        | (Projection::Index(_), Projection::Index(_)) => true,
+        (Projection::Deref, Projection::Deref) | (Projection::Index(_), Projection::Index(_)) => {
+            true
+        }
         (Projection::UnionPayload(t1), Projection::UnionPayload(t2)) => t1 == t2,
         (
-            Projection::EnumField { variant: v1, index: i1 },
-            Projection::EnumField { variant: v2, index: i2 },
+            Projection::EnumField {
+                variant: v1,
+                index: i1,
+            },
+            Projection::EnumField {
+                variant: v2,
+                index: i2,
+            },
         ) => v1 == v2 && i1 == i2,
         _ => false,
     }
@@ -482,20 +487,13 @@ fn is_before(before: Point, after: Point, facts: &BorrowFacts) -> bool {
 }
 
 /// Returns true if block `from` can reach block `to` via CFG edges.
-fn block_can_reach(
-    from: spark_mir::BlockId,
-    to: spark_mir::BlockId,
-    facts: &BorrowFacts,
-) -> bool {
+fn block_can_reach(from: spark_mir::BlockId, to: spark_mir::BlockId, facts: &BorrowFacts) -> bool {
     // Build block-level successors from CFG edges.
     let mut successors: FxHashMap<spark_mir::BlockId, Vec<spark_mir::BlockId>> =
         FxHashMap::default();
     for &(p_from, p_to) in &facts.cfg_edges {
         if p_from.block != p_to.block {
-            successors
-                .entry(p_from.block)
-                .or_default()
-                .push(p_to.block);
+            successors.entry(p_from.block).or_default().push(p_to.block);
         }
     }
 
@@ -547,12 +545,10 @@ fn is_between(before: Point, middle: Point, after: Point, facts: &BorrowFacts) -
 
     // Cross-block: check if before→middle and middle→after are both reachable.
     if before.block == middle.block {
-        return middle.index > before.index
-            && block_can_reach(middle.block, after.block, facts);
+        return middle.index > before.index && block_can_reach(middle.block, after.block, facts);
     }
     if middle.block == after.block {
-        return middle.index < after.index
-            && block_can_reach(before.block, middle.block, facts);
+        return middle.index < after.index && block_can_reach(before.block, middle.block, facts);
     }
 
     block_can_reach(before.block, middle.block, facts)
@@ -591,8 +587,22 @@ mod tests {
             param_count: 0,
             return_type: TypeId::ERROR,
             locals: vec![
-                LocalDecl { local: Local(0), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: TypeId::ERROR, name: Some(spark_intern::sym("x")), is_user_variable: true, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: TypeId::ERROR,
+                    name: Some(spark_intern::sym("x")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![
@@ -616,7 +626,10 @@ mod tests {
         };
 
         let diags = check_func(&func);
-        assert!(!diags.has_errors(), "Expected no errors for simple copy code");
+        assert!(
+            !diags.has_errors(),
+            "Expected no errors for simple copy code"
+        );
     }
 
     #[test]
@@ -632,14 +645,20 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..6).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
-                is_user_variable: i > 0,
-                mutable: false,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..6)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: false,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![BasicBlock {
                 statements: vec![
                     Statement::Assign {
@@ -649,12 +668,18 @@ mod tests {
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: false,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(3)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: false,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
@@ -710,14 +735,20 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..6).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
-                is_user_variable: i > 0,
-                mutable: i == 1,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..6)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: i == 1,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![BasicBlock {
                 statements: vec![
                     Statement::Assign {
@@ -727,12 +758,18 @@ mod tests {
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: true,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(3)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: true,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
@@ -787,14 +824,20 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..6).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
-                is_user_variable: i > 0,
-                mutable: i == 1,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..6)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: i == 1,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![BasicBlock {
                 statements: vec![
                     Statement::Assign {
@@ -804,12 +847,18 @@ mod tests {
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: false,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(3)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: true,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
@@ -861,14 +910,20 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..3).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
-                is_user_variable: i > 0,
-                mutable: false,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..3)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: false,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![BasicBlock {
                 statements: vec![
                     Statement::Assign {
@@ -896,10 +951,7 @@ mod tests {
         };
 
         let diags = check_func(&func);
-        assert!(
-            diags.has_errors(),
-            "Use after move should be an error"
-        );
+        assert!(diags.has_errors(), "Use after move should be an error");
     }
 
     #[test]
@@ -920,7 +972,8 @@ mod tests {
     fn places_overlap_prefix() {
         let a = Place::from_local(Local(1));
         let mut b = Place::from_local(Local(1));
-        b.projections.push(Projection::Field(spark_intern::sym("x")));
+        b.projections
+            .push(Projection::Field(spark_intern::sym("x")));
         assert!(places_overlap(&a, &b));
     }
 
@@ -932,8 +985,22 @@ mod tests {
             param_count: 1,
             return_type: TypeId::ERROR,
             locals: vec![
-                LocalDecl { local: Local(0), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: TypeId::ERROR, name: Some(spark_intern::sym("x")), is_user_variable: true, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: TypeId::ERROR,
+                    name: Some(spark_intern::sym("x")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![Statement::Assign {
@@ -964,14 +1031,20 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..3).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
-                is_user_variable: i > 0,
-                mutable: false,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..3)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: false,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![BasicBlock {
                 statements: vec![
                     Statement::Assign {
@@ -981,7 +1054,10 @@ mod tests {
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: false,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
@@ -1108,14 +1184,20 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..5).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
-                is_user_variable: i > 0,
-                mutable: i == 1,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..5)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: i == 1,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![BasicBlock {
                 statements: vec![
                     Statement::Assign {
@@ -1125,7 +1207,10 @@ mod tests {
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: true,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
@@ -1185,14 +1270,20 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..6).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
-                is_user_variable: i > 0,
-                mutable: i == 1,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..6)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: i == 1,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![
                 BasicBlock {
                     statements: vec![
@@ -1203,12 +1294,18 @@ mod tests {
                         },
                         Statement::Assign {
                             place: Place::from_local(Local(2)),
-                            rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                            rvalue: Rvalue::Ref {
+                                place: Place::from_local(Local(1)),
+                                mutable: true,
+                            },
                             span: Span::DUMMY,
                         },
                         Statement::Assign {
                             place: Place::from_local(Local(3)),
-                            rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                            rvalue: Rvalue::Ref {
+                                place: Place::from_local(Local(1)),
+                                mutable: false,
+                            },
                             span: Span::DUMMY,
                         },
                     ],
@@ -1260,14 +1357,20 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..6).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
-                is_user_variable: i > 0,
-                mutable: i == 1,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..6)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: i == 1,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![
                 BasicBlock {
                     statements: vec![
@@ -1278,12 +1381,18 @@ mod tests {
                         },
                         Statement::Assign {
                             place: Place::from_local(Local(2)),
-                            rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                            rvalue: Rvalue::Ref {
+                                place: Place::from_local(Local(1)),
+                                mutable: true,
+                            },
                             span: Span::DUMMY,
                         },
                         Statement::Assign {
                             place: Place::from_local(Local(3)),
-                            rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                            rvalue: Rvalue::Ref {
+                                place: Place::from_local(Local(1)),
+                                mutable: true,
+                            },
                             span: Span::DUMMY,
                         },
                     ],
@@ -1337,14 +1446,20 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..6).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
-                is_user_variable: i > 0,
-                mutable: i == 1,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..6)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: i == 1,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![BasicBlock {
                 statements: vec![
                     Statement::Assign {
@@ -1354,12 +1469,18 @@ mod tests {
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: true,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(3)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: false,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
@@ -1425,14 +1546,20 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..6).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else { None },
-                is_user_variable: i > 0,
-                mutable: i == 1,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..6)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: i == 1,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![BasicBlock {
                 statements: vec![
                     Statement::Assign {
@@ -1442,7 +1569,10 @@ mod tests {
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: true,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
@@ -1507,9 +1637,30 @@ mod tests {
             param_count: 0,
             return_type: TypeId::ERROR,
             locals: vec![
-                LocalDecl { local: Local(0), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: TypeId::ERROR, name: Some(spark_intern::sym("x")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(2), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: TypeId::ERROR,
+                    name: Some(spark_intern::sym("x")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(2),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![
@@ -1520,7 +1671,10 @@ mod tests {
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: false,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
@@ -1556,14 +1710,22 @@ mod tests {
             def_id: DefId::new(0),
             param_count: 0,
             return_type: TypeId::ERROR,
-            locals: (0..4).map(|i| LocalDecl {
-                local: Local(i),
-                ty: TypeId::ERROR,
-                name: if i == 1 { Some(spark_intern::sym("x")) } else if i == 2 { Some(spark_intern::sym("r")) } else { None },
-                is_user_variable: i > 0,
-                mutable: i >= 1,
-                span: Span::DUMMY,
-            }).collect(),
+            locals: (0..4)
+                .map(|i| LocalDecl {
+                    local: Local(i),
+                    ty: TypeId::ERROR,
+                    name: if i == 1 {
+                        Some(spark_intern::sym("x"))
+                    } else if i == 2 {
+                        Some(spark_intern::sym("r"))
+                    } else {
+                        None
+                    },
+                    is_user_variable: i > 0,
+                    mutable: i >= 1,
+                    span: Span::DUMMY,
+                })
+                .collect(),
             blocks: vec![
                 BasicBlock {
                     statements: vec![
@@ -1574,7 +1736,10 @@ mod tests {
                         },
                         Statement::Assign {
                             place: Place::from_local(Local(2)),
-                            rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                            rvalue: Rvalue::Ref {
+                                place: Place::from_local(Local(1)),
+                                mutable: true,
+                            },
                             span: Span::DUMMY,
                         },
                     ],
@@ -1621,15 +1786,39 @@ mod tests {
             param_count: 1,
             return_type: TypeId::ERROR,
             locals: vec![
-                LocalDecl { local: Local(0), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: TypeId::ERROR, name: Some(spark_intern::sym("x")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(2), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: TypeId::ERROR,
+                    name: Some(spark_intern::sym("x")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(2),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: false,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {

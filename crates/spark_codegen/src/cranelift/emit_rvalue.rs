@@ -10,44 +10,37 @@ use cranelift_module::Module;
 use spark_ast::{BinaryOp, UnaryOp};
 use spark_diagnostics::Diagnostics;
 use spark_mir::{AggregateKind, Constant, Local, Operand, Place, Projection, Rvalue};
-use spark_resolve::DefinitionTable;
 use spark_types::{FloatWidth, IntWidth, Ty, TypeId, TypeTable};
 
-use super::context::{FunctionContext, LocalStorage};
+use cranelift_module::FuncId;
+use rustc_hash::FxHashMap;
+
+use super::context::{EmitCtx, FunctionContext, LocalStorage};
 use super::types as clif_types;
 use crate::abi;
-
-use rustc_hash::FxHashMap;
-use cranelift_module::FuncId;
 
 /// Emits an rvalue and returns the resulting Cranelift value.
 ///
 /// For aggregate rvalues, writes directly to the destination and returns
 /// the destination address.
-#[allow(clippy::too_many_arguments)]
 pub fn emit_rvalue<M: Module>(
     ctx: &mut FunctionContext<'_>,
     rvalue: &Rvalue,
     dest_local: Local,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
     match rvalue {
-        Rvalue::Use(operand) => emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module),
+        Rvalue::Use(operand) => emit_operand(ctx, operand, ecx, module),
 
         Rvalue::BinaryOp(op, lhs, rhs) => {
-            let lhs_val = emit_operand(ctx, lhs, table, definitions, func_ids, thunk_ids, module)?;
-            let rhs_val = emit_operand(ctx, rhs, table, definitions, func_ids, thunk_ids, module)?;
+            let lhs_val = emit_operand(ctx, lhs, ecx, module)?;
+            let rhs_val = emit_operand(ctx, rhs, ecx, module)?;
 
             // String equality/inequality must call the runtime.
-            let lhs_ty = operand_type(lhs, ctx);
-            let (_, lhs_resolved) = clif_types::unwrap_mutable(lhs_ty, table);
+            let lhs_ty = operand_type(lhs, ctx, ecx.table);
+            let (_, lhs_resolved) = clif_types::unwrap_mutable(lhs_ty, ecx.table);
             if matches!(lhs_resolved, Ty::String) && matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
                 let func_ref = module.declare_func_in_func(ctx.stubs.string_eq, ctx.builder.func);
                 let call = ctx.builder.ins().call(func_ref, &[lhs_val, rhs_val]);
@@ -59,44 +52,44 @@ pub fn emit_rvalue<M: Module>(
                 }
             } else {
                 let result_ty = ctx.local_type_id(dest_local);
-                Some(emit_binop(ctx, *op, lhs_val, rhs_val, result_ty, table))
+                Some(emit_binop(ctx, *op, lhs_val, rhs_val, result_ty, lhs_ty, ecx.table))
             }
         }
 
         Rvalue::UnaryOp(op, operand) => {
-            let val = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module)?;
+            let val = emit_operand(ctx, operand, ecx, module)?;
             let result_ty = ctx.local_type_id(dest_local);
-            Some(emit_unaryop(ctx, *op, val, result_ty, table))
+            Some(emit_unaryop(ctx, *op, val, result_ty, ecx.table))
         }
 
         Rvalue::Ref { place, mutable: _ } => {
             // Take address of a place.
-            Some(emit_place_addr(ctx, place, table, module))
+            Some(emit_place_addr(ctx, place, ecx.table, module))
         }
 
         Rvalue::Aggregate(kind, operands) => {
-            emit_aggregate(ctx, kind, operands, dest_local, table, definitions, func_ids, thunk_ids, dtor_ids, elem_dtor_ids, module, diagnostics)
+            emit_aggregate(ctx, kind, operands, dest_local, ecx, module, diagnostics)
         }
 
         Rvalue::Discriminant(place) => {
-            Some(emit_discriminant(ctx, place, table, module))
+            Some(emit_discriminant(ctx, place, ecx.table, module))
         }
 
         Rvalue::Cast { operand, target_ty } => {
-            let val = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module)?;
+            let val = emit_operand(ctx, operand, ecx, module)?;
             // Determine source type from the operand.
-            let src_ty = operand_type(operand, ctx);
-            Some(emit_cast(ctx, val, src_ty, *target_ty, table))
+            let src_ty = operand_type(operand, ctx, ecx.table);
+            Some(emit_cast(ctx, val, src_ty, *target_ty, ecx.table))
         }
 
         Rvalue::StringInterp(operands) => {
-            emit_string_interp(ctx, operands, table, definitions, func_ids, thunk_ids, module)
+            emit_string_interp(ctx, operands, ecx, module)
         }
 
         Rvalue::ListRange { start, end, inclusive, step } => {
-            let start_val = emit_operand(ctx, start, table, definitions, func_ids, thunk_ids, module)?;
-            let end_val = emit_operand(ctx, end, table, definitions, func_ids, thunk_ids, module)?;
-            let step_val = emit_operand(ctx, step, table, definitions, func_ids, thunk_ids, module)?;
+            let start_val = emit_operand(ctx, start, ecx, module)?;
+            let end_val = emit_operand(ctx, end, ecx, module)?;
+            let step_val = emit_operand(ctx, step, ecx, module)?;
             let inclusive_val = ctx.builder.ins().iconst(types::I8, i64::from(u8::from(*inclusive)));
             let func_ref = module.declare_func_in_func(ctx.stubs.list_from_range, ctx.builder.func);
             let call = ctx.builder.ins().call(func_ref, &[start_val, end_val, inclusive_val, step_val]);
@@ -104,9 +97,9 @@ pub fn emit_rvalue<M: Module>(
         }
 
         Rvalue::RangeLen { start, end, inclusive, step } => {
-            let start_val = emit_operand(ctx, start, table, definitions, func_ids, thunk_ids, module)?;
-            let end_val = emit_operand(ctx, end, table, definitions, func_ids, thunk_ids, module)?;
-            let step_val = emit_operand(ctx, step, table, definitions, func_ids, thunk_ids, module)?;
+            let start_val = emit_operand(ctx, start, ecx, module)?;
+            let end_val = emit_operand(ctx, end, ecx, module)?;
+            let step_val = emit_operand(ctx, step, ecx, module)?;
             let inclusive_val = ctx.builder.ins().iconst(types::I8, i64::from(u8::from(*inclusive)));
             let func_ref = module.declare_func_in_func(ctx.stubs.range_len, ctx.builder.func);
             let call = ctx.builder.ins().call(func_ref, &[start_val, end_val, inclusive_val, step_val]);
@@ -116,31 +109,27 @@ pub fn emit_rvalue<M: Module>(
 }
 
 /// Emits an operand, returning the Cranelift value.
-#[allow(clippy::too_many_arguments)]
 pub fn emit_operand<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operand: &Operand,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) -> Option<Value> {
     match operand {
         Operand::Copy(place) => {
-            let val = emit_place_read(ctx, place, table, module);
+            let val = emit_place_read(ctx, place, ecx.table, module);
             // RC inc: when copying an RC'd value, increment its reference count.
             // Use the resolved place type (after projections) to avoid
             // incrementing non-RC values extracted from RC containers.
             let ty_id = if place.projections.is_empty() {
                 ctx.local_type_id(place.local)
             } else {
-                resolve_place_type(ctx, place, table)
+                resolve_place_type(ctx, place, ecx.table)
             };
-            if spark_drop::needs_rc(ty_id, table) {
+            if spark_drop::needs_rc(ty_id, ecx.table) {
                 let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
                 ctx.builder.ins().call(func_ref, &[val]);
-            } else if matches!(table.resolve(ty_id), Ty::Function { .. }) {
+            } else if matches!(ecx.table.resolve(ty_id), Ty::Function { .. }) {
                 // Function copy: RC inc the env_ptr (second slot of the fat pointer).
                 // val is the address of the fat pointer (fn_ptr, env_ptr).
                 let env_ptr = ctx.builder.ins().load(
@@ -156,10 +145,10 @@ pub fn emit_operand<M: Module>(
         }
         Operand::Move(place) => {
             // Move: no RC change — ownership transfers.
-            Some(emit_place_read(ctx, place, table, module))
+            Some(emit_place_read(ctx, place, ecx.table, module))
         }
         Operand::Constant(constant) => {
-            emit_constant(ctx, constant, definitions, func_ids, thunk_ids, module)
+            emit_constant(ctx, constant, ecx, module)
         }
     }
 }
@@ -173,9 +162,7 @@ pub fn emit_operand<M: Module>(
 fn emit_constant<M: Module>(
     ctx: &mut FunctionContext<'_>,
     constant: &Constant,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) -> Option<Value> {
     match constant {
@@ -224,14 +211,14 @@ fn emit_constant<M: Module>(
         Constant::FunctionRef(def_id) => {
             // For lambdas, use their own func_id (they already have env_ptr convention).
             // For named functions, use the thunk (which accepts+ignores env_ptr).
-            let is_lambda = definitions
+            let is_lambda = ecx.definitions
                 .get(*def_id)
                 .map_or(false, |info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
 
             let target_func_id = if is_lambda {
-                func_ids.get(def_id).copied()
+                ecx.func_ids.get(def_id).copied()
             } else {
-                thunk_ids.get(def_id).copied().or_else(|| func_ids.get(def_id).copied())
+                ecx.thunk_ids.get(def_id).copied().or_else(|| ecx.func_ids.get(def_id).copied())
             };
 
             // Always produce a fat pointer (fn_ptr, env_ptr) in a stack slot.
@@ -543,27 +530,35 @@ fn emit_binop(
     lhs: Value,
     rhs: Value,
     result_ty: TypeId,
+    lhs_ty: TypeId,
     table: &TypeTable,
 ) -> Value {
     let (_, ty) = clif_types::unwrap_mutable(result_ty, table);
 
-    // Check if the operands are float.
-    let is_float = matches!(ty, Ty::Float(_));
-    // For comparisons, the result is Bool but operands may be int/float.
-    // We need to detect this from the operation kind.
+    // For comparisons, the result is Bool but operand types determine
+    // int vs float and signedness. Use lhs_ty for those decisions.
     let is_comparison = op.is_comparison();
+    let (_, lhs_resolved) = clif_types::unwrap_mutable(lhs_ty, table);
 
-    if is_float && !is_comparison {
+    // Check if the operands are float (use lhs_ty for comparisons).
+    let operand_is_float = if is_comparison {
+        matches!(lhs_resolved, Ty::Float(_))
+    } else {
+        matches!(ty, Ty::Float(_))
+    };
+
+    if operand_is_float && !is_comparison {
         emit_float_binop(ctx, op, lhs, rhs)
     } else if is_comparison {
-        // For comparisons, check if result is Bool — the operand types determine int vs float.
-        // We'll check the lhs type by inspecting the cranelift value type.
-        let lhs_ty = ctx.builder.func.dfg.value_type(lhs);
-        if lhs_ty == types::F32 || lhs_ty == types::F64 {
+        if operand_is_float {
             emit_float_cmp(ctx, op, lhs, rhs)
         } else {
-            // Check if we need signed comparison.
-            emit_int_binop(ctx, op, lhs, rhs, true)
+            // Derive signedness from the LHS operand type.
+            let signed = match lhs_resolved {
+                Ty::Int(w) => abi::int_is_signed(*w),
+                _ => true,
+            };
+            emit_int_binop(ctx, op, lhs, rhs, signed)
         }
     } else {
         // Default: check if the result is a signed integer for div/mod.
@@ -752,21 +747,16 @@ fn emit_unaryop(
 }
 
 /// Emits an aggregate construction.
-#[allow(clippy::too_many_arguments)]
 fn emit_aggregate<M: Module>(
     ctx: &mut FunctionContext<'_>,
     kind: &AggregateKind,
     operands: &[Operand],
     dest_local: Local,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
+    let table = ecx.table;
     match kind {
         AggregateKind::Struct { def_id, fields } => {
             let dest_addr = ctx.local_stack_addr(dest_local)?;
@@ -783,7 +773,7 @@ fn emit_aggregate<M: Module>(
             };
 
             for (i, operand) in operands.iter().enumerate() {
-                if let Some(val) = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module) {
+                if let Some(val) = emit_operand(ctx, operand, ecx, module) {
                     let offset = sl.field_offsets[i];
                     ctx.store(val, dest_addr, i32::try_from(offset).unwrap_or(0));
                 }
@@ -823,7 +813,7 @@ fn emit_aggregate<M: Module>(
                     i,
                     table,
                 );
-                if let Some(val) = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module) {
+                if let Some(val) = emit_operand(ctx, operand, ecx, module) {
                     ctx.store(val, dest_addr, i32::try_from(offset).unwrap_or(0));
                 }
             }
@@ -846,7 +836,7 @@ fn emit_aggregate<M: Module>(
                         let elem_layout = ctx.layouts.layout_of(elem_types[i], table);
                         offset = align_to(offset, elem_layout.align);
 
-                        if let Some(val) = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module) {
+                        if let Some(val) = emit_operand(ctx, operand, ecx, module) {
                             ctx.store(val, dest_addr, i32::try_from(offset).unwrap_or(0));
                         }
 
@@ -860,26 +850,23 @@ fn emit_aggregate<M: Module>(
         }
 
         AggregateKind::List => {
-            emit_list_construction(ctx, operands, dest_local, table, definitions, func_ids, thunk_ids, elem_dtor_ids, module)
+            emit_list_construction(ctx, operands, dest_local, ecx, module)
         }
 
         AggregateKind::Map => {
-            emit_map_construction(ctx, operands, dest_local, table, definitions, func_ids, thunk_ids, elem_dtor_ids, module)
+            emit_map_construction(ctx, operands, dest_local, ecx, module)
         }
 
         AggregateKind::Set => {
-            emit_set_construction(ctx, operands, dest_local, table, definitions, func_ids, thunk_ids, elem_dtor_ids, module, diagnostics)
+            emit_set_construction(ctx, operands, dest_local, ecx, module, diagnostics)
         }
 
         AggregateKind::Closure { func_def_id } => {
-            emit_closure_construction(
-                ctx, *func_def_id, operands, dest_local, table, definitions,
-                func_ids, dtor_ids, module,
-            )
+            emit_closure_construction(ctx, *func_def_id, operands, dest_local, ecx, module)
         }
 
         AggregateKind::Union { union_ty, member_ty } => {
-            emit_union_construction(ctx, *union_ty, *member_ty, operands, dest_local, table, definitions, func_ids, thunk_ids, module)
+            emit_union_construction(ctx, *union_ty, *member_ty, operands, dest_local, ecx, module)
         }
 
         AggregateKind::Channel => {
@@ -905,18 +892,15 @@ fn emit_aggregate<M: Module>(
 /// Emits list construction: `[e1, e2, ...]`.
 ///
 /// Calls `__spark_list_new(elem_size)`, then `__spark_list_push` for each element.
-#[allow(clippy::too_many_arguments, clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)]
 fn emit_list_construction<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operands: &[Operand],
     dest_local: Local,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) -> Option<Value> {
+    let table = ecx.table;
     let dest_ty = ctx.local_type_id(dest_local);
     let (_, unwrapped) = clif_types::unwrap_mutable(dest_ty, table);
 
@@ -929,7 +913,7 @@ fn emit_list_construction<M: Module>(
     let elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(elem_layout.size));
 
     // Get the element destructor function address (or null).
-    let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, elem_dtor_ids, module);
+    let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
 
     // Call __spark_list_new(elem_size, elem_drop).
     let new_ref = module.declare_func_in_func(ctx.stubs.list_new, ctx.builder.func);
@@ -939,7 +923,7 @@ fn emit_list_construction<M: Module>(
     // Push each element.
     let push_ref = module.declare_func_in_func(ctx.stubs.list_push, ctx.builder.func);
     for operand in operands {
-        if let Some(elem_addr) = emit_operand_addr(ctx, operand, elem_ty, table, definitions, func_ids, thunk_ids, module) {
+        if let Some(elem_addr) = emit_operand_addr(ctx, operand, elem_ty, ecx, module) {
             ctx.builder.ins().call(push_ref, &[list_ptr, elem_addr]);
         }
     }
@@ -951,18 +935,15 @@ fn emit_list_construction<M: Module>(
 ///
 /// Calls `__spark_map_new(key_size, value_size)`, then `__spark_map_insert`
 /// for each key-value pair. Operands alternate: key, value, key, value, ...
-#[allow(clippy::too_many_arguments, clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)]
 fn emit_map_construction<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operands: &[Operand],
     dest_local: Local,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) -> Option<Value> {
+    let table = ecx.table;
     let dest_ty = ctx.local_type_id(dest_local);
     let (_, unwrapped) = clif_types::unwrap_mutable(dest_ty, table);
 
@@ -977,8 +958,8 @@ fn emit_map_construction<M: Module>(
     let val_size_val = ctx.builder.ins().iconst(types::I64, i64::from(val_layout.size));
 
     // Get key/value destructor function addresses (or null).
-    let key_drop_val = elem_dtor_func_addr(ctx, key_ty, elem_dtor_ids, module);
-    let val_drop_val = elem_dtor_func_addr(ctx, value_ty, elem_dtor_ids, module);
+    let key_drop_val = elem_dtor_func_addr(ctx, key_ty, ecx.elem_dtor_ids, module);
+    let val_drop_val = elem_dtor_func_addr(ctx, value_ty, ecx.elem_dtor_ids, module);
 
     // Call __spark_map_new(key_size, value_size, key_drop, val_drop).
     let new_ref = module.declare_func_in_func(ctx.stubs.map_new, ctx.builder.func);
@@ -989,8 +970,8 @@ fn emit_map_construction<M: Module>(
     let insert_ref = module.declare_func_in_func(ctx.stubs.map_insert, ctx.builder.func);
     let mut i = 0;
     while i + 1 < operands.len() {
-        let key_addr = emit_operand_addr(ctx, &operands[i], key_ty, table, definitions, func_ids, thunk_ids, module);
-        let val_addr = emit_operand_addr(ctx, &operands[i + 1], value_ty, table, definitions, func_ids, thunk_ids, module);
+        let key_addr = emit_operand_addr(ctx, &operands[i], key_ty, ecx, module);
+        let val_addr = emit_operand_addr(ctx, &operands[i + 1], value_ty, ecx, module);
         if let (Some(k), Some(v)) = (key_addr, val_addr) {
             ctx.builder.ins().call(insert_ref, &[map_ptr, k, v]);
         }
@@ -1003,19 +984,16 @@ fn emit_map_construction<M: Module>(
 /// Emits set construction.
 ///
 /// Calls `__spark_set_new(elem_size)`, then `__spark_set_insert` for each element.
-#[allow(clippy::too_many_arguments, clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps)]
 fn emit_set_construction<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operands: &[Operand],
     dest_local: Local,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
+    let table = ecx.table;
     let dest_ty = ctx.local_type_id(dest_local);
     let (_, unwrapped) = clif_types::unwrap_mutable(dest_ty, table);
 
@@ -1030,7 +1008,7 @@ fn emit_set_construction<M: Module>(
     let elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(elem_layout.size));
 
     // Get the element destructor function address (or null).
-    let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, elem_dtor_ids, module);
+    let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
 
     // Call __spark_set_new(elem_size, elem_drop).
     let new_ref = module.declare_func_in_func(ctx.stubs.set_new, ctx.builder.func);
@@ -1040,7 +1018,7 @@ fn emit_set_construction<M: Module>(
     // Insert each element.
     let insert_ref = module.declare_func_in_func(ctx.stubs.set_insert, ctx.builder.func);
     for operand in operands {
-        if let Some(elem_addr) = emit_operand_addr(ctx, operand, elem_ty, table, definitions, func_ids, thunk_ids, module) {
+        if let Some(elem_addr) = emit_operand_addr(ctx, operand, elem_ty, ecx, module) {
             ctx.builder.ins().call(insert_ref, &[set_ptr, elem_addr]);
         }
     }
@@ -1072,18 +1050,15 @@ fn elem_dtor_func_addr<M: Module>(
 /// 2. Calls `__spark_env_alloc(size)` to get the env pointer
 /// 3. Stores each captured value at the correct offset in the env
 /// 4. Writes `(fn_ptr, env_ptr)` into the destination stack slot (fat pointer)
-#[allow(clippy::too_many_arguments)]
 fn emit_closure_construction<M: Module>(
     ctx: &mut FunctionContext<'_>,
     func_def_id: spark_resolve::DefId,
     operands: &[Operand],
     dest_local: Local,
-    table: &TypeTable,
-    _definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) -> Option<Value> {
+    let table = ecx.table;
     let dest_addr = ctx.local_stack_addr(dest_local)?;
 
     // Compute env layout: each capture at its natural offset.
@@ -1111,7 +1086,7 @@ fn emit_closure_construction<M: Module>(
     let env_ptr = ctx.builder.inst_results(alloc_call)[0];
 
     // Store destructor pointer at offset 16 in the env header (if one was generated).
-    if let Some(&dtor_func_id) = dtor_ids.get(&func_def_id) {
+    if let Some(&dtor_func_id) = ecx.dtor_ids.get(&func_def_id) {
         let dtor_ref = module.declare_func_in_func(dtor_func_id, ctx.builder.func);
         let dtor_addr = ctx.builder.ins().func_addr(ctx.ptr_type, dtor_ref);
         ctx.builder.ins().store(MemFlags::new(), dtor_addr, env_ptr, 16);
@@ -1172,7 +1147,7 @@ fn emit_closure_construction<M: Module>(
     }
 
     // Get the function pointer for the lifted lambda.
-    let fn_ptr = if let Some(&fid) = func_ids.get(&func_def_id) {
+    let fn_ptr = if let Some(&fid) = ecx.func_ids.get(&func_def_id) {
         let func_ref = module.declare_func_in_func(fid, ctx.builder.func);
         ctx.builder.ins().func_addr(ctx.ptr_type, func_ref)
     } else {
@@ -1195,19 +1170,16 @@ fn emit_closure_construction<M: Module>(
 ///
 /// The tag byte is the index of `member_ty` in the union's member list.
 /// The payload is written at the union's payload offset.
-#[allow(clippy::too_many_arguments)]
 fn emit_union_construction<M: Module>(
     ctx: &mut FunctionContext<'_>,
     union_ty: TypeId,
     member_ty: TypeId,
     operands: &[Operand],
     dest_local: Local,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) -> Option<Value> {
+    let table = ecx.table;
     let dest_addr = ctx.local_stack_addr(dest_local)?;
 
     let ul = ctx.layouts.union_layout_of(union_ty, table);
@@ -1241,7 +1213,7 @@ fn emit_union_construction<M: Module>(
 
     // Write the payload at payload_offset.
     if let Some(operand) = operands.first() {
-        if let Some(val) = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module) {
+        if let Some(val) = emit_operand(ctx, operand, ecx, module) {
             let payload_addr = ctx.builder.ins().iadd_imm(dest_addr, i64::from(ul.payload_offset));
             if abi::is_scalar(member_ty, table) {
                 ctx.store(val, payload_addr, 0);
@@ -1380,13 +1352,30 @@ fn emit_cast(
 }
 
 /// Determines the type of an operand.
-fn operand_type(operand: &Operand, ctx: &FunctionContext<'_>) -> TypeId {
+///
+/// For constants, infers the type from the constant variant by looking up
+/// the corresponding pre-interned primitive type.
+fn operand_type(operand: &Operand, ctx: &FunctionContext<'_>, table: &TypeTable) -> TypeId {
     match operand {
         Operand::Copy(place) | Operand::Move(place) => ctx.local_type_id(place.local),
-        Operand::Constant(_) => {
-            // For constants, we use a best-effort approach.
-            // The actual type comes from the destination.
-            ctx.local_type_id(Local(0))
+        Operand::Constant(c) => {
+            let ty = match c {
+                Constant::Int(_) => Ty::Int(IntWidth::I64),
+                Constant::Float(_) => Ty::Float(FloatWidth::F64),
+                Constant::Bool(_) => Ty::Bool,
+                Constant::String(_) => Ty::String,
+                Constant::Char(_) => Ty::Char,
+                Constant::Null => Ty::Null,
+                Constant::Void => Ty::Void,
+                Constant::FunctionRef(_) | Constant::IntrinsicRef(_) => {
+                    // Function references are fat pointers; type depends on the
+                    // specific function. Fall back to the destination type.
+                    return ctx.local_type_id(Local(0));
+                }
+            };
+            // All primitive types are pre-interned by the builtins phase, so
+            // lookup will always succeed.
+            table.lookup(&ty).unwrap_or(TypeId::ERROR)
         }
     }
 }
@@ -1419,20 +1408,16 @@ pub fn store_scalar_to_temp(
 ///
 /// For scalars, stores the value into a temp stack slot and returns the address.
 /// For aggregates, the value *is* already an address.
-#[allow(clippy::too_many_arguments)]
 pub fn emit_operand_addr<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operand: &Operand,
     operand_ty: TypeId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) -> Option<Value> {
-    let val = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module)?;
-    if abi::is_scalar(operand_ty, table) {
-        Some(store_scalar_to_temp(ctx, val, operand_ty, table))
+    let val = emit_operand(ctx, operand, ecx, module)?;
+    if abi::is_scalar(operand_ty, ecx.table) {
+        Some(store_scalar_to_temp(ctx, val, operand_ty, ecx.table))
     } else {
         // Aggregate — val is already a pointer to the data.
         Some(val)
@@ -1441,16 +1426,13 @@ pub fn emit_operand_addr<M: Module>(
 
 /// Emits a string interpolation: converts each part to a string pointer,
 /// then chains `__spark_string_concat` calls left-to-right.
-#[allow(clippy::too_many_arguments)]
 fn emit_string_interp<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operands: &[Operand],
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) -> Option<Value> {
+    let table = ecx.table;
     if operands.is_empty() {
         // Empty interpolation → empty string.
         let func_ref = module.declare_func_in_func(ctx.stubs.string_new, ctx.builder.func);
@@ -1461,8 +1443,8 @@ fn emit_string_interp<M: Module>(
     // Convert each part to a string pointer.
     let mut string_vals: Vec<Value> = Vec::with_capacity(operands.len());
     for operand in operands {
-        let val = emit_operand(ctx, operand, table, definitions, func_ids, thunk_ids, module);
-        let part_ty = operand_type(operand, ctx);
+        let val = emit_operand(ctx, operand, ecx, module);
+        let part_ty = operand_type(operand, ctx, table);
         let (_, resolved) = clif_types::unwrap_mutable(part_ty, table);
 
         let string_ptr = match resolved {

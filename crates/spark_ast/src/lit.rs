@@ -147,9 +147,11 @@ mod tests {
 
     #[test]
     fn literal_float() {
-        let lit = Literal::float(3.14, Span::DUMMY);
+        const TEST_VAL: f64 = std::f64::consts::PI;
+
+        let lit = Literal::float(TEST_VAL, Span::DUMMY);
         if let LiteralKind::Float(f) = lit.kind {
-            assert!((f - 3.14).abs() < f64::EPSILON);
+            assert!((f - TEST_VAL).abs() < f64::EPSILON);
         } else {
             panic!("Expected float literal");
         }

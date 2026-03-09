@@ -44,7 +44,12 @@ pub fn needs_rc(ty_id: TypeId, table: &TypeTable) -> bool {
         return false;
     }
     match table.resolve(ty_id) {
-        Ty::String | Ty::List(_) | Ty::Map(_, _) | Ty::Set(_) | Ty::Future { .. } | Ty::Channel { .. } => true,
+        Ty::String
+        | Ty::List(_)
+        | Ty::Map(_, _)
+        | Ty::Set(_)
+        | Ty::Future { .. }
+        | Ty::Channel { .. } => true,
         Ty::Mutable(inner) => needs_rc(*inner, table),
         _ => false,
     }
@@ -65,7 +70,6 @@ pub fn element_needs_rc(ty_id: TypeId, table: &TypeTable) -> bool {
         Ty::List(elem) | Ty::Set(elem) => needs_rc(*elem, table),
         Ty::Map(k, v) => needs_rc(*k, table) || needs_rc(*v, table),
         Ty::Mutable(inner) => element_needs_rc(*inner, table),
-        Ty::Future { .. } | Ty::Channel { .. } => false,
         _ => false,
     }
 }

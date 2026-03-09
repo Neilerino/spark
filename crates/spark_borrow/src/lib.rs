@@ -1,6 +1,6 @@
 //! # `spark_borrow`
 //!
-//! Borrow checking for the Spark compiler (Phase 8).
+//! Borrow checking for the Spark compiler.
 //!
 //! This crate validates ownership, move semantics, and reference safety over
 //! the MIR control-flow graph. It implements an NLL-style (Non-Lexical Lifetimes)
@@ -142,8 +142,7 @@ fn type_involves_ref(type_id: spark_types::TypeId, table: &TypeTable) -> bool {
         Ty::Tuple(elems) => elems.iter().any(|e| type_involves_ref(*e, table)),
         Ty::Union(members) => members.iter().any(|m| type_involves_ref(*m, table)),
         Ty::Function { params, ret, .. } => {
-            params.iter().any(|p| type_involves_ref(*p, table))
-                || type_involves_ref(*ret, table)
+            params.iter().any(|p| type_involves_ref(*p, table)) || type_involves_ref(*ret, table)
         }
         Ty::Applied { args, .. } => args.iter().any(|a| type_involves_ref(*a, table)),
         _ => false,
@@ -162,7 +161,7 @@ mod tests {
     use spark_types::{LifetimeId, TypeId};
     use std::collections::HashMap;
 
-    /// Creates an empty BorrowInput with no functions.
+    /// Creates an empty `BorrowInput` with no functions.
     fn empty_input() -> BorrowInput {
         BorrowInput {
             mir: Mir {
@@ -242,15 +241,39 @@ mod tests {
             param_count: 1,
             return_type: TypeId::ERROR,
             locals: vec![
-                LocalDecl { local: Local(0), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: int_ty, name: Some(spark_intern::sym("x")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(2), ty: ref_ty, name: Some(spark_intern::sym("r")), is_user_variable: true, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: int_ty,
+                    name: Some(spark_intern::sym("x")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(2),
+                    ty: ref_ty,
+                    name: Some(spark_intern::sym("r")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: false },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: false,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
@@ -279,11 +302,16 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Single immutable borrow should pass: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn conflicting_mutable_borrows_detected() {
         let mut table = TypeTable::new();
         let int_ty = table.intern(Ty::Int(spark_types::IntWidth::I64));
@@ -305,12 +333,54 @@ mod tests {
             param_count: 0,
             return_type: TypeId::ERROR,
             locals: vec![
-                LocalDecl { local: Local(0), ty: TypeId::ERROR, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: int_ty, name: Some(spark_intern::sym("x")), is_user_variable: true, mutable: true, span: Span::DUMMY },
-                LocalDecl { local: Local(2), ty: ref_ty, name: Some(spark_intern::sym("r1")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(3), ty: ref_ty, name: Some(spark_intern::sym("r2")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(4), ty: int_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(5), ty: int_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: TypeId::ERROR,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: int_ty,
+                    name: Some(spark_intern::sym("x")),
+                    is_user_variable: true,
+                    mutable: true,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(2),
+                    ty: ref_ty,
+                    name: Some(spark_intern::sym("r1")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(3),
+                    ty: ref_ty,
+                    name: Some(spark_intern::sym("r2")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(4),
+                    ty: int_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(5),
+                    ty: int_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![
@@ -321,12 +391,18 @@ mod tests {
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(2)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: true,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {
                         place: Place::from_local(Local(3)),
-                        rvalue: Rvalue::Ref { place: Place::from_local(Local(1)), mutable: true },
+                        rvalue: Rvalue::Ref {
+                            place: Place::from_local(Local(1)),
+                            mutable: true,
+                        },
                         span: Span::DUMMY,
                     },
                     Statement::Assign {

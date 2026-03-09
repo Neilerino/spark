@@ -17,68 +17,84 @@ use crate::lower_pattern::lower_pattern_with_guard;
 use crate::lower_stmt::lower_stmt;
 use crate::lower_type_expr;
 
+/// Shared lowering context threaded through all expression/statement lowering.
+///
+/// Bundles the read-only type tables and mutable state (definitions, diagnostics)
+/// that every lowering function needs, reducing repetitive parameter passing.
+pub(crate) struct LowerCtx<'a> {
+    /// The type table for resolving type IDs.
+    pub table: &'a TypeTable,
+    /// The definition table for generating synthetic IDs.
+    pub definitions: &'a mut DefinitionTable,
+    /// Name resolution results (None during desugaring phases).
+    pub resolutions: Option<&'a ResolutionMap>,
+    /// Diagnostic accumulator.
+    pub diagnostics: &'a mut Diagnostics,
+    /// Return type of the enclosing function (for propagation desugaring).
+    pub current_fn_ret: Option<TypeId>,
+}
+
 /// Lowers an expression from the AST to HIR.
-#[allow(clippy::too_many_arguments)]
 pub fn lower_expr(
     expr: &Expr,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
 ) -> HirExpr {
-    let ty = expr_type(expr.id, table);
-    let kind = lower_expr_kind(expr, table, definitions, resolutions, diagnostics, current_fn_ret);
+    let ty = expr_type(expr.id, ctx.table);
+    let kind = lower_expr_kind(
+        expr,
+        ctx,
+    );
     HirExpr::new(kind, ty, expr.span)
 }
 
 /// Lowers a block expression.
 pub fn lower_block(
     block: &spark_ast::Block,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
 ) -> HirExpr {
     let stmts: Vec<HirStmt> = block
         .stmts
         .iter()
-        .map(|s| lower_stmt(s, table, definitions, resolutions, diagnostics, current_fn_ret))
+        .map(|s| {
+            lower_stmt(s, ctx)
+        })
         .collect();
 
     let trailing = block.expr.as_ref().map(|e| {
-        Box::new(lower_expr(e, table, definitions, resolutions, diagnostics, current_fn_ret))
+        Box::new(lower_expr(e, ctx))
     });
 
     let ty = trailing
         .as_ref()
-        .map_or_else(|| expr_type(block.id, table), |e| e.ty);
+        .map_or_else(|| expr_type(block.id, ctx.table), |e| e.ty);
 
     HirExpr::new(
-        HirExprKind::Block { stmts, expr: trailing },
+        HirExprKind::Block {
+            stmts,
+            expr: trailing,
+        },
         ty,
         block.span,
     )
 }
 
 /// Inner dispatch on `ExprKind`.
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 fn lower_expr_kind(
     expr: &Expr,
-    table: &TypeTable,
-    definitions: &mut DefinitionTable,
-    resolutions: Option<&ResolutionMap>,
-    diagnostics: &mut Diagnostics,
-    current_fn_ret: Option<TypeId>,
+    ctx: &mut LowerCtx<'_>,
 ) -> HirExprKind {
     match &expr.kind {
         // === Literals ===
-        ExprKind::Literal(lit) => lower_literal_expr(&lit.kind, expr, table, definitions, resolutions, diagnostics, current_fn_ret),
+        ExprKind::Literal(lit) => lower_literal_expr(
+            &lit.kind,
+            expr,
+            ctx,
+        ),
 
         // === Identifiers -> Local(DefId) ===
         ExprKind::Ident(ident) => {
-            let def_id = resolutions
+            let def_id = ctx.resolutions
                 .and_then(|res| res.get_ident(ident.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             if def_id.is_dummy() {
@@ -89,7 +105,7 @@ fn lower_expr_kind(
         }
 
         ExprKind::Path(path) => {
-            let def_id = resolutions
+            let def_id = ctx.resolutions
                 .and_then(|res| res.get_path(path.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             if def_id.is_dummy() {
@@ -101,15 +117,27 @@ fn lower_expr_kind(
 
         // === Operators ===
         ExprKind::Binary { op, lhs, rhs } => {
-            let lhs_hir = auto_deref_ref(lower_expr(lhs, table, definitions, resolutions, diagnostics, current_fn_ret), table);
-            let rhs_hir = auto_deref_ref(lower_expr(rhs, table, definitions, resolutions, diagnostics, current_fn_ret), table);
+            let lhs_hir = auto_deref_ref(
+                lower_expr(lhs, ctx),
+                ctx.table,
+            );
+            let rhs_hir = auto_deref_ref(
+                lower_expr(rhs, ctx),
+                ctx.table,
+            );
             // Equatable: desugar `a == b` / `a != b` to method calls
-            if matches!(op, BinaryOp::Eq | BinaryOp::Ne) && should_desugar_equatable(&lhs_hir, table) {
-                return desugar_equatable(*op, lhs_hir, rhs_hir, table);
+            if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                && should_desugar_equatable(&lhs_hir, ctx.table)
+            {
+                return desugar_equatable(*op, lhs_hir, rhs_hir, ctx.table);
             }
             // Comparable: desugar `a < b` etc. to compareTo() calls
-            if matches!(op, BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge) && should_desugar_comparable(&lhs_hir, table) {
-                return desugar_comparable(*op, lhs_hir, rhs_hir, table);
+            if matches!(
+                op,
+                BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+            ) && should_desugar_comparable(&lhs_hir, ctx.table)
+            {
+                return desugar_comparable(*op, lhs_hir, rhs_hir, ctx.table);
             }
             HirExprKind::BinaryOp {
                 op: *op,
@@ -119,7 +147,10 @@ fn lower_expr_kind(
         }
 
         ExprKind::Unary { op, operand } => {
-            let operand_hir = auto_deref_ref(lower_expr(operand, table, definitions, resolutions, diagnostics, current_fn_ret), table);
+            let operand_hir = auto_deref_ref(
+                lower_expr(operand, ctx),
+                ctx.table,
+            );
             HirExprKind::UnaryOp {
                 op: *op,
                 operand: Box::new(operand_hir),
@@ -128,15 +159,13 @@ fn lower_expr_kind(
 
         // === Access ===
         ExprKind::Field { base, field } => {
-            let mut base_hir = lower_expr(base, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let mut base_hir = lower_expr(base, ctx);
             // Auto-deref through Ref (and Mutable(Ref))
             let base_ty = strip_mutable_ty(base_hir.ty, table);
             if let Ty::Ref { inner, .. } = table.resolve(base_ty) {
                 let inner_ty = *inner;
-                base_hir = HirExpr::new(
-                    HirExprKind::Deref(Box::new(base_hir)),
-                    inner_ty, base.span,
-                );
+                base_hir =
+                    HirExpr::new(HirExprKind::Deref(Box::new(base_hir)), inner_ty, base.span);
             }
             HirExprKind::FieldAccess {
                 base: Box::new(base_hir),
@@ -145,52 +174,71 @@ fn lower_expr_kind(
         }
 
         ExprKind::Index { base, index } => HirExprKind::Index {
-            base: Box::new(lower_expr(base, table, definitions, resolutions, diagnostics, current_fn_ret)),
-            index: Box::new(lower_expr(index, table, definitions, resolutions, diagnostics, current_fn_ret)),
+            base: Box::new(lower_expr(base, ctx)),
+            index: Box::new(lower_expr(index, ctx)),
         },
 
         // === Calls ===
         ExprKind::Call { callee, args } => {
-            let callee_hir = lower_expr(callee, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let callee_hir = lower_expr(callee, ctx);
             let param_types = extract_param_types(callee_hir.ty, table);
             let is_print = is_print_call(callee, resolutions, definitions);
-            let lowered_args: Vec<HirExpr> = args.iter().enumerate().map(|(i, a)| {
-                let mut arg = lower_expr(&a.value, table, definitions, resolutions, diagnostics, current_fn_ret);
-                if let Some(&param_ty) = param_types.get(i) {
-                    arg = coerce_ref(arg, param_ty, a.value.span, table);
-                }
-                // Displayable: wrap struct args in print() with toString()
-                if is_print {
-                    arg = maybe_wrap_displayable(arg, table);
-                }
-                arg
-            }).collect();
+            let lowered_args: Vec<HirExpr> = args
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let mut arg = lower_expr(&a.value, ctx);
+                    if let Some(&param_ty) = param_types.get(i) {
+                        arg = coerce_ref(arg, param_ty, a.value.span, table);
+                    }
+                    // Displayable: wrap struct args in print() with toString()
+                    if is_print {
+                        arg = maybe_wrap_displayable(arg, table);
+                    }
+                    arg
+                })
+                .collect();
             HirExprKind::Call {
                 callee: Box::new(callee_hir),
                 args: lowered_args,
             }
         }
 
-        ExprKind::MethodCall { receiver, method, args } => {
-            let mut recv_hir = lower_expr(receiver, table, definitions, resolutions, diagnostics, current_fn_ret);
+        ExprKind::MethodCall {
+            receiver,
+            method,
+            args,
+        } => {
+            let mut recv_hir = lower_expr(receiver, ctx);
             // Auto-deref through Ref (and Mutable(Ref))
             let recv_ty = strip_mutable_ty(recv_hir.ty, table);
             if let Ty::Ref { inner, .. } = table.resolve(recv_ty) {
                 let inner_ty = *inner;
                 recv_hir = HirExpr::new(
                     HirExprKind::Deref(Box::new(recv_hir)),
-                    inner_ty, receiver.span,
+                    inner_ty,
+                    receiver.span,
                 );
             }
             HirExprKind::MethodCall {
                 receiver: Box::new(recv_hir),
                 method: method.name,
-                args: args.iter().map(|a| lower_expr(&a.value, table, definitions, resolutions, diagnostics, current_fn_ret)).collect(),
+                args: args
+                    .iter()
+                    .map(|a| {
+                        lower_expr(&a.value, ctx)
+                    })
+                    .collect(),
             }
         }
 
         // === Constructors ===
-        ExprKind::StructInit { path, type_args: _, fields, spread: _ } => {
+        ExprKind::StructInit {
+            path,
+            type_args: _,
+            fields,
+            spread: _,
+        } => {
             let def_id = resolutions
                 .and_then(|res| res.get_path(path.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
@@ -198,12 +246,21 @@ fn lower_expr_kind(
                 def_id,
                 fields: fields
                     .iter()
-                    .map(|f| (f.name.name, lower_expr(&f.value, table, definitions, resolutions, diagnostics, current_fn_ret)))
+                    .map(|f| {
+                        (
+                            f.name.name,
+                            lower_expr(&f.value, ctx),
+                        )
+                    })
                     .collect(),
             }
         }
 
-        ExprKind::EnumVariant { path, variant, fields } => {
+        ExprKind::EnumVariant {
+            path,
+            variant,
+            fields,
+        } => {
             let def_id = resolutions
                 .and_then(|res| res.get_path(path.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
@@ -212,93 +269,130 @@ fn lower_expr_kind(
                 variant: variant.name,
                 fields: fields
                     .iter()
-                    .map(|f| lower_expr(f, table, definitions, resolutions, diagnostics, current_fn_ret))
+                    .map(|f| {
+                        lower_expr(f, ctx)
+                    })
                     .collect(),
             }
         }
 
         ExprKind::List(elems) => HirExprKind::ListLit(
-            elems.iter().map(|e| lower_expr(e, table, definitions, resolutions, diagnostics, current_fn_ret)).collect(),
+            elems
+                .iter()
+                .map(|e| {
+                    lower_expr(e, ctx)
+                })
+                .collect(),
         ),
 
         ExprKind::Map(entries) => HirExprKind::MapLit(
             entries
                 .iter()
                 .map(|e| {
-                    let key = lower_expr(&e.key, table, definitions, resolutions, diagnostics, current_fn_ret);
-                    let val = lower_expr(&e.value, table, definitions, resolutions, diagnostics, current_fn_ret);
+                    let key = lower_expr(&e.key, ctx);
+                    let val = lower_expr(&e.value, ctx);
                     (key, val)
                 })
                 .collect(),
         ),
 
         ExprKind::Set(elems) => HirExprKind::SetLit(
-            elems.iter().map(|e| lower_expr(e, table, definitions, resolutions, diagnostics, current_fn_ret)).collect(),
+            elems
+                .iter()
+                .map(|e| {
+                    lower_expr(e, ctx)
+                })
+                .collect(),
         ),
 
         ExprKind::Tuple(elems) => HirExprKind::TupleLit(
-            elems.iter().map(|e| lower_expr(e, table, definitions, resolutions, diagnostics, current_fn_ret)).collect(),
+            elems
+                .iter()
+                .map(|e| {
+                    lower_expr(e, ctx)
+                })
+                .collect(),
         ),
 
         // === Control flow ===
         ExprKind::Block(block) => {
-            let lowered = lower_block(block, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let lowered = lower_block(
+                block,
+                table,
+                definitions,
+                resolutions,
+                diagnostics,
+                current_fn_ret,
+            );
             lowered.kind
         }
 
-        ExprKind::If { condition, then_branch, else_branch } => HirExprKind::If {
-            cond: Box::new(lower_expr(condition, table, definitions, resolutions, diagnostics, current_fn_ret)),
-            then_: Box::new(lower_expr(then_branch, table, definitions, resolutions, diagnostics, current_fn_ret)),
-            else_: else_branch.as_ref().map(|e| Box::new(lower_expr(e, table, definitions, resolutions, diagnostics, current_fn_ret))),
+        ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => HirExprKind::If {
+            cond: Box::new(lower_expr(condition, ctx)),
+            then_: Box::new(lower_expr(then_branch, ctx)),
+            else_: else_branch.as_ref().map(|e| {
+                Box::new(lower_expr(e, ctx))
+            }),
         },
 
         ExprKind::Loop { body } => HirExprKind::Loop {
-            body: Box::new(lower_expr(body, table, definitions, resolutions, diagnostics, current_fn_ret)),
+            body: Box::new(lower_expr(body, ctx)),
         },
 
-        ExprKind::Break(value) => HirExprKind::Break(
-            value.as_ref().map(|v| Box::new(lower_expr(v, table, definitions, resolutions, diagnostics, current_fn_ret))),
-        ),
+        ExprKind::Break(value) => HirExprKind::Break(value.as_ref().map(|v| {
+            Box::new(lower_expr(v, ctx))
+        })),
 
         ExprKind::Continue => HirExprKind::Continue,
 
-        ExprKind::Return(value) => HirExprKind::Return(
-            value.as_ref().map(|v| {
-                let mut lowered = lower_expr(v, table, definitions, resolutions, diagnostics, current_fn_ret);
-                if let Some(ret_ty) = current_fn_ret {
-                    let ret_stripped = strip_mutable_ty(ret_ty, table);
-                    // Auto-borrow: if function returns Ref[T] and value is T,
-                    // wrap in Borrow so the borrow checker can detect dangling refs.
-                    if let Ty::Ref { mutable: ref_mut, .. } = table.resolve(ret_stripped) {
-                        let val_stripped = strip_mutable_ty(lowered.ty, table);
-                        if !matches!(table.resolve(val_stripped), Ty::Ref { .. })
-                            && !lowered.ty.is_error()
-                        {
-                            lowered = HirExpr::new(
-                                HirExprKind::Borrow { operand: Box::new(lowered), mutable: *ref_mut },
-                                ret_ty, v.span,
-                            );
-                        }
-                    }
-                    // Auto-deref: if function returns T and value is Ref[T],
-                    // wrap in Deref.
-                    if !matches!(table.resolve(ret_stripped), Ty::Ref { .. }) {
-                        let val_stripped = strip_mutable_ty(lowered.ty, table);
-                        if let Ty::Ref { inner, .. } = table.resolve(val_stripped) {
-                            let inner_ty = *inner;
-                            lowered = HirExpr::new(
-                                HirExprKind::Deref(Box::new(lowered)),
-                                inner_ty, v.span,
-                            );
-                        }
+        ExprKind::Return(value) => HirExprKind::Return(value.as_ref().map(|v| {
+            let mut lowered = lower_expr(v, ctx);
+            if let Some(ret_ty) = current_fn_ret {
+                let ret_stripped = strip_mutable_ty(ret_ty, table);
+                // Auto-borrow: if function returns Ref[T] and value is T,
+                // wrap in Borrow so the borrow checker can detect dangling refs.
+                if let Ty::Ref {
+                    mutable: ref_mut, ..
+                } = table.resolve(ret_stripped)
+                {
+                    let val_stripped = strip_mutable_ty(lowered.ty, table);
+                    if !matches!(table.resolve(val_stripped), Ty::Ref { .. })
+                        && !lowered.ty.is_error()
+                    {
+                        lowered = HirExpr::new(
+                            HirExprKind::Borrow {
+                                operand: Box::new(lowered),
+                                mutable: *ref_mut,
+                            },
+                            ret_ty,
+                            v.span,
+                        );
                     }
                 }
-                Box::new(lowered)
-            }),
-        ),
+                // Auto-deref: if function returns T and value is Ref[T],
+                // wrap in Deref.
+                if !matches!(table.resolve(ret_stripped), Ty::Ref { .. }) {
+                    let val_stripped = strip_mutable_ty(lowered.ty, table);
+                    if let Ty::Ref { inner, .. } = table.resolve(val_stripped) {
+                        let inner_ty = *inner;
+                        lowered =
+                            HirExpr::new(HirExprKind::Deref(Box::new(lowered)), inner_ty, v.span);
+                    }
+                }
+            }
+            Box::new(lowered)
+        })),
 
         // === Closures ===
-        ExprKind::Lambda { params, ret_type: _, body } => {
+        ExprKind::Lambda {
+            params,
+            ret_type: _,
+            body,
+        } => {
             let hir_params: Vec<HirParam> = params
                 .iter()
                 .map(|p| {
@@ -306,78 +400,118 @@ fn lower_expr_kind(
                         .and_then(|res| res.get_binding(p.name.span))
                         .unwrap_or(spark_resolve::DefId::DUMMY);
                     let ty = table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
-                    HirParam { def_id, ty, span: p.span }
+                    HirParam {
+                        def_id,
+                        ty,
+                        span: p.span,
+                    }
                 })
                 .collect();
             HirExprKind::Lambda {
                 params: hir_params,
-                body: Box::new(lower_expr(body, table, definitions, resolutions, diagnostics, current_fn_ret)),
+                body: Box::new(lower_expr(body, ctx)),
             }
         }
 
         // === Type operations ===
         ExprKind::Is { expr: inner, ty } => HirExprKind::Is {
-            expr: Box::new(lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret)),
+            expr: Box::new(lower_expr(inner, ctx)),
             target_ty: lower_type_expr(ty, table),
         },
 
         ExprKind::As { expr: inner, ty } => HirExprKind::As {
-            expr: Box::new(lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret)),
+            expr: Box::new(lower_expr(inner, ctx)),
             target_ty: lower_type_expr(ty, table),
         },
 
         // === Async ===
-        ExprKind::Await(inner) | ExprKind::BlockAwait(inner) => HirExprKind::Await(
-            Box::new(lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret)),
-        ),
+        ExprKind::Await(inner) | ExprKind::BlockAwait(inner) => {
+            HirExprKind::Await(Box::new(lower_expr(inner, ctx)))
+        }
 
-        ExprKind::Spawn(inner) => HirExprKind::Spawn(
-            Box::new(lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret)),
-        ),
+        ExprKind::Spawn(inner) => HirExprKind::Spawn(Box::new(lower_expr(inner, ctx))),
 
         // === Desugared: Paren ===
-        ExprKind::Paren(inner) => {
-            lower_expr_kind(inner, table, definitions, resolutions, diagnostics, current_fn_ret)
-        }
+        ExprKind::Paren(inner) => lower_expr_kind(
+            inner,
+            table,
+            definitions,
+            resolutions,
+            diagnostics,
+            current_fn_ret,
+        ),
 
         // === Desugared: Coalesce (??) ===
         ExprKind::Coalesce { lhs, rhs } => {
-            let lhs_hir = lower_expr(lhs, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let rhs_hir = lower_expr(rhs, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let lhs_hir = lower_expr(lhs, ctx);
+            let rhs_hir = lower_expr(rhs, ctx);
             let ty = expr_type(expr.id, table);
             desugar::desugar_coalesce(lhs_hir, rhs_hir, expr.span, ty, definitions).kind
         }
 
         // === Desugared: OptionalField (?.) ===
         ExprKind::OptionalField { base, field } => {
-            let base_hir = lower_expr(base, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let base_hir = lower_expr(base, ctx);
             let ty = expr_type(expr.id, table);
             let inner_ty = spark_types::union::strip_null(base_hir.ty, table);
-            desugar::desugar_optional_field(base_hir, field.name, expr.span, ty, inner_ty, definitions).kind
+            desugar::desugar_optional_field(
+                base_hir,
+                field.name,
+                expr.span,
+                ty,
+                inner_ty,
+                definitions,
+            )
+            .kind
         }
 
         // === Desugared: Propagate (!) ===
         ExprKind::Propagate(inner) => {
-            let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let inner_hir = lower_expr(inner, ctx);
             let ty = expr_type(expr.id, table);
             let inner_ty = inner_hir.ty;
-            desugar_propagate_expr(inner_hir, inner_ty, ty, current_fn_ret, expr.span, table, definitions)
+            desugar_propagate_expr(
+                inner_hir,
+                inner_ty,
+                ty,
+                current_fn_ret,
+                expr.span,
+                table,
+                definitions,
+            )
         }
 
         // === Unified Pipeline ===
-        ExprKind::Pipeline { source, stages } => {
-            lower_pipeline(source, stages, expr, table, definitions, resolutions, diagnostics, current_fn_ret)
-        }
+        ExprKind::Pipeline { source, stages } => lower_pipeline(
+            source,
+            stages,
+            expr,
+            table,
+            definitions,
+            resolutions,
+            diagnostics,
+            current_fn_ret,
+        ),
 
         ExprKind::To { expr: inner, arms } => {
             let inner_ty = expr_type(inner.id, table);
             let is_union = matches!(table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_));
-            let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let inner_hir = lower_expr(inner, ctx);
 
             if is_union {
                 // Union/optional: use narrowing lowering (adds passthrough arms)
                 let ty = expr_type(expr.id, table);
-                lower_to_narrowing(inner_hir, arms, ty, table, definitions, resolutions, diagnostics, current_fn_ret, expr.span)
+                lower_to_narrowing(
+                    inner_hir,
+                    arms,
+                    ty,
+                    table,
+                    definitions,
+                    resolutions,
+                    diagnostics,
+                    current_fn_ret,
+                    expr.span,
+                )
             } else {
                 // Non-union: lower directly to HirExprKind::Match (exhaustive, no passthrough)
                 HirExprKind::Match {
@@ -385,11 +519,18 @@ fn lower_expr_kind(
                     arms: arms
                         .iter()
                         .map(|arm| {
-                            let (pattern, guard) = lower_pattern_with_guard(&arm.pattern, resolutions, diagnostics, table, definitions, current_fn_ret);
+                            let (pattern, guard) = lower_pattern_with_guard(
+                                &arm.pattern,
+                                resolutions,
+                                diagnostics,
+                                table,
+                                definitions,
+                                current_fn_ret,
+                            );
                             HirMatchArm {
                                 pattern,
                                 guard,
-                                body: lower_expr(&arm.body, table, definitions, resolutions, diagnostics, current_fn_ret),
+                                body: lower_expr(&arm.body, ctx),
                                 span: arm.span,
                             }
                         })
@@ -398,26 +539,52 @@ fn lower_expr_kind(
             }
         }
 
-        ExprKind::PipelineApply { expr: inner, operation, args } => {
-            let inner_hir = lower_expr(inner, table, definitions, resolutions, diagnostics, current_fn_ret);
-            lower_pipeline_apply(inner_hir, operation, args, table, definitions, resolutions, diagnostics, current_fn_ret, expr.span)
+        ExprKind::PipelineApply {
+            expr: inner,
+            operation,
+            args,
+        } => {
+            let inner_hir = lower_expr(inner, ctx);
+            lower_pipeline_apply(
+                inner_hir,
+                operation,
+                args,
+                table,
+                definitions,
+                resolutions,
+                diagnostics,
+                current_fn_ret,
+                expr.span,
+            )
         }
 
-        ExprKind::Partial { callee, args } => {
-            lower_standalone_partial(callee, args, expr, table, definitions, resolutions, diagnostics, current_fn_ret)
-        }
+        ExprKind::Partial { callee, args } => lower_standalone_partial(
+            callee,
+            args,
+            expr,
+            table,
+            definitions,
+            resolutions,
+            diagnostics,
+            current_fn_ret,
+        ),
 
         ExprKind::Range { start, end, .. } => {
-            let _ = lower_expr(start, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let _ = lower_expr(end, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let _ = lower_expr(start, ctx);
+            let _ = lower_expr(end, ctx);
             HirExprKind::Error
         }
 
-        ExprKind::ListRange { start, end, inclusive, step } => {
-            let start_hir = lower_expr(start, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let end_hir = lower_expr(end, table, definitions, resolutions, diagnostics, current_fn_ret);
+        ExprKind::ListRange {
+            start,
+            end,
+            inclusive,
+            step,
+        } => {
+            let start_hir = lower_expr(start, ctx);
+            let end_hir = lower_expr(end, ctx);
             let step_hir = step.as_ref().map(|s| {
-                Box::new(lower_expr(s, table, definitions, resolutions, diagnostics, current_fn_ret))
+                Box::new(lower_expr(s, ctx))
             });
             HirExprKind::ListRange {
                 start: Box::new(start_hir),
@@ -447,14 +614,24 @@ fn desugar_propagate_expr(
     match resolved {
         Ty::Optional(success) => {
             let success_ty = *success;
-            let null_ty = table.lookup(&spark_types::ty::Ty::Null).unwrap_or(TypeId::ERROR);
-            desugar::desugar_propagate_optional(inner_hir, span, success_ty, null_ty, definitions).kind
+            let null_ty = table
+                .lookup(&spark_types::ty::Ty::Null)
+                .unwrap_or(TypeId::ERROR);
+            desugar::desugar_propagate_optional(inner_hir, span, success_ty, null_ty, definitions)
+                .kind
         }
         Ty::Union(_) => {
             if let Some((success_ty, error_types)) =
                 spark_types::union::split_union(inner_ty, Some(result_ty), current_fn_ret, table)
             {
-                desugar::desugar_propagate_union(inner_hir, span, success_ty, &error_types, definitions).kind
+                desugar::desugar_propagate_union(
+                    inner_hir,
+                    span,
+                    success_ty,
+                    &error_types,
+                    definitions,
+                )
+                .kind
             } else {
                 // Can't split — fallback to simple binding
                 let fresh_id = definitions.next_synthetic_id(span);
@@ -480,7 +657,7 @@ fn desugar_propagate_expr(
 ///
 /// Handles sequential/parallel stages and fusion optimization.
 /// For now, lowers each stage independently, chaining results.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 fn lower_pipeline(
     source: &Expr,
     stages: &[spark_ast::PipelineStage],
@@ -496,14 +673,25 @@ fn lower_pipeline(
     // Check for fusion opportunity: [parallel Map, Reduce] → ParallelMapReduce
     if stages.len() == 2 {
         if let (
-            spark_ast::PipelineStage { kind: PipelineStageKind::Map { callback: mapper }, parallel: true, .. },
-            spark_ast::PipelineStage { kind: PipelineStageKind::Reduce { initial, callback: combiner }, .. },
+            spark_ast::PipelineStage {
+                kind: PipelineStageKind::Map { callback: mapper },
+                parallel: true,
+                ..
+            },
+            spark_ast::PipelineStage {
+                kind:
+                    PipelineStageKind::Reduce {
+                        initial,
+                        callback: combiner,
+                    },
+                ..
+            },
         ) = (&stages[0], &stages[1])
         {
-            let source_hir = lower_expr(source, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let mapper_hir = lower_expr(mapper, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let combiner_hir = lower_expr(combiner, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let initial_hir = lower_expr(initial, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let source_hir = lower_expr(source, ctx);
+            let mapper_hir = lower_expr(mapper, ctx);
+            let combiner_hir = lower_expr(combiner, ctx);
+            let initial_hir = lower_expr(initial, ctx);
             let elem_ty = extract_list_elem_ty(source_hir.ty, table);
             let void_ty = find_void_type(table);
             let mapped_ty = extract_fn_ret_ty(mapper_hir.ty, table, void_ty);
@@ -523,20 +711,38 @@ fn lower_pipeline(
     // General case: lower each stage independently
     // For single-stage pipelines, emit directly; for multi-stage, chain via let bindings
     if stages.len() == 1 {
-        let source_hir = lower_expr(source, table, definitions, resolutions, diagnostics, current_fn_ret);
-        return lower_single_pipeline_stage(&stages[0], source_hir, span, table, definitions, resolutions, diagnostics, current_fn_ret);
+        let source_hir = lower_expr(source, ctx);
+        return lower_single_pipeline_stage(
+            &stages[0],
+            source_hir,
+            span,
+            table,
+            definitions,
+            resolutions,
+            diagnostics,
+            current_fn_ret,
+        );
     }
 
     // Multi-stage: build a block that chains stages via let bindings
     let mut stmts = Vec::new();
-    let mut current_hir = lower_expr(source, table, definitions, resolutions, diagnostics, current_fn_ret);
+    let mut current_hir = lower_expr(source, ctx);
 
     for (i, stage) in stages.iter().enumerate() {
         if i < stages.len() - 1 {
             // Intermediate stage: wrap in a let binding
             let stage_result_ty = infer_stage_output_ty(stage, current_hir.ty, table);
             let temp_id = definitions.next_synthetic_id(stage.span);
-            let stage_hir_kind = lower_single_pipeline_stage(stage, current_hir, stage.span, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let stage_hir_kind = lower_single_pipeline_stage(
+                stage,
+                current_hir,
+                stage.span,
+                table,
+                definitions,
+                resolutions,
+                diagnostics,
+                current_fn_ret,
+            );
             let stage_hir = HirExpr::new(stage_hir_kind, stage_result_ty, stage.span);
             stmts.push(HirStmt::Let {
                 def_id: temp_id,
@@ -546,7 +752,16 @@ fn lower_pipeline(
             current_hir = HirExpr::new(HirExprKind::Local(temp_id), stage_result_ty, stage.span);
         } else {
             // Last stage: produce the final expression
-            let final_kind = lower_single_pipeline_stage(stage, current_hir, span, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let final_kind = lower_single_pipeline_stage(
+                stage,
+                current_hir,
+                span,
+                table,
+                definitions,
+                resolutions,
+                diagnostics,
+                current_fn_ret,
+            );
             let result_ty = expr_type(pipeline_expr.id, table);
             let trailing = HirExpr::new(final_kind, result_ty, span);
             return HirExprKind::Block {
@@ -606,7 +821,13 @@ fn lower_single_pipeline_stage(
     match &stage.kind {
         PipelineStageKind::ForEach { callback } => {
             let callback_hir = lower_partial_or_plain(
-                callback, table, definitions, resolutions, diagnostics, current_fn_ret, void_ty,
+                callback,
+                table,
+                definitions,
+                resolutions,
+                diagnostics,
+                current_fn_ret,
+                void_ty,
             );
             let elem_ty = extract_list_elem_ty(source_hir.ty, table);
             if stage.parallel {
@@ -618,14 +839,28 @@ fn lower_single_pipeline_stage(
             } else {
                 let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
                 desugar::desugar_each(
-                    source_hir, callback_hir, elem_ty, cb_ret_ty,
-                    int_ty, bool_ty, void_ty, span, definitions,
-                ).kind
+                    source_hir,
+                    callback_hir,
+                    elem_ty,
+                    cb_ret_ty,
+                    int_ty,
+                    bool_ty,
+                    void_ty,
+                    span,
+                    definitions,
+                )
+                .kind
             }
         }
         PipelineStageKind::Map { callback } => {
             let callback_hir = lower_partial_or_plain(
-                callback, table, definitions, resolutions, diagnostics, current_fn_ret, void_ty,
+                callback,
+                table,
+                definitions,
+                resolutions,
+                diagnostics,
+                current_fn_ret,
+                void_ty,
             );
             let elem_ty = extract_list_elem_ty(source_hir.ty, table);
             let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
@@ -639,23 +874,41 @@ fn lower_single_pipeline_stage(
             } else {
                 let result_list_ty = table.lookup(&Ty::List(cb_ret_ty)).unwrap_or(TypeId::ERROR);
                 desugar::desugar_map(
-                    source_hir, callback_hir, elem_ty, cb_ret_ty,
-                    result_list_ty, int_ty, bool_ty, void_ty,
-                    span, definitions,
-                ).kind
+                    source_hir,
+                    callback_hir,
+                    elem_ty,
+                    cb_ret_ty,
+                    result_list_ty,
+                    int_ty,
+                    bool_ty,
+                    void_ty,
+                    span,
+                    definitions,
+                )
+                .kind
             }
         }
         PipelineStageKind::Reduce { initial, callback } => {
-            let callback_hir = lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret);
-            let initial_hir = lower_expr(initial, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let callback_hir = lower_expr(callback, ctx);
+            let initial_hir = lower_expr(initial, ctx);
             let elem_ty = extract_list_elem_ty(source_hir.ty, table);
             let acc_ty = initial_hir.ty;
             let cb_ret_ty = extract_fn_ret_ty(callback_hir.ty, table, void_ty);
             // Sequential reduce: desugar to accumulator loop
             desugar::desugar_reduce(
-                source_hir, callback_hir, initial_hir, elem_ty, acc_ty, cb_ret_ty,
-                int_ty, bool_ty, void_ty, span, definitions,
-            ).kind
+                source_hir,
+                callback_hir,
+                initial_hir,
+                elem_ty,
+                acc_ty,
+                cb_ret_ty,
+                int_ty,
+                bool_ty,
+                void_ty,
+                span,
+                definitions,
+            )
+            .kind
         }
     }
 }
@@ -677,7 +930,7 @@ fn lower_to_narrowing(
 
     for arm in arms {
         let pattern = lower_to_pattern(&arm.pattern, definitions, resolutions, table);
-        let body = lower_expr(&arm.body, table, definitions, resolutions, diagnostics, current_fn_ret);
+        let body = lower_expr(&arm.body, ctx);
         hir_arms.push(HirMatchArm {
             pattern,
             guard: None,
@@ -704,7 +957,10 @@ fn lower_to_narrowing(
             if !handled.contains(&member_ty) {
                 let pass_id = definitions.next_synthetic_id(span);
                 hir_arms.push(HirMatchArm {
-                    pattern: HirPattern::TypeNarrow { def_id: pass_id, ty: member_ty },
+                    pattern: HirPattern::TypeNarrow {
+                        def_id: pass_id,
+                        ty: member_ty,
+                    },
                     guard: None,
                     body: HirExpr::new(HirExprKind::Local(pass_id), member_ty, span),
                     span,
@@ -752,7 +1008,7 @@ fn lower_pipeline_apply(
     let param_types = extract_param_types(func_ty, table);
     let mut call_args = vec![inner_hir];
     for (i, arg) in args.iter().enumerate() {
-        let mut arg_hir = lower_expr(&arg.value, table, definitions, resolutions, diagnostics, current_fn_ret);
+        let mut arg_hir = lower_expr(&arg.value, ctx);
         if let Some(&param_ty) = param_types.get(i + 1) {
             arg_hir = coerce_ref(arg_hir, param_ty, arg.value.span, table);
         }
@@ -778,7 +1034,10 @@ fn lower_to_pattern(
                 .and_then(|res| res.get_binding(name.span))
                 .unwrap_or_else(|| definitions.next_synthetic_id(pattern.span));
             let narrowed_ty = table.get_expr_type(ty.id).unwrap_or(TypeId::ERROR);
-            HirPattern::TypeNarrow { def_id, ty: narrowed_ty }
+            HirPattern::TypeNarrow {
+                def_id,
+                ty: narrowed_ty,
+            }
         }
         spark_ast::PatternKind::Variant { path, fields } => {
             let def_id = resolutions
@@ -786,7 +1045,10 @@ fn lower_to_pattern(
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             HirPattern::Variant {
                 def_id,
-                fields: fields.iter().map(|f| lower_to_pattern(f, definitions, resolutions, table)).collect(),
+                fields: fields
+                    .iter()
+                    .map(|f| lower_to_pattern(f, definitions, resolutions, table))
+                    .collect(),
             }
         }
         spark_ast::PatternKind::Ident { name, .. } => {
@@ -826,9 +1088,7 @@ fn lower_literal_expr(
                         expr.span,
                     )),
                     StringPart::Interpolation(sub_expr) => {
-                        let lowered = lower_expr(
-                            sub_expr, table, definitions, resolutions, diagnostics, current_fn_ret,
-                        );
+                        let lowered = lower_expr(sub_expr, ctx);
                         // Displayable: wrap struct values in toString()
                         Some(maybe_wrap_displayable(lowered, table))
                     }
@@ -892,7 +1152,7 @@ fn lower_partial_or_plain(
     void_ty: TypeId,
 ) -> HirExpr {
     if let ExprKind::Partial { callee, args } = &callback.kind {
-        let callee_hir = lower_expr(callee, table, definitions, resolutions, diagnostics, current_fn_ret);
+        let callee_hir = lower_expr(callee, ctx);
         let param_types = extract_param_types(callee_hir.ty, table);
         let ret_ty = extract_fn_ret_ty(callee_hir.ty, table, void_ty);
 
@@ -905,11 +1165,19 @@ fn lower_partial_or_plain(
         };
 
         let param_id = definitions.next_synthetic_id(callback.span);
-        let param = HirParam { def_id: param_id, ty: elem_ty, span: callback.span };
+        let param = HirParam {
+            def_id: param_id,
+            ty: elem_ty,
+            span: callback.span,
+        };
 
-        let mut call_args = vec![HirExpr::new(HirExprKind::Local(param_id), elem_ty, callback.span)];
+        let mut call_args = vec![HirExpr::new(
+            HirExprKind::Local(param_id),
+            elem_ty,
+            callback.span,
+        )];
         for (i, arg) in args.iter().enumerate() {
-            let mut arg_hir = lower_expr(&arg.value, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let mut arg_hir = lower_expr(&arg.value, ctx);
             if let Some(&pty) = param_types.get(i + 1) {
                 arg_hir = coerce_ref(arg_hir, pty, arg.value.span, table);
             }
@@ -917,18 +1185,24 @@ fn lower_partial_or_plain(
         }
 
         let body = HirExpr::new(
-            HirExprKind::Call { callee: Box::new(callee_hir), args: call_args },
+            HirExprKind::Call {
+                callee: Box::new(callee_hir),
+                args: call_args,
+            },
             ret_ty,
             callback.span,
         );
 
         HirExpr::new(
-            HirExprKind::Lambda { params: vec![param], body: Box::new(body) },
+            HirExprKind::Lambda {
+                params: vec![param],
+                body: Box::new(body),
+            },
             lambda_ty,
             callback.span,
         )
     } else {
-        lower_expr(callback, table, definitions, resolutions, diagnostics, current_fn_ret)
+        lower_expr(callback, ctx)
     }
 }
 
@@ -948,13 +1222,15 @@ fn lower_standalone_partial(
     diagnostics: &mut Diagnostics,
     current_fn_ret: Option<TypeId>,
 ) -> HirExprKind {
-    let callee_hir = lower_expr(callee, table, definitions, resolutions, diagnostics, current_fn_ret);
+    let callee_hir = lower_expr(callee, ctx);
     let full_param_types = extract_param_types(callee_hir.ty, table);
     let void_ty = find_void_type(table);
     let ret_ty = extract_fn_ret_ty(callee_hir.ty, table, void_ty);
 
     // The type checker stored the reduced function type on this expression
-    let lambda_ty = table.get_expr_type(partial_expr.id).unwrap_or(TypeId::ERROR);
+    let lambda_ty = table
+        .get_expr_type(partial_expr.id)
+        .unwrap_or(TypeId::ERROR);
     if lambda_ty.is_error() {
         return HirExprKind::Error;
     }
@@ -978,24 +1254,38 @@ fn lower_standalone_partial(
         let bound_arg = args.iter().find(|a| a.name.name == name);
 
         if let Some(bound) = bound_arg {
-            let mut arg_hir = lower_expr(&bound.value, table, definitions, resolutions, diagnostics, current_fn_ret);
+            let mut arg_hir = lower_expr(&bound.value, ctx);
             arg_hir = coerce_ref(arg_hir, param_ty, bound.value.span, table);
             call_args.push(arg_hir);
         } else {
             // Unbound parameter — becomes a lambda parameter
             let param_id = definitions.next_synthetic_id(partial_expr.span);
-            lambda_params.push(HirParam { def_id: param_id, ty: param_ty, span: partial_expr.span });
-            call_args.push(HirExpr::new(HirExprKind::Local(param_id), param_ty, partial_expr.span));
+            lambda_params.push(HirParam {
+                def_id: param_id,
+                ty: param_ty,
+                span: partial_expr.span,
+            });
+            call_args.push(HirExpr::new(
+                HirExprKind::Local(param_id),
+                param_ty,
+                partial_expr.span,
+            ));
         }
     }
 
     let body = HirExpr::new(
-        HirExprKind::Call { callee: Box::new(callee_hir), args: call_args },
+        HirExprKind::Call {
+            callee: Box::new(callee_hir),
+            args: call_args,
+        },
         ret_ty,
         partial_expr.span,
     );
 
-    HirExprKind::Lambda { params: lambda_params, body: Box::new(body) }
+    HirExprKind::Lambda {
+        params: lambda_params,
+        body: Box::new(body),
+    }
 }
 
 /// Extracts parameter types from a function type.
@@ -1019,7 +1309,10 @@ fn strip_mutable_ty(ty: TypeId, table: &TypeTable) -> TypeId {
 /// Tries to find the `DefId` for a callee expression.
 ///
 /// Mirrors `find_callee_def_id` in `spark_types::check_expr`.
-fn find_callee_def_id(callee_span: Span, resolutions: Option<&ResolutionMap>) -> Option<spark_resolve::DefId> {
+fn find_callee_def_id(
+    callee_span: Span,
+    resolutions: Option<&ResolutionMap>,
+) -> Option<spark_resolve::DefId> {
     let res = resolutions?;
     res.get_path(callee_span)
         .or_else(|| res.get_ident(callee_span))
@@ -1072,8 +1365,12 @@ fn coerce_ref(mut arg: HirExpr, param_ty: TypeId, span: Span, table: &TypeTable)
         if !matches!(arg_resolved, Ty::Ref { .. }) && !arg.ty.is_error() {
             let mutable = *mutable;
             arg = HirExpr::new(
-                HirExprKind::Borrow { operand: Box::new(arg), mutable },
-                param_ty, span,
+                HirExprKind::Borrow {
+                    operand: Box::new(arg),
+                    mutable,
+                },
+                param_ty,
+                span,
             );
         }
     }
@@ -1083,10 +1380,7 @@ fn coerce_ref(mut arg: HirExpr, param_ty: TypeId, span: Span, table: &TypeTable)
     if !matches!(param_resolved, Ty::Ref { .. }) {
         if let Ty::Ref { inner, .. } = table.resolve(arg_inner2) {
             let inner_ty = *inner;
-            arg = HirExpr::new(
-                HirExprKind::Deref(Box::new(arg)),
-                inner_ty, span,
-            );
+            arg = HirExpr::new(HirExprKind::Deref(Box::new(arg)), inner_ty, span);
         }
     }
 
@@ -1114,17 +1408,20 @@ fn is_print_call(
 ) -> bool {
     let def_id = find_callee_def_id(callee.span, resolutions);
     def_id.map_or(false, |id| {
-        definitions
-            .get(id)
-            .map_or(false, |info| {
-                info.name == kw::PRINT && matches!(info.kind, DefinitionKind::BuiltinFunction)
-            })
+        definitions.get(id).map_or(false, |info| {
+            info.name == kw::PRINT && matches!(info.kind, DefinitionKind::BuiltinFunction)
+        })
     })
 }
 
 /// Finds the DefId of a binding method by struct DefId and method name.
-fn find_binding_method(struct_def: spark_resolve::DefId, method_name: spark_intern::Symbol, table: &TypeTable) -> Option<spark_resolve::DefId> {
-    table.get_type_methods(struct_def)
+fn find_binding_method(
+    struct_def: spark_resolve::DefId,
+    method_name: spark_intern::Symbol,
+    table: &TypeTable,
+) -> Option<spark_resolve::DefId> {
+    table
+        .get_type_methods(struct_def)
         .and_then(|methods| methods.iter().find(|(name, _)| *name == method_name))
         .map(|(_, def_id)| *def_id)
 }
@@ -1193,26 +1490,33 @@ fn maybe_wrap_iterable(source: HirExpr, table: &TypeTable) -> HirExpr {
 
 /// Returns `true` if the lhs operand is a struct binding `Equatable`.
 fn should_desugar_equatable(lhs: &HirExpr, table: &TypeTable) -> bool {
-    let Some(equatable_id) = table.well_known.equatable else { return false };
-    let Some(sdef) = struct_def_id(lhs.ty, table) else { return false };
+    let Some(equatable_id) = table.well_known.equatable else {
+        return false;
+    };
+    let Some(sdef) = struct_def_id(lhs.ty, table) else {
+        return false;
+    };
     table.type_binds_interface(sdef, equatable_id)
 }
 
 /// Desugars `a == b` to `equals(a, b)` and `a != b` to `!equals(a, b)`.
 /// Caller must verify `should_desugar_equatable` first.
-fn desugar_equatable(
-    op: BinaryOp,
-    lhs: HirExpr,
-    rhs: HirExpr,
-    table: &TypeTable,
-) -> HirExprKind {
+fn desugar_equatable(op: BinaryOp, lhs: HirExpr, rhs: HirExpr, table: &TypeTable) -> HirExprKind {
     let bool_ty = find_bool_type(table);
     let span = lhs.span;
     let Some(sdef) = struct_def_id(lhs.ty, table) else {
-        return HirExprKind::BinaryOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        return HirExprKind::BinaryOp {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
     };
     let Some(method_def) = find_binding_method(sdef, kw::EQUALS, table) else {
-        return HirExprKind::BinaryOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        return HirExprKind::BinaryOp {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
     };
     let fn_ty = table.get_def_type(method_def).unwrap_or(TypeId::ERROR);
     let callee = HirExpr::new(HirExprKind::Local(method_def), fn_ty, span);
@@ -1236,26 +1540,33 @@ fn desugar_equatable(
 
 /// Returns `true` if the lhs operand is a struct binding `Comparable`.
 fn should_desugar_comparable(lhs: &HirExpr, table: &TypeTable) -> bool {
-    let Some(comparable_id) = table.well_known.comparable else { return false };
-    let Some(sdef) = struct_def_id(lhs.ty, table) else { return false };
+    let Some(comparable_id) = table.well_known.comparable else {
+        return false;
+    };
+    let Some(sdef) = struct_def_id(lhs.ty, table) else {
+        return false;
+    };
     table.type_binds_interface(sdef, comparable_id)
 }
 
 /// Desugars `a < b` to `compareTo(a, b) < 0`, etc.
 /// Caller must verify `should_desugar_comparable` first.
-fn desugar_comparable(
-    op: BinaryOp,
-    lhs: HirExpr,
-    rhs: HirExpr,
-    table: &TypeTable,
-) -> HirExprKind {
+fn desugar_comparable(op: BinaryOp, lhs: HirExpr, rhs: HirExpr, table: &TypeTable) -> HirExprKind {
     let int_ty = find_int_type(table);
     let span = lhs.span;
     let Some(sdef) = struct_def_id(lhs.ty, table) else {
-        return HirExprKind::BinaryOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        return HirExprKind::BinaryOp {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
     };
     let Some(method_def) = find_binding_method(sdef, kw::COMPARE_TO, table) else {
-        return HirExprKind::BinaryOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) };
+        return HirExprKind::BinaryOp {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+        };
     };
     let fn_ty = table.get_def_type(method_def).unwrap_or(TypeId::ERROR);
     let callee = HirExpr::new(HirExprKind::Local(method_def), fn_ty, span);
@@ -1267,11 +1578,7 @@ fn desugar_comparable(
         int_ty,
         span,
     );
-    let zero = HirExpr::new(
-        HirExprKind::Literal(HirLiteral::Int(0)),
-        int_ty,
-        span,
-    );
+    let zero = HirExpr::new(HirExprKind::Literal(HirLiteral::Int(0)), int_ty, span);
     HirExprKind::BinaryOp {
         op,
         lhs: Box::new(cmp_call),

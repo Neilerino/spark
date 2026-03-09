@@ -5,34 +5,26 @@
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Signature, TrapCode, Value};
 use cranelift_module::{FuncId, Linkage, Module};
-use rustc_hash::FxHashMap;
 use spark_diagnostics::Diagnostics;
 use spark_intern::kw;
 use spark_mir::{BlockId, Operand, Place, Terminator};
-use spark_resolve::{DefinitionKind, DefinitionTable};
-use spark_types::{Ty, TypeId, TypeTable};
+use spark_resolve::DefinitionKind;
+use spark_types::{Ty, TypeTable};
 
-use super::context::{self, FunctionContext};
+use super::context::{self, EmitCtx, FunctionContext};
 use super::emit_rvalue;
 use super::types as clif_types;
 use crate::abi;
 
 /// Emits a MIR terminator instruction.
-#[allow(clippy::too_many_arguments)]
 pub fn emit_terminator<M: Module>(
     ctx: &mut FunctionContext<'_>,
     terminator: &Terminator,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    _dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    _elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
-    poll_fn_map: &FxHashMap<spark_resolve::DefId, spark_mir::async_transform::PollFnInfo>,
-    lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,
     diagnostics: &mut Diagnostics,
 ) {
+    let table = ecx.table;
     match terminator {
         Terminator::Goto { target } => {
             let target_block = ctx.clif_block(*target);
@@ -73,17 +65,7 @@ pub fn emit_terminator<M: Module>(
             targets,
             otherwise,
         } => {
-            emit_switch_int(
-                ctx,
-                discriminant,
-                targets,
-                *otherwise,
-                table,
-                definitions,
-                func_ids,
-                thunk_ids,
-                module,
-            );
+            emit_switch_int(ctx, discriminant, targets, *otherwise, ecx, module);
         }
 
         Terminator::Call {
@@ -99,13 +81,8 @@ pub fn emit_terminator<M: Module>(
                 args,
                 destination,
                 *target,
-                table,
-                definitions,
-                func_ids,
-                thunk_ids,
+                ecx,
                 module,
-                poll_fn_map,
-                lambda_to_async,
                 diagnostics,
             );
         }
@@ -117,28 +94,16 @@ pub fn emit_terminator<M: Module>(
 }
 
 /// Emits a `SwitchInt` terminator as a chain of compare-and-branch instructions.
-#[allow(clippy::too_many_arguments)]
 fn emit_switch_int<M: Module>(
     ctx: &mut FunctionContext<'_>,
     discriminant: &Operand,
     targets: &[(i128, BlockId)],
     otherwise: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
-    let disc_val = emit_rvalue::emit_operand(
-        ctx,
-        discriminant,
-        table,
-        definitions,
-        func_ids,
-        thunk_ids,
-        module,
-    )
-    .expect("ICE: switch discriminant operand produced no value; this is a compiler bug");
+    let disc_val = emit_rvalue::emit_operand(ctx, discriminant, ecx, module)
+        .expect("ICE: switch discriminant operand produced no value; this is a compiler bug");
 
     for (value, target) in targets {
         let val_ty = ctx.builder.func.dfg.value_type(disc_val);
@@ -163,28 +128,21 @@ fn emit_switch_int<M: Module>(
 }
 
 /// Emits a function `Call` terminator.
-#[allow(clippy::too_many_arguments)]
 fn emit_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
     func: &Operand,
     args: &[Operand],
     destination: &Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
-    poll_fn_map: &FxHashMap<spark_resolve::DefId, spark_mir::async_transform::PollFnInfo>,
-    lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,
     diagnostics: &mut Diagnostics,
 ) {
+    let table = ecx.table;
+
     // Intercept intrinsic calls introduced by the deforestation pass.
     if let Some(intrinsic) = resolve_intrinsic(func, ctx) {
-        emit_intrinsic_call(
-            ctx, intrinsic, args, destination, target, table, definitions,
-            func_ids, thunk_ids, module,
-        );
+        emit_intrinsic_call(ctx, intrinsic, args, destination, target, ecx, module);
         return;
     }
 
@@ -192,50 +150,19 @@ fn emit_call<M: Module>(
     // The func operand is typically `Copy(place)` of a local that was assigned
     // a `Constant::FunctionRef(def_id)`, so we resolve the DefId from the MIR.
     if let Some(callee_def_id) = ctx.mir_func.resolve_callee_def_id(func) {
-        if let Some(info) = definitions.get(callee_def_id) {
+        if let Some(info) = ecx.definitions.get(callee_def_id) {
             if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::PRINT {
-                emit_builtin_print(
-                    ctx,
-                    args,
-                    target,
-                    table,
-                    definitions,
-                    func_ids,
-                    thunk_ids,
-                    module,
-                );
+                emit_builtin_print(ctx, args, target, ecx, module);
                 return;
             }
             if matches!(info.kind, DefinitionKind::BuiltinFunction)
                 && (info.name == kw::SORT || info.name == kw::TAKE || info.name == kw::REVERSE)
             {
-                emit_builtin_list_fn(
-                    ctx,
-                    info.name,
-                    args,
-                    destination,
-                    target,
-                    table,
-                    definitions,
-                    func_ids,
-                    thunk_ids,
-                    module,
-                );
+                emit_builtin_list_fn(ctx, info.name, args, destination, target, ecx, module);
                 return;
             }
             if matches!(info.kind, DefinitionKind::BuiltinMethod) {
-                emit_builtin_method(
-                    ctx,
-                    info.name,
-                    args,
-                    destination,
-                    target,
-                    table,
-                    definitions,
-                    func_ids,
-                    thunk_ids,
-                    module,
-                );
+                emit_builtin_method(ctx, info.name, args, destination, target, ecx, module);
                 return;
             }
             if matches!(info.kind, DefinitionKind::ExternFunction) {
@@ -246,10 +173,7 @@ fn emit_call<M: Module>(
                     args,
                     destination,
                     target,
-                    table,
-                    definitions,
-                    func_ids,
-                    thunk_ids,
+                    ecx,
                     module,
                 );
                 return;
@@ -257,84 +181,27 @@ fn emit_call<M: Module>(
             if matches!(info.kind, DefinitionKind::BuiltinFunction)
                 && (info.name == kw::PARALLEL_FOREACH || info.name == kw::PARALLEL_MAP)
             {
-                emit_parallel_call(
-                    ctx,
-                    info.name,
-                    args,
-                    destination,
-                    target,
-                    table,
-                    definitions,
-                    func_ids,
-                    thunk_ids,
-                    module,
-                );
+                emit_parallel_call(ctx, info.name, args, destination, target, ecx, module);
                 return;
             }
             if matches!(info.kind, DefinitionKind::BuiltinFunction)
                 && info.name == kw::PARALLEL_MAP_REDUCE
             {
-                emit_parallel_map_reduce_call(
-                    ctx,
-                    args,
-                    destination,
-                    target,
-                    table,
-                    definitions,
-                    func_ids,
-                    thunk_ids,
-                    module,
-                );
+                emit_parallel_map_reduce_call(ctx, args, destination, target, ecx, module);
                 return;
             }
-            if matches!(info.kind, DefinitionKind::BuiltinFunction)
-                && info.name == kw::SPARK_SPAWN
+            if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::SPARK_SPAWN
             {
-                emit_spawn_call(
-                    ctx,
-                    args,
-                    destination,
-                    target,
-                    table,
-                    definitions,
-                    func_ids,
-                    thunk_ids,
-                    module,
-                    poll_fn_map,
-                    lambda_to_async,
-                );
+                emit_spawn_call(ctx, args, destination, target, ecx, module);
                 return;
             }
-            if matches!(info.kind, DefinitionKind::BuiltinFunction)
-                && info.name == kw::SPARK_AWAIT
+            if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::SPARK_AWAIT
             {
-                emit_await_call(
-                    ctx,
-                    args,
-                    destination,
-                    target,
-                    table,
-                    definitions,
-                    func_ids,
-                    thunk_ids,
-                    module,
-                );
+                emit_await_call(ctx, args, destination, target, ecx, module);
                 return;
             }
-            if matches!(info.kind, DefinitionKind::BuiltinFunction)
-                && info.name == kw::TRY_POLL
-            {
-                emit_try_poll_call(
-                    ctx,
-                    args,
-                    destination,
-                    target,
-                    table,
-                    definitions,
-                    func_ids,
-                    thunk_ids,
-                    module,
-                );
+            if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::TRY_POLL {
+                emit_try_poll_call(ctx, args, destination, target, ecx, module);
                 return;
             }
         }
@@ -348,22 +215,22 @@ fn emit_call<M: Module>(
     // in their Cranelift signature that isn't present in MIR call args.
     // Calling a lambda directly without env_ptr would cause a verifier error.
     let is_lambda = |id: &spark_resolve::DefId| {
-        definitions
-            .get(*id)
-            .map_or(false, |info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda))
+        ecx.definitions.get(*id).map_or(false, |info| {
+            matches!(info.kind, spark_resolve::DefinitionKind::Lambda)
+        })
     };
     let resolved_def_id = match func {
         spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(def_id)) => Some(*def_id),
-        _ => ctx.mir_func.resolve_callee_def_id(func)
-            .filter(|id| func_ids.contains_key(id)),
+        _ => ctx
+            .mir_func
+            .resolve_callee_def_id(func)
+            .filter(|id| ecx.func_ids.contains_key(id)),
     }
     .filter(|id| !is_lambda(id));
 
     let arg_vals: Vec<Value> = args
         .iter()
-        .filter_map(|arg| {
-            emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-        })
+        .filter_map(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module))
         .collect();
 
     // Check if the callee returns an aggregate (sret convention).
@@ -382,14 +249,12 @@ fn emit_call<M: Module>(
                 def_id,
                 sret_addr,
                 &arg_vals,
-                func_ids,
+                ecx.func_ids,
                 module,
                 diagnostics,
             );
         } else {
-            let func_val = emit_rvalue::emit_operand(
-                ctx, func, table, definitions, func_ids, thunk_ids, module,
-            );
+            let func_val = emit_rvalue::emit_operand(ctx, func, ecx, module);
             emit_indirect_call_sret(
                 ctx,
                 func_val,
@@ -402,10 +267,9 @@ fn emit_call<M: Module>(
         }
         None // data already written to sret_addr
     } else if let Some(def_id) = resolved_def_id {
-        emit_direct_call(ctx, def_id, &arg_vals, func_ids, module, diagnostics)
+        emit_direct_call(ctx, def_id, &arg_vals, ecx.func_ids, module, diagnostics)
     } else {
-        let func_val =
-            emit_rvalue::emit_operand(ctx, func, table, definitions, func_ids, thunk_ids, module);
+        let func_val = emit_rvalue::emit_operand(ctx, func, ecx, module);
         emit_indirect_call(ctx, func_val, &arg_vals, destination, table, module)
     };
 
@@ -423,10 +287,7 @@ fn emit_call<M: Module>(
 ///
 /// The deforestation pass stores `Constant::IntrinsicRef(intrinsic)` directly
 /// in the function operand. We also check locals that were assigned one.
-fn resolve_intrinsic(
-    func: &Operand,
-    ctx: &FunctionContext<'_>,
-) -> Option<spark_mir::Intrinsic> {
+fn resolve_intrinsic(func: &Operand, ctx: &FunctionContext<'_>) -> Option<spark_mir::Intrinsic> {
     if let spark_mir::Operand::Constant(spark_mir::Constant::IntrinsicRef(intrinsic)) = func {
         return Some(*intrinsic);
     }
@@ -462,32 +323,30 @@ fn resolve_intrinsic(
 ///
 /// Intrinsic args are already rewritten by the deforestation pass:
 /// `[start, end, inclusive_i64, step, ...rest_args]`
-#[allow(clippy::too_many_arguments)]
 fn emit_intrinsic_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
     intrinsic: spark_mir::Intrinsic,
     args: &[Operand],
     destination: &spark_mir::Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
+    let table = ecx.table;
+
     // Evaluate range parameters: start, end, inclusive, step (args[0..4]).
-    let start_val = args.first().and_then(|a| {
-        emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
-    });
-    let end_val = args.get(1).and_then(|a| {
-        emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
-    });
-    let inclusive_val = args.get(2).and_then(|a| {
-        emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
-    });
-    let step_val = args.get(3).and_then(|a| {
-        emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
-    });
+    let start_val = args
+        .first()
+        .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
+    let end_val = args
+        .get(1)
+        .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
+    let inclusive_val = args
+        .get(2)
+        .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
+    let step_val = args
+        .get(3)
+        .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
 
     let (Some(s), Some(e), Some(inc), Some(st)) = (start_val, end_val, inclusive_val, step_val)
     else {
@@ -502,15 +361,18 @@ fn emit_intrinsic_call<M: Module>(
     match intrinsic {
         spark_mir::Intrinsic::ParallelRangeForEach => {
             // args[4] = callback fat pointer
-            let cb_val = args.get(4).and_then(|a| {
-                emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
-            });
+            let cb_val = args
+                .get(4)
+                .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
             let Some(fat_ptr) = cb_val else {
                 let target_block = ctx.clif_block(target);
                 ctx.builder.ins().jump(target_block, &[]);
                 return;
             };
-            let fn_ptr = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), fat_ptr, 0);
+            let fn_ptr = ctx
+                .builder
+                .ins()
+                .load(ctx.ptr_type, MemFlags::new(), fat_ptr, 0);
             let env_ptr = ctx.builder.ins().load(
                 ctx.ptr_type,
                 MemFlags::new(),
@@ -522,27 +384,27 @@ fn emit_intrinsic_call<M: Module>(
             let cb_kind = compute_cb_kind_for_arg(ctx, args, 4, table);
             let cb_kind_val = ctx.builder.ins().iconst(types::I8, i64::from(cb_kind));
 
-            let func_ref = module.declare_func_in_func(
-                ctx.stubs.parallel_range_foreach,
-                ctx.builder.func,
-            );
-            ctx.builder.ins().call(
-                func_ref,
-                &[s, e, inc_i8, st, fn_ptr, env_ptr, cb_kind_val],
-            );
+            let func_ref =
+                module.declare_func_in_func(ctx.stubs.parallel_range_foreach, ctx.builder.func);
+            ctx.builder
+                .ins()
+                .call(func_ref, &[s, e, inc_i8, st, fn_ptr, env_ptr, cb_kind_val]);
         }
 
         spark_mir::Intrinsic::ParallelRangeMap => {
             // args[4] = callback fat pointer
-            let cb_val = args.get(4).and_then(|a| {
-                emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
-            });
+            let cb_val = args
+                .get(4)
+                .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
             let Some(fat_ptr) = cb_val else {
                 let target_block = ctx.clif_block(target);
                 ctx.builder.ins().jump(target_block, &[]);
                 return;
             };
-            let fn_ptr = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), fat_ptr, 0);
+            let fn_ptr = ctx
+                .builder
+                .ins()
+                .load(ctx.ptr_type, MemFlags::new(), fat_ptr, 0);
             let env_ptr = ctx.builder.ins().load(
                 ctx.ptr_type,
                 MemFlags::new(),
@@ -561,13 +423,20 @@ fn emit_intrinsic_call<M: Module>(
                 .ins()
                 .iconst(types::I64, i64::from(result_layout.size));
 
-            let func_ref = module.declare_func_in_func(
-                ctx.stubs.parallel_range_map,
-                ctx.builder.func,
-            );
+            let func_ref =
+                module.declare_func_in_func(ctx.stubs.parallel_range_map, ctx.builder.func);
             let call = ctx.builder.ins().call(
                 func_ref,
-                &[s, e, inc_i8, st, fn_ptr, env_ptr, result_elem_size_val, cb_kind_val],
+                &[
+                    s,
+                    e,
+                    inc_i8,
+                    st,
+                    fn_ptr,
+                    env_ptr,
+                    result_elem_size_val,
+                    cb_kind_val,
+                ],
             );
             let result = ctx.builder.inst_results(call)[0];
             if destination.projections.is_empty() {
@@ -577,15 +446,15 @@ fn emit_intrinsic_call<M: Module>(
 
         spark_mir::Intrinsic::ParallelRangeMapReduce => {
             // args: [start, end, inclusive, step, mapper, combiner, initial]
-            let mapper_val = args.get(4).and_then(|a| {
-                emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
-            });
-            let combiner_val = args.get(5).and_then(|a| {
-                emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
-            });
-            let initial_val = args.get(6).and_then(|a| {
-                emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
-            });
+            let mapper_val = args
+                .get(4)
+                .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
+            let combiner_val = args
+                .get(5)
+                .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
+            let initial_val = args
+                .get(6)
+                .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
 
             let (Some(mapper_fp), Some(combiner_fp), Some(initial)) =
                 (mapper_val, combiner_val, initial_val)
@@ -595,17 +464,20 @@ fn emit_intrinsic_call<M: Module>(
                 return;
             };
 
-            let map_fn = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), mapper_fp, 0);
+            let map_fn = ctx
+                .builder
+                .ins()
+                .load(ctx.ptr_type, MemFlags::new(), mapper_fp, 0);
             let map_env = ctx.builder.ins().load(
                 ctx.ptr_type,
                 MemFlags::new(),
                 mapper_fp,
                 ctx.ptr_type.bytes() as i32,
             );
-            let reduce_fn =
-                ctx.builder
-                    .ins()
-                    .load(ctx.ptr_type, MemFlags::new(), combiner_fp, 0);
+            let reduce_fn = ctx
+                .builder
+                .ins()
+                .load(ctx.ptr_type, MemFlags::new(), combiner_fp, 0);
             let reduce_env = ctx.builder.ins().load(
                 ctx.ptr_type,
                 MemFlags::new(),
@@ -616,13 +488,13 @@ fn emit_intrinsic_call<M: Module>(
             let map_cb_kind = compute_cb_kind_for_arg(ctx, args, 4, table);
             let map_cb_kind_val = ctx.builder.ins().iconst(types::I8, i64::from(map_cb_kind));
             let reduce_cb_kind = compute_cb_kind_for_arg(ctx, args, 5, table);
-            let reduce_cb_kind_val =
-                ctx.builder.ins().iconst(types::I8, i64::from(reduce_cb_kind));
+            let reduce_cb_kind_val = ctx
+                .builder
+                .ins()
+                .iconst(types::I8, i64::from(reduce_cb_kind));
 
-            let func_ref = module.declare_func_in_func(
-                ctx.stubs.parallel_range_map_reduce,
-                ctx.builder.func,
-            );
+            let func_ref =
+                module.declare_func_in_func(ctx.stubs.parallel_range_map_reduce, ctx.builder.func);
             let call = ctx.builder.ins().call(
                 func_ref,
                 &[
@@ -706,21 +578,19 @@ fn get_callback_return_type(
 
 /// Emits a built-in `print` call, dispatching to the correct runtime stub
 /// based on the argument's type.
-#[allow(clippy::too_many_arguments)]
 fn emit_builtin_print<M: Module>(
     ctx: &mut FunctionContext<'_>,
     args: &[Operand],
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
+    let table = ecx.table;
+
     // Evaluate the single argument.
-    let arg_val = args.first().and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let arg_val = args
+        .first()
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
 
     if let Some(val) = arg_val {
         // Determine the argument's type from the MIR operand.
@@ -755,23 +625,21 @@ fn emit_builtin_print<M: Module>(
 ///
 /// These are free functions that take a list as the first argument and return a new list.
 /// `expr via sort` is desugared to `sort(expr)` by HIR, so args[0] is the list.
-#[allow(clippy::too_many_arguments)]
 fn emit_builtin_list_fn<M: Module>(
     ctx: &mut FunctionContext<'_>,
     fn_name: spark_intern::Symbol,
     args: &[Operand],
     destination: &Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
+    let table = ecx.table;
+
     // Evaluate the list argument (args[0]).
-    let list_val = args.first().and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let list_val = args
+        .first()
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
 
     let Some(list_ptr) = list_val else {
         let target_block = ctx.clif_block(target);
@@ -809,9 +677,7 @@ fn emit_builtin_list_fn<M: Module>(
         // args[1] is the count
         let count_val = args
             .get(1)
-            .and_then(|arg| {
-                emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-            })
+            .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module))
             .unwrap_or_else(|| ctx.builder.ins().iconst(types::I64, 0));
         let func_ref = module.declare_func_in_func(ctx.stubs.list_take, ctx.builder.func);
         let call = ctx.builder.ins().call(func_ref, &[list_ptr, count_val]);
@@ -837,25 +703,22 @@ fn emit_builtin_list_fn<M: Module>(
 /// MIR args: `[list, callback]` where `callback` is a fat pointer `(fn_ptr, env_ptr)`.
 /// The function unpacks the fat pointer and computes `elem_size` and `cb_kind` from types,
 /// then calls the appropriate runtime stub with the raw arguments.
-#[allow(clippy::too_many_arguments)]
 fn emit_parallel_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
     fn_name: spark_intern::Symbol,
     args: &[Operand],
     destination: &Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
+    let table = ecx.table;
     let is_map = fn_name == kw::PARALLEL_MAP;
 
     // Evaluate the list argument (args[0]).
-    let list_val = args.first().and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let list_val = args
+        .first()
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
 
     let Some(list_ptr) = list_val else {
         let target_block = ctx.clif_block(target);
@@ -864,9 +727,9 @@ fn emit_parallel_call<M: Module>(
     };
 
     // Evaluate the callback argument (args[1]) — a fat pointer aggregate.
-    let cb_val = args.get(1).and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let cb_val = args
+        .get(1)
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
 
     let Some(fat_ptr_addr) = cb_val else {
         let target_block = ctx.clif_block(target);
@@ -976,22 +839,20 @@ fn emit_parallel_call<M: Module>(
 ///
 /// Arguments: [list, mapper_fat_ptr, combiner_fat_ptr, initial_value]
 /// Runtime: `__spark_parallel_map_reduce(list, map_fn, map_env, reduce_fn, reduce_env, initial, elem_size, map_cb_kind, reduce_cb_kind) -> i64`
-#[allow(clippy::too_many_arguments)]
 fn emit_parallel_map_reduce_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
     args: &[Operand],
     destination: &Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
+    let table = ecx.table;
+
     // Evaluate list (args[0])
-    let list_val = args.first().and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let list_val = args
+        .first()
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
     let Some(list_ptr) = list_val else {
         let target_block = ctx.clif_block(target);
         ctx.builder.ins().jump(target_block, &[]);
@@ -999,9 +860,9 @@ fn emit_parallel_map_reduce_call<M: Module>(
     };
 
     // Evaluate mapper fat pointer (args[1])
-    let mapper_val = args.get(1).and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let mapper_val = args
+        .get(1)
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
     let Some(mapper_fat_ptr) = mapper_val else {
         let target_block = ctx.clif_block(target);
         ctx.builder.ins().jump(target_block, &[]);
@@ -1009,9 +870,9 @@ fn emit_parallel_map_reduce_call<M: Module>(
     };
 
     // Evaluate combiner fat pointer (args[2])
-    let combiner_val = args.get(2).and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let combiner_val = args
+        .get(2)
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
     let Some(combiner_fat_ptr) = combiner_val else {
         let target_block = ctx.clif_block(target);
         ctx.builder.ins().jump(target_block, &[]);
@@ -1019,9 +880,9 @@ fn emit_parallel_map_reduce_call<M: Module>(
     };
 
     // Evaluate initial value (args[3])
-    let initial_val = args.get(3).and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let initial_val = args
+        .get(3)
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
     let Some(initial) = initial_val else {
         let target_block = ctx.clif_block(target);
         ctx.builder.ins().jump(target_block, &[]);
@@ -1029,12 +890,28 @@ fn emit_parallel_map_reduce_call<M: Module>(
     };
 
     // Load fn_ptr and env_ptr from mapper fat pointer
-    let map_fn = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), mapper_fat_ptr, 0);
-    let map_env = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), mapper_fat_ptr, ctx.ptr_type.bytes() as i32);
+    let map_fn = ctx
+        .builder
+        .ins()
+        .load(ctx.ptr_type, MemFlags::new(), mapper_fat_ptr, 0);
+    let map_env = ctx.builder.ins().load(
+        ctx.ptr_type,
+        MemFlags::new(),
+        mapper_fat_ptr,
+        ctx.ptr_type.bytes() as i32,
+    );
 
     // Load fn_ptr and env_ptr from combiner fat pointer
-    let reduce_fn = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), combiner_fat_ptr, 0);
-    let reduce_env = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), combiner_fat_ptr, ctx.ptr_type.bytes() as i32);
+    let reduce_fn = ctx
+        .builder
+        .ins()
+        .load(ctx.ptr_type, MemFlags::new(), combiner_fat_ptr, 0);
+    let reduce_env = ctx.builder.ins().load(
+        ctx.ptr_type,
+        MemFlags::new(),
+        combiner_fat_ptr,
+        ctx.ptr_type.bytes() as i32,
+    );
 
     // Determine elem_size from list element type
     let list_ty_id = if let Some(Operand::Copy(place)) = args.first() {
@@ -1047,7 +924,10 @@ fn emit_parallel_map_reduce_call<M: Module>(
         _ => spark_types::TypeId::ERROR,
     };
     let elem_layout = ctx.layouts.layout_of(elem_ty, table);
-    let elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(elem_layout.size));
+    let elem_size_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I64, i64::from(elem_layout.size));
 
     // Compute map_cb_kind from mapper type
     let map_cb_ty_id = if let Some(Operand::Copy(place)) = args.get(1) {
@@ -1057,13 +937,24 @@ fn emit_parallel_map_reduce_call<M: Module>(
     };
     let (map_param_ty, map_ret_ty) = match table.resolve(map_cb_ty_id).clone() {
         Ty::Function { params, ret, .. } => {
-            let p = params.first().copied().unwrap_or(spark_types::TypeId::ERROR);
+            let p = params
+                .first()
+                .copied()
+                .unwrap_or(spark_types::TypeId::ERROR);
             (p, ret)
         }
         _ => (spark_types::TypeId::ERROR, spark_types::TypeId::ERROR),
     };
-    let map_input_kind: u8 = if matches!(table.resolve(map_param_ty), Ty::Float(_)) { 1 } else { 0 };
-    let map_output_kind: u8 = if matches!(table.resolve(map_ret_ty), Ty::Float(_)) { 1 } else { 0 };
+    let map_input_kind: u8 = if matches!(table.resolve(map_param_ty), Ty::Float(_)) {
+        1
+    } else {
+        0
+    };
+    let map_output_kind: u8 = if matches!(table.resolve(map_ret_ty), Ty::Float(_)) {
+        1
+    } else {
+        0
+    };
     let map_cb_kind: u8 = map_input_kind | (map_output_kind << 2);
     let map_cb_kind_val = ctx.builder.ins().iconst(types::I8, i64::from(map_cb_kind));
 
@@ -1075,15 +966,29 @@ fn emit_parallel_map_reduce_call<M: Module>(
     };
     let (reduce_param_ty, reduce_ret_ty) = match table.resolve(reduce_cb_ty_id).clone() {
         Ty::Function { params, ret, .. } => {
-            let p = params.first().copied().unwrap_or(spark_types::TypeId::ERROR);
+            let p = params
+                .first()
+                .copied()
+                .unwrap_or(spark_types::TypeId::ERROR);
             (p, ret)
         }
         _ => (spark_types::TypeId::ERROR, spark_types::TypeId::ERROR),
     };
-    let reduce_input_kind: u8 = if matches!(table.resolve(reduce_param_ty), Ty::Float(_)) { 1 } else { 0 };
-    let reduce_output_kind: u8 = if matches!(table.resolve(reduce_ret_ty), Ty::Float(_)) { 1 } else { 0 };
+    let reduce_input_kind: u8 = if matches!(table.resolve(reduce_param_ty), Ty::Float(_)) {
+        1
+    } else {
+        0
+    };
+    let reduce_output_kind: u8 = if matches!(table.resolve(reduce_ret_ty), Ty::Float(_)) {
+        1
+    } else {
+        0
+    };
     let reduce_cb_kind: u8 = reduce_input_kind | (reduce_output_kind << 2);
-    let reduce_cb_kind_val = ctx.builder.ins().iconst(types::I8, i64::from(reduce_cb_kind));
+    let reduce_cb_kind_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I8, i64::from(reduce_cb_kind));
 
     let func_ref = module.declare_func_in_func(ctx.stubs.parallel_map_reduce, ctx.builder.func);
     let call = ctx.builder.ins().call(
@@ -1119,32 +1024,25 @@ fn emit_parallel_map_reduce_call<M: Module>(
 ///
 /// **Blocking fallback** (no poll function available):
 /// Extracts fn_ptr and env_ptr from the closure fat pointer and calls `__spark_spawn`.
-#[allow(clippy::too_many_arguments)]
 fn emit_spawn_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
     args: &[Operand],
     destination: &Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
-    poll_fn_map: &FxHashMap<spark_resolve::DefId, spark_mir::async_transform::PollFnInfo>,
-    lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,
 ) {
+    let table = ecx.table;
+
     // Try cooperative spawn path.
-    if try_emit_coop_spawn(
-        ctx, args, destination, target, table, definitions,
-        func_ids, thunk_ids, module, poll_fn_map, lambda_to_async,
-    ).is_some() {
+    if try_emit_coop_spawn(ctx, args, destination, target, ecx, module).is_some() {
         return;
     }
 
     // Fallback: blocking spawn via __spark_spawn.
-    let cb_val = args.first().and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let cb_val = args
+        .first()
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
 
     let Some(fat_ptr_addr) = cb_val else {
         let target_block = ctx.clif_block(target);
@@ -1193,10 +1091,10 @@ fn emit_spawn_call<M: Module>(
 
     // Call __spark_spawn(fn_ptr, env_ptr, result_size, is_float) -> ptr
     let func_ref = module.declare_func_in_func(ctx.stubs.spawn, ctx.builder.func);
-    let call = ctx.builder.ins().call(
-        func_ref,
-        &[fn_ptr, env_ptr, result_size_val, is_float_val],
-    );
+    let call = ctx
+        .builder
+        .ins()
+        .call(func_ref, &[fn_ptr, env_ptr, result_size_val, is_float_val]);
     let result = ctx.builder.inst_results(call)[0];
     if destination.projections.is_empty() {
         ctx.write_local(destination.local, result);
@@ -1210,20 +1108,16 @@ fn emit_spawn_call<M: Module>(
 ///
 /// Detects if the spawned closure wraps an async function that has a poll entry,
 /// and if so, emits the cooperative spawn sequence instead of the blocking path.
-#[allow(clippy::too_many_arguments)]
 fn try_emit_coop_spawn<M: Module>(
     ctx: &mut FunctionContext<'_>,
     args: &[Operand],
     destination: &Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
-    poll_fn_map: &FxHashMap<spark_resolve::DefId, spark_mir::async_transform::PollFnInfo>,
-    lambda_to_async: &FxHashMap<spark_resolve::DefId, spark_resolve::DefId>,
 ) -> Option<()> {
+    let table = ecx.table;
+
     // Step 1: Find the closure local from the spawn argument.
     let closure_local = match args.first() {
         Some(Operand::Copy(place) | Operand::Move(place)) if place.projections.is_empty() => {
@@ -1255,14 +1149,16 @@ fn try_emit_coop_spawn<M: Module>(
     let lambda_def_id = lambda_def_id?;
 
     // Step 3: Check if this lambda wraps an async function with a poll entry.
-    let async_def_id = lambda_to_async.get(&lambda_def_id)?;
-    let poll_info = poll_fn_map.get(async_def_id)?;
+    let async_def_id = ecx.lambda_to_async.get(&lambda_def_id)?;
+    let poll_info = ecx.poll_fn_map.get(async_def_id)?;
 
     // Step 4: Get the poll function's FuncId.
-    let poll_func_id = func_ids.get(&poll_info.poll_def_id)?;
+    let poll_func_id = ecx.func_ids.get(&poll_info.poll_def_id)?;
 
     // Step 5: Compute state layout.
-    let state_layout = ctx.layouts.async_state_layout_of(&poll_info.state_fields, table);
+    let state_layout = ctx
+        .layouts
+        .async_state_layout_of(&poll_info.state_fields, table);
     let state_size = state_layout.layout.size;
 
     // Step 6: Allocate state via __spark_alloc_state(state_size).
@@ -1278,9 +1174,12 @@ fn try_emit_coop_spawn<M: Module>(
 
     // Store __tag = 0 (initial segment).
     let tag_zero = ctx.builder.ins().iconst(types::I64, 0);
-    ctx.builder
-        .ins()
-        .store(MemFlags::new(), tag_zero, state_ptr, i32::try_from(tag_offset).unwrap_or(0));
+    ctx.builder.ins().store(
+        MemFlags::new(),
+        tag_zero,
+        state_ptr,
+        i32::try_from(tag_offset).unwrap_or(0),
+    );
 
     // Store each capture into its corresponding state field.
     // Captures correspond to the async function's params (Local(1), Local(2), ...).
@@ -1290,7 +1189,10 @@ fn try_emit_coop_spawn<M: Module>(
         let field_name = format!("__local_{param_idx}");
 
         // Find the state field by name.
-        let field_pos = poll_info.state_fields.iter().position(|(name, _)| name.as_str() == field_name);
+        let field_pos = poll_info
+            .state_fields
+            .iter()
+            .position(|(name, _)| name.as_str() == field_name);
         let Some(field_idx) = field_pos else { continue };
         if field_idx >= state_layout.field_offsets.len() {
             continue;
@@ -1298,9 +1200,7 @@ fn try_emit_coop_spawn<M: Module>(
         let field_offset = state_layout.field_offsets[field_idx];
         let field_ty = poll_info.state_fields[field_idx].1;
 
-        if let Some(val) = emit_rvalue::emit_operand(
-            ctx, cap_op, table, definitions, func_ids, thunk_ids, module,
-        ) {
+        if let Some(val) = emit_rvalue::emit_operand(ctx, cap_op, ecx, module) {
             if abi::is_scalar(field_ty, table) {
                 ctx.builder.ins().store(
                     MemFlags::new(),
@@ -1311,10 +1211,20 @@ fn try_emit_coop_spawn<M: Module>(
             } else {
                 // Aggregate capture: memcpy from the value address.
                 let field_layout = ctx.layouts.layout_of(field_ty, table);
-                let dest = ctx.builder.ins().iadd_imm(state_ptr, i64::from(field_offset));
+                let dest = ctx
+                    .builder
+                    .ins()
+                    .iadd_imm(state_ptr, i64::from(field_offset));
                 let config = module.target_config();
                 ctx.builder.emit_small_memory_copy(
-                    config, dest, val, u64::from(field_layout.size), 1, 1, true, MemFlags::new(),
+                    config,
+                    dest,
+                    val,
+                    u64::from(field_layout.size),
+                    1,
+                    1,
+                    true,
+                    MemFlags::new(),
                 );
             }
         }
@@ -1331,7 +1241,10 @@ fn try_emit_coop_spawn<M: Module>(
         _ => dest_ty_id,
     };
     let result_layout = ctx.layouts.layout_of(inner_ty, table);
-    let result_size_val = ctx.builder.ins().iconst(types::I64, i64::from(result_layout.size));
+    let result_size_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I64, i64::from(result_layout.size));
 
     // Find __result field offset in the state struct.
     let result_field_idx = poll_info
@@ -1344,13 +1257,22 @@ fn try_emit_coop_spawn<M: Module>(
     } else {
         0
     };
-    let result_offset_val = ctx.builder.ins().iconst(types::I64, i64::from(result_offset));
+    let result_offset_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I64, i64::from(result_offset));
 
     // Step 10: Call __spark_spawn_coop(poll_fn_ptr, state_ptr, state_size, result_size, result_offset) -> ptr.
     let spawn_coop_ref = module.declare_func_in_func(ctx.stubs.spawn_coop, ctx.builder.func);
     let spawn_call = ctx.builder.ins().call(
         spawn_coop_ref,
-        &[poll_fn_ptr, state_ptr, state_size_val, result_size_val, result_offset_val],
+        &[
+            poll_fn_ptr,
+            state_ptr,
+            state_size_val,
+            result_size_val,
+            result_offset_val,
+        ],
     );
     let future_ptr = ctx.builder.inst_results(spawn_call)[0];
     if destination.projections.is_empty() {
@@ -1364,22 +1286,20 @@ fn try_emit_coop_spawn<M: Module>(
 
 /// Emits an `await` call: passes the future pointer to `__spark_await` and
 /// loads the result value from the returned buffer pointer.
-#[allow(clippy::too_many_arguments)]
 fn emit_await_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
     args: &[Operand],
     destination: &Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
+    let table = ecx.table;
+
     // args[0] is the Future[T] pointer.
-    let future_val = args.first().and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let future_val = args
+        .first()
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
 
     let Some(future_ptr) = future_val else {
         let target_block = ctx.clif_block(target);
@@ -1410,22 +1330,18 @@ fn emit_await_call<M: Module>(
 
 /// Emits a `__spark_try_poll` call: passes the future pointer to `__spark_try_poll`
 /// and stores the returned result pointer (null if pending, non-null if ready).
-#[allow(clippy::too_many_arguments)]
 fn emit_try_poll_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
     args: &[Operand],
     destination: &Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
     // args[0] is the future pointer (opaque i64/ptr).
-    let future_val = args.first().and_then(|arg| {
-        emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-    });
+    let future_val = args
+        .first()
+        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
 
     let Some(future_ptr) = future_val else {
         let target_block = ctx.clif_block(target);
@@ -1458,12 +1374,11 @@ fn emit_builtin_method<M: Module>(
     args: &[Operand],
     destination: &Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
+    let table = ecx.table;
+
     // args[0] is the receiver. Read its type to determine dispatch.
     let recv_ty_id = match &args[0] {
         spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place) => {
@@ -1528,9 +1443,9 @@ fn emit_builtin_method<M: Module>(
     // --- CONTAINS ---
     if method_name == kw::CONTAINS {
         // args[1] is the element/key to search for
-        let arg_val = args.get(1).and_then(|a| {
-            emit_rvalue::emit_operand(ctx, a, table, definitions, func_ids, thunk_ids, module)
-        });
+        let arg_val = args
+            .get(1)
+            .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
 
         if let Some(val) = arg_val {
             let (stub_id, arg_ty) = match stripped_ty {
@@ -1570,16 +1485,9 @@ fn emit_builtin_method<M: Module>(
             (Ty::List(elem), _) if method_name == kw::APPEND => {
                 let elem_ty = *elem;
                 if let Some(arg) = args.get(1) {
-                    if let Some(elem_addr) = emit_rvalue::emit_operand_addr(
-                        ctx,
-                        arg,
-                        elem_ty,
-                        table,
-                        definitions,
-                        func_ids,
-                        thunk_ids,
-                        module,
-                    ) {
+                    if let Some(elem_addr) =
+                        emit_rvalue::emit_operand_addr(ctx, arg, elem_ty, ecx, module)
+                    {
                         let func_ref =
                             module.declare_func_in_func(ctx.stubs.list_push, ctx.builder.func);
                         ctx.builder.ins().call(func_ref, &[cow_ptr, elem_addr]);
@@ -1589,20 +1497,10 @@ fn emit_builtin_method<M: Module>(
             // List.remove(index)
             (Ty::List(_), _) if method_name == kw::REMOVE => {
                 if let Some(arg) = args.get(1) {
-                    if let Some(idx_val) = emit_rvalue::emit_operand(
-                        ctx,
-                        arg,
-                        table,
-                        definitions,
-                        func_ids,
-                        thunk_ids,
-                        module,
-                    ) {
+                    if let Some(idx_val) = emit_rvalue::emit_operand(ctx, arg, ecx, module) {
                         let func_ref =
                             module.declare_func_in_func(ctx.stubs.list_remove, ctx.builder.func);
-                        ctx.builder
-                            .ins()
-                            .call(func_ref, &[cow_ptr, idx_val]);
+                        ctx.builder.ins().call(func_ref, &[cow_ptr, idx_val]);
                     }
                 }
             }
@@ -1610,16 +1508,9 @@ fn emit_builtin_method<M: Module>(
             (Ty::Set(elem), _) if method_name == kw::ADD => {
                 let elem_ty = *elem;
                 if let Some(arg) = args.get(1) {
-                    if let Some(elem_addr) = emit_rvalue::emit_operand_addr(
-                        ctx,
-                        arg,
-                        elem_ty,
-                        table,
-                        definitions,
-                        func_ids,
-                        thunk_ids,
-                        module,
-                    ) {
+                    if let Some(elem_addr) =
+                        emit_rvalue::emit_operand_addr(ctx, arg, elem_ty, ecx, module)
+                    {
                         let func_ref =
                             module.declare_func_in_func(ctx.stubs.set_insert, ctx.builder.func);
                         ctx.builder.ins().call(func_ref, &[cow_ptr, elem_addr]);
@@ -1630,21 +1521,12 @@ fn emit_builtin_method<M: Module>(
             (Ty::Set(elem), _) if method_name == kw::REMOVE => {
                 let elem_ty = *elem;
                 if let Some(arg) = args.get(1) {
-                    if let Some(elem_addr) = emit_rvalue::emit_operand_addr(
-                        ctx,
-                        arg,
-                        elem_ty,
-                        table,
-                        definitions,
-                        func_ids,
-                        thunk_ids,
-                        module,
-                    ) {
+                    if let Some(elem_addr) =
+                        emit_rvalue::emit_operand_addr(ctx, arg, elem_ty, ecx, module)
+                    {
                         let func_ref =
                             module.declare_func_in_func(ctx.stubs.set_remove, ctx.builder.func);
-                        ctx.builder
-                            .ins()
-                            .call(func_ref, &[cow_ptr, elem_addr]);
+                        ctx.builder.ins().call(func_ref, &[cow_ptr, elem_addr]);
                     }
                 }
             }
@@ -1652,21 +1534,12 @@ fn emit_builtin_method<M: Module>(
             (Ty::Map(k, _), _) if method_name == kw::REMOVE => {
                 let key_ty = *k;
                 if let Some(arg) = args.get(1) {
-                    if let Some(key_addr) = emit_rvalue::emit_operand_addr(
-                        ctx,
-                        arg,
-                        key_ty,
-                        table,
-                        definitions,
-                        func_ids,
-                        thunk_ids,
-                        module,
-                    ) {
+                    if let Some(key_addr) =
+                        emit_rvalue::emit_operand_addr(ctx, arg, key_ty, ecx, module)
+                    {
                         let func_ref =
                             module.declare_func_in_func(ctx.stubs.map_remove, ctx.builder.func);
-                        ctx.builder
-                            .ins()
-                            .call(func_ref, &[cow_ptr, key_addr]);
+                        ctx.builder.ins().call(func_ref, &[cow_ptr, key_addr]);
                     }
                 }
             }
@@ -1692,11 +1565,14 @@ fn emit_builtin_method<M: Module>(
         if method_name == kw::SEND {
             // ch.send(value) → store value to temp, call __spark_channel_send(ch, &val, elem_size)
             if let Some(arg) = args.get(1) {
-                if let Some(val_addr) = emit_rvalue::emit_operand_addr(
-                    ctx, arg, inner_ty, table, definitions, func_ids, thunk_ids, module,
-                ) {
-                    let func_ref = module.declare_func_in_func(ctx.stubs.channel_send, ctx.builder.func);
-                    ctx.builder.ins().call(func_ref, &[recv_ptr, val_addr, elem_size_val]);
+                if let Some(val_addr) =
+                    emit_rvalue::emit_operand_addr(ctx, arg, inner_ty, ecx, module)
+                {
+                    let func_ref =
+                        module.declare_func_in_func(ctx.stubs.channel_send, ctx.builder.func);
+                    ctx.builder
+                        .ins()
+                        .call(func_ref, &[recv_ptr, val_addr, elem_size_val]);
                 }
             }
         } else if method_name == kw::RECV {
@@ -1707,7 +1583,10 @@ fn emit_builtin_method<M: Module>(
 
             // Load the value from the returned pointer.
             if let Some(clif_ty) = abi::spark_type_to_clif(inner_ty, table, ctx.ptr_type) {
-                let val = ctx.builder.ins().load(clif_ty, MemFlags::new(), result_ptr, 0);
+                let val = ctx
+                    .builder
+                    .ins()
+                    .load(clif_ty, MemFlags::new(), result_ptr, 0);
                 if destination.projections.is_empty() {
                     ctx.write_local(destination.local, val);
                 }
@@ -1718,8 +1597,12 @@ fn emit_builtin_method<M: Module>(
             if destination.projections.is_empty() {
                 if let Some(dest_addr) = ctx.local_stack_addr(destination.local) {
                     let payload_offset = (1 + elem_layout.align - 1) & !(elem_layout.align - 1);
-                    let payload_offset_val = ctx.builder.ins().iconst(types::I64, i64::from(payload_offset));
-                    let func_ref = module.declare_func_in_func(ctx.stubs.channel_try_recv, ctx.builder.func);
+                    let payload_offset_val = ctx
+                        .builder
+                        .ins()
+                        .iconst(types::I64, i64::from(payload_offset));
+                    let func_ref =
+                        module.declare_func_in_func(ctx.stubs.channel_try_recv, ctx.builder.func);
                     ctx.builder.ins().call(
                         func_ref,
                         &[recv_ptr, elem_size_val, dest_addr, payload_offset_val],
@@ -1755,20 +1638,16 @@ fn emit_extern_call<M: Module>(
     args: &[Operand],
     destination: &Place,
     target: BlockId,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
+    let table = ecx.table;
     let symbol_name = info.name.as_str();
 
     // Evaluate arguments
     let arg_vals: Vec<Value> = args
         .iter()
-        .filter_map(|arg| {
-            emit_rvalue::emit_operand(ctx, arg, table, definitions, func_ids, thunk_ids, module)
-        })
+        .filter_map(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module))
         .collect();
 
     // Build Cranelift signature from the function's type in the TypeTable
@@ -1843,7 +1722,7 @@ fn emit_direct_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
     def_id: spark_resolve::DefId,
     arg_vals: &[Value],
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    func_ids: &rustc_hash::FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
@@ -1869,7 +1748,7 @@ fn emit_direct_call_sret<M: Module>(
     def_id: spark_resolve::DefId,
     sret_addr: Value,
     arg_vals: &[Value],
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
+    func_ids: &rustc_hash::FxHashMap<spark_resolve::DefId, FuncId>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) {

@@ -3,31 +3,25 @@
 //! Handles `Assign`, `Drop`, and `Nop` statements.
 
 use cranelift_codegen::ir::{InstBuilder, MemFlags};
-use cranelift_module::{FuncId, Module};
-use rustc_hash::FxHashMap;
+use cranelift_module::Module;
 use spark_diagnostics::Diagnostics;
 use spark_mir::Statement;
-use spark_resolve::DefinitionTable;
-use spark_types::{TypeId, TypeTable};
+use spark_types::TypeTable;
 
-use super::context::{FunctionContext, LocalStorage};
+use super::context::{EmitCtx, FunctionContext, LocalStorage};
 use super::drop_glue;
 use super::emit_rvalue;
 
 /// Emits a single MIR statement.
-#[allow(clippy::too_many_arguments)]
 pub fn emit_statement<M: Module>(
     ctx: &mut FunctionContext<'_>,
     stmt: &Statement,
-    table: &TypeTable,
-    definitions: &DefinitionTable,
-    func_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    thunk_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    dtor_ids: &FxHashMap<spark_resolve::DefId, FuncId>,
-    elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
     diagnostics: &mut Diagnostics,
 ) {
+    let table = ecx.table;
+
     match stmt {
         Statement::Assign {
             place,
@@ -39,12 +33,7 @@ pub fn emit_statement<M: Module>(
                 ctx,
                 rvalue,
                 dest_local,
-                table,
-                definitions,
-                func_ids,
-                thunk_ids,
-                dtor_ids,
-                elem_dtor_ids,
+                ecx,
                 module,
                 diagnostics,
             ) {

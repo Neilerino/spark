@@ -7,13 +7,39 @@ use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{Block, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Type as ClifType, Value};
 use cranelift_frontend::{FunctionBuilder, Variable};
+use cranelift_module::FuncId;
+use rustc_hash::FxHashMap;
 use spark_mir::{BlockId, Local, MirFunction};
+use spark_resolve::{DefId, DefinitionTable};
 use spark_types::{TypeId, TypeTable};
 
 use crate::abi;
 use crate::cranelift::runtime::RuntimeStubs;
 use crate::cranelift::types as clif_types;
 use crate::layout::LayoutCache;
+
+/// Read-only compilation tables shared across all emission functions.
+///
+/// Bundles the immutable lookup tables that nearly every codegen helper needs,
+/// reducing repetitive parameter passing.
+pub struct EmitCtx<'a> {
+    /// The type table for resolving type IDs.
+    pub table: &'a TypeTable,
+    /// The definition table for looking up functions, methods, etc.
+    pub definitions: &'a DefinitionTable,
+    /// Mapping from definition IDs to Cranelift function IDs.
+    pub func_ids: &'a FxHashMap<DefId, FuncId>,
+    /// Mapping from named functions to their thunk wrappers.
+    pub thunk_ids: &'a FxHashMap<DefId, FuncId>,
+    /// Mapping from lambda definition IDs to their env destructors.
+    pub dtor_ids: &'a FxHashMap<DefId, FuncId>,
+    /// Mapping from element types to their collection-element destructors.
+    pub elem_dtor_ids: &'a FxHashMap<TypeId, FuncId>,
+    /// Poll function info for cooperative async.
+    pub poll_fn_map: &'a FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
+    /// Mapping from lambda DefIds to their async function DefIds.
+    pub lambda_to_async: &'a FxHashMap<DefId, DefId>,
+}
 
 /// How a MIR local is stored at the Cranelift IR level.
 #[derive(Debug, Clone, Copy)]
