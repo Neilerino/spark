@@ -1,0 +1,20 @@
+import spark.sys { getEnv, hasEnv, setEnv, removeEnv }
+
+fn main(): Int {
+    // Test getEnv with a known variable set by the test harness
+    val: String = getEnv("SPARK_TEST_ENV_VAR")
+    print(val)
+
+    // Test hasEnv
+    print(hasEnv("SPARK_TEST_ENV_VAR"))
+
+    // Test setEnv + getEnv
+    setEnv("SPARK_TEST_DYNAMIC", "dynamic_value")
+    print(getEnv("SPARK_TEST_DYNAMIC"))
+
+    // Test removeEnv
+    removeEnv("SPARK_TEST_DYNAMIC")
+    print(hasEnv("SPARK_TEST_DYNAMIC"))
+
+    return 0
+}
