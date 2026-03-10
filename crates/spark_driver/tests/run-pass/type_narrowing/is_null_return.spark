@@ -1,0 +1,19 @@
+fn maybe_null(x: Int): Int? {
+    if x > 0 {
+        return x
+    }
+    return Null
+}
+
+fn add_or_zero(x: Int?): Int {
+    if x is Null {
+        return 0
+    }
+    return x
+}
+
+fn main(): Int {
+    print(add_or_zero(maybe_null(5)))
+    print(add_or_zero(maybe_null(-1)))
+    return 0
+}

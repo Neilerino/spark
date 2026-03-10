@@ -750,13 +750,13 @@ mod tests {
         };
 
         let item = Item::Function(func);
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: Some(&resolutions),
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            Some(&resolutions),
+            &mut diags,
+        );
         collect_item(&item, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -814,13 +814,13 @@ mod tests {
         };
 
         let item = Item::Struct(struct_item);
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: Some(&resolutions),
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            Some(&resolutions),
+            &mut diags,
+        );
         collect_item(&item, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());

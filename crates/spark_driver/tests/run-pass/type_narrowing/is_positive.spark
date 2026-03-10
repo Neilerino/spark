@@ -1,0 +1,14 @@
+fn maybe_null(x: Int): Int? {
+    if x > 0 {
+        return x
+    }
+    return Null
+}
+
+fn main(): Int {
+    val: Int? = maybe_null(42)
+    if val is Int {
+        print(val)
+    }
+    return 0
+}

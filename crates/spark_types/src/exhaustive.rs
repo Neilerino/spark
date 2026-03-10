@@ -487,13 +487,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![make_arm(Pattern::wildcard(Span::DUMMY))];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors(), "Wildcard should be exhaustive: {:?}",
             ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
@@ -507,13 +507,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![make_arm(Pattern::ident(Ident::dummy(sym("x"))))];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -529,13 +529,13 @@ mod tests {
             PatternKind::Literal(Literal::int(42, Span::DUMMY)),
             Span::DUMMY,
         ))];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         assert!(ctx.diagnostics.has_errors());
     }
@@ -557,13 +557,13 @@ mod tests {
                 Span::DUMMY,
             )),
         ];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.bool_ty, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors(), "Both bools should be exhaustive: {:?}",
             ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
@@ -580,13 +580,13 @@ mod tests {
             PatternKind::Literal(Literal::bool(true, Span::DUMMY)),
             Span::DUMMY,
         ))];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.bool_ty, &arms, Span::DUMMY, &mut ctx);
         assert!(ctx.diagnostics.has_errors());
     }
@@ -605,13 +605,13 @@ mod tests {
                 Span::DUMMY,
             )),
         ];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         // Should warn about unreachable arm but no errors
         assert!(!ctx.diagnostics.has_errors());
@@ -629,13 +629,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         assert!(ctx.diagnostics.has_errors());
     }
@@ -648,13 +648,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(TypeId::ERROR, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -667,13 +667,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![make_arm(Pattern::new(PatternKind::Error, Span::DUMMY))];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -692,13 +692,13 @@ mod tests {
             },
             Span::DUMMY,
         ))];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         assert!(ctx.diagnostics.has_errors(), "Guard should not count toward exhaustiveness");
     }
@@ -711,13 +711,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.never, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -743,13 +743,13 @@ mod tests {
             ]),
             Span::DUMMY,
         ))];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(builtins.bool_ty, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors(), "Or-pattern `true | false` should be exhaustive: {:?}",
             ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
@@ -790,13 +790,13 @@ mod tests {
         ));
 
         let arms = vec![value_arm, null_arm];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(optional_ty, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors(), "Optional with value + Null should be exhaustive: {:?}",
             ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
@@ -845,13 +845,13 @@ mod tests {
         ));
 
         let arms = vec![int_arm, str_arm];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_exhaustiveness(union_ty, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors(), "Union with all members covered should be exhaustive: {:?}",
             ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
@@ -909,13 +909,13 @@ mod tests {
         ));
 
         let arms = vec![arm_a, arm_b];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: Some(&res),
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            Some(&res),
+            &mut diags,
+        );
         check_exhaustiveness(enum_ty, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors(), "Enum with all variants should be exhaustive: {:?}",
             ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
@@ -960,13 +960,13 @@ mod tests {
         ));
 
         let arms = vec![arm_a];
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: Some(&res),
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            Some(&res),
+            &mut diags,
+        );
         check_exhaustiveness(enum_ty, &arms, Span::DUMMY, &mut ctx);
         assert!(ctx.diagnostics.has_errors());
         let msgs: Vec<_> = ctx.diagnostics.iter().map(|d| &d.message).collect();

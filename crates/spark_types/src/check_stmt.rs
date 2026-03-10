@@ -170,13 +170,13 @@ mod tests {
             Span::DUMMY,
         );
 
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_stmt(&stmt, &mut ctx, None);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -204,13 +204,13 @@ mod tests {
             Span::DUMMY,
         );
 
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_stmt(&stmt, &mut ctx, None);
         assert!(ctx.diagnostics.has_errors());
     }
@@ -223,13 +223,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let stmt = Stmt::expr(int_literal());
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         check_stmt(&stmt, &mut ctx, None);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -270,13 +270,13 @@ mod tests {
         table.set_def_type(def_id, mut_ref_ty);
 
         let stmt = compound_assign_stmt(target_span, spark_ast::CompoundOp::Add);
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: Some(&res),
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            Some(&res),
+            &mut diags,
+        );
         check_stmt(&stmt, &mut ctx, None);
         assert!(
             !ctx.diagnostics.has_errors(),
@@ -306,13 +306,13 @@ mod tests {
         table.set_def_type(def_id, ref_ty); // NOT Mutable(...)
 
         let stmt = compound_assign_stmt(target_span, spark_ast::CompoundOp::Add);
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: Some(&res),
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            Some(&res),
+            &mut diags,
+        );
         check_stmt(&stmt, &mut ctx, None);
         assert!(
             ctx.diagnostics.has_errors(),
@@ -342,13 +342,13 @@ mod tests {
         table.set_def_type(def_id, mut_ref_ty);
 
         let stmt = compound_assign_stmt(target_span, spark_ast::CompoundOp::Add);
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: Some(&res),
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            Some(&res),
+            &mut diags,
+        );
         check_stmt(&stmt, &mut ctx, None);
         assert!(
             ctx.diagnostics.has_errors(),

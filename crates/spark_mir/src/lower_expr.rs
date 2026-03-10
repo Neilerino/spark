@@ -29,16 +29,36 @@ pub fn lower_expr(
         // ── Values ───────────────────────────────────────────────
         HirExprKind::Literal(lit) => lower_literal(lit, expr, fb),
 
-        HirExprKind::Local(def_id) => fb.lookup_def(*def_id).unwrap_or_else(|| {
-            // Could be a function reference
-            let temp = fb.fresh_temp(expr.ty, expr.span);
-            fb.push_assign(
-                Place::from_local(temp),
-                Rvalue::Use(Operand::Constant(Constant::FunctionRef(*def_id))),
-                expr.span,
-            );
-            temp
-        }),
+        HirExprKind::Local(def_id) => {
+            let local = fb.lookup_def(*def_id).unwrap_or_else(|| {
+                // Could be a function reference
+                let temp = fb.fresh_temp(expr.ty, expr.span);
+                fb.push_assign(
+                    Place::from_local(temp),
+                    Rvalue::Use(Operand::Constant(Constant::FunctionRef(*def_id))),
+                    expr.span,
+                );
+                temp
+            });
+
+            // If type narrowing occurred (e.g., `x: Int?` narrowed to `Int`
+            // after `if x is Null { return }`), insert an implicit payload
+            // extraction so the runtime reads the inner value correctly.
+            let local_ty = fb.local_type(local);
+            if local_ty != expr.ty && is_optional_narrowing(local_ty, expr.ty, type_table) {
+                let temp = fb.fresh_temp(expr.ty, expr.span);
+                let mut place = Place::from_local(local);
+                place.projections.push(Projection::UnionPayload(expr.ty));
+                fb.push_assign(
+                    Place::from_local(temp),
+                    Rvalue::Use(Operand::Copy(place)),
+                    expr.span,
+                );
+                temp
+            } else {
+                local
+            }
+        }
 
         // ── Operators ────────────────────────────────────────────
         HirExprKind::BinaryOp { op, lhs, rhs } => {
@@ -786,7 +806,7 @@ fn lower_is_expr(
                 };
 
                 if let Some((_, variant_def_id)) = matching_variant {
-                    emit_discriminant_check(inner_local, i128::from(variant_def_id.as_u32()), result, expr, fb);
+                    emit_discriminant_check(inner_local, i128::from(variant_def_id.as_u32()), result, expr, fb, type_table);
                 } else {
                     // No matching variant — always false
                     fb.push_assign(
@@ -807,7 +827,7 @@ fn lower_is_expr(
         // Union: check discriminant against the target member's index
         Ty::Union(members) => {
             if let Some(idx) = members.iter().position(|&m| m == target_ty) {
-                emit_discriminant_check(inner_local, idx as i128, result, expr, fb);
+                emit_discriminant_check(inner_local, idx as i128, result, expr, fb, type_table);
             } else {
                 // Target type is not a member — always false
                 fb.push_assign(
@@ -823,10 +843,10 @@ fn lower_is_expr(
             let target_resolved = type_table.resolve(target_ty);
             if matches!(target_resolved, Ty::Null) {
                 // `x is Null` — check discriminant == 0
-                emit_discriminant_check(inner_local, 0, result, expr, fb);
+                emit_discriminant_check(inner_local, 0, result, expr, fb, type_table);
             } else if target_ty == *inner_type {
                 // `x is T` where T is the inner type — check discriminant == 1
-                emit_discriminant_check(inner_local, 1, result, expr, fb);
+                emit_discriminant_check(inner_local, 1, result, expr, fb, type_table);
             } else {
                 // Unknown target — always false
                 fb.push_assign(
@@ -859,8 +879,15 @@ fn emit_discriminant_check(
     result: Local,
     expr: &HirExpr,
     fb: &mut FunctionBuilder,
+    type_table: &TypeTable,
 ) {
-    let disc_temp = fb.fresh_temp(TypeId::ERROR, expr.span);
+    // Use Bool type for the discriminant temp so it's allocated as a
+    // scalar register (Var), not a StackSlot. SwitchInt reads the local's
+    // value, which for StackSlot returns an address, not the actual value.
+    let disc_ty = type_table
+        .lookup(&Ty::Bool)
+        .unwrap_or(TypeId::ERROR);
+    let disc_temp = fb.fresh_temp(disc_ty, expr.span);
     fb.push_assign(
         Place::from_local(disc_temp),
         Rvalue::Discriminant(Place::from_local(scrut)),
@@ -1263,6 +1290,17 @@ fn lower_await(
 
     fb.switch_to(cont);
     dest
+}
+
+/// Returns `true` if `local_ty` is `Optional(inner)` and `expr_ty` equals `inner`.
+///
+/// Used to detect when a type-narrowed variable needs an implicit payload
+/// extraction (e.g., `x: Int?` narrowed to `Int` after an `is Null` guard).
+fn is_optional_narrowing(local_ty: TypeId, expr_ty: TypeId, table: &TypeTable) -> bool {
+    match table.resolve(local_ty) {
+        Ty::Optional(inner) => *inner == expr_ty,
+        _ => false,
+    }
 }
 
 fn lower_parallel_each(

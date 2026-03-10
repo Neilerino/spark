@@ -855,6 +855,21 @@ fn propagate_optional_null() {
     assert_output("run-pass/type_narrowing/propagate_optional_null.spark", "0");
 }
 
+#[test]
+fn is_null_continue() {
+    assert_output("run-pass/type_narrowing/is_null_continue.spark", "9");
+}
+
+#[test]
+fn is_null_return() {
+    assert_output("run-pass/type_narrowing/is_null_return.spark", "5\n0");
+}
+
+#[test]
+fn is_positive_narrowing() {
+    assert_output("run-pass/type_narrowing/is_positive.spark", "42");
+}
+
 // ============================================================================
 // Stdin / Stderr I/O
 // ============================================================================

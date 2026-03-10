@@ -100,6 +100,10 @@ fn check_expr_inner(
         ExprKind::Ident(ident) => {
             if let Some(res) = ctx.resolutions {
                 if let Some(def_id) = res.get_ident(ident.span) {
+                    // Check for type narrowing (e.g., after `if x is Null { return }`)
+                    if let Some(narrowed) = ctx.get_narrowed_type(def_id) {
+                        return narrowed;
+                    }
                     return ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
                 }
             }
@@ -268,7 +272,34 @@ fn check_expr_inner(
                 );
             }
 
-            let then_ty = check_expr(then_branch, ctx, current_fn_ret);
+            // Detect `is` narrowing: `if x is T { ... }`
+            let narrowing_info = extract_is_narrowing(condition, ctx);
+
+            // Positive narrowing: inside then-branch, narrow ident to the tested type
+            let then_ty = if let Some((def_id, tested_ty)) = narrowing_info {
+                ctx.push_narrowing_scope();
+                ctx.add_narrowing(def_id, tested_ty);
+                let ty = check_expr(then_branch, ctx, current_fn_ret);
+                ctx.pop_narrowing_scope();
+                ty
+            } else {
+                check_expr(then_branch, ctx, current_fn_ret)
+            };
+
+            // Negative narrowing: if then-branch diverges (Never), narrow
+            // the ident to the original type minus the tested type for the
+            // rest of the current scope.
+            if let Some((def_id, tested_ty)) = narrowing_info {
+                let then_resolved = ctx.table.resolve(then_ty);
+                if matches!(then_resolved, Ty::Never) {
+                    let base_ty = ctx.get_narrowed_type(def_id)
+                        .unwrap_or_else(|| ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR));
+                    let narrowed = subtract_type(base_ty, tested_ty, ctx.table);
+                    if narrowed != base_ty {
+                        ctx.add_narrowing(def_id, narrowed);
+                    }
+                }
+            }
 
             else_branch
                 .as_ref()
@@ -639,6 +670,8 @@ pub fn check_block(
     ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
+    ctx.push_narrowing_scope();
+
     for stmt in &block.stmts {
         check_stmt(stmt, ctx, current_fn_ret);
     }
@@ -647,6 +680,8 @@ pub fn check_block(
         check_expr(expr, ctx, current_fn_ret)
     });
     ctx.table.set_expr_type(block.id, ty);
+
+    ctx.pop_narrowing_scope();
     ty
 }
 
@@ -1719,6 +1754,82 @@ fn unwrap_optional(ty: TypeId, table: &TypeTable) -> TypeId {
         }
         _ => ty,
     }
+}
+
+/// Subtracts `to_remove` from `original`, returning the narrowed type.
+///
+/// - `Optional(T)` minus `Null` → `T`
+/// - `Optional(T)` minus `T` → `Null`
+/// - `Union([...])` minus a member → remaining union or single type
+/// - Otherwise returns `original` unchanged.
+fn subtract_type(original: TypeId, to_remove: TypeId, table: &mut TypeTable) -> TypeId {
+    // Two-phase approach: read from the type table first, then mutate.
+    // This avoids cloning the resolved Ty to break the borrow conflict.
+    enum Action {
+        ReturnInner(TypeId),
+        ReturnNull,
+        RebuildUnion(Vec<TypeId>),
+        NoChange,
+    }
+
+    let action = match table.resolve(original) {
+        Ty::Optional(inner) => {
+            let inner = *inner;
+            if to_remove == inner {
+                Action::ReturnNull
+            } else {
+                // Will check against Null after releasing the borrow.
+                Action::ReturnInner(inner)
+            }
+        }
+        Ty::Union(members) => {
+            let remaining: Vec<TypeId> = members
+                .iter()
+                .copied()
+                .filter(|&m| m != to_remove)
+                .collect();
+            if remaining.len() == members.len() {
+                Action::NoChange
+            } else {
+                Action::RebuildUnion(remaining)
+            }
+        }
+        _ => Action::NoChange,
+    };
+
+    // Immutable borrow released — safe to call intern().
+    match action {
+        Action::ReturnNull => table.intern(Ty::Null),
+        Action::ReturnInner(inner) => {
+            let null_id = table.intern(Ty::Null);
+            if to_remove == null_id { inner } else { original }
+        }
+        Action::RebuildUnion(remaining) => match remaining.len() {
+            0 => original,
+            1 => remaining[0],
+            _ => table.intern(Ty::Union(remaining)),
+        },
+        Action::NoChange => original,
+    }
+}
+
+/// Extracts narrowing information from an `is` condition.
+///
+/// If the condition is `<ident> is <Type>`, returns the ident's `DefId`
+/// and the tested `TypeId`. Returns `None` for non-ident expressions
+/// or non-`is` conditions.
+fn extract_is_narrowing(
+    condition: &Expr,
+    ctx: &mut TypeCheckCtx<'_>,
+) -> Option<(DefId, TypeId)> {
+    if let ExprKind::Is { expr: inner, ty } = &condition.kind {
+        if let ExprKind::Ident(ident) = &inner.kind {
+            let def_id = ctx.resolutions?.get_ident(ident.span)?;
+            let tested_ty = lower_type_expr(ty, ctx);
+            return Some((def_id, tested_ty));
+        }
+    }
+    None
 }
 
 /// Type-checks a method call on a collection, string, or user-defined type receiver.

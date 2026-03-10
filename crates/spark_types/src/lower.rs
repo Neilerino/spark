@@ -521,13 +521,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named("Int");
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -542,13 +542,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named("Bool");
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -566,13 +566,13 @@ mod tests {
             TypeExprKind::Optional(Box::new(make_named("Int"))),
             Span::DUMMY,
         );
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -590,13 +590,13 @@ mod tests {
             TypeExprKind::Mutable(Box::new(make_named("Int"))),
             Span::DUMMY,
         );
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -614,13 +614,13 @@ mod tests {
             TypeExprKind::Union(vec![make_named("Int"), make_named("String")]),
             Span::DUMMY,
         );
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -638,13 +638,13 @@ mod tests {
             TypeExprKind::Tuple(vec![make_named("Int"), make_named("Bool")]),
             Span::DUMMY,
         );
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -665,13 +665,13 @@ mod tests {
             },
             Span::DUMMY,
         );
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -686,13 +686,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named_generic("List", vec![make_named("Int")]);
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -707,13 +707,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named_generic("Map", vec![make_named("String"), make_named("Int")]);
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -728,13 +728,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = TypeExpr::error(Span::DUMMY);
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -749,13 +749,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = TypeExpr::new(TypeExprKind::Structural(vec![]), Span::DUMMY);
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(ctx.diagnostics.has_errors());
@@ -770,13 +770,13 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named("NonExistent");
-        let mut ctx = TypeCheckCtx {
-            table: &mut table,
-            builtins: &builtins,
-            definitions: &defs,
-            resolutions: None,
-            diagnostics: &mut diags,
-        };
+        let mut ctx = TypeCheckCtx::new(
+            &mut table,
+            &builtins,
+            &defs,
+            None,
+            &mut diags,
+        );
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(ctx.diagnostics.has_errors());

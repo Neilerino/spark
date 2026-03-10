@@ -82,13 +82,13 @@ impl<'a> TypeChecker<'a> {
 
         for (file_id, ast) in &resolved.asts {
             let resolutions = resolved.resolutions.get(file_id);
-            let mut ctx = TypeCheckCtx {
-                table: &mut self.table,
-                builtins: &self.builtins,
+            let mut ctx = TypeCheckCtx::new(
+                &mut self.table,
+                &self.builtins,
                 definitions,
                 resolutions,
-                diagnostics: &mut self.diagnostics,
-            };
+                &mut self.diagnostics,
+            );
             for item in &ast.items {
                 collect_item(item, &mut ctx);
             }
@@ -210,13 +210,13 @@ impl<'a> TypeChecker<'a> {
 
         for (file_id, ast) in &resolved.asts {
             let file_resolutions = resolved.resolutions.get(file_id);
-            let mut ctx = TypeCheckCtx {
-                table: &mut self.table,
-                builtins: &self.builtins,
+            let mut ctx = TypeCheckCtx::new(
+                &mut self.table,
+                &self.builtins,
                 definitions,
-                resolutions: file_resolutions,
-                diagnostics: &mut self.diagnostics,
-            };
+                file_resolutions,
+                &mut self.diagnostics,
+            );
             for item in &ast.items {
                 check_item_body(item, &mut ctx);
             }
