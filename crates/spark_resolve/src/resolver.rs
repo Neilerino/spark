@@ -21,6 +21,7 @@ use spark_span::{FileId, Span};
 use crate::def::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visibility};
 use crate::resolved_ast::ResolvedAst;
 use crate::rib::{RibKind, RibStack};
+use crate::scope::{ScopeArena, ScopeId, ScopeKind};
 use crate::{ResolverInput, ResolverOutput};
 
 /// The main resolver struct.
@@ -50,6 +51,12 @@ pub struct Resolver {
     file_imports: FxHashMap<FileId, Vec<(Symbol, DefId, DefinitionKind, Span)>>,
     /// Built-in function definitions to inject into every module rib.
     builtin_defs: Vec<(Symbol, DefId, DefinitionKind)>,
+    /// Scope arena for LSP autocomplete queries.
+    scope_arena: ScopeArena,
+    /// Current scope ID in the scope arena.
+    current_scope: ScopeId,
+    /// Stack of scope IDs for push/pop tracking.
+    scope_stack: Vec<ScopeId>,
 }
 
 impl Resolver {
@@ -67,6 +74,9 @@ impl Resolver {
             module_defs: FxHashMap::default(),
             file_imports: FxHashMap::default(),
             builtin_defs: Vec::new(),
+            scope_arena: ScopeArena::new(),
+            current_scope: ScopeId::ROOT,
+            scope_stack: Vec::new(),
         }
     }
 
@@ -579,8 +589,11 @@ impl Resolver {
                 }
             }
 
-            if let Some(defs) = self.module_defs.get(module_path).cloned() {
-                for (name, def_id, kind) in &defs {
+            // Collect module defs for scope arena population below.
+            let module_defs_snapshot = self.module_defs.get(module_path).cloned();
+
+            if let Some(ref defs) = module_defs_snapshot {
+                for (name, def_id, kind) in defs {
                     if kind.is_type() {
                         self.rib_stack.define_type(*name, *def_id);
                     }
@@ -593,6 +606,31 @@ impl Resolver {
             let asts = std::mem::take(&mut self.asts);
 
             for &file_id in &module_info.files {
+                // Push a per-file module scope in the arena (covers entire file).
+                let file_span = Span::new(file_id, 0, u32::MAX);
+                self.push_scope(ScopeKind::Module, file_span);
+
+                // Mirror built-in definitions into scope arena.
+                // Use index-based loop to avoid borrow conflict without allocating.
+                for i in 0..self.builtin_defs.len() {
+                    let (name, def_id, ref kind) = self.builtin_defs[i];
+                    if kind.is_value() {
+                        self.scope_define_value(name, def_id);
+                    }
+                }
+
+                // Mirror module definitions into scope arena.
+                if let Some(ref defs) = module_defs_snapshot {
+                    for (name, def_id, kind) in defs {
+                        if kind.is_type() {
+                            self.scope_define_type(*name, *def_id);
+                        }
+                        if kind.is_value() {
+                            self.scope_define_value(*name, *def_id);
+                        }
+                    }
+                }
+
                 // Add imports for this file to the rib
                 if let Some(imports) = self.file_imports.get(&file_id).cloned() {
                     for (local_name, def_id, kind, import_span) in &imports {
@@ -607,6 +645,7 @@ impl Resolver {
                                     module_path,
                                 );
                             }
+                            self.scope_define_value(*local_name, *def_id);
                         }
                         if kind.is_type() {
                             if let Some(prev_id) =
@@ -623,6 +662,7 @@ impl Resolver {
                                     );
                                 }
                             }
+                            self.scope_define_type(*local_name, *def_id);
                         }
                     }
                 }
@@ -631,6 +671,8 @@ impl Resolver {
                     self.current_file = file_id;
                     self.resolve_file(ast);
                 }
+
+                self.pop_scope();
             }
 
             self.asts = asts;
@@ -681,6 +723,7 @@ impl Resolver {
 
         // Push parameter rib
         self.rib_stack.push_rib(RibKind::Parameter);
+        self.push_scope(ScopeKind::Function, func.span);
 
         // Resolve parameters (types first, then define names)
         for param in &func.params {
@@ -694,6 +737,7 @@ impl Resolver {
             );
             let def_id = self.definitions.insert(info);
             self.rib_stack.define_value(param.name.name, def_id);
+            self.scope_define_value(param.name.name, def_id);
             self.record_binding(param.name.span, def_id);
         }
 
@@ -707,6 +751,7 @@ impl Resolver {
 
         // Pop parameter rib
         self.rib_stack.pop_rib();
+        self.pop_scope();
 
         // Pop generic rib
         self.pop_generics_if_needed(&func.generics);
@@ -720,6 +765,12 @@ impl Resolver {
 
         self.rib_stack.push_type_rib(RibKind::Generic);
 
+        // Push a generic scope in the arena spanning from the first to the last generic param.
+        let generic_span = generics.first().unwrap().name.span.merge(
+            generics.last().unwrap().name.span,
+        );
+        self.push_scope(ScopeKind::Generic, generic_span);
+
         for generic in generics {
             let info = DefinitionInfo::new(
                 DefinitionKind::GenericParam,
@@ -730,6 +781,7 @@ impl Resolver {
             );
             let def_id = self.definitions.insert(info);
             self.rib_stack.define_type(generic.name.name, def_id);
+            self.scope_define_type(generic.name.name, def_id);
             self.record_binding(generic.name.span, def_id);
 
             // Resolve constraint
@@ -750,6 +802,7 @@ impl Resolver {
     fn pop_generics_if_needed(&mut self, generics: &[spark_ast::GenericParam]) {
         if !generics.is_empty() {
             self.rib_stack.pop_type_rib();
+            self.pop_scope();
         }
     }
 
@@ -816,6 +869,7 @@ impl Resolver {
     /// Resolves a block (pushes a new rib scope).
     fn resolve_block(&mut self, block: &Block) {
         self.rib_stack.push_rib(RibKind::Normal);
+        self.push_scope(ScopeKind::Block, block.span);
         for stmt in &block.stmts {
             self.resolve_stmt(stmt);
         }
@@ -823,6 +877,7 @@ impl Resolver {
             self.resolve_expr(expr);
         }
         self.rib_stack.pop_rib();
+        self.pop_scope();
     }
 
     /// Resolves a statement.
@@ -848,6 +903,7 @@ impl Resolver {
                 );
                 let def_id = self.definitions.insert(info);
                 self.rib_stack.define_value(name.name, def_id);
+                self.scope_define_value(name.name, def_id);
                 self.record_binding(name.span, def_id);
             }
             StmtKind::Assign { target, value } | StmtKind::CompoundAssign { target, value, .. } => {
@@ -1001,9 +1057,11 @@ impl Resolver {
                 self.resolve_expr(expr);
                 for arm in arms {
                     self.rib_stack.push_rib(RibKind::Normal);
+                    self.push_scope(ScopeKind::Block, arm.span);
                     self.resolve_pattern(&arm.pattern);
                     self.resolve_expr(&arm.body);
                     self.rib_stack.pop_rib();
+                    self.pop_scope();
                 }
             }
 
@@ -1039,6 +1097,7 @@ impl Resolver {
                 body,
             } => {
                 self.rib_stack.push_rib(RibKind::Lambda);
+                self.push_scope(ScopeKind::Lambda, expr.span);
 
                 for param in params {
                     self.resolve_type_expr(&param.ty);
@@ -1051,6 +1110,7 @@ impl Resolver {
                     );
                     let def_id = self.definitions.insert(info);
                     self.rib_stack.define_value(param.name.name, def_id);
+                    self.scope_define_value(param.name.name, def_id);
                     self.record_binding(param.name.span, def_id);
                 }
 
@@ -1060,6 +1120,7 @@ impl Resolver {
 
                 self.resolve_expr(body);
                 self.rib_stack.pop_rib();
+                self.pop_scope();
             }
 
             ExprKind::Partial { callee, args } => {
@@ -1145,6 +1206,7 @@ impl Resolver {
                 );
                 let def_id = self.definitions.insert(info);
                 self.rib_stack.define_value(name.name, def_id);
+                self.scope_define_value(name.name, def_id);
                 self.record_binding(name.span, def_id);
 
                 if let Some(t) = ty {
@@ -1175,6 +1237,7 @@ impl Resolver {
                         );
                         let def_id = self.definitions.insert(info);
                         self.rib_stack.define_value(field.name.name, def_id);
+                        self.scope_define_value(field.name.name, def_id);
                         self.record_binding(field.name.span, def_id);
                     }
                 }
@@ -1206,6 +1269,7 @@ impl Resolver {
                 );
                 let def_id = self.definitions.insert(info);
                 self.rib_stack.define_value(name.name, def_id);
+                self.scope_define_value(name.name, def_id);
                 self.record_binding(name.span, def_id);
 
                 self.resolve_type_expr(ty);
@@ -1418,12 +1482,55 @@ impl Resolver {
         );
     }
 
+    // ========================================================================
+    // Scope arena helpers (mirror rib push/pop for LSP autocomplete)
+    // ========================================================================
+
+    /// Pushes a new scope in the scope arena and makes it current.
+    fn push_scope(&mut self, kind: ScopeKind, span: Span) {
+        let parent = if self.scope_stack.is_empty() {
+            None
+        } else {
+            Some(self.current_scope)
+        };
+        let id = self.scope_arena.create_scope(parent, kind, span);
+        self.scope_stack.push(id);
+        self.current_scope = id;
+    }
+
+    /// Pops the current scope, restoring the parent as current.
+    fn pop_scope(&mut self) {
+        self.scope_stack.pop();
+        self.current_scope = self.scope_stack.last().copied().unwrap_or(ScopeId::ROOT);
+    }
+
+    /// Defines a value in the current scope arena scope.
+    ///
+    /// The `Result` from `define_value` is intentionally discarded — duplicate
+    /// diagnostics are already emitted by the rib stack. The scope arena is a
+    /// read-only snapshot for LSP queries and does not need its own diagnostics.
+    fn scope_define_value(&mut self, name: Symbol, def_id: DefId) {
+        if !self.scope_stack.is_empty() {
+            let _ = self.scope_arena.get_mut(self.current_scope).define_value(name, def_id);
+        }
+    }
+
+    /// Defines a type in the current scope arena scope.
+    ///
+    /// See [`scope_define_value`](Self::scope_define_value) for why the error is discarded.
+    fn scope_define_type(&mut self, name: Symbol, def_id: DefId) {
+        if !self.scope_stack.is_empty() {
+            let _ = self.scope_arena.get_mut(self.current_scope).define_type(name, def_id);
+        }
+    }
+
     /// Converts the resolver into its output.
     #[must_use]
     pub fn into_output(self) -> ResolverOutput {
         ResolverOutput {
             resolved: self.resolved,
             definitions: self.definitions,
+            scope_arena: self.scope_arena,
             diagnostics: self.diagnostics,
         }
     }
@@ -1915,5 +2022,66 @@ mod tests {
             "#,
         );
         assert!(!output.diagnostics.has_errors());
+    }
+
+    // ========================================================================
+    // Scope arena population tests
+    // ========================================================================
+
+    #[test]
+    fn scope_arena_populated_after_resolve() {
+        let output = resolve_source("fn main(): Void { x: Int = 1 }");
+        assert!(!output.diagnostics.has_errors());
+        // Should have at least a module scope and a function scope
+        assert!(output.scope_arena.len() >= 2, "Expected >=2 scopes, got {}", output.scope_arena.len());
+    }
+
+    #[test]
+    fn scope_arena_function_bindings_in_function_scope() {
+        let output = resolve_source("fn add(a: Int, b: Int): Int { return a + b }");
+        assert!(!output.diagnostics.has_errors());
+
+        let file_id = FileId::new(0);
+        // Find innermost scope at offset inside the function body
+        let scope_id = output.scope_arena.find_scope_at_offset(35, file_id)
+            .expect("should find a scope inside the function body");
+        let visible = output.scope_arena.visible_values(scope_id);
+        let names: Vec<&str> = visible.iter().map(|(sym, _)| sym.as_str()).collect();
+        // Parameters should be visible
+        assert!(names.contains(&"a"), "Expected 'a' in visible values: {names:?}");
+        assert!(names.contains(&"b"), "Expected 'b' in visible values: {names:?}");
+    }
+
+    #[test]
+    fn scope_arena_local_not_in_module_scope() {
+        let output = resolve_source("fn main(): Void { x: Int = 42 }");
+        assert!(!output.diagnostics.has_errors());
+
+        let file_id = FileId::new(0);
+        // Module scope should contain `main` but not `x`.
+        // find_scope_at_offset returns the innermost scope, which at offset 0
+        // is the Function scope (since `fn main()` starts at byte 0). Walk up
+        // the parent chain to find the Module scope.
+        let innermost = output.scope_arena.find_scope_at_offset(0, file_id)
+            .expect("should find a scope at offset 0");
+        let mut module_scope = innermost;
+        while output.scope_arena.get(module_scope).kind != crate::scope::ScopeKind::Module {
+            module_scope = output.scope_arena.get(module_scope).parent
+                .expect("should have parent leading to module scope");
+        }
+        let module_values = output.scope_arena.visible_values(module_scope);
+        let names: Vec<&str> = module_values.iter().map(|(sym, _)| sym.as_str()).collect();
+        assert!(names.contains(&"main"), "Expected 'main' in module scope: {names:?}");
+        assert!(!names.contains(&"x"), "Did not expect 'x' in module scope: {names:?}");
+    }
+
+    #[test]
+    fn scope_arena_nested_blocks_create_nested_scopes() {
+        let output = resolve_source(
+            "fn main(): Void { x: Int = 1\nif x > 0 { y: Int = 2\ny } else { 0 } }",
+        );
+        assert!(!output.diagnostics.has_errors());
+        // Should have module + function + block (for func body) + at least 2 blocks (if/else)
+        assert!(output.scope_arena.len() >= 4, "Expected >=4 scopes, got {}", output.scope_arena.len());
     }
 }

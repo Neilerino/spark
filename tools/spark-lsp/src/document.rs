@@ -9,7 +9,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use ropey::Rope;
 use spark_diagnostics::Diagnostic;
-use spark_resolve::{DefinitionTable, ResolvedAst};
+use spark_resolve::{DefinitionTable, ResolvedAst, ScopeArena};
 use spark_span::{FileId, Span};
 use spark_types::TypeTable;
 use tower_lsp::lsp_types::{self, Url};
@@ -33,6 +33,8 @@ pub struct AnalysisResult {
     pub definitions: Arc<DefinitionTable>,
     /// Type table from the type checker (shared across all files).
     pub type_table: Option<Arc<TypeTable>>,
+    /// Scope arena for autocomplete queries (shared across all files).
+    pub scope_arena: Option<Arc<ScopeArena>>,
 }
 
 /// State for a single open document.

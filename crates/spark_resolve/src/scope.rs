@@ -201,6 +201,59 @@ impl ScopeArena {
     pub const fn is_empty(&self) -> bool {
         self.scopes.is_empty()
     }
+
+    /// Collects all visible value-namespace names at a scope, walking parent chain.
+    ///
+    /// Inner scopes shadow outer ones (first-seen wins via `seen` set).
+    #[must_use]
+    pub fn visible_values(&self, scope_id: ScopeId) -> Vec<(Symbol, DefId)> {
+        let mut result = Vec::new();
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut current = Some(scope_id);
+        while let Some(id) = current {
+            let scope = self.get(id);
+            for (&name, &def_id) in &scope.value_bindings {
+                if seen.insert(name) {
+                    result.push((name, def_id));
+                }
+            }
+            current = scope.parent;
+        }
+        result
+    }
+
+    /// Collects all visible type-namespace names at a scope, walking parent chain.
+    ///
+    /// Inner scopes shadow outer ones (first-seen wins via `seen` set).
+    #[must_use]
+    pub fn visible_types(&self, scope_id: ScopeId) -> Vec<(Symbol, DefId)> {
+        let mut result = Vec::new();
+        let mut seen = rustc_hash::FxHashSet::default();
+        let mut current = Some(scope_id);
+        while let Some(id) = current {
+            let scope = self.get(id);
+            for (&name, &def_id) in &scope.type_bindings {
+                if seen.insert(name) {
+                    result.push((name, def_id));
+                }
+            }
+            current = scope.parent;
+        }
+        result
+    }
+
+    /// Finds the innermost scope containing `offset` in `file_id`.
+    ///
+    /// Filters scopes by file and containment, then picks the narrowest
+    /// (smallest span length).
+    #[must_use]
+    pub fn find_scope_at_offset(&self, offset: u32, file_id: spark_span::FileId) -> Option<ScopeId> {
+        self.scopes
+            .iter()
+            .filter(|s| s.span.file == file_id && s.span.contains(offset))
+            .min_by_key(|s| s.span.end - s.span.start)
+            .map(|s| s.id)
+    }
 }
 
 #[cfg(test)]
@@ -325,5 +378,98 @@ mod tests {
 
         // Root sees its own
         assert_eq!(arena.lookup_value(root, sym("x")), Some(root_def));
+    }
+
+    #[test]
+    fn visible_values_walks_parent_chain() {
+        let mut arena = ScopeArena::new();
+        let root = arena.create_scope(None, ScopeKind::Module, Span::DUMMY);
+        let child = arena.create_scope(Some(root), ScopeKind::Function, Span::DUMMY);
+
+        let outer_def = DefId::new(0);
+        let inner_def = DefId::new(1);
+
+        arena.get_mut(root).define_value(sym("outer"), outer_def).unwrap();
+        arena.get_mut(child).define_value(sym("inner"), inner_def).unwrap();
+
+        let visible = arena.visible_values(child);
+        assert!(visible.contains(&(sym("inner"), inner_def)));
+        assert!(visible.contains(&(sym("outer"), outer_def)));
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn visible_values_inner_shadows_outer() {
+        let mut arena = ScopeArena::new();
+        let root = arena.create_scope(None, ScopeKind::Module, Span::DUMMY);
+        let child = arena.create_scope(Some(root), ScopeKind::Function, Span::DUMMY);
+
+        let root_def = DefId::new(0);
+        let child_def = DefId::new(1);
+
+        arena.get_mut(root).define_value(sym("x"), root_def).unwrap();
+        arena.get_mut(child).define_value(sym("x"), child_def).unwrap();
+
+        let visible = arena.visible_values(child);
+        // Should see child's x (shadow), not root's
+        assert_eq!(visible.len(), 1);
+        assert!(visible.contains(&(sym("x"), child_def)));
+    }
+
+    #[test]
+    fn visible_types_walks_parent_chain() {
+        let mut arena = ScopeArena::new();
+        let root = arena.create_scope(None, ScopeKind::Module, Span::DUMMY);
+        let child = arena.create_scope(Some(root), ScopeKind::Function, Span::DUMMY);
+
+        let struct_def = DefId::new(0);
+        let generic_def = DefId::new(1);
+
+        arena.get_mut(root).define_type(sym("User"), struct_def).unwrap();
+        arena.get_mut(child).define_type(sym("T"), generic_def).unwrap();
+
+        let visible = arena.visible_types(child);
+        assert!(visible.contains(&(sym("User"), struct_def)));
+        assert!(visible.contains(&(sym("T"), generic_def)));
+        assert_eq!(visible.len(), 2);
+    }
+
+    #[test]
+    fn find_scope_at_offset_returns_innermost() {
+        let file = spark_span::FileId::new(0);
+        let mut arena = ScopeArena::new();
+
+        // Module scope: bytes 0..100
+        let module = arena.create_scope(None, ScopeKind::Module, Span::new(file, 0, 100));
+        // Function scope: bytes 10..50
+        let _func = arena.create_scope(Some(module), ScopeKind::Function, Span::new(file, 10, 50));
+        // Block scope: bytes 20..40
+        let block = arena.create_scope(Some(_func), ScopeKind::Block, Span::new(file, 20, 40));
+
+        // Offset 25 is in all three — should return innermost (block)
+        let found = arena.find_scope_at_offset(25, file);
+        assert_eq!(found, Some(block));
+
+        // Offset 5 is only in module
+        let found = arena.find_scope_at_offset(5, file);
+        assert_eq!(found, Some(module));
+
+        // Offset 200 is in nothing
+        let found = arena.find_scope_at_offset(200, file);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn find_scope_at_offset_filters_by_file() {
+        let file0 = spark_span::FileId::new(0);
+        let file1 = spark_span::FileId::new(1);
+        let mut arena = ScopeArena::new();
+
+        arena.create_scope(None, ScopeKind::Module, Span::new(file0, 0, 100));
+        let scope1 = arena.create_scope(None, ScopeKind::Module, Span::new(file1, 0, 100));
+
+        // Offset 50 in file1 should only find the file1 scope
+        let found = arena.find_scope_at_offset(50, file1);
+        assert_eq!(found, Some(scope1));
     }
 }

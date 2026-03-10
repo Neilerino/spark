@@ -19,7 +19,7 @@ use spark_lexer::Lexer;
 use spark_mir::MirInput;
 use spark_modules::ModuleResolverInput;
 use spark_parser::parse;
-use spark_resolve::{DefinitionTable, ResolvedAst, ResolverInput};
+use spark_resolve::{DefinitionTable, ResolvedAst, ResolverInput, ScopeArena};
 use spark_span::{FileId, SourceMap};
 use spark_types::{TypeCheckerInput, TypeTable};
 
@@ -235,6 +235,8 @@ pub struct WorkspaceAnalysisOutput {
     pub resolved: ResolvedAst,
     /// Table of all definitions across all files.
     pub definitions: DefinitionTable,
+    /// Scope arena for autocomplete queries.
+    pub scope_arena: Option<ScopeArena>,
     /// Type table from the type checker (only available when type checking succeeds).
     pub type_table: Option<TypeTable>,
     /// Per-file LSP diagnostics, ready to publish.
@@ -440,6 +442,7 @@ pub fn analyze_workspace(
 
     let resolved = resolve_output.resolved;
     let definitions = resolve_output.definitions;
+    let scope_arena = Some(resolve_output.scope_arena);
 
     // Phases 6–8: HIR → MIR → Borrow checking
     // Run unconditionally when the type table is available. Unlike the
@@ -483,6 +486,7 @@ pub fn analyze_workspace(
         uri_to_file_id,
         resolved,
         definitions,
+        scope_arena,
         type_table,
         diagnostics_by_uri,
         ropes,

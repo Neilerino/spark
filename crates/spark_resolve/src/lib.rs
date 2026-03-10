@@ -100,6 +100,11 @@ pub struct ResolverOutput {
     pub resolved: ResolvedAst,
     /// Table of all definitions.
     pub definitions: DefinitionTable,
+    /// Scope arena with all scopes populated during resolution.
+    ///
+    /// Used by the LSP for autocomplete — query with
+    /// [`ScopeArena::find_scope_at_offset`] and [`ScopeArena::visible_values`].
+    pub scope_arena: ScopeArena,
     /// Diagnostics accumulated during resolution.
     pub diagnostics: Diagnostics,
 }
