@@ -709,6 +709,11 @@ fn ref_closure() {
     assert_output("run-pass/references/ref_closure.spark", "42");
 }
 
+#[test]
+fn ref_list_coerce() {
+    assert_output("run-pass/references/ref_list_coerce.spark", "2");
+}
+
 // ============================================================================
 // Standard library
 // ============================================================================

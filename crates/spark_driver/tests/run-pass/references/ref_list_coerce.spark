@@ -1,0 +1,11 @@
+struct Item {
+    name: String
+}
+
+fn main(): Int {
+    a: Item = Item { name: "hello" }
+    b: Item = Item { name: "world" }
+    items: List[Ref[Item]] = [a, b]
+    print(items.len())
+    return 0
+}

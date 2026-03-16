@@ -494,41 +494,61 @@ fn check_expr_inner(
 
         // === Collections ===
         ExprKind::List(elems) => {
+            let expected_elem = extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
+                Ty::List(elem) => Some(*elem),
+                _ => None,
+            });
+
             if elems.is_empty() {
-                // Empty list — element type unknown, use Error for now
-                ctx.table.intern(Ty::List(TypeId::ERROR))
+                ctx.table.intern(Ty::List(expected_elem.unwrap_or(TypeId::ERROR)))
             } else {
-                let first_ty = check_expr(&elems[0], ctx, current_fn_ret);
+                let first_ty = check_expr_expected(&elems[0], ctx, current_fn_ret, expected_elem);
                 for elem in &elems[1..] {
-                    let _ = check_expr(elem, ctx, current_fn_ret);
+                    let _ = check_expr_expected(elem, ctx, current_fn_ret, expected_elem);
                 }
-                ctx.table.intern(Ty::List(first_ty))
+                ctx.table.intern(Ty::List(resolve_with_expected(first_ty, expected_elem, ctx.table)))
             }
         }
 
         ExprKind::Map(entries) => {
+            let expected_kv = extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
+                Ty::Map(k, v) => Some((*k, *v)),
+                _ => None,
+            });
+            let expected_key = expected_kv.map(|(k, _)| k);
+            let expected_val = expected_kv.map(|(_, v)| v);
+
             if entries.is_empty() {
-                ctx.table.intern(Ty::Map(TypeId::ERROR, TypeId::ERROR))
-            } else {
-                let key_ty = check_expr(&entries[0].key, ctx, current_fn_ret);
-                let val_ty = check_expr(&entries[0].value, ctx, current_fn_ret);
-                for entry in &entries[1..] {
-                    let _ = check_expr(&entry.key, ctx, current_fn_ret);
-                    let _ = check_expr(&entry.value, ctx, current_fn_ret);
-                }
+                let key_ty = expected_key.unwrap_or(TypeId::ERROR);
+                let val_ty = expected_val.unwrap_or(TypeId::ERROR);
                 ctx.table.intern(Ty::Map(key_ty, val_ty))
+            } else {
+                let key_ty = check_expr_expected(&entries[0].key, ctx, current_fn_ret, expected_key);
+                let val_ty = check_expr_expected(&entries[0].value, ctx, current_fn_ret, expected_val);
+                for entry in &entries[1..] {
+                    let _ = check_expr_expected(&entry.key, ctx, current_fn_ret, expected_key);
+                    let _ = check_expr_expected(&entry.value, ctx, current_fn_ret, expected_val);
+                }
+                let final_key = resolve_with_expected(key_ty, expected_key, ctx.table);
+                let final_val = resolve_with_expected(val_ty, expected_val, ctx.table);
+                ctx.table.intern(Ty::Map(final_key, final_val))
             }
         }
 
         ExprKind::Set(elems) => {
+            let expected_elem = extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
+                Ty::Set(elem) => Some(*elem),
+                _ => None,
+            });
+
             if elems.is_empty() {
-                ctx.table.intern(Ty::Set(TypeId::ERROR))
+                ctx.table.intern(Ty::Set(expected_elem.unwrap_or(TypeId::ERROR)))
             } else {
-                let first_ty = check_expr(&elems[0], ctx, current_fn_ret);
+                let first_ty = check_expr_expected(&elems[0], ctx, current_fn_ret, expected_elem);
                 for elem in &elems[1..] {
-                    let _ = check_expr(elem, ctx, current_fn_ret);
+                    let _ = check_expr_expected(elem, ctx, current_fn_ret, expected_elem);
                 }
-                ctx.table.intern(Ty::Set(first_ty))
+                ctx.table.intern(Ty::Set(resolve_with_expected(first_ty, expected_elem, ctx.table)))
             }
         }
 
@@ -1386,6 +1406,21 @@ pub fn is_compatible(actual: TypeId, expected: TypeId, table: &TypeTable) -> boo
         }
     }
 
+    // List[A] is compatible with List[B] if A is compatible with B
+    if let (Ty::List(a_elem), Ty::List(b_elem)) = (actual_ty, expected_ty) {
+        return is_compatible(*a_elem, *b_elem, table);
+    }
+
+    // Map[AK, AV] is compatible with Map[BK, BV] if keys and values are compatible
+    if let (Ty::Map(ak, av), Ty::Map(bk, bv)) = (actual_ty, expected_ty) {
+        return is_compatible(*ak, *bk, table) && is_compatible(*av, *bv, table);
+    }
+
+    // Set[A] is compatible with Set[B] if A is compatible with B
+    if let (Ty::Set(a_elem), Ty::Set(b_elem)) = (actual_ty, expected_ty) {
+        return is_compatible(*a_elem, *b_elem, table);
+    }
+
     // Mutable T is compatible with T
     if let Ty::Mutable(inner) = actual_ty {
         if is_compatible(*inner, expected, table) {
@@ -1453,6 +1488,29 @@ pub(crate) fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
     } else {
         ty
     }
+}
+
+/// If `expected` is `Some` and compatible with `inferred`, use `expected`; otherwise use `inferred`.
+fn resolve_with_expected(inferred: TypeId, expected: Option<TypeId>, table: &TypeTable) -> TypeId {
+    match expected {
+        Some(exp) if is_compatible(inferred, exp, table) => exp,
+        _ => inferred,
+    }
+}
+
+/// Extracts an inner type from an expected collection type after stripping mutability.
+///
+/// `extractor` receives the resolved, unwrapped type and returns the inner component(s)
+/// if the type matches the expected collection shape (e.g., `Ty::List(elem) => Some(*elem)`).
+fn extract_expected_elem<T>(
+    expected_ty: Option<TypeId>,
+    table: &TypeTable,
+    extractor: impl FnOnce(&Ty) -> Option<T>,
+) -> Option<T> {
+    expected_ty.and_then(|ty| {
+        let stripped = strip_mutable(ty, table);
+        extractor(table.resolve(stripped))
+    })
 }
 
 /// Returns `true` if the type is `Mutable(Ref { .. })`, i.e. a mutable reference parameter.

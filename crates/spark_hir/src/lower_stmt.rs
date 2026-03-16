@@ -8,7 +8,7 @@ use spark_types::ty::Ty;
 use spark_types::{TypeId, TypeTable};
 
 use crate::hir::{HirExpr, HirExprKind, HirStmt};
-use crate::lower_expr::{auto_deref_ref, lower_expr, LowerCtx};
+use crate::lower_expr::{auto_deref_ref, coerce_ref, lower_expr, LowerCtx};
 
 /// Lowers a statement from the AST to HIR.
 pub(crate) fn lower_stmt(
@@ -24,9 +24,36 @@ pub(crate) fn lower_stmt(
 
             let mut lowered_value = lower_expr(value, ctx);
 
+            let declared_info = table.get_def_type(def_id)
+                .map(|ty| (ty, strip_mutable(ty, table)));
+
+            // Collection element coercion: if declared type is List[Ref[T]] and
+            // elements are T, wrap each element with Borrow/Deref as needed.
+            if let Some((_, stripped)) = declared_info {
+                match (table.resolve(stripped), &mut lowered_value.kind) {
+                    (Ty::List(expected_elem), HirExprKind::ListLit(elems)) => {
+                        coerce_collection_elems(elems, *expected_elem, value.span, table);
+                    }
+                    (Ty::Set(expected_elem), HirExprKind::SetLit(elems)) => {
+                        coerce_collection_elems(elems, *expected_elem, value.span, table);
+                    }
+                    (Ty::Map(expected_key, expected_val), HirExprKind::MapLit(entries)) => {
+                        let expected_key = *expected_key;
+                        let expected_val = *expected_val;
+                        *entries = std::mem::take(entries)
+                            .into_iter()
+                            .map(|(k, v)| (
+                                coerce_ref(k, expected_key, value.span, table),
+                                coerce_ref(v, expected_val, value.span, table),
+                            ))
+                            .collect();
+                    }
+                    _ => {}
+                }
+            }
+
             // Auto-borrow: if declared type is Ref[T] and value is T, wrap in Borrow
-            if let Some(declared_ty) = table.get_def_type(def_id) {
-                let stripped_declared = strip_mutable(declared_ty, table);
+            if let Some((declared_ty, stripped_declared)) = declared_info {
                 if let Ty::Ref { mutable: ref_mut, .. } = table.resolve(stripped_declared) {
                     let value_stripped = strip_mutable(lowered_value.ty, table);
                     if !matches!(table.resolve(value_stripped), Ty::Ref { .. })
@@ -48,8 +75,7 @@ pub(crate) fn lower_stmt(
             let value_stripped = strip_mutable(lowered_value.ty, table);
             if let Ty::Ref { inner, .. } = table.resolve(value_stripped) {
                 let inner_ty = *inner;
-                if let Some(declared_ty) = table.get_def_type(def_id) {
-                    let decl_stripped = strip_mutable(declared_ty, table);
+                if let Some((_, decl_stripped)) = declared_info {
                     if !matches!(table.resolve(decl_stripped), Ty::Ref { .. }) {
                         lowered_value = HirExpr::new(
                             HirExprKind::Deref(Box::new(lowered_value)),
@@ -147,6 +173,19 @@ pub(crate) fn lower_stmt(
             HirStmt::Expr(lower_expr(expr, ctx))
         }
     }
+}
+
+/// Coerces each element in a collection literal to the expected element type.
+fn coerce_collection_elems(
+    elems: &mut Vec<HirExpr>,
+    expected_elem: TypeId,
+    span: spark_span::Span,
+    table: &TypeTable,
+) {
+    *elems = std::mem::take(elems)
+        .into_iter()
+        .map(|e| coerce_ref(e, expected_elem, span, table))
+        .collect();
 }
 
 /// Strips the `Mutable` wrapper from a type if present.

@@ -1265,7 +1265,7 @@ fn extract_fn_ret_ty(ty: TypeId, table: &TypeTable, default: TypeId) -> TypeId {
 
 /// Inserts `Borrow` or `Deref` coercion if the argument type needs to be
 /// converted to match the parameter type.
-fn coerce_ref(mut arg: HirExpr, param_ty: TypeId, span: Span, table: &TypeTable) -> HirExpr {
+pub(crate) fn coerce_ref(mut arg: HirExpr, param_ty: TypeId, span: Span, table: &TypeTable) -> HirExpr {
     let arg_inner = strip_mutable_ty(arg.ty, table);
     let param_inner = strip_mutable_ty(param_ty, table);
     let arg_resolved = table.resolve(arg_inner);
