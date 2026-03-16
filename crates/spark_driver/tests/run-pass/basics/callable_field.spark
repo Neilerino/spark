@@ -1,0 +1,12 @@
+struct Handler {
+    action: (Int): Int
+}
+
+fn double(x: Int): Int { return x * 2 }
+
+fn main(): Int {
+    h: Handler = Handler { action: double }
+    result: Int = h.action(5)
+    print(result)
+    return 0
+}

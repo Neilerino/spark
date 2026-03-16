@@ -307,6 +307,11 @@ fn struct_field_access() {
 }
 
 #[test]
+fn callable_field() {
+    assert_output("run-pass/basics/callable_field.spark", "10");
+}
+
+#[test]
 fn tuple_field_access() {
     assert_output("run-pass/basics/tuple_field_access.spark", "10\n20\nalice\n30\ntrue");
 }
@@ -868,6 +873,11 @@ fn is_null_return() {
 #[test]
 fn is_positive_narrowing() {
     assert_output("run-pass/type_narrowing/is_positive.spark", "42");
+}
+
+#[test]
+fn mutable_optional_narrowing() {
+    assert_output("run-pass/type_narrowing/mutable_optional_narrowing.spark", "10");
 }
 
 // ============================================================================

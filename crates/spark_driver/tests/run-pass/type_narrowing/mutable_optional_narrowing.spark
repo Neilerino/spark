@@ -1,0 +1,24 @@
+fn maybe_null(x: Int): Int? {
+    if x > 0 {
+        return x
+    }
+    return Null
+}
+
+fn main(): Int {
+    total: Int! = 0
+    i: Int! = 0
+    loop {
+        if i > 4 {
+            break
+        }
+        val: Int?! = maybe_null(i)
+        i = i + 1
+        if val is Null {
+            continue
+        }
+        total = total + val
+    }
+    print(total)
+    return 0
+}

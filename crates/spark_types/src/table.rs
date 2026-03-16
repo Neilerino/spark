@@ -98,6 +98,10 @@ pub struct TypeTable {
     /// Maps a type `DefId` (struct/enum) to the interface `DefId`s it binds.
     /// Populated during `collect_binding()`, consumed during constraint validation.
     pub(crate) type_interface_bindings: FxHashMap<DefId, Vec<DefId>>,
+    /// Maps call-site spans to the function type of callable struct fields.
+    /// Populated during type checking, consumed during HIR lowering to emit
+    /// `Call` with `FieldAccess` callee instead of `MethodCall`.
+    pub(crate) field_call_fn_types: FxHashMap<Span, TypeId>,
     /// Maps a function (or method) `DefId` to its ordered parameter names.
     /// Populated during declaration collection, consumed during partial
     /// application type checking to resolve named arguments to positions.
@@ -138,6 +142,7 @@ impl TypeTable {
             type_methods: FxHashMap::default(),
             method_resolutions: FxHashMap::default(),
             field_resolutions: FxHashMap::default(),
+            field_call_fn_types: FxHashMap::default(),
             generic_params: FxHashMap::default(),
             mono_instances: FxHashMap::default(),
             generic_constraints: FxHashMap::default(),
@@ -256,6 +261,17 @@ impl TypeTable {
     /// Returns an iterator over all field resolution entries.
     pub fn field_resolutions(&self) -> impl Iterator<Item = (&Span, &DefId)> {
         self.field_resolutions.iter()
+    }
+
+    /// Records the function type of a field-call callee.
+    pub fn set_field_call_fn_type(&mut self, span: Span, ty: TypeId) {
+        self.field_call_fn_types.insert(span, ty);
+    }
+
+    /// Returns the function type of a field-call callee.
+    #[must_use]
+    pub fn get_field_call_fn_type(&self, span: Span) -> Option<TypeId> {
+        self.field_call_fn_types.get(&span).copied()
     }
 
     /// Returns an iterator over all method resolution entries.

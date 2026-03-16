@@ -220,15 +220,51 @@ fn lower_expr_kind(
                     receiver.span,
                 );
             }
-            HirExprKind::MethodCall {
-                receiver: Box::new(recv_hir),
-                method: method.name,
-                args: args
+
+            // Field call: the "method" is actually a struct field with a function type.
+            if let Some(fn_ty) = ctx.table.get_field_call_fn_type(expr.span) {
+                let callee = HirExpr::new(
+                    HirExprKind::FieldAccess {
+                        base: Box::new(recv_hir),
+                        field: method.name,
+                    },
+                    fn_ty,
+                    method.span,
+                );
+
+                // Get param types for ref coercion
+                let param_types: Vec<TypeId> = match ctx.table.resolve(fn_ty) {
+                    Ty::Function { params, .. } => params.clone(),
+                    _ => vec![],
+                };
+
+                let lowered_args = args
                     .iter()
-                    .map(|a| {
-                        lower_expr(&a.value, ctx)
+                    .enumerate()
+                    .map(|(i, a)| {
+                        let mut arg = lower_expr(&a.value, ctx);
+                        if let Some(&param_ty) = param_types.get(i) {
+                            arg = coerce_ref(arg, param_ty, a.value.span, ctx.table);
+                        }
+                        arg
                     })
-                    .collect(),
+                    .collect();
+
+                HirExprKind::Call {
+                    callee: Box::new(callee),
+                    args: lowered_args,
+                }
+            } else {
+                HirExprKind::MethodCall {
+                    receiver: Box::new(recv_hir),
+                    method: method.name,
+                    args: args
+                        .iter()
+                        .map(|a| {
+                            lower_expr(&a.value, ctx)
+                        })
+                        .collect(),
+                }
             }
         }
 

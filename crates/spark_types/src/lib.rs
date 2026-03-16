@@ -788,4 +788,71 @@ mod tests {
         );
         assert!(output.diagnostics.has_errors());
     }
+
+    // === Callable struct field tests ===
+
+    #[test]
+    fn callable_field_basic() {
+        let output = check_source(
+            "struct Handler { action: (Int): Int }\n\
+             fn double(x: Int): Int { return x * 2 }\n\
+             fn main(): Int {\n\
+                 h: Handler = Handler { action: double }\n\
+                 return h.action(5)\n\
+             }",
+        );
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn callable_field_wrong_arg_count() {
+        let output = check_source(
+            "struct Handler { action: (Int): Int }\n\
+             fn double(x: Int): Int { return x * 2 }\n\
+             fn main(): Int {\n\
+                 h: Handler = Handler { action: double }\n\
+                 return h.action(1, 2)\n\
+             }",
+        );
+        assert!(output.diagnostics.has_errors());
+        let msgs: Vec<_> = output.diagnostics.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("argument")),
+            "Expected argument count error, got: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn callable_field_wrong_arg_type() {
+        let output = check_source(
+            "struct Handler { action: (Int): Int }\n\
+             fn double(x: Int): Int { return x * 2 }\n\
+             fn main(): Int {\n\
+                 h: Handler = Handler { action: double }\n\
+                 return h.action(true)\n\
+             }",
+        );
+        assert!(output.diagnostics.has_errors());
+    }
+
+    #[test]
+    fn non_callable_field_error() {
+        let output = check_source(
+            "struct Foo { x: Int }\n\
+             fn main(): Int {\n\
+                 f: Foo = Foo { x: 1 }\n\
+                 return f.x()\n\
+             }",
+        );
+        assert!(output.diagnostics.has_errors());
+        let msgs: Vec<_> = output.diagnostics.iter().map(|d| &d.message).collect();
+        assert!(
+            msgs.iter().any(|m| m.contains("not callable")),
+            "Expected 'not callable' error, got: {msgs:?}"
+        );
+    }
 }

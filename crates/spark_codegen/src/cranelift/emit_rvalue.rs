@@ -764,18 +764,62 @@ fn emit_aggregate<M: Module>(
             // Check if the dest local has an Applied type (generic struct instantiation).
             // If so, compute layout with substituted field types.
             let dest_ty = ctx.local_type_id(dest_local);
-            let (_, unwrapped) = clif_types::unwrap_mutable(dest_ty, table);
-            let sl = if matches!(unwrapped, Ty::Applied { .. }) {
-                let (unwrapped_id, _) = clif_types::unwrap_mutable(dest_ty, table);
+            let (unwrapped_id, unwrapped) = clif_types::unwrap_mutable(dest_ty, table);
+            let is_applied = matches!(unwrapped, Ty::Applied { .. });
+            let sl = if is_applied {
                 ctx.layouts.applied_struct_layout_of(unwrapped_id, table)
             } else {
                 ctx.layouts.struct_layout_of(*def_id, table)
             };
 
+            // Look up field types to distinguish scalar vs aggregate fields.
+            let field_types: Vec<TypeId> = if is_applied {
+                match table.resolve(unwrapped_id) {
+                    Ty::Applied { base, args } => {
+                        let base = *base;
+                        let args = args.clone();
+                        let raw_fields = table.get_struct_fields(base)
+                            .map(<[(spark_intern::Symbol, TypeId)]>::to_vec)
+                            .unwrap_or_default();
+                        let params = table.get_generic_params(base)
+                            .map(<[_]>::to_vec)
+                            .unwrap_or_default();
+                        let subst = spark_types::substitute::build_subst_map(&params, &args);
+                        raw_fields.iter()
+                            .map(|(_, ty)| spark_types::substitute::substitute(*ty, &subst, table))
+                            .collect()
+                    }
+                    _ => vec![],
+                }
+            } else {
+                table.get_struct_fields(*def_id)
+                    .map(|fs| fs.iter().map(|(_, ty)| *ty).collect())
+                    .unwrap_or_default()
+            };
+
             for (i, operand) in operands.iter().enumerate() {
                 if let Some(val) = emit_operand(ctx, operand, ecx, module) {
                     let offset = sl.field_offsets[i];
-                    ctx.store(val, dest_addr, i32::try_from(offset).unwrap_or(0));
+                    let field_off = i32::try_from(offset).unwrap_or(0);
+                    let field_ty = field_types.get(i).copied();
+                    if field_ty.map_or(true, |ty| abi::is_scalar(ty, table)) {
+                        ctx.store(val, dest_addr, field_off);
+                    } else {
+                        // Aggregate field (e.g. function fat pointer, nested struct) —
+                        // val is a pointer to the source data; memcpy into the struct.
+                        let ft = field_ty.unwrap();
+                        let field_layout = ctx.layouts.layout_of(ft, table);
+                        let field_addr = ctx.builder.ins().iadd_imm(dest_addr, i64::from(field_off));
+                        let config = module.target_config();
+                        ctx.builder.emit_small_memory_copy(
+                            config,
+                            field_addr,
+                            val,
+                            u64::from(field_layout.size),
+                            1, 1, true,
+                            MemFlags::new(),
+                        );
+                    }
                 }
             }
 

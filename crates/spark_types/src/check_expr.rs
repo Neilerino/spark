@@ -18,7 +18,7 @@ use crate::diagnostics;
 use crate::display::display_type as type_name;
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
-use crate::ty::{Ty, TypeId};
+use crate::ty::{LifetimeId, Ty, TypeId};
 
 /// Type-checks an expression and returns its type.
 ///
@@ -1761,6 +1761,8 @@ fn unwrap_optional(ty: TypeId, table: &TypeTable) -> TypeId {
 /// - `Optional(T)` minus `Null` → `T`
 /// - `Optional(T)` minus `T` → `Null`
 /// - `Union([...])` minus a member → remaining union or single type
+/// - `Mutable(T)` — recurse on `T`, re-wrap if changed
+/// - `Ref { inner, .. }` — recurse on `inner`, re-wrap if changed
 /// - Otherwise returns `original` unchanged.
 fn subtract_type(original: TypeId, to_remove: TypeId, table: &mut TypeTable) -> TypeId {
     // Two-phase approach: read from the type table first, then mutate.
@@ -1769,10 +1771,34 @@ fn subtract_type(original: TypeId, to_remove: TypeId, table: &mut TypeTable) -> 
         ReturnInner(TypeId),
         ReturnNull,
         RebuildUnion(Vec<TypeId>),
+        RewrapMutable(TypeId),
+        RewrapRef {
+            inner: TypeId,
+            mutable: bool,
+            lifetime: LifetimeId,
+        },
         NoChange,
     }
 
     let action = match table.resolve(original) {
+        Ty::Mutable(inner) => {
+            let inner = *inner;
+            Action::RewrapMutable(inner)
+        }
+        Ty::Ref {
+            inner,
+            mutable,
+            lifetime,
+        } => {
+            let inner = *inner;
+            let mutable = *mutable;
+            let lifetime = *lifetime;
+            Action::RewrapRef {
+                inner,
+                mutable,
+                lifetime,
+            }
+        }
         Ty::Optional(inner) => {
             let inner = *inner;
             if to_remove == inner {
@@ -1799,6 +1825,30 @@ fn subtract_type(original: TypeId, to_remove: TypeId, table: &mut TypeTable) -> 
 
     // Immutable borrow released — safe to call intern().
     match action {
+        Action::RewrapMutable(inner) => {
+            let narrowed = subtract_type(inner, to_remove, table);
+            if narrowed != inner {
+                table.intern(Ty::Mutable(narrowed))
+            } else {
+                original
+            }
+        }
+        Action::RewrapRef {
+            inner,
+            mutable,
+            lifetime,
+        } => {
+            let narrowed = subtract_type(inner, to_remove, table);
+            if narrowed != inner {
+                table.intern(Ty::Ref {
+                    inner: narrowed,
+                    mutable,
+                    lifetime,
+                })
+            } else {
+                original
+            }
+        }
         Action::ReturnNull => table.intern(Ty::Null),
         Action::ReturnInner(inner) => {
             let null_id = table.intern(Ty::Null);
@@ -1875,10 +1925,11 @@ fn check_method_call(
             ctx.diagnostics,
         ),
         Ty::Struct(def_id) | Ty::Enum(def_id) => {
-            check_user_method_call(def_id, method, arg_tys, recv_span, call_span, ctx)
+            check_user_method_call(def_id, method, arg_tys, recv_span, call_span, &[], ctx)
         }
-        Ty::Applied { base, .. } => {
-            check_user_method_call(base, method, arg_tys, recv_span, call_span, ctx)
+        Ty::Applied { base, args } => {
+            let args = args.clone();
+            check_user_method_call(base, method, arg_tys, recv_span, call_span, &args, ctx)
         }
         _ => {
             ctx.diagnostics.push(
@@ -2074,6 +2125,29 @@ fn check_channel_method(
     }
 }
 
+/// Validates argument count and types against expected parameter types.
+fn validate_call_args(
+    expected_params: &[TypeId],
+    arg_tys: &[TypeId],
+    call_span: Span,
+    ctx: &mut TypeCheckCtx<'_>,
+) {
+    diagnostics::expect_args(expected_params.len(), arg_tys.len(), call_span, ctx.diagnostics);
+    for (i, arg_ty) in arg_tys.iter().enumerate() {
+        if let Some(&expected) = expected_params.get(i) {
+            if !is_compatible(*arg_ty, expected, ctx.table) {
+                let expected_name = type_name(expected, ctx.table, ctx.definitions);
+                let found_name = type_name(*arg_ty, ctx.table, ctx.definitions);
+                ctx.diagnostics.push(diagnostics::arg_type_mismatch(
+                    &expected_name,
+                    &found_name,
+                    call_span,
+                ));
+            }
+        }
+    }
+}
+
 /// Checks a method call on a user-defined type (struct or enum with bindings).
 ///
 /// Looks up the method in `TypeTable::type_methods`, validates arguments,
@@ -2085,6 +2159,7 @@ fn check_user_method_call(
     arg_tys: &[TypeId],
     recv_span: Span,
     call_span: Span,
+    applied_args: &[TypeId],
     ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
     // Look up available methods for this type
@@ -2110,28 +2185,7 @@ fn check_user_method_call(
                         &params[1..]
                     };
 
-                    // Check argument count (excluding receiver)
-                    diagnostics::expect_args(
-                        call_params.len(),
-                        arg_tys.len(),
-                        call_span,
-                        ctx.diagnostics,
-                    );
-
-                    // Check argument types
-                    for (i, arg_ty) in arg_tys.iter().enumerate() {
-                        if let Some(&expected) = call_params.get(i) {
-                            if !is_compatible(*arg_ty, expected, ctx.table) {
-                                let expected_name = type_name(expected, ctx.table, ctx.definitions);
-                                let found_name = type_name(*arg_ty, ctx.table, ctx.definitions);
-                                ctx.diagnostics.push(diagnostics::arg_type_mismatch(
-                                    &expected_name,
-                                    &found_name,
-                                    call_span,
-                                ));
-                            }
-                        }
-                    }
+                    validate_call_args(call_params, arg_tys, call_span, ctx);
 
                     // Store the method resolution for MIR lowering
                     ctx.table.set_method_resolution(call_span, method_def_id);
@@ -2145,7 +2199,55 @@ fn check_user_method_call(
         }
     }
 
-    // No method found
+    // No method found — check if the type has a callable field with this name.
+    let field_ty_raw = ctx
+        .table
+        .get_struct_fields(type_def_id)
+        .and_then(|fields| fields.iter().find(|(name, _)| *name == method).map(|(_, ty)| *ty));
+    if let Some(raw_ty) = field_ty_raw {
+        let mut field_ty = strip_mutable(raw_ty, ctx.table);
+
+        // Apply generic substitution for Ty::Applied types.
+        if !applied_args.is_empty() {
+            let params = ctx
+                .table
+                .get_generic_params(type_def_id)
+                .map(<[_]>::to_vec)
+                .unwrap_or_default();
+            let subst = crate::substitute::build_subst_map(&params, applied_args);
+            field_ty = crate::substitute::substitute_mut(field_ty, &subst, ctx.table);
+        }
+
+        if let Ty::Function { params, ret, .. } = ctx.table.resolve(field_ty).clone() {
+            validate_call_args(&params, arg_tys, call_span, ctx);
+
+            // Record field resolution for HIR lowering
+            if let Some(field_def) =
+                crate::check_decl::find_field_def(method, type_def_id, ctx.definitions)
+            {
+                ctx.table.set_field_resolution(call_span, field_def);
+            }
+            ctx.table.set_field_call_fn_type(call_span, field_ty);
+
+            return ret;
+        }
+
+        // Field exists but is not callable
+        let tn = ctx
+            .definitions
+            .get(type_def_id)
+            .map_or("<unknown>", |info| info.name.as_str());
+        let ft = type_name(field_ty, ctx.table, ctx.definitions);
+        ctx.diagnostics.push(
+            Diagnostic::error(format!(
+                "field `{method}` on type `{tn}` is not callable (has type `{ft}`)"
+            ))
+            .with_label(Label::primary(recv_span, "not a function")),
+        );
+        return TypeId::ERROR;
+    }
+
+    // No method or callable field found
     let tn = ctx
         .definitions
         .get(type_def_id)

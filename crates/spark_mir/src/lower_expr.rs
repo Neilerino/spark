@@ -773,7 +773,9 @@ fn lower_is_expr(
         return result;
     }
 
-    let inner_ty = type_table.resolve(inner.ty);
+    // Unwrap Mutable wrappers — mutability is transparent at runtime.
+    let unwrapped_inner_ty_id = unwrap_type_wrappers(inner.ty, type_table);
+    let inner_ty = type_table.resolve(unwrapped_inner_ty_id);
 
     match inner_ty {
         // Enum: check discriminant against target variant's DefId
@@ -1292,14 +1294,28 @@ fn lower_await(
     dest
 }
 
-/// Returns `true` if `local_ty` is `Optional(inner)` and `expr_ty` equals `inner`.
+/// Returns `true` if `local_ty` is `Optional(inner)` and `expr_ty` equals `inner`,
+/// looking through `Mutable` and `Ref` wrappers on both sides.
 ///
 /// Used to detect when a type-narrowed variable needs an implicit payload
-/// extraction (e.g., `x: Int?` narrowed to `Int` after an `is Null` guard).
+/// extraction (e.g., `x: Int?` narrowed to `Int` after an `is Null` guard,
+/// or `x: Int?!` narrowed to `Int!`).
 fn is_optional_narrowing(local_ty: TypeId, expr_ty: TypeId, table: &TypeTable) -> bool {
-    match table.resolve(local_ty) {
-        Ty::Optional(inner) => *inner == expr_ty,
+    // Unwrap Mutable/Ref wrappers to get to the core types.
+    let unwrapped_local = unwrap_type_wrappers(local_ty, table);
+    let unwrapped_expr = unwrap_type_wrappers(expr_ty, table);
+    match table.resolve(unwrapped_local) {
+        Ty::Optional(inner) => *inner == unwrapped_expr,
         _ => false,
+    }
+}
+
+/// Strips `Mutable` and `Ref` wrappers from a type, returning the innermost type.
+fn unwrap_type_wrappers(ty: TypeId, table: &TypeTable) -> TypeId {
+    match table.resolve(ty) {
+        Ty::Mutable(inner) => unwrap_type_wrappers(*inner, table),
+        Ty::Ref { inner, .. } => unwrap_type_wrappers(*inner, table),
+        _ => ty,
     }
 }
 
