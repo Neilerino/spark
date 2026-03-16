@@ -150,11 +150,13 @@ impl<'a> ModuleDiscovery<'a> {
                 // if the file name matches the parent dir, don't duplicate
                 let file_stem = file_path
                     .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(spark_intern::sym);
+                    .and_then(|s| s.to_str());
 
-                if file_stem == Some(module_name) {
-                    // This is the "main" file of the module
+                let is_main_file = file_stem == Some(module_name.as_str())
+                    || file_stem == Some("mod");
+
+                if is_main_file {
+                    // This is the "main" file of the module (either name.spark or mod.spark)
                     if segments.last() != Some(&module_name) {
                         segments.push(module_name);
                     }
@@ -206,7 +208,7 @@ impl<'a> ModuleDiscovery<'a> {
         let file_stem = file_path.file_stem().and_then(|s| s.to_str());
 
         if let Some(stem) = file_stem {
-            if stem != module_name.as_str() {
+            if stem != module_name.as_str() && stem != "mod" {
                 self.diagnostics.push(
                     Diagnostic::warning(format!(
                         "module `{}` is declared in file `{}`",
@@ -329,5 +331,43 @@ mod tests {
         let (_modules, _file_map, diags) = discovery.discover();
 
         assert!(diags.has_errors());
+    }
+
+    #[test]
+    fn discover_mod_spark_as_main_file() {
+        let file_id = FileId::new(0);
+        let mut asts = HashMap::new();
+        asts.insert(file_id, make_ast(file_id, Some("server")));
+
+        let mut file_paths = HashMap::new();
+        file_paths.insert(file_id, PathBuf::from("server/mod.spark"));
+
+        let root = PathBuf::from("");
+        let discovery = ModuleDiscovery::new(&asts, &file_paths, &root);
+        let (modules, file_map, diags) = discovery.discover();
+
+        assert!(!diags.has_errors());
+        let module_path = file_map.get(&file_id).unwrap();
+        assert_eq!(module_path.to_string(), "server");
+        assert!(modules.contains_key(module_path));
+    }
+
+    #[test]
+    fn discover_nested_mod_spark() {
+        let file_id = FileId::new(0);
+        let mut asts = HashMap::new();
+        asts.insert(file_id, make_ast(file_id, Some("auth")));
+
+        let mut file_paths = HashMap::new();
+        file_paths.insert(file_id, PathBuf::from("user/auth/mod.spark"));
+
+        let root = PathBuf::from("");
+        let discovery = ModuleDiscovery::new(&asts, &file_paths, &root);
+        let (modules, file_map, diags) = discovery.discover();
+
+        assert!(!diags.has_errors());
+        let module_path = file_map.get(&file_id).unwrap();
+        assert_eq!(module_path.to_string(), "user.auth");
+        assert!(modules.contains_key(module_path));
     }
 }
