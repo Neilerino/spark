@@ -312,6 +312,11 @@ fn callable_field() {
 }
 
 #[test]
+fn string_interp_struct_field() {
+    assert_output("run-pass/basics/string_interp_field.spark", "x=10\nname=origin");
+}
+
+#[test]
 fn tuple_field_access() {
     assert_output("run-pass/basics/tuple_field_access.spark", "10\n20\nalice\n30\ntrue");
 }
@@ -1062,6 +1067,22 @@ fn propagate_union_return_mismatch() {
 #[test]
 fn tuple_field_oob() {
     assert_compile_error("compile-fail/type_errors/tuple_field_oob.spark", "out of range");
+}
+
+#[test]
+fn list_string_index_error() {
+    assert_compile_error(
+        "compile-fail/type_errors/list_string_index.spark",
+        "list index must be an integer",
+    );
+}
+
+#[test]
+fn continue_in_closure_error() {
+    assert_compile_error(
+        "compile-fail/type_errors/continue_in_closure.spark",
+        "not inside a loop",
+    );
 }
 
 #[test]

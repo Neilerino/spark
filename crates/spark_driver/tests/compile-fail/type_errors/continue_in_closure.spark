@@ -1,0 +1,9 @@
+fn main(): Void {
+    xs: List[Int] = [1, 2, 3]
+    loop {
+        xs each (x: Int): Void {
+            continue
+        }
+        break
+    }
+}

@@ -10,8 +10,8 @@ use std::collections::HashMap;
 
 use rustc_hash::FxHashMap;
 use spark_ast::{
-    Ast, BindingDef, Block, Expr, ExprKind, FunctionDef, GenericConstraint, Item, Pattern,
-    PatternKind, PipelineStageKind, Stmt, StmtKind, TypeExpr, TypeExprKind,
+    Ast, BindingDef, Block, Expr, ExprKind, FunctionDef, GenericConstraint, Item, LiteralKind,
+    Pattern, PatternKind, PipelineStageKind, Stmt, StmtKind, StringPart, TypeExpr, TypeExprKind,
 };
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_intern::{kw, Symbol};
@@ -922,7 +922,17 @@ impl Resolver {
     #[allow(clippy::too_many_lines)]
     fn resolve_expr(&mut self, expr: &Expr) {
         match &expr.kind {
-            ExprKind::Literal(_) | ExprKind::Error | ExprKind::Continue => {}
+            ExprKind::Literal(lit) => {
+                // Resolve identifiers inside string interpolation sub-expressions.
+                if let LiteralKind::String(s) = &lit.kind {
+                    for part in &s.parts {
+                        if let StringPart::Interpolation(sub_expr) = part {
+                            self.resolve_expr(sub_expr);
+                        }
+                    }
+                }
+            }
+            ExprKind::Error | ExprKind::Continue => {}
 
             ExprKind::Ident(ident) => {
                 if let Some(def_id) = self.rib_stack.lookup_value(ident.name) {

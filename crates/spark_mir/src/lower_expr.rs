@@ -318,6 +318,11 @@ pub fn lower_expr(
                 let dead = fb.new_block();
                 fb.switch_to(dead);
                 fb.terminate(Terminator::Goto { target: dead });
+            } else {
+                mir.diagnostics.push(
+                    Diagnostic::error("`continue` is not inside a loop")
+                        .with_label(Label::primary(expr.span, "cannot `continue` here")),
+                );
             }
             // Return a void temp (unreachable in practice)
             let temp = fb.fresh_temp(expr.ty, expr.span);
@@ -1049,6 +1054,11 @@ fn lower_break(
         fb.terminate(Terminator::Goto {
             target: break_block,
         });
+    } else {
+        mir.diagnostics.push(
+            Diagnostic::error("`break` is not inside a loop")
+                .with_label(Label::primary(expr.span, "cannot `break` here")),
+        );
     }
 
     // Start a new dead block so subsequent code doesn't corrupt

@@ -183,10 +183,26 @@ fn check_expr_inner(
         // === Index access ===
         ExprKind::Index { base, index } => {
             let base_ty = check_expr(base, ctx, current_fn_ret);
-            let _index_ty = check_expr(index, ctx, current_fn_ret);
+            let index_ty = check_expr(index, ctx, current_fn_ret);
 
             match ctx.table.resolve(strip_mutable(base_ty, ctx.table)).clone() {
-                Ty::List(elem) => ctx.table.intern(Ty::Optional(elem)),
+                Ty::List(elem) => {
+                    let resolved_idx = ctx.table.resolve(strip_mutable(index_ty, ctx.table));
+                    if !resolved_idx.is_integer() && index_ty != TypeId::ERROR {
+                        ctx.diagnostics.push(
+                            Diagnostic::error("list index must be an integer")
+                                .with_label(Label::primary(
+                                    index.span,
+                                    format!(
+                                        "expected `Int`, found `{}`",
+                                        type_name(index_ty, ctx.table, ctx.definitions)
+                                    ),
+                                )),
+                        );
+                        return TypeId::ERROR;
+                    }
+                    ctx.table.intern(Ty::Optional(elem))
+                }
                 Ty::Map(_, value) => ctx.table.intern(Ty::Optional(value)),
                 Ty::Tuple(elems) => {
                     if let ExprKind::Literal(spark_ast::Literal {

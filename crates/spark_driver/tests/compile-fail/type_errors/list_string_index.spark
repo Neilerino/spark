@@ -1,0 +1,5 @@
+fn main(): Void {
+    xs: List[Int] = [1, 2, 3]
+    key: String = "hello"
+    result: Int? = xs[key]
+}

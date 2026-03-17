@@ -1401,7 +1401,7 @@ fn emit_cast(
 /// the corresponding pre-interned primitive type.
 fn operand_type(operand: &Operand, ctx: &FunctionContext<'_>, table: &TypeTable) -> TypeId {
     match operand {
-        Operand::Copy(place) | Operand::Move(place) => ctx.local_type_id(place.local),
+        Operand::Copy(place) | Operand::Move(place) => resolve_place_type(ctx, place, table),
         Operand::Constant(c) => {
             let ty = match c {
                 Constant::Int(_) => Ty::Int(IntWidth::I64),
