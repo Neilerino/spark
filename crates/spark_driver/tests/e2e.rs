@@ -322,6 +322,11 @@ fn struct_param() {
 }
 
 #[test]
+fn struct_field_order() {
+    assert_output("run-pass/basics/struct_field_order.spark", "1\n2\n3");
+}
+
+#[test]
 fn loop_break() {
     assert_output("run-pass/basics/loop_break.spark", "4");
 }

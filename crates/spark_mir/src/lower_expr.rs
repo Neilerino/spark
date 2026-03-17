@@ -3,6 +3,7 @@
 //! Every expression is lowered into a [`Local`] that holds its result.
 //! Control flow expressions (if, loop, match) create new basic blocks.
 
+use rustc_hash::FxHashMap;
 use spark_diagnostics::{Diagnostic, Label};
 use spark_hir::{HirExpr, HirExprKind, HirLiteral};
 use spark_intern::{kw, Symbol};
@@ -156,14 +157,40 @@ pub fn lower_expr(
                 return temp;
             }
 
-            let field_names: Vec<Symbol> = fields.iter().map(|(name, _)| *name).collect();
-            let operands: Vec<Operand> = fields
+            // Lower each field value in source order first (order of evaluation).
+            let source_fields: Vec<(Symbol, Operand)> = fields
                 .iter()
-                .map(|(_, val)| {
+                .map(|(name, val)| {
                     let local = lower_expr(val, fb, mir, type_table, defs);
-                    Operand::Copy(Place::from_local(local))
+                    (*name, Operand::Copy(Place::from_local(local)))
                 })
                 .collect();
+
+            // Reorder to match the struct's declaration order so that
+            // codegen stores each value at the correct memory offset.
+            let (field_names, operands) =
+                if let Some(decl_fields) = type_table.get_struct_fields(*def_id) {
+                    let mut field_map: FxHashMap<Symbol, Operand> =
+                        source_fields.into_iter().collect();
+                    let mut ordered_names = Vec::with_capacity(decl_fields.len());
+                    let mut ordered_ops = Vec::with_capacity(decl_fields.len());
+                    for (decl_name, _) in decl_fields {
+                        let op = field_map
+                            .remove(decl_name)
+                            .expect("ICE: struct field missing after type check");
+                        ordered_names.push(*decl_name);
+                        ordered_ops.push(op);
+                    }
+                    debug_assert!(
+                        field_map.is_empty(),
+                        "ICE: extra fields in struct init"
+                    );
+                    (ordered_names, ordered_ops)
+                } else {
+                    // Fallback: keep source order.
+                    source_fields.into_iter().unzip()
+                };
+
             let temp = fb.fresh_temp(expr.ty, expr.span);
             fb.push_assign(
                 Place::from_local(temp),
@@ -240,6 +267,9 @@ pub fn lower_expr(
         HirExprKind::Block { stmts, expr: tail } => {
             fb.push_scope();
             for s in stmts {
+                if fb.is_terminated() {
+                    break;
+                }
                 lower_stmt(s, fb, mir, type_table, defs);
             }
             let result = if let Some(tail_expr) = tail {
@@ -279,6 +309,15 @@ pub fn lower_expr(
                 // Drop locals in scopes above the loop before jumping back.
                 fb.drops_to_loop(None, expr.span);
                 fb.terminate(Terminator::Goto { target });
+
+                // Start a new dead block so subsequent code doesn't corrupt
+                // the current block's terminator (mirrors lower_return pattern).
+                // Terminate it immediately so `is_terminated()` returns true —
+                // this prevents match arm lowering from emitting type-mismatched
+                // assignments into the dead block.
+                let dead = fb.new_block();
+                fb.switch_to(dead);
+                fb.terminate(Terminator::Goto { target: dead });
             }
             // Return a void temp (unreachable in practice)
             let temp = fb.fresh_temp(expr.ty, expr.span);
@@ -1012,6 +1051,15 @@ fn lower_break(
         });
     }
 
+    // Start a new dead block so subsequent code doesn't corrupt
+    // the current block's terminator (mirrors lower_return pattern).
+    // Terminate it immediately so `is_terminated()` returns true —
+    // this prevents match arm lowering from emitting type-mismatched
+    // assignments into the dead block.
+    let dead = fb.new_block();
+    fb.switch_to(dead);
+    fb.terminate(Terminator::Goto { target: dead });
+
     // Return a void temp (code after break is unreachable)
     let temp = fb.fresh_temp(expr.ty, expr.span);
     fb.push_assign(
@@ -1048,9 +1096,12 @@ fn lower_return(
     fb.terminate(Terminator::Return);
 
     // Start a new dead block so subsequent code (if any) doesn't corrupt
-    // the current block's terminator
+    // the current block's terminator. Terminate it immediately so
+    // `is_terminated()` returns true — this prevents match arm lowering
+    // from emitting type-mismatched assignments into the dead block.
     let dead = fb.new_block();
     fb.switch_to(dead);
+    fb.terminate(Terminator::Goto { target: dead });
 
     // Return void temp (unreachable)
     let temp = fb.fresh_temp(expr.ty, expr.span);

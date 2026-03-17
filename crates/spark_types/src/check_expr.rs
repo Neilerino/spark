@@ -2563,6 +2563,24 @@ fn validate_reduce_callback(
     ret
 }
 
+/// Registers the narrowed type for a `TypeNarrowing` pattern binding.
+///
+/// Returns `Some(narrowed_ty)` if the arm has a `TypeNarrowing` pattern, `None` otherwise.
+fn register_narrowing_binding(
+    arm: &spark_ast::MatchArm,
+    ctx: &mut TypeCheckCtx<'_>,
+) -> Option<TypeId> {
+    if let spark_ast::PatternKind::TypeNarrowing { name, ty: pat_ty } = &arm.pattern.kind {
+        let narrowed_ty = crate::lower::lower_type_expr(pat_ty, ctx);
+        if let Some(def_id) = ctx.resolutions.and_then(|res| res.get_binding(name.span)) {
+            ctx.table.set_def_type(def_id, narrowed_ty);
+        }
+        Some(narrowed_ty)
+    } else {
+        None
+    }
+}
+
 /// Checks a `to` expression (`expr to { Pattern -> ... }`).
 ///
 /// Behaviour depends on the scrutinee type:
@@ -2585,8 +2603,7 @@ fn check_to_narrowing(
         let mut handled_types = Vec::new();
 
         for arm in arms {
-            if let spark_ast::PatternKind::TypeNarrowing { ty: pat_ty, .. } = &arm.pattern.kind {
-                let narrowed_ty = crate::lower::lower_type_expr(pat_ty, ctx);
+            if let Some(narrowed_ty) = register_narrowing_binding(arm, ctx) {
                 handled_types.push(narrowed_ty);
             } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
                 let variant_ty = ctx
@@ -2620,6 +2637,7 @@ fn check_to_narrowing(
         // === Non-union exhaustive mode ===
         let mut arm_types = Vec::with_capacity(arms.len());
         for arm in arms {
+            register_narrowing_binding(arm, ctx);
             let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
             arm_types.push(body_ty);
         }
