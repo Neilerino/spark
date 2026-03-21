@@ -708,6 +708,424 @@ pub fn desugar_reduce(
     )
 }
 
+/// Desugars `iterable filter callback` into an index loop that conditionally
+/// appends matching elements to a result list.
+///
+/// ```text
+/// {
+///     let __cb = predicate
+///     let __iter = iterable
+///     let __idx: Int! = 0
+///     let __len: Int = __iter.len()
+///     let __result: List[T]! = []
+///     loop {
+///         if __idx >= __len { break }
+///         let __item: T = __iter[__idx]
+///         if __cb(__item) { __result.append(__item) }
+///         __idx = __idx + 1
+///     }
+///     __result
+/// }
+/// ```
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn desugar_filter(
+    iterable: HirExpr,
+    predicate: HirExpr,
+    elem_ty: TypeId,
+    result_list_ty: TypeId,
+    int_ty: TypeId,
+    bool_ty: TypeId,
+    void_ty: TypeId,
+    span: Span,
+    definitions: &mut DefinitionTable,
+) -> HirExpr {
+    let cb_id = definitions.next_synthetic_id(span);
+    let iter_id = definitions.next_synthetic_id(span);
+    let idx_id = definitions.next_synthetic_id(span);
+    let len_id = definitions.next_synthetic_id(span);
+    let item_id = definitions.next_synthetic_id(span);
+    let result_id = definitions.next_synthetic_id(span);
+
+    let cb_ty = predicate.ty;
+    let iter_ty = iterable.ty;
+
+    // let __cb = predicate
+    let cb_let = HirStmt::Let {
+        def_id: cb_id,
+        mutable: false,
+        value: predicate,
+    };
+
+    // let __iter = iterable
+    let iter_let = HirStmt::Let {
+        def_id: iter_id,
+        mutable: false,
+        value: iterable,
+    };
+
+    // let __idx: Int! = 0
+    let idx_let = HirStmt::Let {
+        def_id: idx_id,
+        mutable: true,
+        value: HirExpr::new(HirExprKind::Literal(HirLiteral::Int(0)), int_ty, span),
+    };
+
+    // let __len: Int = __iter.len()
+    let len_let = HirStmt::Let {
+        def_id: len_id,
+        mutable: false,
+        value: HirExpr::new(
+            HirExprKind::MethodCall {
+                receiver: Box::new(HirExpr::new(HirExprKind::Local(iter_id), iter_ty, span)),
+                method: spark_intern::kw::LEN,
+                args: vec![],
+            },
+            int_ty,
+            span,
+        ),
+    };
+
+    // let __result: List[T]! = []
+    let result_let = HirStmt::Let {
+        def_id: result_id,
+        mutable: true,
+        value: HirExpr::new(HirExprKind::ListLit(vec![]), result_list_ty, span),
+    };
+
+    // if __idx >= __len { break }
+    let guard = HirExpr::new(
+        HirExprKind::If {
+            cond: Box::new(HirExpr::new(
+                HirExprKind::BinaryOp {
+                    op: BinaryOp::Ge,
+                    lhs: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+                    rhs: Box::new(HirExpr::new(HirExprKind::Local(len_id), int_ty, span)),
+                },
+                bool_ty,
+                span,
+            )),
+            then_: Box::new(HirExpr::new(HirExprKind::Break(None), void_ty, span)),
+            else_: None,
+        },
+        void_ty,
+        span,
+    );
+
+    // let __item: T = __iter[__idx]
+    let item_let = HirStmt::Let {
+        def_id: item_id,
+        mutable: false,
+        value: HirExpr::new(
+            HirExprKind::Index {
+                base: Box::new(HirExpr::new(HirExprKind::Local(iter_id), iter_ty, span)),
+                index: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+            },
+            elem_ty,
+            span,
+        ),
+    };
+
+    // __cb(__item) — predicate call
+    let pred_call = HirExpr::new(
+        HirExprKind::Call {
+            callee: Box::new(HirExpr::new(HirExprKind::Local(cb_id), cb_ty, span)),
+            args: vec![HirExpr::new(HirExprKind::Local(item_id), elem_ty, span)],
+        },
+        bool_ty,
+        span,
+    );
+
+    // if __cb(__item) { __result.append(__item) }
+    let cond_append = HirStmt::Expr(HirExpr::new(
+        HirExprKind::If {
+            cond: Box::new(pred_call),
+            then_: Box::new(HirExpr::new(
+                HirExprKind::MethodCall {
+                    receiver: Box::new(HirExpr::new(
+                        HirExprKind::Local(result_id),
+                        result_list_ty,
+                        span,
+                    )),
+                    method: spark_intern::kw::APPEND,
+                    args: vec![HirExpr::new(HirExprKind::Local(item_id), elem_ty, span)],
+                },
+                void_ty,
+                span,
+            )),
+            else_: None,
+        },
+        void_ty,
+        span,
+    ));
+
+    // __idx = __idx + 1
+    let increment = HirStmt::Assign {
+        target: HirExpr::new(HirExprKind::Local(idx_id), int_ty, span),
+        value: HirExpr::new(
+            HirExprKind::BinaryOp {
+                op: BinaryOp::Add,
+                lhs: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+                rhs: Box::new(HirExpr::new(
+                    HirExprKind::Literal(HirLiteral::Int(1)),
+                    int_ty,
+                    span,
+                )),
+            },
+            int_ty,
+            span,
+        ),
+    };
+
+    // Build loop body
+    let loop_stmts = vec![HirStmt::Expr(guard), item_let, cond_append, increment];
+
+    let loop_body = HirExpr::new(
+        HirExprKind::Block {
+            stmts: loop_stmts,
+            expr: None,
+        },
+        void_ty,
+        span,
+    );
+
+    let loop_expr = HirStmt::Expr(HirExpr::new(
+        HirExprKind::Loop {
+            body: Box::new(loop_body),
+        },
+        void_ty,
+        span,
+    ));
+
+    // Outer block
+    let stmts = vec![cb_let, iter_let, idx_let, len_let, result_let, loop_expr];
+
+    let trailing = HirExpr::new(HirExprKind::Local(result_id), result_list_ty, span);
+
+    HirExpr::new(
+        HirExprKind::Block {
+            stmts,
+            expr: Some(Box::new(trailing)),
+        },
+        result_list_ty,
+        span,
+    )
+}
+
+/// Desugars `iterable find callback` into an index loop that returns the
+/// first matching element as `Optional(T)`, or `Null` if none match.
+///
+/// ```text
+/// {
+///     let __cb = predicate
+///     let __iter = iterable
+///     let __idx: Int! = 0
+///     let __len: Int = __iter.len()
+///     let __result: T?! = Null
+///     loop {
+///         if __idx >= __len { break }
+///         let __item: T = __iter[__idx]
+///         if __cb(__item) { __result = __item; break }
+///         __idx = __idx + 1
+///     }
+///     __result
+/// }
+/// ```
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn desugar_find(
+    iterable: HirExpr,
+    predicate: HirExpr,
+    elem_ty: TypeId,
+    optional_ty: TypeId,
+    int_ty: TypeId,
+    bool_ty: TypeId,
+    void_ty: TypeId,
+    span: Span,
+    definitions: &mut DefinitionTable,
+) -> HirExpr {
+    let cb_id = definitions.next_synthetic_id(span);
+    let iter_id = definitions.next_synthetic_id(span);
+    let idx_id = definitions.next_synthetic_id(span);
+    let len_id = definitions.next_synthetic_id(span);
+    let item_id = definitions.next_synthetic_id(span);
+    let result_id = definitions.next_synthetic_id(span);
+
+    let cb_ty = predicate.ty;
+    let iter_ty = iterable.ty;
+
+    // let __cb = predicate
+    let cb_let = HirStmt::Let {
+        def_id: cb_id,
+        mutable: false,
+        value: predicate,
+    };
+
+    // let __iter = iterable
+    let iter_let = HirStmt::Let {
+        def_id: iter_id,
+        mutable: false,
+        value: iterable,
+    };
+
+    // let __idx: Int! = 0
+    let idx_let = HirStmt::Let {
+        def_id: idx_id,
+        mutable: true,
+        value: HirExpr::new(HirExprKind::Literal(HirLiteral::Int(0)), int_ty, span),
+    };
+
+    // let __len: Int = __iter.len()
+    let len_let = HirStmt::Let {
+        def_id: len_id,
+        mutable: false,
+        value: HirExpr::new(
+            HirExprKind::MethodCall {
+                receiver: Box::new(HirExpr::new(HirExprKind::Local(iter_id), iter_ty, span)),
+                method: spark_intern::kw::LEN,
+                args: vec![],
+            },
+            int_ty,
+            span,
+        ),
+    };
+
+    // let __result: T?! = Null
+    let result_let = HirStmt::Let {
+        def_id: result_id,
+        mutable: true,
+        value: HirExpr::new(HirExprKind::Literal(HirLiteral::Null), optional_ty, span),
+    };
+
+    // if __idx >= __len { break }
+    let guard = HirExpr::new(
+        HirExprKind::If {
+            cond: Box::new(HirExpr::new(
+                HirExprKind::BinaryOp {
+                    op: BinaryOp::Ge,
+                    lhs: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+                    rhs: Box::new(HirExpr::new(HirExprKind::Local(len_id), int_ty, span)),
+                },
+                bool_ty,
+                span,
+            )),
+            then_: Box::new(HirExpr::new(HirExprKind::Break(None), void_ty, span)),
+            else_: None,
+        },
+        void_ty,
+        span,
+    );
+
+    // let __item: T = __iter[__idx]
+    let item_let = HirStmt::Let {
+        def_id: item_id,
+        mutable: false,
+        value: HirExpr::new(
+            HirExprKind::Index {
+                base: Box::new(HirExpr::new(HirExprKind::Local(iter_id), iter_ty, span)),
+                index: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+            },
+            elem_ty,
+            span,
+        ),
+    };
+
+    // __cb(__item) — predicate call
+    let pred_call = HirExpr::new(
+        HirExprKind::Call {
+            callee: Box::new(HirExpr::new(HirExprKind::Local(cb_id), cb_ty, span)),
+            args: vec![HirExpr::new(HirExprKind::Local(item_id), elem_ty, span)],
+        },
+        bool_ty,
+        span,
+    );
+
+    // if __cb(__item) { __result = __item; break }
+    let assign_and_break = HirExpr::new(
+        HirExprKind::Block {
+            stmts: vec![
+                HirStmt::Assign {
+                    target: HirExpr::new(
+                        HirExprKind::Local(result_id),
+                        optional_ty,
+                        span,
+                    ),
+                    value: HirExpr::new(HirExprKind::Local(item_id), elem_ty, span),
+                },
+            ],
+            expr: Some(Box::new(HirExpr::new(
+                HirExprKind::Break(None),
+                void_ty,
+                span,
+            ))),
+        },
+        void_ty,
+        span,
+    );
+
+    let cond_find = HirStmt::Expr(HirExpr::new(
+        HirExprKind::If {
+            cond: Box::new(pred_call),
+            then_: Box::new(assign_and_break),
+            else_: None,
+        },
+        void_ty,
+        span,
+    ));
+
+    // __idx = __idx + 1
+    let increment = HirStmt::Assign {
+        target: HirExpr::new(HirExprKind::Local(idx_id), int_ty, span),
+        value: HirExpr::new(
+            HirExprKind::BinaryOp {
+                op: BinaryOp::Add,
+                lhs: Box::new(HirExpr::new(HirExprKind::Local(idx_id), int_ty, span)),
+                rhs: Box::new(HirExpr::new(
+                    HirExprKind::Literal(HirLiteral::Int(1)),
+                    int_ty,
+                    span,
+                )),
+            },
+            int_ty,
+            span,
+        ),
+    };
+
+    // Build loop body
+    let loop_stmts = vec![HirStmt::Expr(guard), item_let, cond_find, increment];
+
+    let loop_body = HirExpr::new(
+        HirExprKind::Block {
+            stmts: loop_stmts,
+            expr: None,
+        },
+        void_ty,
+        span,
+    );
+
+    let loop_expr = HirStmt::Expr(HirExpr::new(
+        HirExprKind::Loop {
+            body: Box::new(loop_body),
+        },
+        void_ty,
+        span,
+    ));
+
+    // Outer block
+    let stmts = vec![cb_let, iter_let, idx_let, len_let, result_let, loop_expr];
+
+    let trailing = HirExpr::new(HirExprKind::Local(result_id), optional_ty, span);
+
+    HirExpr::new(
+        HirExprKind::Block {
+            stmts,
+            expr: Some(Box::new(trailing)),
+        },
+        optional_ty,
+        span,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

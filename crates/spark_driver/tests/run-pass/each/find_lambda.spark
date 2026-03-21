@@ -1,0 +1,12 @@
+fn main(): Int {
+    nums: List[Int] = [10, 20, 30, 40]
+    result: Int? = nums find (n: Int): Bool { n > 15 }
+
+    if result is Null {
+        print("not found")
+    } else {
+        print("found")
+    }
+
+    return 0
+}

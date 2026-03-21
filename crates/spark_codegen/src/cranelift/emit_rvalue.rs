@@ -935,7 +935,7 @@ fn emit_aggregate<M: Module>(
 
 /// Emits list construction: `[e1, e2, ...]`.
 ///
-/// Calls `__spark_list_new(elem_size)`, then `__spark_list_push` for each element.
+/// Calls `__spark_list_new(elem_size, elem_drop, elem_eq)`, then `__spark_list_push` for each element.
 #[allow(clippy::unnecessary_wraps)]
 fn emit_list_construction<M: Module>(
     ctx: &mut FunctionContext<'_>,
@@ -958,10 +958,15 @@ fn emit_list_construction<M: Module>(
 
     // Get the element destructor function address (or null).
     let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
+    // Get the element equality callback address (or null for byte-level behavior).
+    let elem_eq_val = elem_eq_func_addr(ctx, elem_ty, table, module);
 
-    // Call __spark_list_new(elem_size, elem_drop).
+    // Call __spark_list_new(elem_size, elem_drop, elem_eq).
     let new_ref = module.declare_func_in_func(ctx.stubs.list_new, ctx.builder.func);
-    let call = ctx.builder.ins().call(new_ref, &[elem_size_val, elem_drop_val]);
+    let call = ctx
+        .builder
+        .ins()
+        .call(new_ref, &[elem_size_val, elem_drop_val, elem_eq_val]);
     let list_ptr = ctx.builder.inst_results(call)[0];
 
     // Push each element.
@@ -977,7 +982,8 @@ fn emit_list_construction<M: Module>(
 
 /// Emits map construction: `{"k1": v1, "k2": v2, ...}`.
 ///
-/// Calls `__spark_map_new(key_size, value_size)`, then `__spark_map_insert`
+/// Calls `__spark_map_new(key_size, value_size, key_drop, val_drop, key_hash, key_eq)`,
+/// then `__spark_map_insert`
 /// for each key-value pair. Operands alternate: key, value, key, value, ...
 #[allow(clippy::unnecessary_wraps)]
 fn emit_map_construction<M: Module>(
@@ -1005,9 +1011,23 @@ fn emit_map_construction<M: Module>(
     let key_drop_val = elem_dtor_func_addr(ctx, key_ty, ecx.elem_dtor_ids, module);
     let val_drop_val = elem_dtor_func_addr(ctx, value_ty, ecx.elem_dtor_ids, module);
 
-    // Call __spark_map_new(key_size, value_size, key_drop, val_drop).
+    // Get key hash/equality callback addresses (or null for byte-level behavior).
+    let key_hash_val = elem_hash_func_addr(ctx, key_ty, table, module);
+    let key_eq_val = elem_eq_func_addr(ctx, key_ty, table, module);
+
+    // Call __spark_map_new(key_size, value_size, key_drop, val_drop, key_hash, key_eq).
     let new_ref = module.declare_func_in_func(ctx.stubs.map_new, ctx.builder.func);
-    let call = ctx.builder.ins().call(new_ref, &[key_size_val, val_size_val, key_drop_val, val_drop_val]);
+    let call = ctx.builder.ins().call(
+        new_ref,
+        &[
+            key_size_val,
+            val_size_val,
+            key_drop_val,
+            val_drop_val,
+            key_hash_val,
+            key_eq_val,
+        ],
+    );
     let map_ptr = ctx.builder.inst_results(call)[0];
 
     // Insert each key-value pair. Operands come in pairs: [k0, v0, k1, v1, ...].
@@ -1027,7 +1047,8 @@ fn emit_map_construction<M: Module>(
 
 /// Emits set construction.
 ///
-/// Calls `__spark_set_new(elem_size)`, then `__spark_set_insert` for each element.
+/// Calls `__spark_set_new(elem_size, elem_drop, elem_hash, elem_eq)`, then
+/// `__spark_set_insert` for each element.
 #[allow(clippy::unnecessary_wraps)]
 fn emit_set_construction<M: Module>(
     ctx: &mut FunctionContext<'_>,
@@ -1054,9 +1075,16 @@ fn emit_set_construction<M: Module>(
     // Get the element destructor function address (or null).
     let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
 
-    // Call __spark_set_new(elem_size, elem_drop).
+    // Get element hash/equality callback addresses (or null for byte-level behavior).
+    let elem_hash_val = elem_hash_func_addr(ctx, elem_ty, table, module);
+    let elem_eq_val = elem_eq_func_addr(ctx, elem_ty, table, module);
+
+    // Call __spark_set_new(elem_size, elem_drop, elem_hash, elem_eq).
     let new_ref = module.declare_func_in_func(ctx.stubs.set_new, ctx.builder.func);
-    let call = ctx.builder.ins().call(new_ref, &[elem_size_val, elem_drop_val]);
+    let call = ctx.builder.ins().call(
+        new_ref,
+        &[elem_size_val, elem_drop_val, elem_hash_val, elem_eq_val],
+    );
     let set_ptr = ctx.builder.inst_results(call)[0];
 
     // Insert each element.
@@ -1085,6 +1113,38 @@ fn elem_dtor_func_addr<M: Module>(
 ) -> Value {
     if let Some(&dtor_fid) = elem_dtor_ids.get(&elem_ty) {
         let func_ref = module.declare_func_in_func(dtor_fid, ctx.builder.func);
+        ctx.builder.ins().func_addr(ctx.ptr_type, func_ref)
+    } else {
+        ctx.builder.ins().iconst(ctx.ptr_type, 0)
+    }
+}
+
+/// Returns a hash callback function address for set/map keys, or null.
+fn elem_hash_func_addr<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    elem_ty: TypeId,
+    table: &TypeTable,
+    module: &mut M,
+) -> Value {
+    let (_, unwrapped) = clif_types::unwrap_mutable(elem_ty, table);
+    if matches!(unwrapped, Ty::String) {
+        let func_ref = module.declare_func_in_func(ctx.stubs.hash_string_elem, ctx.builder.func);
+        ctx.builder.ins().func_addr(ctx.ptr_type, func_ref)
+    } else {
+        ctx.builder.ins().iconst(ctx.ptr_type, 0)
+    }
+}
+
+/// Returns an equality callback function address for set/map keys, or null.
+fn elem_eq_func_addr<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    elem_ty: TypeId,
+    table: &TypeTable,
+    module: &mut M,
+) -> Value {
+    let (_, unwrapped) = clif_types::unwrap_mutable(elem_ty, table);
+    if matches!(unwrapped, Ty::String) {
+        let func_ref = module.declare_func_in_func(ctx.stubs.eq_string_elem, ctx.builder.func);
         ctx.builder.ins().func_addr(ctx.ptr_type, func_ref)
     } else {
         ctx.builder.ins().iconst(ctx.ptr_type, 0)

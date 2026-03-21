@@ -10,7 +10,7 @@ fn transform[T, U](items: List[T], transform: (T): U): List[U] {
 }
 
 // Filter function
-fn filter[T](items: List[T], predicate: (T): Bool): List[T] {
+fn filter_items[T](items: List[T], predicate: (T): Bool): List[T] {
     return items
 }
 
@@ -34,9 +34,9 @@ fn use_map(): List[Int] {
     return transform(numbers, fn(x: Int): Int { x * 2 })
 }
 
-fn use_filter(): List[Int] {
+fn use_filter_items(): List[Int] {
     numbers: List[Int] = [1, 2, 3, 4, 5]
-    return filter(numbers, fn(x: Int): Bool { x % 2 == 0 })
+    return filter_items(numbers, fn(x: Int): Bool { x % 2 == 0 })
 }
 
 fn use_compose(): (Int): Int {

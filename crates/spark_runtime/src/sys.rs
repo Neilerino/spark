@@ -5,8 +5,8 @@
 //! variables.
 
 use crate::{
-    SparkString, __spark_list_new, __spark_list_push, __spark_string_from_literal,
-    __spark_string_rc_dec,
+    SparkString, __spark_eq_string_elem, __spark_list_new, __spark_list_push,
+    __spark_string_from_literal, __spark_string_rc_dec,
 };
 
 /// Reads a `SparkString` pointer, returning the content as a Rust `String`.
@@ -39,7 +39,8 @@ fn rust_str_to_spark(s: &str) -> *mut u8 {
 fn string_list_from_iter(iter: impl Iterator<Item = String>) -> *mut u8 {
     let elem_size = std::mem::size_of::<*mut u8>() as i64;
     let elem_drop = __spark_string_rc_dec as *const () as usize;
-    let list = __spark_list_new(elem_size, elem_drop);
+    let elem_eq = __spark_eq_string_elem as *const () as usize;
+    let list = __spark_list_new(elem_size, elem_drop, elem_eq);
     for s in iter {
         let spark_str = rust_str_to_spark(&s);
         unsafe { __spark_list_push(list, std::ptr::addr_of!(spark_str).cast::<u8>()) };
@@ -155,7 +156,10 @@ mod tests {
         let list_ptr = __spark_sys_args();
         let args = unsafe { read_string_list(list_ptr) };
         // When running under cargo test, there should be at least one arg (the test binary).
-        assert!(!args.is_empty(), "args() should return at least the program name");
+        assert!(
+            !args.is_empty(),
+            "args() should return at least the program name"
+        );
     }
 
     #[test]
@@ -172,7 +176,10 @@ mod tests {
         let name = rust_str_to_spark("SPARK_TEST_NONEXISTENT_VAR_12345");
         let result = unsafe { __spark_sys_get_env(name) };
         let value = unsafe { read_result_string(result) };
-        assert!(value.is_empty(), "missing env var should return empty string");
+        assert!(
+            value.is_empty(),
+            "missing env var should return empty string"
+        );
     }
 
     #[test]

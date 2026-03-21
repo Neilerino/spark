@@ -1,0 +1,20 @@
+fn main(): Int {
+    nums: List[Int] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+    // filter then map
+    doubled_evens: List[Int] = nums filter (n: Int): Bool { n % 2 == 0 } map (n: Int): Int { n * 2 }
+    doubled_evens each (n: Int) { print(n) }
+
+    // filter then find
+    result: Int? = nums filter (n: Int): Bool { n > 5 } find (n: Int): Bool { n % 3 == 0 }
+    if result is Null {
+        print("none")
+    } else {
+        print("found")
+    }
+
+    // find on filtered list
+    print(nums filter (n: Int): Bool { n < 3 } map (n: Int): Int { n * 10 } reduce 0 (acc: Int, n: Int): Int { acc + n })
+
+    return 0
+}

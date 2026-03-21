@@ -403,6 +403,9 @@ impl Interner {
             "compareTo",
             // Pipeline map keyword (lowercase, distinct from "Map" collection type)
             "map",
+            // Pipeline filter/find keywords
+            "filter",
+            "find",
         ];
 
         for kw in keywords {
@@ -783,6 +786,10 @@ pub mod kw {
     // Pipeline map keyword
     /// `map` (lowercase keyword, distinct from `MAP` which is the `Map` collection type)
     pub const MAP_KW: Symbol = Symbol(124);
+    /// `filter`
+    pub const FILTER: Symbol = Symbol(125);
+    /// `find`
+    pub const FIND_KW: Symbol = Symbol(126);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]

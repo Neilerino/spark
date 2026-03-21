@@ -143,6 +143,8 @@ const fn token_type_index(kind: TokenKind) -> Option<u32> {
         | TokenKind::Null
         | TokenKind::Extern
         | TokenKind::Reduce
+        | TokenKind::Filter
+        | TokenKind::Find
         | TokenKind::Link
         | TokenKind::When => Some(KEYWORD),
 

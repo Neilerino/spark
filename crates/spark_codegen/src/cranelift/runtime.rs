@@ -15,19 +15,19 @@ pub struct RuntimeStubs {
     pub string_new: FuncId,
     /// `__spark_string_from_literal(data: ptr, len: i64) -> ptr`
     pub string_from_literal: FuncId,
-    /// `__spark_list_new(elem_size: i64, elem_drop: ptr) -> ptr`
+    /// `__spark_list_new(elem_size: i64, elem_drop: ptr, elem_eq: ptr) -> ptr`
     pub list_new: FuncId,
     /// `__spark_list_push(list: ptr, elem_ptr: ptr) -> void`
     pub list_push: FuncId,
     /// `__spark_list_get(list: ptr, index: i64) -> ptr`
     pub list_get: FuncId,
-    /// `__spark_map_new(key_size: i64, value_size: i64, key_drop: ptr, val_drop: ptr) -> ptr`
+    /// `__spark_map_new(key_size: i64, value_size: i64, key_drop: ptr, val_drop: ptr, key_hash: ptr, key_eq: ptr) -> ptr`
     pub map_new: FuncId,
     /// `__spark_map_insert(map: ptr, key_ptr: ptr, value_ptr: ptr) -> void`
     pub map_insert: FuncId,
     /// `__spark_map_get(map: ptr, key_ptr: ptr) -> ptr`
     pub map_get: FuncId,
-    /// `__spark_set_new(elem_size: i64, elem_drop: ptr) -> ptr`
+    /// `__spark_set_new(elem_size: i64, elem_drop: ptr, elem_hash: ptr, elem_eq: ptr) -> ptr`
     pub set_new: FuncId,
     /// `__spark_set_insert(set: ptr, elem_ptr: ptr) -> void`
     pub set_insert: FuncId,
@@ -83,6 +83,10 @@ pub struct RuntimeStubs {
     pub string_concat: FuncId,
     /// `__spark_string_eq(ptr, ptr) -> i8`
     pub string_eq: FuncId,
+    /// `__spark_hash_string_elem(elem_ptr: ptr) -> u64`
+    pub hash_string_elem: FuncId,
+    /// `__spark_eq_string_elem(a: ptr, b: ptr) -> i8`
+    pub eq_string_elem: FuncId,
     /// `__spark_int_to_string(i64) -> ptr`
     pub int_to_string: FuncId,
     /// `__spark_float_to_string(f64) -> ptr`
@@ -159,7 +163,7 @@ impl RuntimeStubs {
             list_new: declare_fn(
                 module,
                 "__spark_list_new",
-                &[types::I64, ptr_type],
+                &[types::I64, ptr_type, ptr_type],
                 Some(ptr_type),
                 call_conv,
             ),
@@ -180,7 +184,14 @@ impl RuntimeStubs {
             map_new: declare_fn(
                 module,
                 "__spark_map_new",
-                &[types::I64, types::I64, ptr_type, ptr_type],
+                &[
+                    types::I64,
+                    types::I64,
+                    ptr_type,
+                    ptr_type,
+                    ptr_type,
+                    ptr_type,
+                ],
                 Some(ptr_type),
                 call_conv,
             ),
@@ -201,7 +212,7 @@ impl RuntimeStubs {
             set_new: declare_fn(
                 module,
                 "__spark_set_new",
-                &[types::I64, ptr_type],
+                &[types::I64, ptr_type, ptr_type, ptr_type],
                 Some(ptr_type),
                 call_conv,
             ),
@@ -221,27 +232,9 @@ impl RuntimeStubs {
                 None,
                 call_conv,
             ),
-            list_rc_dec: declare_fn(
-                module,
-                "__spark_list_rc_dec",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
-            map_rc_dec: declare_fn(
-                module,
-                "__spark_map_rc_dec",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
-            set_rc_dec: declare_fn(
-                module,
-                "__spark_set_rc_dec",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
+            list_rc_dec: declare_fn(module, "__spark_list_rc_dec", &[ptr_type], None, call_conv),
+            map_rc_dec: declare_fn(module, "__spark_map_rc_dec", &[ptr_type], None, call_conv),
+            set_rc_dec: declare_fn(module, "__spark_set_rc_dec", &[ptr_type], None, call_conv),
             string_cow: declare_fn(
                 module,
                 "__spark_string_cow",
@@ -360,6 +353,20 @@ impl RuntimeStubs {
             string_eq: declare_fn(
                 module,
                 "__spark_string_eq",
+                &[ptr_type, ptr_type],
+                Some(types::I8),
+                call_conv,
+            ),
+            hash_string_elem: declare_fn(
+                module,
+                "__spark_hash_string_elem",
+                &[ptr_type],
+                Some(types::I64),
+                call_conv,
+            ),
+            eq_string_elem: declare_fn(
+                module,
+                "__spark_eq_string_elem",
                 &[ptr_type, ptr_type],
                 Some(types::I8),
                 call_conv,

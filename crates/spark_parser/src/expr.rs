@@ -88,11 +88,13 @@ impl Parser {
                 continue;
             }
 
-            // Check for pipeline stage (parallel, each, map, reduce) — accumulate into Pipeline node
+            // Check for pipeline stage (parallel, each, map, reduce, filter, find) — accumulate into Pipeline node
             if self.check(TokenKind::Parallel)
                 || self.check(TokenKind::Each)
                 || self.check(TokenKind::Map)
                 || self.check(TokenKind::Reduce)
+                || self.check(TokenKind::Filter)
+                || self.check(TokenKind::Find)
             {
                 let stage = self.parse_pipeline_stage();
                 match &mut lhs.kind {
@@ -671,20 +673,25 @@ impl Parser {
 
     /// Parses a single pipeline stage.
     ///
-    /// Handles: `[parallel] each callback`, `[parallel] map callback`, `reduce initial callback`
+    /// Handles: `[parallel] each|map|filter|find callback`, `reduce initial callback`
     fn parse_pipeline_stage(&mut self) -> PipelineStage {
         let stage_start = self.current_span();
         let parallel = self.eat(TokenKind::Parallel).is_some();
 
-        if self.check(TokenKind::Each) || self.check(TokenKind::Map) {
-            let is_map = self.check(TokenKind::Map);
+        if self.check(TokenKind::Each)
+            || self.check(TokenKind::Map)
+            || self.check(TokenKind::Filter)
+            || self.check(TokenKind::Find)
+        {
+            let token = self.current().kind.clone();
             self.advance();
             let callback = self.parse_pipeline_callback();
             let span = self.span_from(stage_start);
-            let kind = if is_map {
-                PipelineStageKind::Map { callback: Box::new(callback) }
-            } else {
-                PipelineStageKind::ForEach { callback: Box::new(callback) }
+            let kind = match token {
+                TokenKind::Map => PipelineStageKind::Map { callback: Box::new(callback) },
+                TokenKind::Filter => PipelineStageKind::Filter { callback: Box::new(callback) },
+                TokenKind::Find => PipelineStageKind::Find { callback: Box::new(callback) },
+                _ => PipelineStageKind::ForEach { callback: Box::new(callback) },
             };
             PipelineStage { kind, parallel, span }
         } else if self.check(TokenKind::Reduce) {
@@ -703,9 +710,9 @@ impl Parser {
             }
         } else {
             if parallel {
-                self.error_expected("'each', 'map', or 'reduce' after 'parallel'");
+                self.error_expected("'each', 'map', 'reduce', 'filter', or 'find' after 'parallel'");
             } else {
-                self.error_expected("pipeline stage ('each', 'map', 'reduce')");
+                self.error_expected("pipeline stage ('each', 'map', 'reduce', 'filter', 'find')");
             }
             PipelineStage {
                 kind: PipelineStageKind::ForEach {

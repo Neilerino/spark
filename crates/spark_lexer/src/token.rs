@@ -159,6 +159,10 @@ pub enum TokenKind {
     Extern,
     /// `reduce`
     Reduce,
+    /// `filter`
+    Filter,
+    /// `find`
+    Find,
     /// `link`
     Link,
     /// `when`
@@ -317,6 +321,8 @@ impl TokenKind {
                 | Self::Parallel
                 | Self::Extern
                 | Self::Reduce
+                | Self::Filter
+                | Self::Find
                 | Self::Link
                 | Self::When
                 | Self::True
@@ -390,6 +396,8 @@ impl TokenKind {
             "parallel" => Some(Self::Parallel),
             "extern" => Some(Self::Extern),
             "reduce" => Some(Self::Reduce),
+            "filter" => Some(Self::Filter),
+            "find" => Some(Self::Find),
             "link" => Some(Self::Link),
             "when" => Some(Self::When),
             "true" => Some(Self::True),
@@ -445,6 +453,8 @@ impl TokenKind {
             Self::Parallel => "parallel",
             Self::Extern => "extern",
             Self::Reduce => "reduce",
+            Self::Filter => "filter",
+            Self::Find => "find",
             Self::Link => "link",
             Self::When => "when",
             Self::True => "true",

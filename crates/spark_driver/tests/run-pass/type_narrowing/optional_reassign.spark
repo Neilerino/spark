@@ -1,0 +1,12 @@
+fn main(): Int {
+    found: Int?! = Null
+    found = 42
+
+    if found is Null {
+        print("null")
+    } else {
+        print("found")
+    }
+
+    return 0
+}

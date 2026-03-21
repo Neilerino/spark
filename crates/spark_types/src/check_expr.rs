@@ -2350,12 +2350,16 @@ fn check_pipeline_stage(
             PipelineStageKind::ForEach { .. } => "parallel each",
             PipelineStageKind::Map { .. } => "parallel map",
             PipelineStageKind::Reduce { .. } => "parallel reduce",
+            PipelineStageKind::Filter { .. } => "parallel filter",
+            PipelineStageKind::Find { .. } => "parallel find",
         }
     } else {
         match &stage.kind {
             PipelineStageKind::ForEach { .. } => "each",
             PipelineStageKind::Map { .. } => "map",
             PipelineStageKind::Reduce { .. } => "reduce",
+            PipelineStageKind::Filter { .. } => "filter",
+            PipelineStageKind::Find { .. } => "find",
         }
     };
 
@@ -2446,6 +2450,68 @@ fn check_pipeline_stage(
                 ctx.definitions,
                 ctx.diagnostics,
             )
+        }
+        PipelineStageKind::Filter { callback } => {
+            let elem_ty = extract_list_elem(
+                base_ty,
+                label,
+                source_span,
+                ctx.table,
+                ctx.definitions,
+                ctx.diagnostics,
+            );
+            let ret_ty = if let ExprKind::Partial { callee, args } = &callback.kind {
+                validate_partial_each_callback(
+                    callee, args, elem_ty, true, callback, ctx, current_fn_ret,
+                )
+            } else {
+                let cb_ty = check_expr(callback, ctx, current_fn_ret);
+                validate_each_callback(
+                    cb_ty, elem_ty, true, callback.span,
+                    ctx.table, ctx.definitions, ctx.diagnostics,
+                )
+            };
+            if ret_ty != TypeId::ERROR && ret_ty != ctx.builtins.bool_ty {
+                let found = type_name(ret_ty, ctx.table, ctx.definitions);
+                ctx.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "`filter` callback must return `Bool`, found `{found}`"
+                    ))
+                    .with_label(Label::primary(callback.span, "expected Bool return")),
+                );
+            }
+            ctx.table.intern(Ty::List(elem_ty))
+        }
+        PipelineStageKind::Find { callback } => {
+            let elem_ty = extract_list_elem(
+                base_ty,
+                label,
+                source_span,
+                ctx.table,
+                ctx.definitions,
+                ctx.diagnostics,
+            );
+            let ret_ty = if let ExprKind::Partial { callee, args } = &callback.kind {
+                validate_partial_each_callback(
+                    callee, args, elem_ty, true, callback, ctx, current_fn_ret,
+                )
+            } else {
+                let cb_ty = check_expr(callback, ctx, current_fn_ret);
+                validate_each_callback(
+                    cb_ty, elem_ty, true, callback.span,
+                    ctx.table, ctx.definitions, ctx.diagnostics,
+                )
+            };
+            if ret_ty != TypeId::ERROR && ret_ty != ctx.builtins.bool_ty {
+                let found = type_name(ret_ty, ctx.table, ctx.definitions);
+                ctx.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "`find` callback must return `Bool`, found `{found}`"
+                    ))
+                    .with_label(Label::primary(callback.span, "expected Bool return")),
+                );
+            }
+            ctx.table.intern(Ty::Optional(elem_ty))
         }
     }
 }

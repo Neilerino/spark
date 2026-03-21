@@ -1,0 +1,6 @@
+fn main(): Int {
+    nums: List[Int] = [1, 2, 3, 4, 5]
+    big: List[Int] = nums filter (n: Int): Bool { n > 2 }
+    big each (n: Int) { print(n) }
+    return 0
+}

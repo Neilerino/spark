@@ -29,6 +29,31 @@ pub fn emit_statement<M: Module>(
             span: _,
         } => {
             let dest_local = place.local;
+
+            // Special case: assigning Null to an aggregate StackSlot
+            // (e.g. `result: T?! = Null`). Zero-fill the slot instead of
+            // trying to memcpy from address 0 (which would segfault).
+            if place.projections.is_empty() {
+                if let spark_mir::Rvalue::Use(spark_mir::Operand::Constant(
+                    spark_mir::Constant::Null,
+                )) = rvalue
+                {
+                    if let LocalStorage::StackSlot(slot, size) = ctx.local_storage(dest_local) {
+                        let dest_addr =
+                            ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0);
+                        ctx.builder.emit_small_memset(
+                            module.target_config(),
+                            dest_addr,
+                            0_u8,
+                            u64::from(size),
+                            1,
+                            MemFlags::new(),
+                        );
+                        return;
+                    }
+                }
+            }
+
             if let Some(val) = emit_rvalue::emit_rvalue(
                 ctx,
                 rvalue,

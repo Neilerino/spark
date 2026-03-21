@@ -1,0 +1,23 @@
+struct Item {
+    name: String
+    value: Int
+}
+
+fn main(): Int {
+    data: Map[String, List[Item]] = {
+        "x": [Item { name: "a", value: 1 }]
+    }
+
+    items: List[Item]? = data["x"]
+
+    if items is Null {
+        print("null")
+        return 1
+    }
+
+    print("found")
+    items each (item: Item) {
+        print(item.name)
+    }
+    return 0
+}

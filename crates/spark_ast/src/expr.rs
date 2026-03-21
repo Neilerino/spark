@@ -588,6 +588,16 @@ pub enum PipelineStageKind {
         /// The callback (lambda or function reference).
         callback: Box<Expr>,
     },
+    /// `filter callback` — keep elements matching predicate.
+    Filter {
+        /// The predicate callback (returns Bool).
+        callback: Box<Expr>,
+    },
+    /// `find callback` — first element matching predicate, or Null.
+    Find {
+        /// The predicate callback (returns Bool).
+        callback: Box<Expr>,
+    },
 }
 
 /// A partial application argument.

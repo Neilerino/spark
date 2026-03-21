@@ -352,7 +352,9 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
             for stage in stages {
                 match &stage.kind {
                     PipelineStageKind::ForEach { callback }
-                    | PipelineStageKind::Map { callback } => v.visit_expr(callback),
+                    | PipelineStageKind::Map { callback }
+                    | PipelineStageKind::Filter { callback }
+                    | PipelineStageKind::Find { callback } => v.visit_expr(callback),
                     PipelineStageKind::Reduce { initial, callback } => {
                         v.visit_expr(initial);
                         v.visit_expr(callback);

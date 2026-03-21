@@ -107,19 +107,17 @@ pub fn lower_expr(
             let base_local = lower_expr(base, fb, mir, type_table, defs);
             let index_local = lower_expr(index, fb, mir, type_table, defs);
             // Use the element type from the base collection, not expr.ty
-            // (which is Optional(elem_ty) from the type checker). This
-            // ensures the MIR temp matches resolve_place_type in codegen.
-            let elem_ty = {
-                let base_resolved = type_table.resolve(base.ty);
-                let unwrapped = match base_resolved {
-                    Ty::Mutable(inner) => type_table.resolve(*inner),
-                    other => other,
-                };
-                match unwrapped {
-                    Ty::List(elem) => *elem,
-                    Ty::Map(_, val) => *val,
-                    _ => expr.ty,
-                }
+            // (which is Optional(elem_ty) from the type checker).
+            // This ensures the MIR temp matches resolve_place_type in codegen.
+            let base_resolved = type_table.resolve(base.ty);
+            let unwrapped_base = match base_resolved {
+                Ty::Mutable(inner) => type_table.resolve(*inner),
+                other => other,
+            };
+            let elem_ty = match unwrapped_base {
+                Ty::List(elem) => *elem,
+                Ty::Map(_, val) => *val,
+                _ => expr.ty,
             };
             let temp = fb.fresh_temp(elem_ty, expr.span);
             let mut place = Place::from_local(base_local);
@@ -129,7 +127,21 @@ pub fn lower_expr(
                 Rvalue::Use(Operand::Copy(place)),
                 expr.span,
             );
-            temp
+
+            // The type checker assigns Optional(V) to list/map index
+            // expressions, but the Place projection loads the raw value V.
+            // When the expression type is Optional and differs from the
+            // raw element type, wrap in Optional so the MIR type matches
+            // what callers (Let statements, etc.) expect. Desugared
+            // index expressions (e.g. from `each`) have expr.ty == elem_ty
+            // and skip this wrapping.
+            if expr.ty != elem_ty && matches!(type_table.resolve(expr.ty), Ty::Optional(_)) {
+                let opt_temp = fb.fresh_temp(expr.ty, expr.span);
+                emit_assign_with_union_wrap(fb, opt_temp, temp, type_table, expr.span);
+                opt_temp
+            } else {
+                temp
+            }
         }
 
         // ── Calls ────────────────────────────────────────────────

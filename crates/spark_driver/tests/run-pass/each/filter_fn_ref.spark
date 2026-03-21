@@ -1,0 +1,10 @@
+fn is_even(n: Int): Bool {
+    return n % 2 == 0
+}
+
+fn main(): Int {
+    nums: List[Int] = [1, 2, 3, 4, 5, 6]
+    evens: List[Int] = nums filter is_even
+    evens each (n: Int) { print(n) }
+    return 0
+}

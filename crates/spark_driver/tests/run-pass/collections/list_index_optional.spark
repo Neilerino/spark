@@ -1,0 +1,35 @@
+struct Endpoint {
+    path: String
+    methods: List[String]
+}
+
+fn main(): Int {
+    endpoints: List[Endpoint] = [
+        Endpoint { path: "/test", methods: ["GET"] },
+        Endpoint { path: "/other", methods: ["POST"] }
+    ]
+
+    result: Endpoint?! = Null
+
+    idx: Int! = 0
+    loop {
+        if idx >= endpoints.len() { break }
+        current: Endpoint? = endpoints[idx]
+        if current is Null {
+            idx = idx + 1
+            continue
+        }
+        if current.methods.contains("GET") and current.path == "/test" {
+            result = current
+        }
+        idx = idx + 1
+    }
+
+    if result is Null {
+        print("not found")
+    } else {
+        print("found")
+    }
+
+    return 0
+}

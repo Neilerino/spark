@@ -752,6 +752,17 @@ fn infer_stage_output_ty(
             let void_ty = find_void_type(table);
             extract_fn_ret_ty(cb_ty, table, void_ty)
         }
+        PipelineStageKind::Filter { .. } => {
+            // Output is List[elem_ty] — same element type as input
+            let elem_ty = extract_list_elem_ty(_input_ty, table);
+            table.lookup(&Ty::List(elem_ty)).unwrap_or(TypeId::ERROR)
+        }
+        PipelineStageKind::Find { .. } => {
+            // Output is Optional(elem_ty) — first match or Null.
+            // The type checker already interned this Optional type.
+            let elem_ty = extract_list_elem_ty(_input_ty, table);
+            table.lookup(&Ty::Optional(elem_ty)).unwrap_or(TypeId::ERROR)
+        }
     }
 }
 
@@ -838,6 +849,40 @@ fn lower_single_pipeline_stage(
                 elem_ty,
                 acc_ty,
                 cb_ret_ty,
+                int_ty,
+                bool_ty,
+                void_ty,
+                span,
+                ctx.definitions,
+            )
+            .kind
+        }
+        PipelineStageKind::Filter { callback } => {
+            let callback_hir = lower_partial_or_plain(callback, ctx, void_ty);
+            let elem_ty = extract_list_elem_ty(source_hir.ty, table);
+            let result_list_ty = table.lookup(&Ty::List(elem_ty)).unwrap_or(TypeId::ERROR);
+            desugar::desugar_filter(
+                source_hir,
+                callback_hir,
+                elem_ty,
+                result_list_ty,
+                int_ty,
+                bool_ty,
+                void_ty,
+                span,
+                ctx.definitions,
+            )
+            .kind
+        }
+        PipelineStageKind::Find { callback } => {
+            let callback_hir = lower_partial_or_plain(callback, ctx, void_ty);
+            let elem_ty = extract_list_elem_ty(source_hir.ty, table);
+            let optional_ty = table.lookup(&Ty::Optional(elem_ty)).unwrap_or(TypeId::ERROR);
+            desugar::desugar_find(
+                source_hir,
+                callback_hir,
+                elem_ty,
+                optional_ty,
                 int_ty,
                 bool_ty,
                 void_ty,

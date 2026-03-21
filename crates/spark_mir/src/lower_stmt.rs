@@ -105,16 +105,36 @@ pub fn lower_stmt(
                 });
             }
 
-            let operand = if fb.is_def_local(val_local) {
-                Operand::Copy(Place::from_local(val_local))
+            // Check if the destination needs union/optional wrapping.
+            // For simple local targets, compare the local's type with the
+            // value's type — if they differ (e.g. assigning `Int` to `Int?!`),
+            // use union wrapping just like Let bindings do.
+            let dest_ty = if place.projections.is_empty() {
+                Some(fb.local_type(place.local))
             } else {
-                Operand::Move(Place::from_local(val_local))
+                None
             };
-            fb.push_stmt(Statement::Assign {
-                place,
-                rvalue: Rvalue::Use(operand),
-                span: value.span,
+            let needs_wrap = dest_ty.is_some_and(|dt| {
+                let dt_stripped = strip_mutable(dt, type_table);
+                let val_ty = value.ty;
+                dt_stripped != val_ty
+                    && (matches!(type_table.resolve(dt_stripped), Ty::Optional(_) | Ty::Union(_)))
             });
+
+            if needs_wrap {
+                emit_assign_with_union_wrap(fb, place.local, val_local, type_table, value.span);
+            } else {
+                let operand = if fb.is_def_local(val_local) {
+                    Operand::Copy(Place::from_local(val_local))
+                } else {
+                    Operand::Move(Place::from_local(val_local))
+                };
+                fb.push_stmt(Statement::Assign {
+                    place,
+                    rvalue: Rvalue::Use(operand),
+                    span: value.span,
+                });
+            }
         }
 
         HirStmt::Expr(expr) => {

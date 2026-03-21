@@ -400,6 +400,21 @@ fn map_multiple_sizes() {
     assert_output("run-pass/collections/map_overwrite.spark", "1\n3");
 }
 
+#[test]
+fn map_get_optional() {
+    assert_output("run-pass/collections/map_get_optional.spark", "found");
+}
+
+#[test]
+fn map_get_optional_list() {
+    assert_output("run-pass/collections/map_get_optional_list.spark", "found\na");
+}
+
+#[test]
+fn list_index_optional() {
+    assert_output("run-pass/collections/list_index_optional.spark", "found");
+}
+
 // ============================================================================
 // Generics
 // ============================================================================
@@ -527,6 +542,26 @@ fn each_cow() {
     assert_output("run-pass/each/each_cow.spark", "0");
 }
 
+#[test]
+fn filter_lambda() {
+    assert_output("run-pass/each/filter_lambda.spark", "3\n4\n5");
+}
+
+#[test]
+fn filter_fn_ref() {
+    assert_output("run-pass/each/filter_fn_ref.spark", "2\n4\n6");
+}
+
+#[test]
+fn find_lambda() {
+    assert_output("run-pass/each/find_lambda.spark", "found");
+}
+
+#[test]
+fn find_not_found() {
+    assert_output("run-pass/each/find_not_found.spark", "not found");
+}
+
 // ============================================================================
 // Parallel Each / Parallel Map
 // ============================================================================
@@ -624,6 +659,14 @@ fn pipeline_complex() {
     assert_output(
         "run-pass/pipeline/pipeline_complex.spark",
         "4\n534\n109\n125\n150\n150\n534\n184\n4\n-1\n35\n1001\n1002\n1003\n4665600",
+    );
+}
+
+#[test]
+fn pipeline_filter_find() {
+    assert_output(
+        "run-pass/pipeline/pipeline_filter_find.spark",
+        "4\n8\n12\n16\n20\nfound\n30",
     );
 }
 
@@ -893,6 +936,11 @@ fn is_positive_narrowing() {
 #[test]
 fn mutable_optional_narrowing() {
     assert_output("run-pass/type_narrowing/mutable_optional_narrowing.spark", "10");
+}
+
+#[test]
+fn optional_reassign() {
+    assert_output("run-pass/type_narrowing/optional_reassign.spark", "found");
 }
 
 // ============================================================================

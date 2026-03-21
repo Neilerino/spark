@@ -1052,7 +1052,9 @@ impl Resolver {
                 for stage in stages {
                     match &stage.kind {
                         PipelineStageKind::ForEach { callback }
-                        | PipelineStageKind::Map { callback } => {
+                        | PipelineStageKind::Map { callback }
+                        | PipelineStageKind::Filter { callback }
+                        | PipelineStageKind::Find { callback } => {
                             self.resolve_expr(callback);
                         }
                         PipelineStageKind::Reduce { initial, callback } => {

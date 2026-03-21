@@ -158,6 +158,8 @@ struct SparkList {
     rc: usize,
     /// Element destructor function pointer, or 0 (null) if elements don't need RC cleanup.
     elem_drop: usize,
+    /// Element equality function pointer, or 0 for byte-level memcmp.
+    elem_eq: usize,
     /// Pointer to the contiguous data buffer.
     data: *mut u8,
     /// Number of elements currently stored.
@@ -174,15 +176,19 @@ struct SparkList {
 /// elements don't need RC cleanup (e.g. `Int`, `Bool`). When non-null,
 /// the function is called on each element pointer during cleanup.
 ///
+/// `elem_eq` is an optional equality function pointer for element comparison.
+/// Pass 0 to use byte-level comparison (`memcmp`).
+///
 /// # Safety
 ///
 /// `elem_size` must be > 0.
 #[no_mangle]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub extern "C" fn __spark_list_new(elem_size: i64, elem_drop: usize) -> *mut u8 {
+pub extern "C" fn __spark_list_new(elem_size: i64, elem_drop: usize, elem_eq: usize) -> *mut u8 {
     let list = Box::new(SparkList {
         rc: 1,
         elem_drop,
+        elem_eq,
         data: std::ptr::null_mut(),
         len: 0,
         cap: 0,
@@ -215,12 +221,19 @@ pub unsafe extern "C" fn __spark_list_push(list: *mut u8, elem_ptr: *const u8) {
 ///
 /// `list` must be a valid pointer from `__spark_list_new`.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub unsafe extern "C" fn __spark_list_get(list: *mut u8, index: i64) -> *mut u8 {
     let list = unsafe { &*(list.cast::<SparkList>()) };
     let idx = index as usize;
     if idx >= list.len {
-        eprintln!("spark: list index out of bounds: index {idx}, length {}", list.len);
+        eprintln!(
+            "spark: list index out of bounds: index {idx}, length {}",
+            list.len
+        );
         std::process::abort();
     }
     unsafe { list.data.add(idx * list.elem_size) }
@@ -269,6 +282,10 @@ struct SparkMap {
     key_drop: usize,
     /// Value destructor function pointer, or 0 if values don't need RC cleanup.
     val_drop: usize,
+    /// Key hash function pointer, or 0 for byte-level FNV-1a.
+    key_hash: usize,
+    /// Key equality function pointer, or 0 for byte-level memcmp.
+    key_eq: usize,
     /// Hash per slot (`HASH_EMPTY` = empty, `HASH_TOMBSTONE` = deleted, `≥ 2` = occupied).
     hashes: *mut u64,
     /// Pointer to contiguous key buffer (cap * key_size bytes).
@@ -302,11 +319,15 @@ pub extern "C" fn __spark_map_new(
     value_size: i64,
     key_drop: usize,
     val_drop: usize,
+    key_hash: usize,
+    key_eq: usize,
 ) -> *mut u8 {
     let map = Box::new(SparkMap {
         rc: 1,
         key_drop,
         val_drop,
+        key_hash,
+        key_eq,
         hashes: std::ptr::null_mut(),
         keys: std::ptr::null_mut(),
         values: std::ptr::null_mut(),
@@ -344,7 +365,7 @@ pub unsafe extern "C" fn __spark_map_insert(
         map_hash_grow(map);
     }
 
-    let h = fix_hash(unsafe { fnv1a_hash(key_ptr, map.key_size) });
+    let h = unsafe { hash_elem(key_ptr, map.key_size, map.key_hash) };
     let mask = map.cap - 1;
     let mut idx = (h as usize) & mask;
     let mut first_tombstone: Option<usize> = None;
@@ -372,7 +393,7 @@ pub unsafe extern "C" fn __spark_map_insert(
         } else if slot_hash == h {
             // Hash match — verify key equality.
             let existing_key = unsafe { map.keys.add(idx * map.key_size) };
-            if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
+            if unsafe { eq_elem(existing_key, key_ptr, map.key_size, map.key_eq) } {
                 // Overwrite value.
                 let existing_val = unsafe { map.values.add(idx * map.value_size) };
                 unsafe {
@@ -399,7 +420,7 @@ pub unsafe extern "C" fn __spark_map_get(map: *mut u8, key_ptr: *const u8) -> *m
         return std::ptr::null_mut();
     }
 
-    let h = fix_hash(unsafe { fnv1a_hash(key_ptr, map.key_size) });
+    let h = unsafe { hash_elem(key_ptr, map.key_size, map.key_hash) };
     let mask = map.cap - 1;
     let mut idx = (h as usize) & mask;
 
@@ -410,7 +431,7 @@ pub unsafe extern "C" fn __spark_map_get(map: *mut u8, key_ptr: *const u8) -> *m
         }
         if slot_hash == h {
             let existing_key = unsafe { map.keys.add(idx * map.key_size) };
-            if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
+            if unsafe { eq_elem(existing_key, key_ptr, map.key_size, map.key_eq) } {
                 return unsafe { map.values.add(idx * map.value_size) };
             }
         }
@@ -453,9 +474,8 @@ fn map_hash_grow(map: &mut SparkMap) {
     let new_cap = old_cap * 2;
     let align = std::mem::align_of::<u64>();
 
-    let hash_layout = unsafe {
-        std::alloc::Layout::from_size_align_unchecked(new_cap * size_of::<u64>(), align)
-    };
+    let hash_layout =
+        unsafe { std::alloc::Layout::from_size_align_unchecked(new_cap * size_of::<u64>(), align) };
     let new_hashes = unsafe { alloc_zeroed_or_abort(hash_layout) };
 
     let key_layout =
@@ -513,6 +533,10 @@ struct SparkSet {
     rc: usize,
     /// Element destructor function pointer, or 0 if elements don't need RC cleanup.
     elem_drop: usize,
+    /// Element hash function pointer, or 0 for byte-level FNV-1a.
+    elem_hash: usize,
+    /// Element equality function pointer, or 0 for byte-level memcmp.
+    elem_eq: usize,
     /// Hash per slot (`HASH_EMPTY` = empty, `HASH_TOMBSTONE` = deleted, `≥ 2` = occupied).
     hashes: *mut u64,
     /// Pointer to contiguous element buffer (cap * elem_size bytes).
@@ -536,10 +560,17 @@ struct SparkSet {
 /// `elem_size` must be > 0.
 #[no_mangle]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub extern "C" fn __spark_set_new(elem_size: i64, elem_drop: usize) -> *mut u8 {
+pub extern "C" fn __spark_set_new(
+    elem_size: i64,
+    elem_drop: usize,
+    elem_hash: usize,
+    elem_eq: usize,
+) -> *mut u8 {
     let set = Box::new(SparkSet {
         rc: 1,
         elem_drop,
+        elem_hash,
+        elem_eq,
         hashes: std::ptr::null_mut(),
         data: std::ptr::null_mut(),
         len: 0,
@@ -568,7 +599,7 @@ pub unsafe extern "C" fn __spark_set_insert(set: *mut u8, elem_ptr: *const u8) {
         set_hash_grow(set);
     }
 
-    let h = fix_hash(unsafe { fnv1a_hash(elem_ptr, set.elem_size) });
+    let h = unsafe { hash_elem(elem_ptr, set.elem_size, set.elem_hash) };
     let mask = set.cap - 1;
     let mut idx = (h as usize) & mask;
     let mut first_tombstone: Option<usize> = None;
@@ -593,7 +624,7 @@ pub unsafe extern "C" fn __spark_set_insert(set: *mut u8, elem_ptr: *const u8) {
             }
         } else if slot_hash == h {
             let existing = unsafe { set.data.add(idx * set.elem_size) };
-            if unsafe { libc_memcmp(existing, elem_ptr, set.elem_size) } {
+            if unsafe { eq_elem(existing, elem_ptr, set.elem_size, set.elem_eq) } {
                 return; // Already present — dedup.
             }
         }
@@ -628,9 +659,8 @@ fn set_hash_grow(set: &mut SparkSet) {
     let new_cap = old_cap * 2;
     let align = std::mem::align_of::<u64>();
 
-    let hash_layout = unsafe {
-        std::alloc::Layout::from_size_align_unchecked(new_cap * size_of::<u64>(), align)
-    };
+    let hash_layout =
+        unsafe { std::alloc::Layout::from_size_align_unchecked(new_cap * size_of::<u64>(), align) };
     let new_hashes = unsafe { alloc_zeroed_or_abort(hash_layout) };
 
     let data_layout =
@@ -680,7 +710,7 @@ pub unsafe extern "C" fn __spark_list_len(ptr: *mut u8) -> i64 {
 }
 
 /// Returns 1 if the list contains the element at `elem_ptr`, 0 otherwise.
-/// Comparison is byte-level (`memcmp`).
+/// Uses `elem_eq` when provided, else byte-level comparison (`memcmp`).
 ///
 /// # Safety
 ///
@@ -692,7 +722,7 @@ pub unsafe extern "C" fn __spark_list_contains(ptr: *mut u8, elem_ptr: *const u8
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
     for i in 0..list.len {
         let existing = unsafe { list.data.add(i * list.elem_size) };
-        if unsafe { libc_memcmp(existing, elem_ptr, list.elem_size) } {
+        if unsafe { eq_elem(existing, elem_ptr, list.elem_size, list.elem_eq) } {
             return 1;
         }
     }
@@ -706,7 +736,11 @@ pub unsafe extern "C" fn __spark_list_contains(ptr: *mut u8, elem_ptr: *const u8
 ///
 /// `ptr` must be a valid pointer from `__spark_list_new`.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub unsafe extern "C" fn __spark_list_remove(ptr: *mut u8, index: i64) {
     let list = unsafe { &mut *(ptr.cast::<SparkList>()) };
     let idx = index as usize;
@@ -775,7 +809,7 @@ pub unsafe extern "C" fn __spark_map_remove(ptr: *mut u8, key_ptr: *const u8) {
         return;
     }
 
-    let h = fix_hash(unsafe { fnv1a_hash(key_ptr, map.key_size) });
+    let h = unsafe { hash_elem(key_ptr, map.key_size, map.key_hash) };
     let mask = map.cap - 1;
     let mut idx = (h as usize) & mask;
 
@@ -786,7 +820,7 @@ pub unsafe extern "C" fn __spark_map_remove(ptr: *mut u8, key_ptr: *const u8) {
         }
         if slot_hash == h {
             let existing_key = unsafe { map.keys.add(idx * map.key_size) };
-            if unsafe { libc_memcmp(existing_key, key_ptr, map.key_size) } {
+            if unsafe { eq_elem(existing_key, key_ptr, map.key_size, map.key_eq) } {
                 // Call destructors on removed key/value.
                 if map.key_drop != 0 {
                     let key_drop_fn: unsafe extern "C" fn(*mut u8) =
@@ -836,7 +870,7 @@ pub unsafe extern "C" fn __spark_set_contains(ptr: *mut u8, elem_ptr: *const u8)
         return 0;
     }
 
-    let h = fix_hash(unsafe { fnv1a_hash(elem_ptr, set.elem_size) });
+    let h = unsafe { hash_elem(elem_ptr, set.elem_size, set.elem_hash) };
     let mask = set.cap - 1;
     let mut idx = (h as usize) & mask;
 
@@ -847,7 +881,7 @@ pub unsafe extern "C" fn __spark_set_contains(ptr: *mut u8, elem_ptr: *const u8)
         }
         if slot_hash == h {
             let existing = unsafe { set.data.add(idx * set.elem_size) };
-            if unsafe { libc_memcmp(existing, elem_ptr, set.elem_size) } {
+            if unsafe { eq_elem(existing, elem_ptr, set.elem_size, set.elem_eq) } {
                 return 1;
             }
         }
@@ -870,7 +904,7 @@ pub unsafe extern "C" fn __spark_set_remove(ptr: *mut u8, elem_ptr: *const u8) {
         return;
     }
 
-    let h = fix_hash(unsafe { fnv1a_hash(elem_ptr, set.elem_size) });
+    let h = unsafe { hash_elem(elem_ptr, set.elem_size, set.elem_hash) };
     let mask = set.cap - 1;
     let mut idx = (h as usize) & mask;
 
@@ -881,7 +915,7 @@ pub unsafe extern "C" fn __spark_set_remove(ptr: *mut u8, elem_ptr: *const u8) {
         }
         if slot_hash == h {
             let existing = unsafe { set.data.add(idx * set.elem_size) };
-            if unsafe { libc_memcmp(existing, elem_ptr, set.elem_size) } {
+            if unsafe { eq_elem(existing, elem_ptr, set.elem_size, set.elem_eq) } {
                 if set.elem_drop != 0 {
                     let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
                         unsafe { std::mem::transmute(set.elem_drop) };
@@ -952,7 +986,12 @@ pub unsafe extern "C" fn __spark_string_eq(a: *mut u8, b: *mut u8) -> i8 {
 /// an empty list.
 #[no_mangle]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub extern "C" fn __spark_list_from_range(start: i64, end: i64, inclusive: i8, step: i64) -> *mut u8 {
+pub extern "C" fn __spark_list_from_range(
+    start: i64,
+    end: i64,
+    inclusive: i8,
+    step: i64,
+) -> *mut u8 {
     let step = if step == 0 { 1 } else { step };
     let inclusive = inclusive != 0;
 
@@ -975,7 +1014,7 @@ pub extern "C" fn __spark_list_from_range(start: i64, end: i64, inclusive: i8, s
     };
 
     let elem_size = std::mem::size_of::<i64>();
-    let list_ptr = __spark_list_new(elem_size as i64, 0); // Int elements don't need drop
+    let list_ptr = __spark_list_new(elem_size as i64, 0, 0); // Int elements don't need drop
 
     if count == 0 {
         return list_ptr;
@@ -1034,7 +1073,7 @@ const SORT_TAG_BOOL: i64 = 3;
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_list_sort(ptr: *mut u8, type_tag: i64) -> *mut u8 {
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
-    let new_list = __spark_list_new(list.elem_size as i64, list.elem_drop);
+    let new_list = __spark_list_new(list.elem_size as i64, list.elem_drop, list.elem_eq);
 
     if list.len == 0 {
         return new_list;
@@ -1113,10 +1152,14 @@ pub unsafe extern "C" fn __spark_list_sort(ptr: *mut u8, type_tag: i64) -> *mut 
 ///
 /// `ptr` must be a valid pointer from `__spark_list_new`.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub unsafe extern "C" fn __spark_list_take(ptr: *mut u8, count: i64) -> *mut u8 {
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
-    let new_list = __spark_list_new(list.elem_size as i64, list.elem_drop);
+    let new_list = __spark_list_new(list.elem_size as i64, list.elem_drop, list.elem_eq);
 
     let n = (count as usize).min(list.len);
     for i in 0..n {
@@ -1143,7 +1186,7 @@ pub unsafe extern "C" fn __spark_list_take(ptr: *mut u8, count: i64) -> *mut u8 
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_list_reverse(ptr: *mut u8) -> *mut u8 {
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
-    let new_list = __spark_list_new(list.elem_size as i64, list.elem_drop);
+    let new_list = __spark_list_new(list.elem_size as i64, list.elem_drop, list.elem_eq);
 
     for i in (0..list.len).rev() {
         let elem = unsafe { list.data.add(i * list.elem_size) };
@@ -1233,6 +1276,50 @@ pub extern "C" fn __spark_bool_to_string(val: i8) -> *mut u8 {
     unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
 }
 
+/// Hashes a set/map element containing a `SparkString*` by string contents.
+///
+/// The input points to an element slot whose bytes are a `*mut u8` string pointer.
+///
+/// # Safety
+///
+/// `elem_ptr` must point to at least `size_of::<*mut u8>()` bytes.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_hash_string_elem(elem_ptr: *const u8) -> u64 {
+    let str_ptr = unsafe { *(elem_ptr.cast::<*mut u8>()) };
+    if str_ptr.is_null() {
+        return fix_hash(unsafe { fnv1a_hash(std::ptr::null(), 0) });
+    }
+    let s = unsafe { &*(str_ptr.cast::<SparkString>()) };
+    fix_hash(unsafe { fnv1a_hash(s.data, s.len) })
+}
+
+/// Compares two set/map elements containing `SparkString*` values by contents.
+///
+/// The inputs point to element/key slots whose bytes are `*mut u8` string pointers.
+///
+/// # Safety
+///
+/// `a` and `b` must each point to at least `size_of::<*mut u8>()` bytes.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_eq_string_elem(a: *const u8, b: *const u8) -> i8 {
+    let pa = unsafe { *(a.cast::<*mut u8>()) };
+    let pb = unsafe { *(b.cast::<*mut u8>()) };
+    if pa == pb {
+        return 1;
+    }
+    if pa.is_null() || pb.is_null() {
+        return 0;
+    }
+    let sa = unsafe { &*(pa.cast::<SparkString>()) };
+    let sb = unsafe { &*(pb.cast::<SparkString>()) };
+    if sa.len != sb.len {
+        return 0;
+    }
+    i8::from(unsafe { libc_memcmp(sa.data, sb.data, sa.len) })
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -1275,10 +1362,48 @@ unsafe fn fnv1a_hash(data: *const u8, len: usize) -> u64 {
     hash
 }
 
+/// Function-pointer ABI for element hashing callbacks.
+type ElemHashFn = unsafe extern "C" fn(*const u8) -> u64;
+
+/// Function-pointer ABI for element equality callbacks.
+type ElemEqFn = unsafe extern "C" fn(*const u8, *const u8) -> i8;
+
+/// Hashes an element using a callback when provided, else byte-level FNV-1a.
+///
+/// # Safety
+///
+/// `elem_ptr` must be valid for `elem_size` bytes when `hash_fn == 0`.
+unsafe fn hash_elem(elem_ptr: *const u8, elem_size: usize, hash_fn: usize) -> u64 {
+    if hash_fn == 0 {
+        fix_hash(unsafe { fnv1a_hash(elem_ptr, elem_size) })
+    } else {
+        let f: ElemHashFn = unsafe { std::mem::transmute(hash_fn) };
+        fix_hash(unsafe { f(elem_ptr) })
+    }
+}
+
+/// Compares two elements using a callback when provided, else byte-level memcmp.
+///
+/// # Safety
+///
+/// `a` and `b` must be valid for `elem_size` bytes when `eq_fn == 0`.
+unsafe fn eq_elem(a: *const u8, b: *const u8, elem_size: usize, eq_fn: usize) -> bool {
+    if eq_fn == 0 {
+        unsafe { libc_memcmp(a, b, elem_size) }
+    } else {
+        let f: ElemEqFn = unsafe { std::mem::transmute(eq_fn) };
+        unsafe { f(a, b) != 0 }
+    }
+}
+
 /// Maps raw hash values 0 and 1 to 2 so they don't collide with sentinel
 /// values [`HASH_EMPTY`] and [`HASH_TOMBSTONE`].
 const fn fix_hash(h: u64) -> u64 {
-    if h < 2 { 2 } else { h }
+    if h < 2 {
+        2
+    } else {
+        h
+    }
 }
 
 /// Returns true if the hash value represents an occupied slot (not empty or tombstone).
@@ -1322,8 +1447,7 @@ unsafe fn alloc_zeroed_or_abort(layout: std::alloc::Layout) -> *mut u8 {
 unsafe fn dealloc_buf(ptr: *mut u8, byte_size: usize) {
     if !ptr.is_null() && byte_size > 0 {
         let align = std::mem::align_of::<u64>();
-        let layout =
-            unsafe { std::alloc::Layout::from_size_align_unchecked(byte_size, align) };
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(byte_size, align) };
         unsafe { std::alloc::dealloc(ptr, layout) };
     }
 }
@@ -1385,8 +1509,7 @@ pub unsafe extern "C" fn __spark_string_rc_dec(ptr: *mut u8) {
         // Free the data buffer.
         if !s.data.is_null() && s.cap > 0 {
             let align = std::mem::align_of::<u64>();
-            let layout =
-                unsafe { std::alloc::Layout::from_size_align_unchecked(s.cap, align) };
+            let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(s.cap, align) };
             unsafe { std::alloc::dealloc(s.data, layout) };
         }
         // Free the SparkString struct itself.
@@ -1423,8 +1546,7 @@ pub unsafe extern "C" fn __spark_list_rc_dec(ptr: *mut u8) {
         if !list.data.is_null() && list.cap > 0 {
             let align = std::mem::align_of::<u64>();
             let buf_size = list.cap * list.elem_size;
-            let layout =
-                unsafe { std::alloc::Layout::from_size_align_unchecked(buf_size, align) };
+            let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(buf_size, align) };
             unsafe { std::alloc::dealloc(list.data, layout) };
         }
         // Free the SparkList struct itself.
@@ -1609,6 +1731,7 @@ pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8) -> *mut u8 {
     let new = Box::new(SparkList {
         rc: 1,
         elem_drop: list.elem_drop,
+        elem_eq: list.elem_eq,
         data: new_data,
         len: list.len,
         cap: list.cap,
@@ -1681,8 +1804,7 @@ pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8) -> *mut u8 {
                     }
                 }
                 if map.val_drop != 0 && !new_values.is_null() {
-                    let inner =
-                        unsafe { *(new_values.add(i * map.value_size).cast::<*mut u8>()) };
+                    let inner = unsafe { *(new_values.add(i * map.value_size).cast::<*mut u8>()) };
                     if !inner.is_null() {
                         unsafe { __spark_rc_inc(inner) };
                     }
@@ -1695,6 +1817,8 @@ pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8) -> *mut u8 {
         rc: 1,
         key_drop: map.key_drop,
         val_drop: map.val_drop,
+        key_hash: map.key_hash,
+        key_eq: map.key_eq,
         hashes: new_hashes,
         keys: new_keys,
         values: new_values,
@@ -1742,8 +1866,7 @@ pub unsafe extern "C" fn __spark_set_cow(ptr: *mut u8) -> *mut u8 {
     // Copy data buffer (full cap — entries are scattered across the table).
     let data_buf_size = set.cap * set.elem_size;
     let new_data = if data_buf_size > 0 && !set.data.is_null() {
-        let layout =
-            unsafe { std::alloc::Layout::from_size_align_unchecked(data_buf_size, align) };
+        let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(data_buf_size, align) };
         let buf = unsafe { alloc_or_abort(layout) };
         unsafe { std::ptr::copy_nonoverlapping(set.data, buf, data_buf_size) };
         // rc_inc occupied elements if they are RC types.
@@ -1765,6 +1888,8 @@ pub unsafe extern "C" fn __spark_set_cow(ptr: *mut u8) -> *mut u8 {
     let new = Box::new(SparkSet {
         rc: 1,
         elem_drop: set.elem_drop,
+        elem_hash: set.elem_hash,
+        elem_eq: set.elem_eq,
         hashes: new_hashes,
         data: new_data,
         len: set.len,
@@ -2153,7 +2278,7 @@ mod tests {
 
     /// Helper: push i64 values into a list.
     unsafe fn push_i64_list(values: &[i64]) -> *mut u8 {
-        let list = __spark_list_new(8, 0);
+        let list = __spark_list_new(8, 0, 0);
         for val in values {
             let ptr = (val as *const i64).cast::<u8>();
             unsafe { __spark_list_push(list, ptr) };
@@ -2198,7 +2323,7 @@ mod tests {
     fn sort_float_with_negatives() {
         unsafe {
             let values: Vec<f64> = vec![3.5, -1.2, 0.0, 2.7, -4.0];
-            let list = __spark_list_new(8, 0);
+            let list = __spark_list_new(8, 0, 0);
             for val in &values {
                 let ptr = (val as *const f64).cast::<u8>();
                 __spark_list_push(list, ptr);
@@ -2213,7 +2338,7 @@ mod tests {
     #[test]
     fn sort_float_empty() {
         unsafe {
-            let list = __spark_list_new(8, 0);
+            let list = __spark_list_new(8, 0, 0);
             let sorted = __spark_list_sort(list, SORT_TAG_FLOAT);
             assert_eq!(read_list_f64(sorted), Vec::<f64>::new());
             __spark_list_rc_dec(list);
@@ -2225,7 +2350,7 @@ mod tests {
     fn sort_string_lexicographic() {
         unsafe {
             // elem_size for strings is pointer-sized
-            let list = __spark_list_new(std::mem::size_of::<*mut u8>() as i64, 0);
+            let list = __spark_list_new(std::mem::size_of::<*mut u8>() as i64, 0, 0);
             let cherry = __spark_string_from_literal("cherry".as_ptr(), 6);
             let apple = __spark_string_from_literal("apple".as_ptr(), 5);
             let banana = __spark_string_from_literal("banana".as_ptr(), 6);
@@ -2238,8 +2363,14 @@ mod tests {
             assert_eq!(sorted_list.len, 3);
 
             let s0 = *(sorted_list.data.cast::<*mut u8>());
-            let s1 = *(sorted_list.data.add(sorted_list.elem_size).cast::<*mut u8>());
-            let s2 = *(sorted_list.data.add(2 * sorted_list.elem_size).cast::<*mut u8>());
+            let s1 = *(sorted_list
+                .data
+                .add(sorted_list.elem_size)
+                .cast::<*mut u8>());
+            let s2 = *(sorted_list
+                .data
+                .add(2 * sorted_list.elem_size)
+                .cast::<*mut u8>());
             assert_eq!(read_spark_string(s0), "apple");
             assert_eq!(read_spark_string(s1), "banana");
             assert_eq!(read_spark_string(s2), "cherry");
@@ -2255,7 +2386,7 @@ mod tests {
     #[test]
     fn sort_bool() {
         unsafe {
-            let list = __spark_list_new(1, 0);
+            let list = __spark_list_new(1, 0, 0);
             let vals: [i8; 4] = [1, 0, 1, 0];
             for val in &vals {
                 let ptr = (val as *const i8).cast::<u8>();
@@ -2271,6 +2402,30 @@ mod tests {
             assert_eq!(result, vec![0, 0, 1, 1]);
             __spark_list_rc_dec(list);
             __spark_list_rc_dec(sorted);
+        }
+    }
+
+    #[test]
+    fn list_contains_string_value_semantics_with_callback() {
+        unsafe {
+            let list = __spark_list_new(
+                std::mem::size_of::<*mut u8>() as i64,
+                __spark_string_rc_dec as *const () as usize,
+                __spark_eq_string_elem as *const () as usize,
+            );
+            let s1 = __spark_string_from_literal("hello".as_ptr(), 5);
+            let s2 = __spark_string_from_literal("hello".as_ptr(), 5);
+
+            __spark_list_push(list, std::ptr::addr_of!(s1).cast::<u8>());
+
+            assert_eq!(
+                __spark_list_contains(list, std::ptr::addr_of!(s2).cast::<u8>()),
+                1
+            );
+
+            __spark_string_rc_dec(s1);
+            __spark_string_rc_dec(s2);
+            __spark_list_rc_dec(list);
         }
     }
 
@@ -2313,10 +2468,14 @@ mod tests {
     #[test]
     fn map_insert_and_get() {
         unsafe {
-            let m = __spark_map_new(8, 8, 0, 0);
+            let m = __spark_map_new(8, 8, 0, 0, 0, 0);
             let key: i64 = 42;
             let val: i64 = 100;
-            __spark_map_insert(m, &key as *const i64 as *const u8, &val as *const i64 as *const u8);
+            __spark_map_insert(
+                m,
+                &key as *const i64 as *const u8,
+                &val as *const i64 as *const u8,
+            );
 
             let result = __spark_map_get(m, &key as *const i64 as *const u8);
             assert!(!result.is_null());
@@ -2329,12 +2488,20 @@ mod tests {
     #[test]
     fn map_overwrite() {
         unsafe {
-            let m = __spark_map_new(8, 8, 0, 0);
+            let m = __spark_map_new(8, 8, 0, 0, 0, 0);
             let key: i64 = 1;
             let v1: i64 = 10;
             let v2: i64 = 20;
-            __spark_map_insert(m, &key as *const i64 as *const u8, &v1 as *const i64 as *const u8);
-            __spark_map_insert(m, &key as *const i64 as *const u8, &v2 as *const i64 as *const u8);
+            __spark_map_insert(
+                m,
+                &key as *const i64 as *const u8,
+                &v1 as *const i64 as *const u8,
+            );
+            __spark_map_insert(
+                m,
+                &key as *const i64 as *const u8,
+                &v2 as *const i64 as *const u8,
+            );
 
             assert_eq!(__spark_map_len(m), 1);
             let result = __spark_map_get(m, &key as *const i64 as *const u8);
@@ -2347,7 +2514,7 @@ mod tests {
     #[test]
     fn map_get_missing() {
         unsafe {
-            let m = __spark_map_new(8, 8, 0, 0);
+            let m = __spark_map_new(8, 8, 0, 0, 0, 0);
             let key: i64 = 99;
             let result = __spark_map_get(m, &key as *const i64 as *const u8);
             assert!(result.is_null());
@@ -2359,12 +2526,16 @@ mod tests {
     #[test]
     fn map_contains() {
         unsafe {
-            let m = __spark_map_new(8, 8, 0, 0);
+            let m = __spark_map_new(8, 8, 0, 0, 0, 0);
             let key: i64 = 5;
             let val: i64 = 50;
             assert_eq!(__spark_map_contains(m, &key as *const i64 as *const u8), 0);
 
-            __spark_map_insert(m, &key as *const i64 as *const u8, &val as *const i64 as *const u8);
+            __spark_map_insert(
+                m,
+                &key as *const i64 as *const u8,
+                &val as *const i64 as *const u8,
+            );
             assert_eq!(__spark_map_contains(m, &key as *const i64 as *const u8), 1);
 
             __spark_map_rc_dec(m);
@@ -2374,17 +2545,19 @@ mod tests {
     #[test]
     fn map_remove() {
         unsafe {
-            let m = __spark_map_new(8, 8, 0, 0);
+            let m = __spark_map_new(8, 8, 0, 0, 0, 0);
             let key: i64 = 7;
             let val: i64 = 77;
-            __spark_map_insert(m, &key as *const i64 as *const u8, &val as *const i64 as *const u8);
+            __spark_map_insert(
+                m,
+                &key as *const i64 as *const u8,
+                &val as *const i64 as *const u8,
+            );
             assert_eq!(__spark_map_len(m), 1);
 
             __spark_map_remove(m, &key as *const i64 as *const u8);
             assert_eq!(__spark_map_len(m), 0);
-            assert!(
-                __spark_map_get(m, &key as *const i64 as *const u8).is_null()
-            );
+            assert!(__spark_map_get(m, &key as *const i64 as *const u8).is_null());
 
             __spark_map_rc_dec(m);
         }
@@ -2393,13 +2566,21 @@ mod tests {
     #[test]
     fn map_remove_and_reinsert() {
         unsafe {
-            let m = __spark_map_new(8, 8, 0, 0);
+            let m = __spark_map_new(8, 8, 0, 0, 0, 0);
             let key: i64 = 3;
             let v1: i64 = 30;
             let v2: i64 = 31;
-            __spark_map_insert(m, &key as *const i64 as *const u8, &v1 as *const i64 as *const u8);
+            __spark_map_insert(
+                m,
+                &key as *const i64 as *const u8,
+                &v1 as *const i64 as *const u8,
+            );
             __spark_map_remove(m, &key as *const i64 as *const u8);
-            __spark_map_insert(m, &key as *const i64 as *const u8, &v2 as *const i64 as *const u8);
+            __spark_map_insert(
+                m,
+                &key as *const i64 as *const u8,
+                &v2 as *const i64 as *const u8,
+            );
 
             assert_eq!(__spark_map_len(m), 1);
             let result = __spark_map_get(m, &key as *const i64 as *const u8);
@@ -2412,7 +2593,7 @@ mod tests {
     #[test]
     fn map_grow_many_entries() {
         unsafe {
-            let m = __spark_map_new(8, 8, 0, 0);
+            let m = __spark_map_new(8, 8, 0, 0, 0, 0);
             for i in 0..100_i64 {
                 let val = i * 10;
                 __spark_map_insert(
@@ -2436,7 +2617,7 @@ mod tests {
     #[test]
     fn map_empty_ops() {
         unsafe {
-            let m = __spark_map_new(8, 8, 0, 0);
+            let m = __spark_map_new(8, 8, 0, 0, 0, 0);
             assert_eq!(__spark_map_len(m), 0);
             let key: i64 = 1;
             assert_eq!(__spark_map_contains(m, &key as *const i64 as *const u8), 0);
@@ -2449,10 +2630,14 @@ mod tests {
     #[test]
     fn map_cow_shared() {
         unsafe {
-            let m = __spark_map_new(8, 8, 0, 0);
+            let m = __spark_map_new(8, 8, 0, 0, 0, 0);
             let key: i64 = 1;
             let val: i64 = 10;
-            __spark_map_insert(m, &key as *const i64 as *const u8, &val as *const i64 as *const u8);
+            __spark_map_insert(
+                m,
+                &key as *const i64 as *const u8,
+                &val as *const i64 as *const u8,
+            );
 
             // Simulate shared ownership.
             __spark_rc_inc(m);
@@ -2473,15 +2658,51 @@ mod tests {
     #[test]
     fn map_cow_sole_owner() {
         unsafe {
-            let m = __spark_map_new(8, 8, 0, 0);
+            let m = __spark_map_new(8, 8, 0, 0, 0, 0);
             let key: i64 = 1;
             let val: i64 = 10;
-            __spark_map_insert(m, &key as *const i64 as *const u8, &val as *const i64 as *const u8);
+            __spark_map_insert(
+                m,
+                &key as *const i64 as *const u8,
+                &val as *const i64 as *const u8,
+            );
 
             // rc == 1 — COW should return same pointer.
             let cow = __spark_map_cow(m);
             assert_eq!(cow, m);
 
+            __spark_map_rc_dec(m);
+        }
+    }
+
+    #[test]
+    fn map_string_key_value_semantics_with_callbacks() {
+        unsafe {
+            let m = __spark_map_new(
+                std::mem::size_of::<*mut u8>() as i64,
+                std::mem::size_of::<i64>() as i64,
+                0,
+                0,
+                __spark_hash_string_elem as *const () as usize,
+                __spark_eq_string_elem as *const () as usize,
+            );
+
+            let k1 = __spark_string_from_literal("hello".as_ptr(), 5);
+            let k2 = __spark_string_from_literal("hello".as_ptr(), 5);
+            let v: i64 = 123;
+
+            __spark_map_insert(
+                m,
+                &k1 as *const *mut u8 as *const u8,
+                &v as *const i64 as *const u8,
+            );
+
+            let got = __spark_map_get(m, &k2 as *const *mut u8 as *const u8);
+            assert!(!got.is_null());
+            assert_eq!(*(got.cast::<i64>()), 123);
+
+            __spark_string_rc_dec(k1);
+            __spark_string_rc_dec(k2);
             __spark_map_rc_dec(m);
         }
     }
@@ -2493,7 +2714,7 @@ mod tests {
     #[test]
     fn set_insert_and_contains() {
         unsafe {
-            let s = __spark_set_new(8, 0);
+            let s = __spark_set_new(8, 0, 0, 0);
             let val: i64 = 42;
             __spark_set_insert(s, &val as *const i64 as *const u8);
             assert_eq!(__spark_set_contains(s, &val as *const i64 as *const u8), 1);
@@ -2506,7 +2727,7 @@ mod tests {
     #[test]
     fn set_dedup() {
         unsafe {
-            let s = __spark_set_new(8, 0);
+            let s = __spark_set_new(8, 0, 0, 0);
             let val: i64 = 10;
             __spark_set_insert(s, &val as *const i64 as *const u8);
             __spark_set_insert(s, &val as *const i64 as *const u8);
@@ -2520,7 +2741,7 @@ mod tests {
     #[test]
     fn set_remove() {
         unsafe {
-            let s = __spark_set_new(8, 0);
+            let s = __spark_set_new(8, 0, 0, 0);
             let val: i64 = 7;
             __spark_set_insert(s, &val as *const i64 as *const u8);
             assert_eq!(__spark_set_len(s), 1);
@@ -2536,7 +2757,7 @@ mod tests {
     #[test]
     fn set_remove_and_reinsert() {
         unsafe {
-            let s = __spark_set_new(8, 0);
+            let s = __spark_set_new(8, 0, 0, 0);
             let val: i64 = 3;
             __spark_set_insert(s, &val as *const i64 as *const u8);
             __spark_set_remove(s, &val as *const i64 as *const u8);
@@ -2552,7 +2773,7 @@ mod tests {
     #[test]
     fn set_grow_many_elements() {
         unsafe {
-            let s = __spark_set_new(8, 0);
+            let s = __spark_set_new(8, 0, 0, 0);
             for i in 0..100_i64 {
                 __spark_set_insert(s, &i as *const i64 as *const u8);
             }
@@ -2576,7 +2797,7 @@ mod tests {
     #[test]
     fn set_empty_ops() {
         unsafe {
-            let s = __spark_set_new(8, 0);
+            let s = __spark_set_new(8, 0, 0, 0);
             assert_eq!(__spark_set_len(s), 0);
             let val: i64 = 1;
             assert_eq!(__spark_set_contains(s, &val as *const i64 as *const u8), 0);
@@ -2588,7 +2809,7 @@ mod tests {
     #[test]
     fn set_cow_shared() {
         unsafe {
-            let s = __spark_set_new(8, 0);
+            let s = __spark_set_new(8, 0, 0, 0);
             let val: i64 = 42;
             __spark_set_insert(s, &val as *const i64 as *const u8);
 
@@ -2597,7 +2818,10 @@ mod tests {
             assert_ne!(cow, s);
 
             assert_eq!(__spark_set_contains(s, &val as *const i64 as *const u8), 1);
-            assert_eq!(__spark_set_contains(cow, &val as *const i64 as *const u8), 1);
+            assert_eq!(
+                __spark_set_contains(cow, &val as *const i64 as *const u8),
+                1
+            );
 
             __spark_set_rc_dec(s);
             __spark_set_rc_dec(cow);
@@ -2607,13 +2831,41 @@ mod tests {
     #[test]
     fn set_cow_sole_owner() {
         unsafe {
-            let s = __spark_set_new(8, 0);
+            let s = __spark_set_new(8, 0, 0, 0);
             let val: i64 = 42;
             __spark_set_insert(s, &val as *const i64 as *const u8);
 
             let cow = __spark_set_cow(s);
             assert_eq!(cow, s);
 
+            __spark_set_rc_dec(s);
+        }
+    }
+
+    #[test]
+    fn set_string_value_semantics_with_callbacks() {
+        unsafe {
+            let s = __spark_set_new(
+                std::mem::size_of::<*mut u8>() as i64,
+                0,
+                __spark_hash_string_elem as *const () as usize,
+                __spark_eq_string_elem as *const () as usize,
+            );
+
+            let v1 = __spark_string_from_literal("hello".as_ptr(), 5);
+            let v2 = __spark_string_from_literal("hello".as_ptr(), 5);
+
+            __spark_set_insert(s, &v1 as *const *mut u8 as *const u8);
+            __spark_set_insert(s, &v2 as *const *mut u8 as *const u8);
+
+            assert_eq!(__spark_set_len(s), 1);
+            assert_eq!(
+                __spark_set_contains(s, &v2 as *const *mut u8 as *const u8),
+                1
+            );
+
+            __spark_string_rc_dec(v1);
+            __spark_string_rc_dec(v2);
             __spark_set_rc_dec(s);
         }
     }
@@ -2641,7 +2893,11 @@ const CB_OUTPUT_VOID: u8 = 2 << 2;
 /// - `fn_ptr` must be a valid function pointer matching the `cb_kind` signature.
 /// - `env_ptr` may be null (non-capturing) or a valid env pointer.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::missing_safety_doc, clippy::items_after_statements)]
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::missing_safety_doc,
+    clippy::items_after_statements
+)]
 pub unsafe extern "C" fn __spark_parallel_foreach(
     list_ptr: *mut u8,
     fn_ptr: *mut u8,
@@ -2679,7 +2935,11 @@ pub unsafe extern "C" fn __spark_parallel_foreach(
 /// - `fn_ptr` must be a valid function pointer matching the `cb_kind` signature.
 /// - `env_ptr` may be null (non-capturing) or a valid env pointer.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::missing_safety_doc, clippy::items_after_statements)]
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::missing_safety_doc,
+    clippy::items_after_statements
+)]
 pub unsafe extern "C" fn __spark_parallel_map(
     list_ptr: *mut u8,
     fn_ptr: *mut u8,
@@ -2691,7 +2951,7 @@ pub unsafe extern "C" fn __spark_parallel_map(
     use rayon::prelude::*;
 
     let list = unsafe { &*(list_ptr.cast::<SparkList>()) };
-    let result_list = __spark_list_new(result_elem_size, 0);
+    let result_list = __spark_list_new(result_elem_size, 0, 0);
 
     if list.len == 0 {
         return result_list;
@@ -2789,7 +3049,11 @@ unsafe fn call_map_cb(fn_addr: usize, env_addr: usize, elem_ptr: *const u8, cb_k
 /// - `map_fn` and `reduce_fn` must be valid function pointers.
 /// - `map_env` and `reduce_env` may be null (non-capturing) or valid env pointers.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::missing_safety_doc, clippy::items_after_statements)]
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::missing_safety_doc,
+    clippy::items_after_statements
+)]
 pub unsafe extern "C" fn __spark_parallel_map_reduce(
     list_ptr: *mut u8,
     map_fn: *mut u8,
@@ -2844,19 +3108,23 @@ unsafe fn call_reduce_cb(fn_addr: usize, env_addr: usize, acc: u64, val: u64, cb
     let output_float = (cb_kind & CB_OUTPUT_FLOAT) != 0;
 
     if input_float && output_float {
-        let f: unsafe extern "C" fn(*mut u8, f64, f64) -> f64 = unsafe { std::mem::transmute(fn_addr) };
+        let f: unsafe extern "C" fn(*mut u8, f64, f64) -> f64 =
+            unsafe { std::mem::transmute(fn_addr) };
         let result = unsafe { f(env, f64::from_bits(acc), f64::from_bits(val)) };
         result.to_bits()
     } else if input_float {
-        let f: unsafe extern "C" fn(*mut u8, f64, f64) -> i64 = unsafe { std::mem::transmute(fn_addr) };
+        let f: unsafe extern "C" fn(*mut u8, f64, f64) -> i64 =
+            unsafe { std::mem::transmute(fn_addr) };
         let result = unsafe { f(env, f64::from_bits(acc), f64::from_bits(val)) };
         result as u64
     } else if output_float {
-        let f: unsafe extern "C" fn(*mut u8, i64, i64) -> f64 = unsafe { std::mem::transmute(fn_addr) };
+        let f: unsafe extern "C" fn(*mut u8, i64, i64) -> f64 =
+            unsafe { std::mem::transmute(fn_addr) };
         let result = unsafe { f(env, acc as i64, val as i64) };
         result.to_bits()
     } else {
-        let f: unsafe extern "C" fn(*mut u8, i64, i64) -> i64 = unsafe { std::mem::transmute(fn_addr) };
+        let f: unsafe extern "C" fn(*mut u8, i64, i64) -> i64 =
+            unsafe { std::mem::transmute(fn_addr) };
         let result = unsafe { f(env, acc as i64, val as i64) };
         result as u64
     }
@@ -2916,7 +3184,11 @@ fn tokio_runtime() -> &'static tokio::runtime::Runtime {
 /// `fn_ptr` must be a valid function pointer. `env_ptr` must be null or a
 /// valid closure environment pointer.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub unsafe extern "C" fn __spark_spawn(
     fn_ptr: *mut u8,
     env_ptr: *mut u8,
@@ -2965,15 +3237,13 @@ pub unsafe extern "C" fn __spark_spawn(
         let result_dst = result_addr as *mut u8;
 
         if is_float_flag {
-            let f: unsafe extern "C" fn(*mut u8) -> f64 =
-                unsafe { std::mem::transmute(fn_addr) };
+            let f: unsafe extern "C" fn(*mut u8) -> f64 = unsafe { std::mem::transmute(fn_addr) };
             let val = unsafe { f(env) };
             if !result_dst.is_null() {
                 unsafe { *(result_dst.cast::<f64>()) = val };
             }
         } else {
-            let f: unsafe extern "C" fn(*mut u8) -> i64 =
-                unsafe { std::mem::transmute(fn_addr) };
+            let f: unsafe extern "C" fn(*mut u8) -> i64 = unsafe { std::mem::transmute(fn_addr) };
             let val = unsafe { f(env) };
             if !result_dst.is_null() {
                 unsafe { *(result_dst.cast::<i64>()) = val };
@@ -3052,15 +3322,16 @@ pub unsafe extern "C" fn __spark_future_rc_dec(ptr: *mut u8) {
             let handle: Box<tokio::task::JoinHandle<()>> =
                 unsafe { Box::from_raw(future.handle.cast()) };
             let rt = tokio_runtime();
-            rt.block_on(async { let _ = handle.await; });
+            rt.block_on(async {
+                let _ = handle.await;
+            });
         }
 
         // Free the result buffer.
         if !future.result.is_null() && future.result_size > 0 {
             let align = std::mem::align_of::<u64>();
-            let layout = unsafe {
-                std::alloc::Layout::from_size_align_unchecked(future.result_size, align)
-            };
+            let layout =
+                unsafe { std::alloc::Layout::from_size_align_unchecked(future.result_size, align) };
             unsafe { std::alloc::dealloc(future.result, layout) };
         }
 
@@ -3206,7 +3477,11 @@ pub extern "C" fn __spark_alloc_state(size: i64) -> *mut u8 {
 /// - `poll_fn` must be a valid function pointer with the expected signature.
 /// - `state_ptr` must be a valid pointer from `__spark_alloc_state`.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub unsafe extern "C" fn __spark_spawn_coop(
     poll_fn: *mut u8,
     state_ptr: *mut u8,
@@ -3380,13 +3655,11 @@ unsafe fn call_range_map_cb(fn_addr: usize, env_addr: usize, val: i64, cb_kind: 
     // Input for range callbacks is always Int (the range element).
 
     if output_float {
-        let f: unsafe extern "C" fn(*mut u8, i64) -> f64 =
-            unsafe { std::mem::transmute(fn_addr) };
+        let f: unsafe extern "C" fn(*mut u8, i64) -> f64 = unsafe { std::mem::transmute(fn_addr) };
         let result = unsafe { f(env, val) };
         result.to_bits()
     } else {
-        let f: unsafe extern "C" fn(*mut u8, i64) -> i64 =
-            unsafe { std::mem::transmute(fn_addr) };
+        let f: unsafe extern "C" fn(*mut u8, i64) -> i64 = unsafe { std::mem::transmute(fn_addr) };
         let result = unsafe { f(env, val) };
         result as u64
     }
@@ -3450,7 +3723,7 @@ pub unsafe extern "C" fn __spark_parallel_range_map(
 
     let len = __spark_range_len(start, end, inclusive, step);
     if len <= 0 {
-        return __spark_list_new(result_elem_size, 0);
+        return __spark_list_new(result_elem_size, 0, 0);
     }
 
     let fn_addr = fn_ptr as usize;
@@ -3467,7 +3740,7 @@ pub unsafe extern "C" fn __spark_parallel_range_map(
         .collect();
 
     // Build a list from the results.
-    let list = __spark_list_new(result_elem_size, 0);
+    let list = __spark_list_new(result_elem_size, 0, 0);
     let spark_list = unsafe { &mut *(list.cast::<SparkList>()) };
 
     for result in &results {

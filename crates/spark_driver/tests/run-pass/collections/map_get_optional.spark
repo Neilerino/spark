@@ -1,0 +1,15 @@
+fn main(): Int {
+    data: Map[String, Int] = {
+        "x": 42
+    }
+
+    val: Int? = data["x"]
+
+    if val is Null {
+        print("null")
+    } else {
+        print("found")
+    }
+
+    return 0
+}
