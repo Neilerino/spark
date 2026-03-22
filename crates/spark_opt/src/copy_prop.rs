@@ -179,6 +179,9 @@ fn rvalue_reads_local(rvalue: &spark_mir::Rvalue, local: Local) -> bool {
         | spark_mir::Rvalue::RangeLen { start, end, step, .. } => {
             operand_reads_local(start, local) || operand_reads_local(end, local) || operand_reads_local(step, local)
         }
+        spark_mir::Rvalue::MapGetOptional { map, key, .. } => {
+            operand_reads_local(map, local) || operand_reads_local(key, local)
+        }
         spark_mir::Rvalue::Cast { operand, .. } => operand_reads_local(operand, local),
     }
 }
@@ -277,6 +280,10 @@ fn replace_local_in_rvalue(rvalue: &mut spark_mir::Rvalue, from: Local, to: Loca
             changed |= replace_local_in_operand(end, from, to);
             changed |= replace_local_in_operand(step, from, to);
             changed
+        }
+        spark_mir::Rvalue::MapGetOptional { map, key, .. } => {
+            let changed = replace_local_in_operand(map, from, to);
+            changed | replace_local_in_operand(key, from, to)
         }
         spark_mir::Rvalue::Cast { operand, .. } => replace_local_in_operand(operand, from, to),
     }

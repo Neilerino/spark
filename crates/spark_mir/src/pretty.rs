@@ -240,6 +240,13 @@ impl PrettyPrinter<'_> {
                 self.print_operand(step);
                 self.out.push(')');
             }
+            Rvalue::MapGetOptional { map, key, .. } => {
+                self.out.push_str("MapGetOptional(");
+                self.print_operand(map);
+                self.out.push_str(", ");
+                self.print_operand(key);
+                self.out.push(')');
+            }
         }
     }
 

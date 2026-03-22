@@ -13,8 +13,8 @@ use spark_modules::ModulePath;
 use spark_resolve::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visibility};
 use spark_types::{Ty, TypeId, TypeTable};
 
-use crate::hir::{Hir, HirExpr, HirExprKind, HirFunction, HirParam};
-use crate::visitor::{walk_expr, walk_expr_mut, HirMutVisitor, HirVisitor};
+use crate::hir::{Hir, HirExpr, HirExprKind, HirFunction, HirParam, HirPattern, HirStmt};
+use crate::visitor::{walk_expr, walk_expr_mut, walk_pattern, walk_stmt, HirMutVisitor, HirVisitor};
 
 /// Lifts all lambda expressions in the HIR into top-level functions.
 ///
@@ -171,6 +171,9 @@ struct CaptureCollector<'a> {
     captures: Vec<(DefId, TypeId)>,
     /// Deduplication set.
     seen: rustc_hash::FxHashSet<DefId>,
+    /// DefIds defined locally within the lambda body (let bindings,
+    /// match pattern bindings). These are NOT captures.
+    local_defs: rustc_hash::FxHashSet<DefId>,
 }
 
 impl HirVisitor for CaptureCollector<'_> {
@@ -179,6 +182,11 @@ impl HirVisitor for CaptureCollector<'_> {
             HirExprKind::Local(def_id) => {
                 // Skip lambda's own parameters.
                 if self.param_defs.contains(def_id) {
+                    return;
+                }
+                // Skip variables defined within the lambda body (let bindings,
+                // match/to pattern bindings).
+                if self.local_defs.contains(def_id) {
                     return;
                 }
                 // Skip functions, builtins, and binding methods — they're not captured values.
@@ -203,6 +211,36 @@ impl HirVisitor for CaptureCollector<'_> {
             HirExprKind::Lambda { .. } => {}
             _ => walk_expr(self, expr),
         }
+    }
+
+    fn visit_stmt(&mut self, stmt: &HirStmt) {
+        // Register let-binding def_ids as local before visiting the body,
+        // so references to them aren't treated as captures.
+        if let HirStmt::Let { def_id, .. } = stmt {
+            self.local_defs.insert(*def_id);
+        }
+        walk_stmt(self, stmt);
+    }
+
+    fn visit_pattern(&mut self, pat: &HirPattern) {
+        // Register pattern-binding def_ids as local.
+        match pat {
+            HirPattern::Binding { def_id } | HirPattern::TypeNarrow { def_id, .. } => {
+                self.local_defs.insert(*def_id);
+            }
+            HirPattern::Variant { fields, .. } => {
+                for f in fields {
+                    self.visit_pattern(f);
+                }
+            }
+            HirPattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    self.visit_pattern(p);
+                }
+            }
+            _ => {}
+        }
+        walk_pattern(self, pat);
     }
 }
 
@@ -382,6 +420,7 @@ fn collect_captures(
         definitions,
         captures: Vec::new(),
         seen: FxHashSet::default(),
+        local_defs: FxHashSet::default(),
     };
     collector.visit_expr(body);
     collector.captures

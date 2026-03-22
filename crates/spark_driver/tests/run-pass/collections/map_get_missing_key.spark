@@ -1,0 +1,22 @@
+fn main(): Int {
+    data: Map[String, Int] = {
+        "x": 42
+    }
+
+    found: Int? = data["x"]
+    missing: Int? = data["nope"]
+
+    if found is Null {
+        print("x: null")
+    } else {
+        print("x: found")
+    }
+
+    if missing is Null {
+        print("nope: null")
+    } else {
+        print("nope: found")
+    }
+
+    return 0
+}

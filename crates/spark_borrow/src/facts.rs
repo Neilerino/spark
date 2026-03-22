@@ -293,6 +293,10 @@ fn collect_rvalue_uses(rvalue: &Rvalue, point: Point, facts: &mut BorrowFacts) {
             collect_operand_uses(end, point, facts);
             collect_operand_uses(step, point, facts);
         }
+        Rvalue::MapGetOptional { map, key, .. } => {
+            collect_operand_uses(map, point, facts);
+            collect_operand_uses(key, point, facts);
+        }
         Rvalue::Discriminant(place) => {
             facts.uses.push((point, place.local));
         }

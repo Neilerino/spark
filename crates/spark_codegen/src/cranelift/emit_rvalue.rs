@@ -96,6 +96,10 @@ pub fn emit_rvalue<M: Module>(
             Some(ctx.builder.inst_results(call)[0])
         }
 
+        Rvalue::MapGetOptional { map, key, value_ty } => {
+            emit_map_get_optional(ctx, map, key, *value_ty, dest_local, ecx, module)
+        }
+
         Rvalue::RangeLen { start, end, inclusive, step } => {
             let start_val = emit_operand(ctx, start, ecx, module)?;
             let end_val = emit_operand(ctx, end, ecx, module)?;
@@ -1266,6 +1270,113 @@ fn emit_closure_construction<M: Module>(
         dest_addr,
         ctx.ptr_type.bytes() as i32,
     );
+
+    Some(dest_addr)
+}
+
+/// Emits a null-safe map index that produces `Optional(V)`.
+///
+/// Calls `__spark_map_get(map, key)` and checks for null:
+/// - If null (key not found): writes tag=0 (Null) to the destination
+/// - If non-null (key found): loads the value, writes tag=1 (Some) + payload
+///
+/// Returns the destination stack slot address.
+fn emit_map_get_optional<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    map_operand: &Operand,
+    key_operand: &Operand,
+    value_ty: TypeId,
+    dest_local: Local,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+) -> Option<Value> {
+    let table = ecx.table;
+    let dest_addr = ctx.local_stack_addr(dest_local)?;
+
+    // Get the map pointer and key address.
+    let map_val = emit_operand(ctx, map_operand, ecx, module)?;
+    let key_val = emit_operand(ctx, key_operand, ecx, module)?;
+    let key_ty = operand_type(key_operand, ctx, table);
+    let key_addr = store_scalar_to_temp(ctx, key_val, key_ty, table);
+
+    // Load the map pointer (map_val is the address of the local holding the pointer).
+    let map_ptr = if abi::is_scalar(operand_type(map_operand, ctx, table), table) {
+        map_val
+    } else {
+        ctx.load(ctx.ptr_type, map_val, 0)
+    };
+
+    // Call __spark_map_get(map_ptr, key_addr) → ptr or null.
+    let func_ref = module.declare_func_in_func(ctx.stubs.map_get, ctx.builder.func);
+    let call = ctx.builder.ins().call(func_ref, &[map_ptr, key_addr]);
+    let raw_ptr = ctx.builder.inst_results(call)[0];
+
+    // Compute the Optional layout.
+    let opt_ty = ctx.local_type_id(dest_local);
+    let ul = ctx.layouts.union_layout_of(opt_ty, table);
+
+    // Branch: is raw_ptr null?
+    let null_val = ctx.builder.ins().iconst(ctx.ptr_type, 0);
+    let is_null = ctx.builder.ins().icmp(
+        cranelift_codegen::ir::condcodes::IntCC::Equal,
+        raw_ptr,
+        null_val,
+    );
+
+    let found_block = ctx.builder.create_block();
+    let not_found_block = ctx.builder.create_block();
+    let join_block = ctx.builder.create_block();
+
+    ctx.builder
+        .ins()
+        .brif(is_null, not_found_block, &[], found_block, &[]);
+
+    // Not-found block: write tag=0 (Null), zero payload.
+    ctx.builder.switch_to_block(not_found_block);
+    ctx.builder.emit_small_memset(
+        module.target_config(),
+        dest_addr,
+        0_u8,
+        u64::from(ul.layout.size),
+        1,
+        MemFlags::new(),
+    );
+    ctx.builder.ins().jump(join_block, &[]);
+
+    // Found block: load value from raw_ptr, write tag=1 + payload.
+    ctx.builder.switch_to_block(found_block);
+    // Write tag = 1 (Some).
+    let tag_ty = clif_types::int_type_for_bytes(ul.tag_size);
+    let tag_val = ctx.builder.ins().iconst(tag_ty, 1);
+    ctx.store(tag_val, dest_addr, 0);
+    // Write payload at payload_offset.
+    let payload_addr = ctx
+        .builder
+        .ins()
+        .iadd_imm(dest_addr, i64::from(ul.payload_offset));
+    if abi::is_scalar(value_ty, table) {
+        let clif_ty = abi::spark_type_to_clif(value_ty, table, ctx.ptr_type)
+            .unwrap_or(ctx.ptr_type);
+        let loaded = ctx.load(clif_ty, raw_ptr, 0);
+        ctx.store(loaded, payload_addr, 0);
+    } else {
+        // Aggregate value: memcpy from raw_ptr to payload area.
+        let val_layout = ctx.layouts.layout_of(value_ty, table);
+        ctx.builder.emit_small_memory_copy(
+            module.target_config(),
+            payload_addr,
+            raw_ptr,
+            u64::from(val_layout.size),
+            1,
+            1,
+            true,
+            MemFlags::new(),
+        );
+    }
+    ctx.builder.ins().jump(join_block, &[]);
+
+    // Join block: Optional is fully written.
+    ctx.builder.switch_to_block(join_block);
 
     Some(dest_addr)
 }

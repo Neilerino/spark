@@ -114,33 +114,51 @@ pub fn lower_expr(
                 Ty::Mutable(inner) => type_table.resolve(*inner),
                 other => other,
             };
+            let is_map = matches!(unwrapped_base, Ty::Map(_, _));
             let elem_ty = match unwrapped_base {
                 Ty::List(elem) => *elem,
                 Ty::Map(_, val) => *val,
                 _ => expr.ty,
             };
-            let temp = fb.fresh_temp(elem_ty, expr.span);
-            let mut place = Place::from_local(base_local);
-            place.projections.push(Projection::Index(index_local));
-            fb.push_assign(
-                Place::from_local(temp),
-                Rvalue::Use(Operand::Copy(place)),
-                expr.span,
-            );
 
-            // The type checker assigns Optional(V) to list/map index
-            // expressions, but the Place projection loads the raw value V.
-            // When the expression type is Optional and differs from the
-            // raw element type, wrap in Optional so the MIR type matches
-            // what callers (Let statements, etc.) expect. Desugared
-            // index expressions (e.g. from `each`) have expr.ty == elem_ty
-            // and skip this wrapping.
-            if expr.ty != elem_ty && matches!(type_table.resolve(expr.ty), Ty::Optional(_)) {
+            // Map index needs special handling: map_get returns null for
+            // missing keys. The Place + Index projection in codegen calls
+            // map_get and loads from the returned pointer — crashing on null.
+            // For user-written map index (expr.ty is Optional), we use the
+            // MapGetOptional rvalue which handles null safely and produces
+            // Optional(V) directly.
+            if is_map && expr.ty != elem_ty && matches!(type_table.resolve(expr.ty), Ty::Optional(_)) {
                 let opt_temp = fb.fresh_temp(expr.ty, expr.span);
-                emit_assign_with_union_wrap(fb, opt_temp, temp, type_table, expr.span);
+                fb.push_assign(
+                    Place::from_local(opt_temp),
+                    Rvalue::MapGetOptional {
+                        map: Operand::Copy(Place::from_local(base_local)),
+                        key: Operand::Copy(Place::from_local(index_local)),
+                        value_ty: elem_ty,
+                    },
+                    expr.span,
+                );
                 opt_temp
             } else {
-                temp
+                let temp = fb.fresh_temp(elem_ty, expr.span);
+                let mut place = Place::from_local(base_local);
+                place.projections.push(Projection::Index(index_local));
+                fb.push_assign(
+                    Place::from_local(temp),
+                    Rvalue::Use(Operand::Copy(place)),
+                    expr.span,
+                );
+
+                // List index: type checker assigns Optional(V) but the
+                // desugared `each` loop uses raw elem_ty. Only wrap when
+                // the expression type differs (user-written index).
+                if expr.ty != elem_ty && matches!(type_table.resolve(expr.ty), Ty::Optional(_)) {
+                    let opt_temp = fb.fresh_temp(expr.ty, expr.span);
+                    emit_assign_with_union_wrap(fb, opt_temp, temp, type_table, expr.span);
+                    opt_temp
+                } else {
+                    temp
+                }
             }
         }
 
@@ -1200,6 +1218,27 @@ pub fn emit_assign_with_union_wrap(
                     AggregateKind::Union {
                         union_ty: dest_ty,
                         member_ty: src_ty,
+                    },
+                    vec![Operand::Copy(Place::from_local(src))],
+                ),
+                span,
+            );
+            return;
+        }
+        // Source may be auto-dereferenced from a Ref member. Check if any
+        // member is Ref { inner: src_ty } and use that member for wrapping.
+        // This handles `return r` where `r: Ref[T]` is auto-deref'd to `T`
+        // but the union contains `Ref[T]`.
+        let ref_member = members.iter().find(|&&m| {
+            matches!(type_table.resolve(m), Ty::Ref { inner, .. } if *inner == src_ty)
+        });
+        if let Some(&member_ty) = ref_member {
+            fb.push_assign(
+                Place::from_local(dest),
+                Rvalue::Aggregate(
+                    AggregateKind::Union {
+                        union_ty: dest_ty,
+                        member_ty,
                     },
                     vec![Operand::Copy(Place::from_local(src))],
                 ),

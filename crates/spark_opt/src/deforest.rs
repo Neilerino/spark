@@ -375,6 +375,9 @@ fn rvalue_reads_any_alias(rvalue: &Rvalue, aliases: &[Local]) -> bool {
                 || operand_reads_alias(end, aliases)
                 || operand_reads_alias(step, aliases)
         }
+        Rvalue::MapGetOptional { map, key, .. } => {
+            operand_reads_alias(map, aliases) || operand_reads_alias(key, aliases)
+        }
     }
 }
 

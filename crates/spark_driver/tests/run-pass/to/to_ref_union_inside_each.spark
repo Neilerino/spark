@@ -1,0 +1,40 @@
+struct MyError {
+    code: Int
+    message: String
+}
+
+struct Data {
+    value: Int
+}
+
+struct Handler {
+    name: String
+    action: (Ref[Data]): Ref[Data] | MyError
+}
+
+fn main(): Int {
+    d: Ref[Data] = Data { value: 42 }
+
+    handlers: List[Handler] = [
+        Handler {
+            name: "test",
+            action: (r: Ref[Data]): Ref[Data] | MyError {
+                return r
+            }
+        }
+    ]
+
+    handlers each (h: Handler) {
+        print(h.name)
+        h.action(d) to {
+            e: MyError -> {
+                print("error")
+            }
+            r: Ref[Data] -> {
+                print("ok")
+            }
+        }
+    }
+
+    return 0
+}

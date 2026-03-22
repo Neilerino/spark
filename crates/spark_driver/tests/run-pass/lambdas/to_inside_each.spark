@@ -1,0 +1,21 @@
+struct MyError {
+    msg: String
+}
+
+fn maybe_fail(x: Int): String | MyError {
+    if x > 0 {
+        return "ok"
+    }
+    return MyError { msg: "failed" }
+}
+
+fn main(): Int {
+    nums: List[Int] = [1, 2, 3]
+    nums each (n: Int) {
+        value: String = maybe_fail(n) to {
+            e: MyError -> "error"
+        }
+        print(value)
+    }
+    return 0
+}

@@ -1,0 +1,34 @@
+struct MyError {
+    code: Int
+    message: String
+}
+
+struct Handler {
+    name: String
+    action: (String): String | MyError
+}
+
+fn main(): Int {
+    handlers: List[Handler] = [
+        Handler {
+            name: "test",
+            action: (s: String): String | MyError {
+                return s
+            }
+        }
+    ]
+
+    handlers each (h: Handler) {
+        print(h.name)
+        h.action("hello") to {
+            e: MyError -> {
+                print("error")
+            }
+            s: String -> {
+                print(s)
+            }
+        }
+    }
+
+    return 0
+}

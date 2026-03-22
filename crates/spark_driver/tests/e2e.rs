@@ -415,6 +415,14 @@ fn list_index_optional() {
     assert_output("run-pass/collections/list_index_optional.spark", "found");
 }
 
+#[test]
+fn map_get_missing_key() {
+    assert_output(
+        "run-pass/collections/map_get_missing_key.spark",
+        "x: found\nnope: null",
+    );
+}
+
 // ============================================================================
 // Generics
 // ============================================================================
@@ -491,6 +499,11 @@ fn closure_capture_list() {
 #[test]
 fn closure_capture_closure() {
     assert_output("run-pass/lambdas/closure_capture_closure.spark", "42");
+}
+
+#[test]
+fn to_inside_each() {
+    assert_output("run-pass/lambdas/to_inside_each.spark", "ok\nok\nok");
 }
 
 // ============================================================================
@@ -648,6 +661,21 @@ fn to_reverse_string() {
 #[test]
 fn to_take_string() {
     assert_output("run-pass/to/to_take_string.spark", "2");
+}
+
+#[test]
+fn to_union_inside_each() {
+    assert_output("run-pass/to/to_union_inside_each.spark", "test\nhello");
+}
+
+#[test]
+fn to_ref_union() {
+    assert_output("run-pass/to/to_ref_union.spark", "ok");
+}
+
+#[test]
+fn to_ref_union_inside_each() {
+    assert_output("run-pass/to/to_ref_union_inside_each.spark", "test\nok");
 }
 
 // ============================================================================
