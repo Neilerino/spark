@@ -64,7 +64,8 @@ pub fn emit_rvalue<M: Module>(
 
         Rvalue::Ref { place, mutable: _ } => {
             // Take address of a place.
-            Some(emit_place_addr(ctx, place, ecx.table, module))
+            let (addr, _ty) = emit_place_addr(ctx, place, ecx.table, module);
+            Some(addr)
         }
 
         Rvalue::Aggregate(kind, operands) => {
@@ -265,8 +266,7 @@ pub fn emit_place_read<M: Module>(
     }
 
     // Build the address through projections, then load.
-    let addr = emit_place_addr(ctx, place, table, module);
-    let result_ty = resolve_place_type(ctx, place, table);
+    let (addr, result_ty) = emit_place_addr(ctx, place, table, module);
 
     if let Some(clif_ty) = abi::spark_type_to_clif(result_ty, table, ctx.ptr_type) {
         if abi::is_scalar(result_ty, table) {
@@ -281,13 +281,18 @@ pub fn emit_place_read<M: Module>(
     }
 }
 
-/// Computes the address of a MIR place (local + projections).
+/// Computes the address of a MIR place (local + projections) and the
+/// resolved type after all projections.
+///
+/// Returning both values eliminates the need to call [`resolve_place_type`]
+/// separately at sites that also need the address, preventing divergence
+/// between address computation and type computation.
 pub(super) fn emit_place_addr<M: Module>(
     ctx: &mut FunctionContext<'_>,
     place: &Place,
     table: &TypeTable,
     module: &mut M,
-) -> Value {
+) -> (Value, TypeId) {
     let mut addr = match ctx.local_storage(place.local) {
         LocalStorage::StackSlot(slot, _) => ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0),
         LocalStorage::Var(_, _) => {
@@ -363,7 +368,10 @@ pub(super) fn emit_place_addr<M: Module>(
                         );
                     }
                     _ => {
-                        let _ = unwrapped_id;
+                        panic!(
+                            "ICE: Projection::Field on unsupported type {unwrapped_ty:?}; \
+                             only Struct, Applied, AsyncState, Tuple, and Enum are expected"
+                        );
                     }
                 }
             }
@@ -421,10 +429,10 @@ pub(super) fn emit_place_addr<M: Module>(
                         current_ty = value_ty;
                     }
                     _ => {
-                        // Fallback: raw pointer arithmetic for array-like types.
-                        let elem_size_val = ctx.builder.ins().iconst(ctx.ptr_type, 8);
-                        let offset = ctx.builder.ins().imul(idx_val, elem_size_val);
-                        addr = ctx.builder.ins().iadd(addr, offset);
+                        panic!(
+                            "ICE: Projection::Index on unsupported type {unwrapped_ty:?}; \
+                             only List and Map are expected"
+                        );
                     }
                 }
             }
@@ -454,7 +462,7 @@ pub(super) fn emit_place_addr<M: Module>(
         }
     }
 
-    addr
+    (addr, current_ty)
 }
 
 /// Resolves the type of a place after all projections.
@@ -497,14 +505,24 @@ pub(super) fn resolve_place_type(ctx: &FunctionContext<'_>, place: &Place, table
                             }
                         }
                     }
-                    _ => {}
+                    _ => {
+                        panic!(
+                            "ICE: resolve_place_type: Projection::Field on unsupported type \
+                             {unwrapped:?}"
+                        );
+                    }
                 }
             }
             Projection::Index(_) => {
                 match unwrapped {
                     Ty::List(elem_ty) => current_ty = *elem_ty,
                     Ty::Map(_, value_ty) => current_ty = *value_ty,
-                    _ => {}
+                    _ => {
+                        panic!(
+                            "ICE: resolve_place_type: Projection::Index on unsupported type \
+                             {unwrapped:?}"
+                        );
+                    }
                 }
             }
             Projection::Deref => {
@@ -703,9 +721,10 @@ fn emit_float_binop(ctx: &mut FunctionContext<'_>, op: BinaryOp, lhs: Value, rhs
         BinaryOp::Mul => ctx.builder.ins().fmul(lhs, rhs),
         BinaryOp::Div => ctx.builder.ins().fdiv(lhs, rhs),
         _ => {
-            // Float doesn't support mod, bitwise, shifts, logical.
-            // Return lhs as a fallback (should not happen with valid MIR).
-            lhs
+            panic!(
+                "ICE: unsupported float binary op {op:?}; \
+                 float only supports Add, Sub, Mul, Div"
+            );
         }
     }
 }
@@ -1193,11 +1212,16 @@ fn emit_closure_construction<M: Module>(
     let alloc_call = ctx.builder.ins().call(env_alloc_ref, &[env_size_val]);
     let env_ptr = ctx.builder.inst_results(alloc_call)[0];
 
-    // Store destructor pointer at offset 16 in the env header (if one was generated).
+    // Store destructor pointer in the env header (if one was generated).
     if let Some(&dtor_func_id) = ecx.dtor_ids.get(&func_def_id) {
         let dtor_ref = module.declare_func_in_func(dtor_func_id, ctx.builder.func);
         let dtor_addr = ctx.builder.ins().func_addr(ctx.ptr_type, dtor_ref);
-        ctx.builder.ins().store(MemFlags::new(), dtor_addr, env_ptr, 16);
+        ctx.builder.ins().store(
+            MemFlags::new(),
+            dtor_addr,
+            env_ptr,
+            spark_abi::ENV_DTOR_OFFSET as i32,
+        );
     }
 
     // Store each captured value into the environment.
@@ -1229,8 +1253,8 @@ fn emit_closure_construction<M: Module>(
                 ctx.builder.ins().call(func_ref, &[inner_env]);
             }
         }
-        // Add 24 bytes for the header (rc + alloc_size + dtor) prepended by __spark_env_alloc.
-        let offset = capture_offsets[i] + 24;
+        // Skip past the env header prepended by __spark_env_alloc.
+        let offset = capture_offsets[i] + spark_abi::ENV_CAPTURES_OFFSET;
         if abi::is_scalar(cap_ty, table) {
             ctx.builder.ins().store(
                 MemFlags::new(),
@@ -1458,12 +1482,7 @@ fn emit_discriminant<M: Module>(
     table: &TypeTable,
     module: &mut M,
 ) -> Value {
-    let addr = emit_place_addr(ctx, place, table, module);
-    let place_ty = if place.projections.is_empty() {
-        ctx.local_type_id(place.local)
-    } else {
-        resolve_place_type(ctx, place, table)
-    };
+    let (addr, place_ty) = emit_place_addr(ctx, place, table, module);
     let (_, unwrapped) = clif_types::unwrap_mutable(place_ty, table);
 
     if let Ty::Enum(def_id) = unwrapped {
@@ -1695,10 +1714,10 @@ fn emit_string_interp<M: Module>(
                 ctx.builder.inst_results(call)[0]
             }
             _ => {
-                // Unsupported type — emit empty string as fallback.
-                let func_ref = module.declare_func_in_func(ctx.stubs.string_new, ctx.builder.func);
-                let call = ctx.builder.ins().call(func_ref, &[]);
-                ctx.builder.inst_results(call)[0]
+                panic!(
+                    "ICE: string interpolation for unsupported type {resolved:?}; \
+                     expected Int, Float, Bool, String, or Char"
+                );
             }
         };
         string_vals.push(string_ptr);

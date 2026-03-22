@@ -376,6 +376,19 @@ fn nested_map_string_list() {
 }
 
 #[test]
+fn nested_list_mutate() {
+    assert_output("run-pass/collections/nested_list_mutate.spark", "2");
+}
+
+#[test]
+fn map_string_keys() {
+    assert_output(
+        "run-pass/collections/map_string_keys.spark",
+        "3\ntrue\n2\nfalse",
+    );
+}
+
+#[test]
 fn nested_list_deep() {
     assert_output("run-pass/collections/nested_list_deep.spark", "1");
 }
@@ -494,6 +507,11 @@ fn closure_capture_string() {
 #[test]
 fn closure_capture_list() {
     assert_output("run-pass/lambdas/closure_capture_list.spark", "3");
+}
+
+#[test]
+fn closure_capture_mutable_list() {
+    assert_output("run-pass/lambdas/closure_capture_mutable_list.spark", "3");
 }
 
 #[test]

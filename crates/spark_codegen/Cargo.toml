@@ -15,6 +15,7 @@ spark_resolve = { workspace = true }
 spark_types = { workspace = true }
 spark_mir = { workspace = true }
 spark_drop = { workspace = true }
+spark_abi = { workspace = true }
 rustc-hash = { workspace = true }
 cranelift-codegen = { workspace = true }
 cranelift-frontend = { workspace = true }

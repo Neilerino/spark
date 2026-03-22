@@ -1,0 +1,9 @@
+fn main(): Int {
+    m: Map[String, Int]! = {"x": 1, "y": 2, "z": 3}
+    print(m.len())
+    print(m.contains("y"))
+    m.remove("y")
+    print(m.len())
+    print(m.contains("y"))
+    return 0
+}

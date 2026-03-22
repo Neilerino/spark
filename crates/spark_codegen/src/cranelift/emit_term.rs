@@ -1424,9 +1424,10 @@ fn emit_builtin_method<M: Module>(
             Ty::Set(_) => ctx.stubs.set_len,
             Ty::String => ctx.stubs.string_len,
             _ => {
-                let target_block = ctx.clif_block(target);
-                ctx.builder.ins().jump(target_block, &[]);
-                return;
+                panic!(
+                    "ICE: .len() called on unsupported type {stripped_ty:?}; \
+                     expected List, Map, Set, or String"
+                );
             }
         };
         let func_ref = module.declare_func_in_func(stub_id, ctx.builder.func);
@@ -1453,9 +1454,10 @@ fn emit_builtin_method<M: Module>(
                 Ty::Map(k, _) => (ctx.stubs.map_contains, *k),
                 Ty::Set(elem) => (ctx.stubs.set_contains, *elem),
                 _ => {
-                    let target_block = ctx.clif_block(target);
-                    ctx.builder.ins().jump(target_block, &[]);
-                    return;
+                    panic!(
+                        "ICE: .contains() called on unsupported type {stripped_ty:?}; \
+                         expected List, Map, or Set"
+                    );
                 }
             };
             // Store the value to a temp slot to get its address.
@@ -1543,7 +1545,11 @@ fn emit_builtin_method<M: Module>(
                     }
                 }
             }
-            _ => {} // Unsupported combination — silently skip
+            _ => {
+                panic!(
+                    "ICE: unsupported mutating method '{method_name}' on type {stripped_ty:?}"
+                );
+            }
         }
 
         let target_block = ctx.clif_block(target);

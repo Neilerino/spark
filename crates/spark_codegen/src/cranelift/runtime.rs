@@ -1,632 +1,330 @@
 //! Runtime function stubs for features that need runtime support.
 //!
-//! Declares external functions that will be provided by a `spark_runtime`
-//! library at link time. Until that library exists, these remain unresolved
-//! external symbols.
+//! Declares external functions that will be provided by the `spark_runtime`
+//! library at link time. Each stub is declared from its canonical
+//! [`spark_abi::RuntimeFn`] signature, ensuring that codegen and runtime
+//! always agree on parameter types and return values.
 
 use cranelift_codegen::ir::{types, AbiParam, Signature};
 use cranelift_codegen::isa::CallConv;
 use cranelift_module::{FuncId, Linkage, Module};
+use spark_abi::{AbiType, RuntimeFn};
 
 /// Collection of runtime function declarations.
 #[derive(Debug)]
 pub struct RuntimeStubs {
-    /// `__spark_string_new() -> ptr`
+    // ── String ──────────────────────────────────────────────────────
+    /// `__spark_string_new`
     pub string_new: FuncId,
-    /// `__spark_string_from_literal(data: ptr, len: i64) -> ptr`
+    /// `__spark_string_from_literal`
     pub string_from_literal: FuncId,
-    /// `__spark_list_new(elem_size: i64, elem_drop: ptr, elem_eq: ptr) -> ptr`
-    pub list_new: FuncId,
-    /// `__spark_list_push(list: ptr, elem_ptr: ptr) -> void`
-    pub list_push: FuncId,
-    /// `__spark_list_get(list: ptr, index: i64) -> ptr`
-    pub list_get: FuncId,
-    /// `__spark_map_new(key_size: i64, value_size: i64, key_drop: ptr, val_drop: ptr, key_hash: ptr, key_eq: ptr) -> ptr`
-    pub map_new: FuncId,
-    /// `__spark_map_insert(map: ptr, key_ptr: ptr, value_ptr: ptr) -> void`
-    pub map_insert: FuncId,
-    /// `__spark_map_get(map: ptr, key_ptr: ptr) -> ptr`
-    pub map_get: FuncId,
-    /// `__spark_set_new(elem_size: i64, elem_drop: ptr, elem_hash: ptr, elem_eq: ptr) -> ptr`
-    pub set_new: FuncId,
-    /// `__spark_set_insert(set: ptr, elem_ptr: ptr) -> void`
-    pub set_insert: FuncId,
-    /// `__spark_rc_release(ptr) -> void`
-    pub rc_release: FuncId,
-    /// `__spark_rc_inc(ptr) -> void`
-    pub rc_inc: FuncId,
-    /// `__spark_string_rc_dec(ptr) -> void`
+    /// `__spark_string_rc_dec`
     pub string_rc_dec: FuncId,
-    /// `__spark_list_rc_dec(ptr) -> void`
-    pub list_rc_dec: FuncId,
-    /// `__spark_map_rc_dec(ptr) -> void`
-    pub map_rc_dec: FuncId,
-    /// `__spark_set_rc_dec(ptr) -> void`
-    pub set_rc_dec: FuncId,
-    /// `__spark_string_cow(ptr) -> ptr`
+    /// `__spark_string_cow`
     pub string_cow: FuncId,
-    /// `__spark_list_cow(ptr) -> ptr`
-    pub list_cow: FuncId,
-    /// `__spark_map_cow(ptr) -> ptr`
-    pub map_cow: FuncId,
-    /// `__spark_set_cow(ptr) -> ptr`
-    pub set_cow: FuncId,
-    /// `__spark_list_len(ptr) -> i64`
-    pub list_len: FuncId,
-    /// `__spark_list_contains(ptr, ptr) -> i8`
-    pub list_contains: FuncId,
-    /// `__spark_list_remove(ptr, i64) -> void`
-    pub list_remove: FuncId,
-    /// `__spark_map_len(ptr) -> i64`
-    pub map_len: FuncId,
-    /// `__spark_map_contains(ptr, ptr) -> i8`
-    pub map_contains: FuncId,
-    /// `__spark_map_remove(ptr, ptr) -> void`
-    pub map_remove: FuncId,
-    /// `__spark_set_len(ptr) -> i64`
-    pub set_len: FuncId,
-    /// `__spark_set_contains(ptr, ptr) -> i8`
-    pub set_contains: FuncId,
-    /// `__spark_set_remove(ptr, ptr) -> void`
-    pub set_remove: FuncId,
-    /// `__spark_string_len(ptr) -> i64`
+    /// `__spark_string_len`
     pub string_len: FuncId,
-    /// `__spark_print_int(i64) -> void`
-    pub print_int: FuncId,
-    /// `__spark_print_string(ptr) -> void`
-    pub print_string: FuncId,
-    /// `__spark_print_bool(i8) -> void`
-    pub print_bool: FuncId,
-    /// `__spark_print_float(f64) -> void`
-    pub print_float: FuncId,
-    /// `__spark_string_concat(ptr, ptr) -> ptr`
+    /// `__spark_string_concat`
     pub string_concat: FuncId,
-    /// `__spark_string_eq(ptr, ptr) -> i8`
+    /// `__spark_string_eq`
     pub string_eq: FuncId,
-    /// `__spark_hash_string_elem(elem_ptr: ptr) -> u64`
+    /// `__spark_hash_string_elem`
     pub hash_string_elem: FuncId,
-    /// `__spark_eq_string_elem(a: ptr, b: ptr) -> i8`
+    /// `__spark_eq_string_elem`
     pub eq_string_elem: FuncId,
-    /// `__spark_int_to_string(i64) -> ptr`
+
+    // ── Conversion ──────────────────────────────────────────────────
+    /// `__spark_int_to_string`
     pub int_to_string: FuncId,
-    /// `__spark_float_to_string(f64) -> ptr`
+    /// `__spark_float_to_string`
     pub float_to_string: FuncId,
-    /// `__spark_bool_to_string(i8) -> ptr`
+    /// `__spark_bool_to_string`
     pub bool_to_string: FuncId,
-    /// `__spark_env_alloc(size: i64) -> ptr`
-    pub env_alloc: FuncId,
-    /// `__spark_env_rc_dec(ptr) -> void`
-    pub env_rc_dec: FuncId,
-    /// `__spark_list_sort(ptr) -> ptr`
+
+    // ── Print ───────────────────────────────────────────────────────
+    /// `__spark_print_int`
+    pub print_int: FuncId,
+    /// `__spark_print_string`
+    pub print_string: FuncId,
+    /// `__spark_print_bool`
+    pub print_bool: FuncId,
+    /// `__spark_print_float`
+    pub print_float: FuncId,
+
+    // ── List ────────────────────────────────────────────────────────
+    /// `__spark_list_new`
+    pub list_new: FuncId,
+    /// `__spark_list_push`
+    pub list_push: FuncId,
+    /// `__spark_list_get`
+    pub list_get: FuncId,
+    /// `__spark_list_rc_dec`
+    pub list_rc_dec: FuncId,
+    /// `__spark_list_cow`
+    pub list_cow: FuncId,
+    /// `__spark_list_len`
+    pub list_len: FuncId,
+    /// `__spark_list_contains`
+    pub list_contains: FuncId,
+    /// `__spark_list_remove`
+    pub list_remove: FuncId,
+    /// `__spark_list_sort`
     pub list_sort: FuncId,
-    /// `__spark_list_take(ptr, i64) -> ptr`
+    /// `__spark_list_take`
     pub list_take: FuncId,
-    /// `__spark_list_reverse(ptr) -> ptr`
+    /// `__spark_list_reverse`
     pub list_reverse: FuncId,
-    /// `__spark_parallel_foreach(list_ptr, fn_ptr, env_ptr, elem_size, cb_kind) -> void`
-    pub parallel_foreach: FuncId,
-    /// `__spark_parallel_map(list_ptr, fn_ptr, env_ptr, elem_size, result_elem_size, cb_kind) -> ptr`
-    pub parallel_map: FuncId,
-    /// `__spark_parallel_map_reduce(list_ptr, map_fn, map_env, reduce_fn, reduce_env, initial, elem_size, map_cb_kind, reduce_cb_kind) -> i64`
-    pub parallel_map_reduce: FuncId,
-    /// `__spark_spawn(fn_ptr, env_ptr, result_size, is_float) -> ptr`
-    pub spawn: FuncId,
-    /// `__spark_await(future_ptr) -> ptr`
-    pub await_future: FuncId,
-    /// `__spark_future_rc_dec(future_ptr)`
-    pub future_rc_dec: FuncId,
-    /// `__spark_alloc_state(size: i64) -> ptr`
-    pub alloc_state: FuncId,
-    /// `__spark_spawn_coop(poll_fn, state_ptr, state_size, result_size, result_offset) -> ptr`
-    pub spawn_coop: FuncId,
-    /// `__spark_try_poll(future_ptr) -> ptr`
-    pub try_poll: FuncId,
-    /// `__spark_channel_new(elem_size: i64) -> ptr`
-    pub channel_new: FuncId,
-    /// `__spark_channel_send(ch: ptr, value_ptr: ptr, elem_size: i64)`
-    pub channel_send: FuncId,
-    /// `__spark_channel_recv(ch: ptr, elem_size: i64) -> ptr`
-    pub channel_recv: FuncId,
-    /// `__spark_channel_try_recv(ch: ptr, elem_size: i64) -> ptr`
-    pub channel_try_recv: FuncId,
-    /// `__spark_channel_close(ch: ptr)`
-    pub channel_close: FuncId,
-    /// `__spark_channel_rc_dec(ch: ptr)`
-    pub channel_rc_dec: FuncId,
-    /// `__spark_list_from_range(start: i64, end: i64, inclusive: i8, step: i64) -> ptr`
+    /// `__spark_list_from_range`
     pub list_from_range: FuncId,
-    /// `__spark_range_len(start: i64, end: i64, inclusive: i8, step: i64) -> i64`
+
+    // ── Map ─────────────────────────────────────────────────────────
+    /// `__spark_map_new`
+    pub map_new: FuncId,
+    /// `__spark_map_insert`
+    pub map_insert: FuncId,
+    /// `__spark_map_get`
+    pub map_get: FuncId,
+    /// `__spark_map_rc_dec`
+    pub map_rc_dec: FuncId,
+    /// `__spark_map_cow`
+    pub map_cow: FuncId,
+    /// `__spark_map_len`
+    pub map_len: FuncId,
+    /// `__spark_map_contains`
+    pub map_contains: FuncId,
+    /// `__spark_map_remove`
+    pub map_remove: FuncId,
+
+    // ── Set ─────────────────────────────────────────────────────────
+    /// `__spark_set_new`
+    pub set_new: FuncId,
+    /// `__spark_set_insert`
+    pub set_insert: FuncId,
+    /// `__spark_set_rc_dec`
+    pub set_rc_dec: FuncId,
+    /// `__spark_set_cow`
+    pub set_cow: FuncId,
+    /// `__spark_set_len`
+    pub set_len: FuncId,
+    /// `__spark_set_contains`
+    pub set_contains: FuncId,
+    /// `__spark_set_remove`
+    pub set_remove: FuncId,
+
+    // ── Reference Counting ──────────────────────────────────────────
+    /// `__spark_rc_release`
+    pub rc_release: FuncId,
+    /// `__spark_rc_inc`
+    pub rc_inc: FuncId,
+
+    // ── Closure Environment ─────────────────────────────────────────
+    /// `__spark_env_alloc`
+    pub env_alloc: FuncId,
+    /// `__spark_env_rc_dec`
+    pub env_rc_dec: FuncId,
+
+    // ── Concurrency ─────────────────────────────────────────────────
+    /// `__spark_spawn`
+    pub spawn: FuncId,
+    /// `__spark_await`
+    pub await_future: FuncId,
+    /// `__spark_future_rc_dec`
+    pub future_rc_dec: FuncId,
+    /// `__spark_alloc_state`
+    pub alloc_state: FuncId,
+    /// `__spark_spawn_coop`
+    pub spawn_coop: FuncId,
+    /// `__spark_try_poll`
+    pub try_poll: FuncId,
+
+    // ── Channels ────────────────────────────────────────────────────
+    /// `__spark_channel_new`
+    pub channel_new: FuncId,
+    /// `__spark_channel_send`
+    pub channel_send: FuncId,
+    /// `__spark_channel_recv`
+    pub channel_recv: FuncId,
+    /// `__spark_channel_try_recv`
+    pub channel_try_recv: FuncId,
+    /// `__spark_channel_close`
+    pub channel_close: FuncId,
+    /// `__spark_channel_rc_dec`
+    pub channel_rc_dec: FuncId,
+
+    // ── Range / Parallel ────────────────────────────────────────────
+    /// `__spark_range_len`
     pub range_len: FuncId,
-    /// `__spark_parallel_range_foreach(start, end, inclusive, step, fn_ptr, env_ptr, cb_kind) -> void`
+    /// `__spark_parallel_foreach`
+    pub parallel_foreach: FuncId,
+    /// `__spark_parallel_map`
+    pub parallel_map: FuncId,
+    /// `__spark_parallel_map_reduce`
+    pub parallel_map_reduce: FuncId,
+    /// `__spark_parallel_range_foreach`
     pub parallel_range_foreach: FuncId,
-    /// `__spark_parallel_range_map(start, end, inclusive, step, fn_ptr, env_ptr, result_elem_size, cb_kind) -> ptr`
+    /// `__spark_parallel_range_map`
     pub parallel_range_map: FuncId,
-    /// `__spark_parallel_range_map_reduce(start, end, inclusive, step, map_fn, map_env, reduce_fn, reduce_env, initial, map_cb_kind, reduce_cb_kind) -> i64`
+    /// `__spark_parallel_range_map_reduce`
     pub parallel_range_map_reduce: FuncId,
 }
 
 impl RuntimeStubs {
     /// Declares all runtime stubs in the given module.
+    ///
+    /// Each stub is declared from its canonical [`spark_abi::RuntimeFn`]
+    /// signature, so any mismatch between codegen and runtime surfaces as
+    /// a compile-time error in `spark_abi` rather than a silent runtime crash.
     #[allow(clippy::too_many_lines)]
     pub fn declare_all<M: Module>(module: &mut M, call_conv: CallConv) -> Self {
+        use spark_abi as abi;
         let ptr_type = module.target_config().pointer_type();
 
         Self {
-            string_new: declare_fn(module, "__spark_string_new", &[], Some(ptr_type), call_conv),
-            string_from_literal: declare_fn(
+            // String
+            string_new: declare_abi(module, &abi::STRING_NEW, ptr_type, call_conv),
+            string_from_literal: declare_abi(
                 module,
-                "__spark_string_from_literal",
-                &[ptr_type, types::I64],
-                Some(ptr_type),
+                &abi::STRING_FROM_LITERAL,
+                ptr_type,
                 call_conv,
             ),
-            list_new: declare_fn(
+            string_rc_dec: declare_abi(module, &abi::STRING_RC_DEC, ptr_type, call_conv),
+            string_cow: declare_abi(module, &abi::STRING_COW, ptr_type, call_conv),
+            string_len: declare_abi(module, &abi::STRING_LEN, ptr_type, call_conv),
+            string_concat: declare_abi(module, &abi::STRING_CONCAT, ptr_type, call_conv),
+            string_eq: declare_abi(module, &abi::STRING_EQ, ptr_type, call_conv),
+            hash_string_elem: declare_abi(module, &abi::HASH_STRING_ELEM, ptr_type, call_conv),
+            eq_string_elem: declare_abi(module, &abi::EQ_STRING_ELEM, ptr_type, call_conv),
+
+            // Conversion
+            int_to_string: declare_abi(module, &abi::INT_TO_STRING, ptr_type, call_conv),
+            float_to_string: declare_abi(module, &abi::FLOAT_TO_STRING, ptr_type, call_conv),
+            bool_to_string: declare_abi(module, &abi::BOOL_TO_STRING, ptr_type, call_conv),
+
+            // Print
+            print_int: declare_abi(module, &abi::PRINT_INT, ptr_type, call_conv),
+            print_string: declare_abi(module, &abi::PRINT_STRING, ptr_type, call_conv),
+            print_bool: declare_abi(module, &abi::PRINT_BOOL, ptr_type, call_conv),
+            print_float: declare_abi(module, &abi::PRINT_FLOAT, ptr_type, call_conv),
+
+            // List
+            list_new: declare_abi(module, &abi::LIST_NEW, ptr_type, call_conv),
+            list_push: declare_abi(module, &abi::LIST_PUSH, ptr_type, call_conv),
+            list_get: declare_abi(module, &abi::LIST_GET, ptr_type, call_conv),
+            list_rc_dec: declare_abi(module, &abi::LIST_RC_DEC, ptr_type, call_conv),
+            list_cow: declare_abi(module, &abi::LIST_COW, ptr_type, call_conv),
+            list_len: declare_abi(module, &abi::LIST_LEN, ptr_type, call_conv),
+            list_contains: declare_abi(module, &abi::LIST_CONTAINS, ptr_type, call_conv),
+            list_remove: declare_abi(module, &abi::LIST_REMOVE, ptr_type, call_conv),
+            list_sort: declare_abi(module, &abi::LIST_SORT, ptr_type, call_conv),
+            list_take: declare_abi(module, &abi::LIST_TAKE, ptr_type, call_conv),
+            list_reverse: declare_abi(module, &abi::LIST_REVERSE, ptr_type, call_conv),
+            list_from_range: declare_abi(module, &abi::LIST_FROM_RANGE, ptr_type, call_conv),
+
+            // Map
+            map_new: declare_abi(module, &abi::MAP_NEW, ptr_type, call_conv),
+            map_insert: declare_abi(module, &abi::MAP_INSERT, ptr_type, call_conv),
+            map_get: declare_abi(module, &abi::MAP_GET, ptr_type, call_conv),
+            map_rc_dec: declare_abi(module, &abi::MAP_RC_DEC, ptr_type, call_conv),
+            map_cow: declare_abi(module, &abi::MAP_COW, ptr_type, call_conv),
+            map_len: declare_abi(module, &abi::MAP_LEN, ptr_type, call_conv),
+            map_contains: declare_abi(module, &abi::MAP_CONTAINS, ptr_type, call_conv),
+            map_remove: declare_abi(module, &abi::MAP_REMOVE, ptr_type, call_conv),
+
+            // Set
+            set_new: declare_abi(module, &abi::SET_NEW, ptr_type, call_conv),
+            set_insert: declare_abi(module, &abi::SET_INSERT, ptr_type, call_conv),
+            set_rc_dec: declare_abi(module, &abi::SET_RC_DEC, ptr_type, call_conv),
+            set_cow: declare_abi(module, &abi::SET_COW, ptr_type, call_conv),
+            set_len: declare_abi(module, &abi::SET_LEN, ptr_type, call_conv),
+            set_contains: declare_abi(module, &abi::SET_CONTAINS, ptr_type, call_conv),
+            set_remove: declare_abi(module, &abi::SET_REMOVE, ptr_type, call_conv),
+
+            // RC
+            rc_release: declare_abi(module, &abi::RC_RELEASE, ptr_type, call_conv),
+            rc_inc: declare_abi(module, &abi::RC_INC, ptr_type, call_conv),
+
+            // Env
+            env_alloc: declare_abi(module, &abi::ENV_ALLOC, ptr_type, call_conv),
+            env_rc_dec: declare_abi(module, &abi::ENV_RC_DEC, ptr_type, call_conv),
+
+            // Concurrency
+            spawn: declare_abi(module, &abi::SPAWN, ptr_type, call_conv),
+            await_future: declare_abi(module, &abi::AWAIT_FUTURE, ptr_type, call_conv),
+            future_rc_dec: declare_abi(module, &abi::FUTURE_RC_DEC, ptr_type, call_conv),
+            alloc_state: declare_abi(module, &abi::ALLOC_STATE, ptr_type, call_conv),
+            spawn_coop: declare_abi(module, &abi::SPAWN_COOP, ptr_type, call_conv),
+            try_poll: declare_abi(module, &abi::TRY_POLL, ptr_type, call_conv),
+
+            // Channels
+            channel_new: declare_abi(module, &abi::CHANNEL_NEW, ptr_type, call_conv),
+            channel_send: declare_abi(module, &abi::CHANNEL_SEND, ptr_type, call_conv),
+            channel_recv: declare_abi(module, &abi::CHANNEL_RECV, ptr_type, call_conv),
+            channel_try_recv: declare_abi(module, &abi::CHANNEL_TRY_RECV, ptr_type, call_conv),
+            channel_close: declare_abi(module, &abi::CHANNEL_CLOSE, ptr_type, call_conv),
+            channel_rc_dec: declare_abi(module, &abi::CHANNEL_RC_DEC, ptr_type, call_conv),
+
+            // Range / Parallel
+            range_len: declare_abi(module, &abi::RANGE_LEN, ptr_type, call_conv),
+            parallel_foreach: declare_abi(module, &abi::PARALLEL_FOREACH, ptr_type, call_conv),
+            parallel_map: declare_abi(module, &abi::PARALLEL_MAP, ptr_type, call_conv),
+            parallel_map_reduce: declare_abi(
                 module,
-                "__spark_list_new",
-                &[types::I64, ptr_type, ptr_type],
-                Some(ptr_type),
+                &abi::PARALLEL_MAP_REDUCE,
+                ptr_type,
                 call_conv,
             ),
-            list_push: declare_fn(
+            parallel_range_foreach: declare_abi(
                 module,
-                "__spark_list_push",
-                &[ptr_type, ptr_type],
-                None,
+                &abi::PARALLEL_RANGE_FOREACH,
+                ptr_type,
                 call_conv,
             ),
-            list_get: declare_fn(
+            parallel_range_map: declare_abi(module, &abi::PARALLEL_RANGE_MAP, ptr_type, call_conv),
+            parallel_range_map_reduce: declare_abi(
                 module,
-                "__spark_list_get",
-                &[ptr_type, types::I64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            map_new: declare_fn(
-                module,
-                "__spark_map_new",
-                &[
-                    types::I64,
-                    types::I64,
-                    ptr_type,
-                    ptr_type,
-                    ptr_type,
-                    ptr_type,
-                ],
-                Some(ptr_type),
-                call_conv,
-            ),
-            map_insert: declare_fn(
-                module,
-                "__spark_map_insert",
-                &[ptr_type, ptr_type, ptr_type],
-                None,
-                call_conv,
-            ),
-            map_get: declare_fn(
-                module,
-                "__spark_map_get",
-                &[ptr_type, ptr_type],
-                Some(ptr_type),
-                call_conv,
-            ),
-            set_new: declare_fn(
-                module,
-                "__spark_set_new",
-                &[types::I64, ptr_type, ptr_type, ptr_type],
-                Some(ptr_type),
-                call_conv,
-            ),
-            set_insert: declare_fn(
-                module,
-                "__spark_set_insert",
-                &[ptr_type, ptr_type],
-                None,
-                call_conv,
-            ),
-            rc_release: declare_fn(module, "__spark_rc_release", &[ptr_type], None, call_conv),
-            rc_inc: declare_fn(module, "__spark_rc_inc", &[ptr_type], None, call_conv),
-            string_rc_dec: declare_fn(
-                module,
-                "__spark_string_rc_dec",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
-            list_rc_dec: declare_fn(module, "__spark_list_rc_dec", &[ptr_type], None, call_conv),
-            map_rc_dec: declare_fn(module, "__spark_map_rc_dec", &[ptr_type], None, call_conv),
-            set_rc_dec: declare_fn(module, "__spark_set_rc_dec", &[ptr_type], None, call_conv),
-            string_cow: declare_fn(
-                module,
-                "__spark_string_cow",
-                &[ptr_type],
-                Some(ptr_type),
-                call_conv,
-            ),
-            list_cow: declare_fn(
-                module,
-                "__spark_list_cow",
-                &[ptr_type],
-                Some(ptr_type),
-                call_conv,
-            ),
-            map_cow: declare_fn(
-                module,
-                "__spark_map_cow",
-                &[ptr_type],
-                Some(ptr_type),
-                call_conv,
-            ),
-            set_cow: declare_fn(
-                module,
-                "__spark_set_cow",
-                &[ptr_type],
-                Some(ptr_type),
-                call_conv,
-            ),
-            list_len: declare_fn(
-                module,
-                "__spark_list_len",
-                &[ptr_type],
-                Some(types::I64),
-                call_conv,
-            ),
-            list_contains: declare_fn(
-                module,
-                "__spark_list_contains",
-                &[ptr_type, ptr_type],
-                Some(types::I8),
-                call_conv,
-            ),
-            list_remove: declare_fn(
-                module,
-                "__spark_list_remove",
-                &[ptr_type, types::I64],
-                None,
-                call_conv,
-            ),
-            map_len: declare_fn(
-                module,
-                "__spark_map_len",
-                &[ptr_type],
-                Some(types::I64),
-                call_conv,
-            ),
-            map_contains: declare_fn(
-                module,
-                "__spark_map_contains",
-                &[ptr_type, ptr_type],
-                Some(types::I8),
-                call_conv,
-            ),
-            map_remove: declare_fn(
-                module,
-                "__spark_map_remove",
-                &[ptr_type, ptr_type],
-                None,
-                call_conv,
-            ),
-            set_len: declare_fn(
-                module,
-                "__spark_set_len",
-                &[ptr_type],
-                Some(types::I64),
-                call_conv,
-            ),
-            set_contains: declare_fn(
-                module,
-                "__spark_set_contains",
-                &[ptr_type, ptr_type],
-                Some(types::I8),
-                call_conv,
-            ),
-            set_remove: declare_fn(
-                module,
-                "__spark_set_remove",
-                &[ptr_type, ptr_type],
-                None,
-                call_conv,
-            ),
-            string_len: declare_fn(
-                module,
-                "__spark_string_len",
-                &[ptr_type],
-                Some(types::I64),
-                call_conv,
-            ),
-            print_int: declare_fn(module, "__spark_print_int", &[types::I64], None, call_conv),
-            print_string: declare_fn(module, "__spark_print_string", &[ptr_type], None, call_conv),
-            print_bool: declare_fn(module, "__spark_print_bool", &[types::I8], None, call_conv),
-            print_float: declare_fn(
-                module,
-                "__spark_print_float",
-                &[types::F64],
-                None,
-                call_conv,
-            ),
-            string_concat: declare_fn(
-                module,
-                "__spark_string_concat",
-                &[ptr_type, ptr_type],
-                Some(ptr_type),
-                call_conv,
-            ),
-            string_eq: declare_fn(
-                module,
-                "__spark_string_eq",
-                &[ptr_type, ptr_type],
-                Some(types::I8),
-                call_conv,
-            ),
-            hash_string_elem: declare_fn(
-                module,
-                "__spark_hash_string_elem",
-                &[ptr_type],
-                Some(types::I64),
-                call_conv,
-            ),
-            eq_string_elem: declare_fn(
-                module,
-                "__spark_eq_string_elem",
-                &[ptr_type, ptr_type],
-                Some(types::I8),
-                call_conv,
-            ),
-            int_to_string: declare_fn(
-                module,
-                "__spark_int_to_string",
-                &[types::I64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            float_to_string: declare_fn(
-                module,
-                "__spark_float_to_string",
-                &[types::F64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            bool_to_string: declare_fn(
-                module,
-                "__spark_bool_to_string",
-                &[types::I8],
-                Some(ptr_type),
-                call_conv,
-            ),
-            env_alloc: declare_fn(
-                module,
-                "__spark_env_alloc",
-                &[types::I64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            env_rc_dec: declare_fn(module, "__spark_env_rc_dec", &[ptr_type], None, call_conv),
-            list_sort: declare_fn(
-                module,
-                "__spark_list_sort",
-                &[ptr_type, types::I64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            list_take: declare_fn(
-                module,
-                "__spark_list_take",
-                &[ptr_type, types::I64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            list_reverse: declare_fn(
-                module,
-                "__spark_list_reverse",
-                &[ptr_type],
-                Some(ptr_type),
-                call_conv,
-            ),
-            parallel_foreach: declare_fn(
-                module,
-                "__spark_parallel_foreach",
-                &[ptr_type, ptr_type, ptr_type, types::I64, types::I8],
-                None,
-                call_conv,
-            ),
-            parallel_map: declare_fn(
-                module,
-                "__spark_parallel_map",
-                &[
-                    ptr_type,
-                    ptr_type,
-                    ptr_type,
-                    types::I64,
-                    types::I64,
-                    types::I8,
-                ],
-                Some(ptr_type),
-                call_conv,
-            ),
-            parallel_map_reduce: declare_fn(
-                module,
-                "__spark_parallel_map_reduce",
-                &[
-                    ptr_type,   // list_ptr
-                    ptr_type,   // map_fn
-                    ptr_type,   // map_env
-                    ptr_type,   // reduce_fn
-                    ptr_type,   // reduce_env
-                    types::I64, // initial
-                    types::I64, // elem_size
-                    types::I8,  // map_cb_kind
-                    types::I8,  // reduce_cb_kind
-                ],
-                Some(types::I64),
-                call_conv,
-            ),
-            spawn: declare_fn(
-                module,
-                "__spark_spawn",
-                &[ptr_type, ptr_type, types::I64, types::I8],
-                Some(ptr_type),
-                call_conv,
-            ),
-            await_future: declare_fn(
-                module,
-                "__spark_await",
-                &[ptr_type],
-                Some(ptr_type),
-                call_conv,
-            ),
-            future_rc_dec: declare_fn(
-                module,
-                "__spark_future_rc_dec",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
-            alloc_state: declare_fn(
-                module,
-                "__spark_alloc_state",
-                &[types::I64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            spawn_coop: declare_fn(
-                module,
-                "__spark_spawn_coop",
-                &[ptr_type, ptr_type, types::I64, types::I64, types::I64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            try_poll: declare_fn(
-                module,
-                "__spark_try_poll",
-                &[ptr_type],
-                Some(ptr_type),
-                call_conv,
-            ),
-            channel_new: declare_fn(
-                module,
-                "__spark_channel_new",
-                &[types::I64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            channel_send: declare_fn(
-                module,
-                "__spark_channel_send",
-                &[ptr_type, ptr_type, types::I64],
-                None,
-                call_conv,
-            ),
-            channel_recv: declare_fn(
-                module,
-                "__spark_channel_recv",
-                &[ptr_type, types::I64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            channel_try_recv: declare_fn(
-                module,
-                "__spark_channel_try_recv",
-                &[ptr_type, types::I64, ptr_type, types::I64],
-                None,
-                call_conv,
-            ),
-            channel_close: declare_fn(
-                module,
-                "__spark_channel_close",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
-            channel_rc_dec: declare_fn(
-                module,
-                "__spark_channel_rc_dec",
-                &[ptr_type],
-                None,
-                call_conv,
-            ),
-            list_from_range: declare_fn(
-                module,
-                "__spark_list_from_range",
-                &[types::I64, types::I64, types::I8, types::I64],
-                Some(ptr_type),
-                call_conv,
-            ),
-            range_len: declare_fn(
-                module,
-                "__spark_range_len",
-                &[types::I64, types::I64, types::I8, types::I64],
-                Some(types::I64),
-                call_conv,
-            ),
-            parallel_range_foreach: declare_fn(
-                module,
-                "__spark_parallel_range_foreach",
-                &[
-                    types::I64, // start
-                    types::I64, // end
-                    types::I8,  // inclusive
-                    types::I64, // step
-                    ptr_type,   // fn_ptr
-                    ptr_type,   // env_ptr
-                    types::I8,  // cb_kind
-                ],
-                None,
-                call_conv,
-            ),
-            parallel_range_map: declare_fn(
-                module,
-                "__spark_parallel_range_map",
-                &[
-                    types::I64, // start
-                    types::I64, // end
-                    types::I8,  // inclusive
-                    types::I64, // step
-                    ptr_type,   // fn_ptr
-                    ptr_type,   // env_ptr
-                    types::I64, // result_elem_size
-                    types::I8,  // cb_kind
-                ],
-                Some(ptr_type),
-                call_conv,
-            ),
-            parallel_range_map_reduce: declare_fn(
-                module,
-                "__spark_parallel_range_map_reduce",
-                &[
-                    types::I64, // start
-                    types::I64, // end
-                    types::I8,  // inclusive
-                    types::I64, // step
-                    ptr_type,   // map_fn
-                    ptr_type,   // map_env
-                    ptr_type,   // reduce_fn
-                    ptr_type,   // reduce_env
-                    types::I64, // initial
-                    types::I8,  // map_cb_kind
-                    types::I8,  // reduce_cb_kind
-                ],
-                Some(types::I64),
+                &abi::PARALLEL_RANGE_MAP_REDUCE,
+                ptr_type,
                 call_conv,
             ),
         }
     }
 }
 
-/// Helper to declare a single runtime function as an imported symbol.
-fn declare_fn<M: Module>(
+/// Converts an [`AbiType`] to a Cranelift IR type.
+const fn abi_to_clif(
+    abi: AbiType,
+    ptr_type: cranelift_codegen::ir::Type,
+) -> cranelift_codegen::ir::Type {
+    match abi {
+        AbiType::I8 => types::I8,
+        AbiType::I64 => types::I64,
+        AbiType::F32 => types::F32,
+        AbiType::F64 => types::F64,
+        AbiType::Ptr => ptr_type,
+    }
+}
+
+/// Declares a runtime function from its [`RuntimeFn`] ABI definition.
+fn declare_abi<M: Module>(
     module: &mut M,
-    name: &str,
-    params: &[cranelift_codegen::ir::Type],
-    ret: Option<cranelift_codegen::ir::Type>,
+    func: &RuntimeFn,
+    ptr_type: cranelift_codegen::ir::Type,
     call_conv: CallConv,
 ) -> FuncId {
     let mut sig = Signature::new(call_conv);
-    for &p in params {
-        sig.params.push(AbiParam::new(p));
+    for &p in func.params {
+        sig.params.push(AbiParam::new(abi_to_clif(p, ptr_type)));
     }
-    if let Some(r) = ret {
-        sig.returns.push(AbiParam::new(r));
+    if let Some(r) = func.ret {
+        sig.returns.push(AbiParam::new(abi_to_clif(r, ptr_type)));
     }
     module
-        .declare_function(name, Linkage::Import, &sig)
-        .expect("ICE: failed to declare runtime stub; this is a compiler bug")
+        .declare_function(func.name, Linkage::Import, &sig)
+        .unwrap_or_else(|e| {
+            panic!(
+                "ICE: failed to declare runtime stub '{}': {e}; this is a compiler bug",
+                func.name
+            )
+        })
 }

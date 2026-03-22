@@ -240,6 +240,21 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     });
     emit_warnings(&opt_output.diagnostics, &source_map);
 
+    // -- Phase 10.75: MIR validation (debug builds) ---------------------------
+    if cfg!(debug_assertions) {
+        let mir_errors = spark_mir::validate::validate(&opt_output.mir);
+        if !mir_errors.is_empty() {
+            for err in &mir_errors {
+                eprintln!("MIR validation error: {err}");
+            }
+            panic!(
+                "ICE: MIR validation failed with {} error(s); \
+                 this is a compiler bug — please report it",
+                mir_errors.len()
+            );
+        }
+    }
+
     // -- Phase 11: Code generation --------------------------------------------
     let codegen_output = spark_codegen::generate(CodegenInput {
         mir: opt_output.mir,

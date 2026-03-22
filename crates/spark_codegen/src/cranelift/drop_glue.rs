@@ -82,8 +82,11 @@ pub fn emit_typed_drop<M: Module>(
             builder.ins().call(func_ref, &[ptr_val]);
         }
         _ => {
-            // Non-droppable type — no-op (shouldn't reach here if the caller
-            // checked `needs_drop` first).
+            // Non-droppable type — no-op. The caller should have checked
+            // `needs_drop` before calling this; if we reach here it means
+            // a Struct/Tuple/Union/Optional/Enum containing droppable members
+            // is being dropped, but the top-level type itself has no RC.
+            // The drop elaboration pass handles nested drops separately.
         }
     }
 }

@@ -1,0 +1,7 @@
+fn main(): Int {
+    items: List[Int]! = [1, 2, 3]
+    adder: (): Void = fn(): Void { items.append(4) }
+    adder()
+    print(items.len())
+    return 0
+}

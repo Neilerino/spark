@@ -190,11 +190,11 @@ impl LayoutCache {
             Ty::Applied { base, args } => (*base, args.clone()),
             // Not an Applied type — fall back to regular struct layout.
             Ty::Struct(def_id) => return self.struct_layout_of(*def_id, table),
-            _ => {
-                return StructLayout {
-                    layout: TypeLayout { size: 0, align: 1 },
-                    field_offsets: Vec::new(),
-                };
+            other => {
+                panic!(
+                    "ICE: applied_struct_layout_of called on non-struct type {other:?}; \
+                     expected Applied or Struct"
+                );
             }
         };
 

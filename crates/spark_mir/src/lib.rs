@@ -38,6 +38,7 @@ pub mod lower_function;
 pub mod lower_pattern;
 pub mod lower_stmt;
 pub mod mir;
+pub mod validate;
 pub mod monomorphize;
 pub mod pretty;
 

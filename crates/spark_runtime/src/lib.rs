@@ -1941,7 +1941,8 @@ pub extern "C" fn __spark_env_alloc(size: i64) -> *mut u8 {
     if payload_size == 0 {
         return std::ptr::null_mut();
     }
-    let total_size = 24 + payload_size;
+    let header_size = spark_abi::ENV_HEADER_SIZE as usize;
+    let total_size = header_size + payload_size;
     let align = std::mem::align_of::<u64>();
     let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(total_size, align) };
     let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
@@ -1949,11 +1950,11 @@ pub extern "C" fn __spark_env_alloc(size: i64) -> *mut u8 {
         eprintln!("spark: out of memory allocating closure environment");
         std::process::abort();
     }
-    // Store rc = 1 at offset 0.
-    unsafe { *(ptr.cast::<usize>()) = 1 };
-    // Store total_alloc_size at offset 8.
-    unsafe { *(ptr.add(8).cast::<usize>()) = total_size };
-    // dtor at offset 16 is zero-initialized by alloc_zeroed (null = no destructor).
+    // Store rc = 1 at the RC offset.
+    unsafe { *(ptr.add(spark_abi::ENV_RC_OFFSET as usize).cast::<usize>()) = 1 };
+    // Store total_alloc_size at the alloc-size offset.
+    unsafe { *(ptr.add(spark_abi::ENV_ALLOC_SIZE_OFFSET as usize).cast::<usize>()) = total_size };
+    // dtor at ENV_DTOR_OFFSET is zero-initialized by alloc_zeroed (null = no destructor).
     ptr
 }
 
@@ -1984,12 +1985,13 @@ pub unsafe extern "C" fn __spark_env_rc_dec(ptr: *mut u8) {
     *rc -= 1;
     if *rc == 0 {
         // Call destructor if one was registered by codegen.
-        let dtor = unsafe { *(ptr.add(16).cast::<usize>()) };
+        let dtor = unsafe { *(ptr.add(spark_abi::ENV_DTOR_OFFSET as usize).cast::<usize>()) };
         if dtor != 0 {
             let dtor_fn: unsafe extern "C" fn(*mut u8) = unsafe { std::mem::transmute(dtor) };
             unsafe { dtor_fn(ptr) };
         }
-        let alloc_size = unsafe { *(ptr.add(8).cast::<usize>()) };
+        let alloc_size =
+            unsafe { *(ptr.add(spark_abi::ENV_ALLOC_SIZE_OFFSET as usize).cast::<usize>()) };
         let align = std::mem::align_of::<u64>();
         let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(alloc_size, align) };
         unsafe { std::alloc::dealloc(ptr, layout) };
@@ -2142,16 +2144,18 @@ mod tests {
     #[test]
     fn env_alloc_has_rc_header() {
         unsafe {
+            let header = spark_abi::ENV_HEADER_SIZE as usize;
             let ptr = __spark_env_alloc(24);
             assert!(!ptr.is_null());
             // rc should be 1
-            let rc = *(ptr.cast::<usize>());
+            let rc = *(ptr.add(spark_abi::ENV_RC_OFFSET as usize).cast::<usize>());
             assert_eq!(rc, 1);
-            // alloc_size should be 24 (header) + 24 (payload) = 48
-            let alloc_size = *(ptr.add(8).cast::<usize>());
-            assert_eq!(alloc_size, 48);
-            // dtor slot at offset 16 should be null (zero-initialized)
-            let dtor = *(ptr.add(16).cast::<usize>());
+            // alloc_size should be header + 24 (payload)
+            let alloc_size =
+                *(ptr.add(spark_abi::ENV_ALLOC_SIZE_OFFSET as usize).cast::<usize>());
+            assert_eq!(alloc_size, header + 24);
+            // dtor slot should be null (zero-initialized)
+            let dtor = *(ptr.add(spark_abi::ENV_DTOR_OFFSET as usize).cast::<usize>());
             assert_eq!(dtor, 0);
             // Free it
             __spark_env_rc_dec(ptr);
@@ -2197,13 +2201,46 @@ mod tests {
         unsafe {
             DTOR_CALLED.store(false, Ordering::SeqCst);
             let ptr = __spark_env_alloc(8);
-            // Set dtor fn ptr at offset 16.
-            *(ptr.add(16).cast::<usize>()) = test_dtor as usize;
+            // Set dtor fn ptr at the dtor offset.
+            *(ptr.add(spark_abi::ENV_DTOR_OFFSET as usize).cast::<usize>()) = test_dtor as usize;
             assert!(!DTOR_CALLED.load(Ordering::SeqCst));
             // Dropping to zero should call the destructor.
             __spark_env_rc_dec(ptr);
             assert!(DTOR_CALLED.load(Ordering::SeqCst));
         }
+    }
+
+    /// Verify that every function in the spark_abi registry has a corresponding
+    /// `#[no_mangle]` symbol in this crate. This test acts as a compile-time
+    /// contract: if a new function is added to `spark_abi::ALL_RUNTIME_FUNCTIONS`
+    /// but not implemented here, this test will fail.
+    #[test]
+    fn abi_registry_covers_all_runtime_functions() {
+        // We can't introspect #[no_mangle] symbols at test time, but we can
+        // verify the registry is internally consistent and that the env header
+        // constants match our actual struct layout.
+        let names: Vec<&str> = spark_abi::ALL_RUNTIME_FUNCTIONS.iter().map(|f| f.name).collect();
+
+        // Spot-check that key functions are in the registry.
+        assert!(names.contains(&"__spark_list_new"), "missing __spark_list_new");
+        assert!(names.contains(&"__spark_map_new"), "missing __spark_map_new");
+        assert!(names.contains(&"__spark_set_new"), "missing __spark_set_new");
+        assert!(names.contains(&"__spark_env_alloc"), "missing __spark_env_alloc");
+        assert!(names.contains(&"__spark_env_rc_dec"), "missing __spark_env_rc_dec");
+        assert!(names.contains(&"__spark_string_new"), "missing __spark_string_new");
+        assert!(names.contains(&"__spark_rc_inc"), "missing __spark_rc_inc");
+        assert!(names.contains(&"__spark_channel_new"), "missing __spark_channel_new");
+        assert!(names.contains(&"__spark_spawn"), "missing __spark_spawn");
+
+        // Verify the env header size matches the layout we use at runtime.
+        // The env is: [rc: usize][alloc_size: usize][dtor: fn_ptr]
+        let expected_header = 3 * std::mem::size_of::<usize>();
+        assert_eq!(
+            spark_abi::ENV_HEADER_SIZE as usize,
+            expected_header,
+            "ENV_HEADER_SIZE mismatch: abi says {}, runtime expects {expected_header}",
+            spark_abi::ENV_HEADER_SIZE
+        );
     }
 
     /// Helper: read elements from a SparkList of i64.

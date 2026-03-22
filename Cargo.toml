@@ -18,6 +18,7 @@ members = [
     "crates/spark_drop",
     "crates/spark_driver",
     "crates/spark_stdlib",
+    "crates/spark_abi",
     "crates/spark_runtime",
     "crates/spark_package",
     "crates/spark_bindgen",
@@ -52,6 +53,7 @@ spark_opt = { path = "crates/spark_opt" }
 spark_drop = { path = "crates/spark_drop" }
 spark_stdlib = { path = "crates/spark_stdlib" }
 spark_package = { path = "crates/spark_package" }
+spark_abi = { path = "crates/spark_abi" }
 spark_bindgen = { path = "crates/spark_bindgen" }
 
 # FFI bindgen

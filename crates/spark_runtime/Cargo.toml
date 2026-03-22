@@ -14,6 +14,7 @@ crate-type = ["staticlib"]
 unsafe_code = "allow"
 
 [dependencies]
+spark_abi = { workspace = true }
 rayon = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "net", "io-util", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

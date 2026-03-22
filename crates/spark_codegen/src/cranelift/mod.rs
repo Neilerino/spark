@@ -379,7 +379,7 @@ impl CraneliftBackend {
 
                 // Compute capture offsets (same logic as emit_closure_construction).
                 let mut layouts = crate::layout::LayoutCache::new(ptr_type.bytes());
-                let mut offset: u32 = 24; // skip header
+                let mut offset: u32 = spark_abi::ENV_CAPTURES_OFFSET; // skip header
 
                 for (_cap_def_id, cap_ty) in &mir_func.captures {
                     let cap_layout = layouts.layout_of(*cap_ty, table);
@@ -626,7 +626,7 @@ impl CraneliftBackend {
         if is_lambda && !mir_func.captures.is_empty() {
             if let Some(env_ptr_val) = fctx.env_ptr {
                 let mut capture_layouts = crate::layout::LayoutCache::new(ptr_type.bytes());
-                let mut offset: u32 = 24; // skip header (rc: usize, alloc_size: usize, dtor: fn_ptr)
+                let mut offset: u32 = spark_abi::ENV_CAPTURES_OFFSET; // skip header (rc + alloc_size + dtor)
                 let capture_start = 1 + mir_func.param_count;
 
                 for (i, (_cap_def_id, cap_ty)) in mir_func.captures.iter().enumerate() {

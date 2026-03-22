@@ -86,8 +86,8 @@ pub fn emit_statement<M: Module>(
                     }
                 } else {
                     // Projected assignment — compute address and store.
-                    let dest_addr = emit_rvalue::emit_place_addr(ctx, place, table, module);
-                    let place_ty = emit_rvalue::resolve_place_type(ctx, place, table);
+                    let (dest_addr, place_ty) =
+                        emit_rvalue::emit_place_addr(ctx, place, table, module);
                     if crate::abi::is_scalar(place_ty, table) {
                         ctx.builder.ins().store(MemFlags::new(), val, dest_addr, 0);
                     } else {
