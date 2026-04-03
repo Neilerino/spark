@@ -1,13 +1,3 @@
-# CLAUDE.md - AI Assistant Guide for Spark Compiler
-
-## Essential Reading (Start Here)
-
-1. **[docs/lang-spec.md](docs/lang-spec.md)** - Complete language specification (2000+ lines)
-2. **[docs/compiler-architecture.md](docs/compiler-architecture.md)** - Pipeline design, I/O schemas, crate responsibilities
-3. **[HANDOFF.md](HANDOFF.md)** - Current status, completed work, immediate next steps
-
----
-
 ## Project Philosophy
 
 **Spark is a "lower-level Python"** - statically typed, compiled, immutable by default, with union types for error handling.

@@ -4,7 +4,8 @@
 //! recording the result in the type table's `expr_types` map.
 
 use spark_ast::{
-    BinaryOp, Block, Expr, ExprKind, LiteralKind, PipelineStageKind, StringPart, UnaryOp,
+    BinaryOp, Block, Expr, ExprKind, FnParam, LiteralKind, PipelineStageKind, StringPart, TypeExpr,
+    UnaryOp,
 };
 use spark_diagnostics::{Diagnostic, Label};
 use spark_intern::{kw, Symbol};
@@ -182,63 +183,7 @@ fn check_expr_inner(
 
         // === Index access ===
         ExprKind::Index { base, index } => {
-            let base_ty = check_expr(base, ctx, current_fn_ret);
-            let index_ty = check_expr(index, ctx, current_fn_ret);
-
-            match ctx.table.resolve(strip_mutable(base_ty, ctx.table)).clone() {
-                Ty::List(elem) => {
-                    let resolved_idx = ctx.table.resolve(strip_mutable(index_ty, ctx.table));
-                    if !resolved_idx.is_integer() && index_ty != TypeId::ERROR {
-                        ctx.diagnostics.push(
-                            Diagnostic::error("list index must be an integer")
-                                .with_label(Label::primary(
-                                    index.span,
-                                    format!(
-                                        "expected `Int`, found `{}`",
-                                        type_name(index_ty, ctx.table, ctx.definitions)
-                                    ),
-                                )),
-                        );
-                        return TypeId::ERROR;
-                    }
-                    ctx.table.intern(Ty::Optional(elem))
-                }
-                Ty::Map(_, value) => ctx.table.intern(Ty::Optional(value)),
-                Ty::Tuple(elems) => {
-                    if let ExprKind::Literal(spark_ast::Literal {
-                        kind: LiteralKind::Int(val),
-                        ..
-                    }) = &index.kind
-                    {
-                        let idx = *val as usize;
-                        if idx >= elems.len() {
-                            ctx.diagnostics.push(diagnostics::tuple_oob(
-                                idx,
-                                elems.len(),
-                                index.span,
-                            ));
-                            TypeId::ERROR
-                        } else {
-                            elems[idx]
-                        }
-                    } else {
-                        ctx.diagnostics.push(
-                            Diagnostic::error("tuple index must be an integer literal").with_label(
-                                Label::primary(index.span, "expected an integer literal"),
-                            ),
-                        );
-                        TypeId::ERROR
-                    }
-                }
-                Ty::Error => TypeId::ERROR,
-                _ => {
-                    ctx.diagnostics.push(
-                        Diagnostic::error("type is not indexable")
-                            .with_label(Label::primary(base.span, "cannot index this type")),
-                    );
-                    TypeId::ERROR
-                }
-            }
+            check_index_access(base, index, ctx, current_fn_ret)
         }
 
         // === Struct initialization ===
@@ -278,52 +223,7 @@ fn check_expr_inner(
             condition,
             then_branch,
             else_branch,
-        } => {
-            let cond_ty = check_expr(condition, ctx, current_fn_ret);
-
-            if !is_compatible(cond_ty, ctx.builtins.bool_ty, ctx.table) {
-                ctx.diagnostics.push(
-                    Diagnostic::error("if condition must be Bool")
-                        .with_label(Label::primary(condition.span, "expected Bool")),
-                );
-            }
-
-            // Detect `is` narrowing: `if x is T { ... }`
-            let narrowing_info = extract_is_narrowing(condition, ctx);
-
-            // Positive narrowing: inside then-branch, narrow ident to the tested type
-            let then_ty = if let Some((def_id, tested_ty)) = narrowing_info {
-                ctx.push_narrowing_scope();
-                ctx.add_narrowing(def_id, tested_ty);
-                let ty = check_expr(then_branch, ctx, current_fn_ret);
-                ctx.pop_narrowing_scope();
-                ty
-            } else {
-                check_expr(then_branch, ctx, current_fn_ret)
-            };
-
-            // Negative narrowing: if then-branch diverges (Never), narrow
-            // the ident to the original type minus the tested type for the
-            // rest of the current scope.
-            if let Some((def_id, tested_ty)) = narrowing_info {
-                let then_resolved = ctx.table.resolve(then_ty);
-                if matches!(then_resolved, Ty::Never) {
-                    let base_ty = ctx.get_narrowed_type(def_id)
-                        .unwrap_or_else(|| ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR));
-                    let narrowed = subtract_type(base_ty, tested_ty, ctx.table);
-                    if narrowed != base_ty {
-                        ctx.add_narrowing(def_id, narrowed);
-                    }
-                }
-            }
-
-            else_branch
-                .as_ref()
-                .map_or(ctx.builtins.void, |else_branch| {
-                    let else_ty = check_expr(else_branch, ctx, current_fn_ret);
-                    unify_branches(then_ty, else_ty, ctx.table, ctx.builtins)
-                })
-        }
+        } => check_if_expr(condition, then_branch, else_branch.as_deref(), ctx, current_fn_ret),
 
         // === Loop ===
         ExprKind::Loop { body } => {
@@ -368,125 +268,16 @@ fn check_expr_inner(
             params,
             ret_type,
             body,
-        } => {
-            let param_types: Vec<TypeId> =
-                params.iter().map(|p| lower_type_expr(&p.ty, ctx)).collect();
-
-            // Register param types
-            for (i, param) in params.iter().enumerate() {
-                if let Some(res) = ctx.resolutions {
-                    if let Some(def_id) = res.get_binding(param.name.span) {
-                        ctx.table.set_def_type(def_id, param_types[i]);
-                    }
-                }
-            }
-
-            let declared_ret = ret_type.as_ref().map(|rt| lower_type_expr(rt, ctx));
-
-            let body_ty = check_expr(body, ctx, declared_ret);
-            let ret = declared_ret.unwrap_or(body_ty);
-
-            ctx.table.intern(Ty::Function {
-                params: param_types,
-                ret,
-                is_async: false,
-            })
-        }
+        } => check_lambda(params, ret_type.as_ref(), body, ctx),
 
         // === Coalesce (??) ===
         ExprKind::Coalesce { lhs, rhs } => {
-            let lhs_ty = check_expr(lhs, ctx, current_fn_ret);
-            let rhs_ty = check_expr(rhs, ctx, current_fn_ret);
-
-            let inner = unwrap_optional(lhs_ty, ctx.table);
-            if inner == lhs_ty && !lhs_ty.is_error() {
-                ctx.diagnostics.push(
-                    Diagnostic::error("left side of `??` must be an optional type")
-                        .with_label(Label::primary(lhs.span, "not optional")),
-                );
-            }
-
-            // The result is the non-optional inner type unified with rhs
-            if inner.is_error() {
-                rhs_ty
-            } else {
-                unify_branches(inner, rhs_ty, ctx.table, ctx.builtins)
-            }
+            check_coalesce(lhs, rhs, ctx, current_fn_ret)
         }
 
         // === Propagate (!) ===
         ExprKind::Propagate(inner_expr) => {
-            let inner_ty = check_expr(inner_expr, ctx, current_fn_ret);
-
-            // For Optional(T) → success type is T
-            if let Ty::Optional(success) = ctx.table.resolve(inner_ty) {
-                let success = *success;
-                // Validate that Null is compatible with the enclosing function's return type
-                if let Some(ret) = current_fn_ret {
-                    if !is_compatible(ctx.builtins.null, ret, ctx.table) {
-                        let ret_name = type_name(ret, ctx.table, ctx.definitions);
-                        ctx.diagnostics.push(
-                            Diagnostic::error(format!(
-                                "propagation operator `!` may return `Null`, but function return type `{ret_name}` does not include `Null`"
-                            ))
-                            .with_label(Label::primary(expr.span, "propagates `Null` here")),
-                        );
-                    }
-                } else {
-                    ctx.diagnostics
-                        .push(diagnostics::propagation_outside_fn(expr.span));
-                }
-                return success;
-            }
-
-            // For Union types → use split_union to determine success type
-            if matches!(ctx.table.resolve(inner_ty), Ty::Union(_)) {
-                // Try to split using the expected type (from context) or fn return type
-                if let Some((success_ty, errors)) =
-                    crate::union::split_union(inner_ty, expected_ty, current_fn_ret, ctx.table)
-                {
-                    // Validate that each error type is compatible with the enclosing function's return type
-                    if let Some(ret) = current_fn_ret {
-                        for &error_ty in &errors {
-                            if !is_compatible(error_ty, ret, ctx.table) {
-                                let error_name = type_name(error_ty, ctx.table, ctx.definitions);
-                                let ret_name = type_name(ret, ctx.table, ctx.definitions);
-                                ctx.diagnostics.push(
-                                    Diagnostic::error(format!(
-                                        "propagation operator `!` may return `{error_name}`, but function return type `{ret_name}` does not include it"
-                                    ))
-                                    .with_label(Label::primary(expr.span, format!("propagates `{error_name}` here"))),
-                                );
-                            }
-                        }
-                    } else {
-                        ctx.diagnostics
-                            .push(diagnostics::propagation_outside_fn(expr.span));
-                    }
-                    return success_ty;
-                }
-            }
-
-            // Fallback: unwrap nullable
-            let result = unwrap_optional(inner_ty, ctx.table);
-            // If unwrap_optional actually unwrapped something, Null was removed — validate it
-            if result != inner_ty {
-                if let Some(ret) = current_fn_ret {
-                    if !is_compatible(ctx.builtins.null, ret, ctx.table) {
-                        let ret_name = type_name(ret, ctx.table, ctx.definitions);
-                        ctx.diagnostics.push(
-                            Diagnostic::error(format!(
-                                "propagation operator `!` may return `Null`, but function return type `{ret_name}` does not include `Null`"
-                            ))
-                            .with_label(Label::primary(expr.span, "propagates `Null` here")),
-                        );
-                    }
-                } else {
-                    ctx.diagnostics
-                        .push(diagnostics::propagation_outside_fn(expr.span));
-                }
-            }
-            result
+            check_propagate(inner_expr, expr.span, ctx, current_fn_ret, expected_ty)
         }
 
         // === Is ===
@@ -665,32 +456,7 @@ fn check_expr_inner(
 
         ExprKind::ListRange {
             start, end, step, ..
-        } => {
-            let start_ty = check_expr(start, ctx, current_fn_ret);
-            let end_ty = check_expr(end, ctx, current_fn_ret);
-            if let Some(s) = step {
-                let step_ty = check_expr(s, ctx, current_fn_ret);
-                if step_ty != ctx.builtins.int && !step_ty.is_error() {
-                    ctx.diagnostics.push(
-                        Diagnostic::error("list range step must be `Int`")
-                            .with_label(Label::primary(s.span, "expected `Int`")),
-                    );
-                }
-            }
-            if start_ty != ctx.builtins.int && !start_ty.is_error() {
-                ctx.diagnostics.push(
-                    Diagnostic::error("list range start must be `Int`")
-                        .with_label(Label::primary(start.span, "expected `Int`")),
-                );
-            }
-            if end_ty != ctx.builtins.int && !end_ty.is_error() {
-                ctx.diagnostics.push(
-                    Diagnostic::error("list range end must be `Int`")
-                        .with_label(Label::primary(end.span, "expected `Int`")),
-                );
-            }
-            ctx.table.intern(Ty::List(ctx.builtins.int))
-        }
+        } => check_list_range(start, end, step.as_deref(), ctx, current_fn_ret),
 
         ExprKind::Partial { callee, args } => {
             check_partial(callee, args, ctx, current_fn_ret)
@@ -719,6 +485,318 @@ pub fn check_block(
 
     ctx.pop_narrowing_scope();
     ty
+}
+
+// === If expression ===
+
+/// Type-checks an `if` expression, including type narrowing from `is` tests.
+fn check_if_expr(
+    condition: &Expr,
+    then_branch: &Expr,
+    else_branch: Option<&Expr>,
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let cond_ty = check_expr(condition, ctx, current_fn_ret);
+
+    if !is_compatible(cond_ty, ctx.builtins.bool_ty, ctx.table) {
+        ctx.diagnostics.push(
+            Diagnostic::error("if condition must be Bool")
+                .with_label(Label::primary(condition.span, "expected Bool")),
+        );
+    }
+
+    // Detect `is` narrowing: `if x is T { ... }`
+    let narrowing_info = extract_is_narrowing(condition, ctx);
+
+    // Positive narrowing: inside then-branch, narrow ident to the tested type
+    let then_ty = if let Some((def_id, tested_ty)) = narrowing_info {
+        ctx.push_narrowing_scope();
+        ctx.add_narrowing(def_id, tested_ty);
+        let ty = check_expr(then_branch, ctx, current_fn_ret);
+        ctx.pop_narrowing_scope();
+        ty
+    } else {
+        check_expr(then_branch, ctx, current_fn_ret)
+    };
+
+    // Negative narrowing: if then-branch diverges (Never), narrow
+    // the ident to the original type minus the tested type for the
+    // rest of the current scope.
+    if let Some((def_id, tested_ty)) = narrowing_info {
+        let then_resolved = ctx.table.resolve(then_ty);
+        if matches!(then_resolved, Ty::Never) {
+            let base_ty = ctx
+                .get_narrowed_type(def_id)
+                .unwrap_or_else(|| ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR));
+            let narrowed = subtract_type(base_ty, tested_ty, ctx.table);
+            if narrowed != base_ty {
+                ctx.add_narrowing(def_id, narrowed);
+            }
+        }
+    }
+
+    else_branch.map_or(ctx.builtins.void, |else_branch| {
+        let else_ty = check_expr(else_branch, ctx, current_fn_ret);
+        unify_branches(then_ty, else_ty, ctx.table, ctx.builtins)
+    })
+}
+
+// === Lambda ===
+
+/// Type-checks a lambda expression, registering parameter types and returning
+/// the resulting function type.
+fn check_lambda(
+    params: &[FnParam],
+    ret_type: Option<&TypeExpr>,
+    body: &Expr,
+    ctx: &mut TypeCheckCtx<'_>,
+) -> TypeId {
+    let param_types: Vec<TypeId> = params.iter().map(|p| lower_type_expr(&p.ty, ctx)).collect();
+
+    // Register param types
+    for (i, param) in params.iter().enumerate() {
+        if let Some(res) = ctx.resolutions {
+            if let Some(def_id) = res.get_binding(param.name.span) {
+                ctx.table.set_def_type(def_id, param_types[i]);
+            }
+        }
+    }
+
+    let declared_ret = ret_type.map(|rt| lower_type_expr(rt, ctx));
+
+    let body_ty = check_expr(body, ctx, declared_ret);
+    let ret = declared_ret.unwrap_or(body_ty);
+
+    ctx.table.intern(Ty::Function {
+        params: param_types,
+        ret,
+        is_async: false,
+    })
+}
+
+// === Coalesce (??) ===
+
+/// Type-checks the null-coalescing operator `??`.
+fn check_coalesce(
+    lhs: &Expr,
+    rhs: &Expr,
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let lhs_ty = check_expr(lhs, ctx, current_fn_ret);
+    let rhs_ty = check_expr(rhs, ctx, current_fn_ret);
+
+    let inner = unwrap_optional(lhs_ty, ctx.table);
+    if inner == lhs_ty && !lhs_ty.is_error() {
+        ctx.diagnostics.push(
+            Diagnostic::error("left side of `??` must be an optional type")
+                .with_label(Label::primary(lhs.span, "not optional")),
+        );
+    }
+
+    // The result is the non-optional inner type unified with rhs
+    if inner.is_error() {
+        rhs_ty
+    } else {
+        unify_branches(inner, rhs_ty, ctx.table, ctx.builtins)
+    }
+}
+
+// === Propagate (!) ===
+
+/// Type-checks the error propagation operator `!`.
+///
+/// Handles three cases:
+/// 1. `Optional(T)` — unwraps to `T`, propagates `Null`
+/// 2. `Union` types — splits into success/error types via `split_union`
+/// 3. Fallback — unwraps nullable types
+fn check_propagate(
+    inner_expr: &Expr,
+    span: Span,
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+    expected_ty: Option<TypeId>,
+) -> TypeId {
+    let inner_ty = check_expr(inner_expr, ctx, current_fn_ret);
+
+    // For Optional(T) → success type is T
+    if let Ty::Optional(success) = ctx.table.resolve(inner_ty) {
+        let success = *success;
+        // Validate that Null is compatible with the enclosing function's return type
+        if let Some(ret) = current_fn_ret {
+            if !is_compatible(ctx.builtins.null, ret, ctx.table) {
+                let ret_name = type_name(ret, ctx.table, ctx.definitions);
+                ctx.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "propagation operator `!` may return `Null`, but function return type `{ret_name}` does not include `Null`"
+                    ))
+                    .with_label(Label::primary(span, "propagates `Null` here")),
+                );
+            }
+        } else {
+            ctx.diagnostics
+                .push(diagnostics::propagation_outside_fn(span));
+        }
+        return success;
+    }
+
+    // For Union types → use split_union to determine success type
+    if matches!(ctx.table.resolve(inner_ty), Ty::Union(_)) {
+        // Try to split using the expected type (from context) or fn return type
+        if let Some((success_ty, errors)) =
+            crate::union::split_union(inner_ty, expected_ty, current_fn_ret, ctx.table)
+        {
+            // Validate that each error type is compatible with the enclosing function's return type
+            if let Some(ret) = current_fn_ret {
+                for &error_ty in &errors {
+                    if !is_compatible(error_ty, ret, ctx.table) {
+                        let error_name = type_name(error_ty, ctx.table, ctx.definitions);
+                        let ret_name = type_name(ret, ctx.table, ctx.definitions);
+                        ctx.diagnostics.push(
+                            Diagnostic::error(format!(
+                                "propagation operator `!` may return `{error_name}`, but function return type `{ret_name}` does not include it"
+                            ))
+                            .with_label(Label::primary(span, format!("propagates `{error_name}` here"))),
+                        );
+                    }
+                }
+            } else {
+                ctx.diagnostics
+                    .push(diagnostics::propagation_outside_fn(span));
+            }
+            return success_ty;
+        }
+    }
+
+    // Fallback: unwrap nullable
+    let result = unwrap_optional(inner_ty, ctx.table);
+    // If unwrap_optional actually unwrapped something, Null was removed — validate it
+    if result != inner_ty {
+        if let Some(ret) = current_fn_ret {
+            if !is_compatible(ctx.builtins.null, ret, ctx.table) {
+                let ret_name = type_name(ret, ctx.table, ctx.definitions);
+                ctx.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "propagation operator `!` may return `Null`, but function return type `{ret_name}` does not include `Null`"
+                    ))
+                    .with_label(Label::primary(span, "propagates `Null` here")),
+                );
+            }
+        } else {
+            ctx.diagnostics
+                .push(diagnostics::propagation_outside_fn(span));
+        }
+    }
+    result
+}
+
+// === Index access ===
+
+/// Type-checks an index expression (`base[index]`).
+///
+/// Supports `List[Int]`, `Map[K]`, `Tuple[literal]`, with appropriate
+/// error diagnostics for invalid index types or out-of-bounds access.
+fn check_index_access(
+    base: &Expr,
+    index: &Expr,
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let base_ty = check_expr(base, ctx, current_fn_ret);
+    let index_ty = check_expr(index, ctx, current_fn_ret);
+
+    match ctx
+        .table
+        .resolve(strip_mutable(base_ty, ctx.table))
+        .clone()
+    {
+        Ty::List(elem) => {
+            let resolved_idx = ctx.table.resolve(strip_mutable(index_ty, ctx.table));
+            if !resolved_idx.is_integer() && index_ty != TypeId::ERROR {
+                ctx.diagnostics.push(
+                    Diagnostic::error("list index must be an integer").with_label(Label::primary(
+                        index.span,
+                        format!(
+                            "expected `Int`, found `{}`",
+                            type_name(index_ty, ctx.table, ctx.definitions)
+                        ),
+                    )),
+                );
+                return TypeId::ERROR;
+            }
+            ctx.table.intern(Ty::Optional(elem))
+        }
+        Ty::Map(_, value) => ctx.table.intern(Ty::Optional(value)),
+        Ty::Tuple(elems) => {
+            if let ExprKind::Literal(spark_ast::Literal {
+                kind: LiteralKind::Int(val),
+                ..
+            }) = &index.kind
+            {
+                let idx = *val as usize;
+                if idx >= elems.len() {
+                    ctx.diagnostics
+                        .push(diagnostics::tuple_oob(idx, elems.len(), index.span));
+                    TypeId::ERROR
+                } else {
+                    elems[idx]
+                }
+            } else {
+                ctx.diagnostics.push(
+                    Diagnostic::error("tuple index must be an integer literal")
+                        .with_label(Label::primary(index.span, "expected an integer literal")),
+                );
+                TypeId::ERROR
+            }
+        }
+        Ty::Error => TypeId::ERROR,
+        _ => {
+            ctx.diagnostics.push(
+                Diagnostic::error("type is not indexable")
+                    .with_label(Label::primary(base.span, "cannot index this type")),
+            );
+            TypeId::ERROR
+        }
+    }
+}
+
+// === List range ===
+
+/// Type-checks a list range expression (`[start..end]` or `[start..end..step]`).
+///
+/// All components must be `Int`; returns `List[Int]`.
+fn check_list_range(
+    start: &Expr,
+    end: &Expr,
+    step: Option<&Expr>,
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let start_ty = check_expr(start, ctx, current_fn_ret);
+    let end_ty = check_expr(end, ctx, current_fn_ret);
+    if let Some(s) = step {
+        let step_ty = check_expr(s, ctx, current_fn_ret);
+        if step_ty != ctx.builtins.int && !step_ty.is_error() {
+            ctx.diagnostics.push(
+                Diagnostic::error("list range step must be `Int`")
+                    .with_label(Label::primary(s.span, "expected `Int`")),
+            );
+        }
+    }
+    if start_ty != ctx.builtins.int && !start_ty.is_error() {
+        ctx.diagnostics.push(
+            Diagnostic::error("list range start must be `Int`")
+                .with_label(Label::primary(start.span, "expected `Int`")),
+        );
+    }
+    if end_ty != ctx.builtins.int && !end_ty.is_error() {
+        ctx.diagnostics.push(
+            Diagnostic::error("list range end must be `Int`")
+                .with_label(Label::primary(end.span, "expected `Int`")),
+        );
+    }
+    ctx.table.intern(Ty::List(ctx.builtins.int))
 }
 
 // === Binary operator checking ===
