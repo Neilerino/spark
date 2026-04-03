@@ -82,7 +82,7 @@ pub struct CodegenInput {
     pub definitions: DefinitionTable,
     /// Target specification (defaults to host).
     pub target: TargetSpec,
-    /// Mapping from async function DefId → poll function info (from async transform).
+    /// Mapping from async function [`DefId`] to poll function info (from async transform).
     pub poll_fn_map: FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
 }
 
@@ -153,7 +153,7 @@ mod tests {
     use spark_modules::ModulePath;
     use spark_resolve::{DefId, DefinitionInfo, DefinitionKind, Visibility};
     use spark_span::Span;
-    use spark_types::{IntWidth, Ty, TypeId};
+    use spark_types::{IntWidth, Ty};
     use std::collections::HashMap;
 
     /// Helper: builds a `CodegenInput` from a list of functions.
@@ -422,6 +422,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // test setup is inherently verbose
     fn multi_function_with_call() {
         // fn double(x: Int): Int { x + x }
         // fn main(): Int { double(21) }

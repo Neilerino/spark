@@ -7,7 +7,7 @@
 use std::sync::mpsc;
 use std::sync::Mutex;
 
-/// Type alias for the sender half, wrapped in Option for close().
+/// Type alias for the sender half, wrapped in `Option` for `close()`.
 type SenderMutex = Mutex<Option<mpsc::Sender<Vec<u8>>>>;
 
 /// Type alias for the receiver half.
@@ -21,7 +21,7 @@ type ReceiverMutex = Mutex<mpsc::Receiver<Vec<u8>>>;
 struct SparkChannel {
     /// Reference count.
     rc: usize,
-    /// `Box<SenderMutex>` — wrapped in Option for close().
+    /// `Box<SenderMutex>` — wrapped in `Option` for `close()`.
     sender: *mut std::ffi::c_void,
     /// `Box<ReceiverMutex>`.
     receiver: *mut std::ffi::c_void,
@@ -80,7 +80,7 @@ pub unsafe extern "C" fn __spark_channel_send(
 
     // Send through the channel.
     let sender_mutex = unsafe { &*(channel.sender.cast::<SenderMutex>()) };
-    let guard = sender_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = sender_mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(ref tx) = *guard {
         let _ = tx.send(data); // Silently ignore if receiver is dropped.
     }
@@ -104,21 +104,15 @@ pub unsafe extern "C" fn __spark_channel_recv(ch: *mut u8, _elem_size: i64) -> *
     let channel = unsafe { &*(ch.cast::<SparkChannel>()) };
 
     let receiver_mutex = unsafe { &*(channel.receiver.cast::<ReceiverMutex>()) };
-    let guard = receiver_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = receiver_mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    match guard.recv() {
-        Ok(data) => {
-            // Leak the Vec's buffer so the pointer remains valid for the caller.
-            let mut data = data.into_boxed_slice();
-            let ptr = data.as_mut_ptr();
-            std::mem::forget(data);
-            ptr
-        }
-        Err(_) => {
-            // Channel closed — return null.
-            std::ptr::null_mut()
-        }
-    }
+    guard.recv().map_or(std::ptr::null_mut(), |data| {
+        // Leak the Vec's buffer so the pointer remains valid for the caller.
+        let mut data = data.into_boxed_slice();
+        let ptr = data.as_mut_ptr();
+        std::mem::forget(data);
+        ptr
+    })
 }
 
 /// Attempts to receive a value without blocking.
@@ -144,7 +138,7 @@ pub unsafe extern "C" fn __spark_channel_try_recv(
     let offset = payload_offset as usize;
 
     let receiver_mutex = unsafe { &*(channel.receiver.cast::<ReceiverMutex>()) };
-    let guard = receiver_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = receiver_mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
     match guard.try_recv() {
         Ok(data) => {
@@ -179,7 +173,7 @@ pub unsafe extern "C" fn __spark_channel_close(ch: *mut u8) {
     let channel = unsafe { &*(ch.cast::<SparkChannel>()) };
 
     let sender_mutex = unsafe { &*(channel.sender.cast::<SenderMutex>()) };
-    let mut guard = sender_mutex.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = sender_mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     *guard = None; // Drop the sender.
 }
 
@@ -233,10 +227,11 @@ mod tests {
         let ch = __spark_channel_new(8);
         let val: i64 = 42;
         unsafe {
-            __spark_channel_send(ch, (&val as *const i64).cast(), 8);
+            __spark_channel_send(ch, (&raw const val).cast(), 8);
         }
         let result_ptr = unsafe { __spark_channel_recv(ch, 8) };
         assert!(!result_ptr.is_null());
+        #[allow(clippy::cast_ptr_alignment)] // test data is aligned
         let received = unsafe { *(result_ptr.cast::<i64>()) };
         assert_eq!(received, 42);
         unsafe { __spark_channel_rc_dec(ch) };
@@ -257,7 +252,7 @@ mod tests {
         let ch = __spark_channel_new(8);
         let val: i64 = 99;
         unsafe {
-            __spark_channel_send(ch, (&val as *const i64).cast(), 8);
+            __spark_channel_send(ch, (&raw const val).cast(), 8);
         }
         let mut buf = [0u8; 16]; // tag(1) + padding(7) + i64(8)
         unsafe { __spark_channel_try_recv(ch, 8, buf.as_mut_ptr(), 8) };
@@ -283,7 +278,7 @@ mod tests {
         unsafe { __spark_channel_close(ch) };
         let val: i64 = 123;
         // Should not panic
-        unsafe { __spark_channel_send(ch, (&val as *const i64).cast(), 8) };
+        unsafe { __spark_channel_send(ch, (&raw const val).cast(), 8) };
         unsafe { __spark_channel_rc_dec(ch) };
     }
 
@@ -291,11 +286,12 @@ mod tests {
     fn multiple_sends_and_recvs() {
         let ch = __spark_channel_new(8);
         for i in 0..5i64 {
-            unsafe { __spark_channel_send(ch, (&i as *const i64).cast(), 8) };
+            unsafe { __spark_channel_send(ch, (&raw const i).cast(), 8) };
         }
         for expected in 0..5i64 {
             let ptr = unsafe { __spark_channel_recv(ch, 8) };
             assert!(!ptr.is_null());
+            #[allow(clippy::cast_ptr_alignment)] // test data is aligned
             let received = unsafe { *(ptr.cast::<i64>()) };
             assert_eq!(received, expected);
         }
@@ -310,12 +306,13 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let ch = ch_addr as *mut u8;
             let val: i64 = 777;
-            unsafe { __spark_channel_send(ch, (&val as *const i64).cast(), 8) };
+            unsafe { __spark_channel_send(ch, (&raw const val).cast(), 8) };
         });
 
         handle.join().unwrap();
         let ptr = unsafe { __spark_channel_recv(ch, 8) };
         assert!(!ptr.is_null());
+        #[allow(clippy::cast_ptr_alignment)] // test data is aligned
         let received = unsafe { *(ptr.cast::<i64>()) };
         assert_eq!(received, 777);
         unsafe { __spark_channel_rc_dec(ch) };

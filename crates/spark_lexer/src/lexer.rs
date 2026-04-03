@@ -366,8 +366,7 @@ impl<'a> Lexer<'a> {
         let mut chars = self.cursor.rest_chars();
         loop {
             match chars.next() {
-                None | Some('\n') => return false,
-                Some('"') => return false,
+                None | Some('\n' | '"') => return false,
                 Some('\\') => {
                     // Skip the escaped character
                     chars.next();
@@ -378,7 +377,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Scans a text segment inside an interpolated string (InString mode).
+    /// Scans a text segment inside an interpolated string (`InString` mode).
     ///
     /// Called when `self.mode == LexerMode::InString`. Scans text until
     /// hitting `{` (start interpolation), `"` (end string), or EOF/newline (error).
@@ -461,15 +460,15 @@ impl<'a> Lexer<'a> {
         }
 
         // Error case: return what we have as text, or an error token.
-        if !value.is_empty() {
+        if value.is_empty() {
+            Token::new(TokenKind::Error, self.span(start))
+        } else {
             let symbol = sym(&value);
             Token::with_value(
                 TokenKind::StringText,
                 self.span(start),
                 TokenValue::String(symbol),
             )
-        } else {
-            Token::new(TokenKind::Error, self.span(start))
         }
     }
 
@@ -1001,7 +1000,10 @@ mod tests {
     #[test]
     fn float_literals() {
         let tokens = lex("3.14 1.0 1e10 1.5e-3");
-        assert!(matches!(tokens[0].value, Some(TokenValue::Float(f)) if (f - 3.14).abs() < 0.001));
+        #[allow(clippy::approx_constant)]
+        {
+            assert!(matches!(tokens[0].value, Some(TokenValue::Float(f)) if (f - 3.14).abs() < 0.001));
+        }
         assert!(matches!(tokens[1].value, Some(TokenValue::Float(f)) if (f - 1.0).abs() < 0.001));
         assert!(matches!(tokens[2].value, Some(TokenValue::Float(f)) if (f - 1e10).abs() < 1e5));
         assert!(

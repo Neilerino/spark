@@ -330,6 +330,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn call_site_rewritten() {
         let mut table = TypeTable::new();
         let mut definitions = DefinitionTable::new();

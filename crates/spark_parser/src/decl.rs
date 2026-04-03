@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn simple_function() {
         let (ast, diags) = parse_source("fn main(): Void { }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.items.len(), 1);
         assert!(ast.items[0].is_function());
     }
@@ -1163,11 +1163,11 @@ mod tests {
 
     #[test]
     fn binding_with_implementation() {
-        let source = r#"
+        let source = r"
             User binds Printable {
                 fn print(self: User): Void { }
             }
-        "#;
+        ";
         let (ast, diags) = parse_source(source);
         assert!(!diags.has_errors());
         if let Item::Binding(b) = &ast.items[0] {
@@ -1179,7 +1179,7 @@ mod tests {
     #[test]
     fn extern_function() {
         let (ast, diags) = parse_source("extern fn sqrt(x: Float): Float");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.items.len(), 1);
         if let Item::Function(f) = &ast.items[0] {
             assert!(f.is_extern);
@@ -1230,7 +1230,7 @@ mod tests {
     #[test]
     fn link_directive() {
         let (ast, diags) = parse_source("link \"sqlite3\"\nfn main(): Void { }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.links.len(), 1);
         assert_eq!(ast.links[0].library.as_str(), "sqlite3");
         assert!(ast.links[0].search_path.is_none());
@@ -1241,7 +1241,7 @@ mod tests {
     fn link_directive_multiple() {
         let (ast, diags) =
             parse_source("link \"sqlite3\"\nlink \"z\"\nfn main(): Void { }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.links.len(), 2);
         assert_eq!(ast.links[0].library.as_str(), "sqlite3");
         assert_eq!(ast.links[1].library.as_str(), "z");
@@ -1257,7 +1257,7 @@ mod tests {
     fn link_directive_with_imports() {
         let (ast, diags) =
             parse_source("import utils\nlink \"m\"\nfn main(): Void { }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.imports.len(), 1);
         assert_eq!(ast.links.len(), 1);
         assert_eq!(ast.items.len(), 1);
@@ -1267,7 +1267,7 @@ mod tests {
     fn link_directive_with_from_path() {
         let (ast, diags) =
             parse_source("link \"sqlite3\" from \"/usr/local/lib\"\nfn main(): Void { }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.links.len(), 1);
         assert_eq!(ast.links[0].library.as_str(), "sqlite3");
         assert_eq!(
@@ -1301,7 +1301,7 @@ mod tests {
     fn link_directive_with_when_single() {
         let (ast, diags) =
             parse_source("link \"ws2_32\" when platform == \"windows\"\nfn main(): Void { }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.links.len(), 1);
         assert_eq!(ast.links[0].library.as_str(), "ws2_32");
         let cond = ast.links[0].condition.as_ref().expect("expected condition");
@@ -1314,7 +1314,7 @@ mod tests {
         let (ast, diags) = parse_source(
             "link \"pthread\" when platform == \"linux\" or platform == \"macos\"\nfn main(): Void { }",
         );
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.links.len(), 1);
         assert_eq!(ast.links[0].library.as_str(), "pthread");
         let cond = ast.links[0].condition.as_ref().expect("expected condition");
@@ -1328,7 +1328,7 @@ mod tests {
         let (ast, diags) = parse_source(
             "link \"m\" from \"/usr/lib\" when platform == \"linux\"\nfn main(): Void { }",
         );
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.links.len(), 1);
         assert_eq!(ast.links[0].library.as_str(), "m");
         assert_eq!(
@@ -1343,7 +1343,7 @@ mod tests {
     #[test]
     fn link_directive_without_when_has_no_condition() {
         let (ast, diags) = parse_source("link \"z\"\nfn main(): Void { }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.links.len(), 1);
         assert!(ast.links[0].condition.is_none());
     }

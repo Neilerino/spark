@@ -99,7 +99,6 @@ impl<'a> Cursor<'a> {
     }
 
     /// Returns a cloned character iterator over the remaining source.
-    #[must_use]
     pub fn rest_chars(&self) -> Chars<'a> {
         self.chars.clone()
     }

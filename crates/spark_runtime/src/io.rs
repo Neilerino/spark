@@ -9,10 +9,10 @@
 //! Functions that can fail store the error message in a thread-local string
 //! and return an integer error code:
 //! - 0 = success
-//! - 1 = NotFound
-//! - 2 = PermissionDenied
-//! - 3 = AlreadyExists
-//! - 4 = Other
+//! - 1 = `NotFound`
+//! - 2 = `PermissionDenied`
+//! - 3 = `AlreadyExists`
+//! - 4 = `Other`
 
 use std::cell::RefCell;
 use std::io::Write;
@@ -20,7 +20,7 @@ use std::io::Write;
 use crate::{__spark_string_from_literal, SparkString};
 
 thread_local! {
-    static LAST_IO_ERROR: RefCell<String> = RefCell::new(String::new());
+    static LAST_IO_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// Sets the last IO error message.
@@ -68,6 +68,7 @@ unsafe fn read_spark_str(ptr: *mut u8) -> String {
 }
 
 /// Creates a new `SparkString` from a Rust `&str`.
+#[allow(clippy::cast_possible_wrap)] // String lengths won't exceed i64::MAX
 fn rust_str_to_spark(s: &str) -> *mut u8 {
     let bytes = s.as_bytes();
     unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
@@ -162,11 +163,7 @@ pub unsafe extern "C" fn __spark_io_append_file(path: *mut u8, content: *mut u8)
 #[no_mangle]
 pub unsafe extern "C" fn __spark_io_file_exists(path: *mut u8) -> i64 {
     let path_str = unsafe { read_spark_str(path) };
-    if std::path::Path::new(&path_str).exists() {
-        1
-    } else {
-        0
-    }
+    i64::from(std::path::Path::new(&path_str).exists())
 }
 
 /// Deletes a file.
@@ -328,7 +325,8 @@ pub extern "C" fn __spark_io_error() -> *mut u8 {
 mod tests {
     use super::*;
 
-    /// Helper: read a SparkString result into a Rust String.
+    /// Helper: read a `SparkString` result into a Rust `String`.
+    #[allow(clippy::cast_ptr_alignment)] // SparkString pointers are properly aligned
     unsafe fn read_result_string(ptr: *mut u8) -> String {
         let s = unsafe { &*(ptr.cast::<SparkString>()) };
         if s.len == 0 {

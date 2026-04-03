@@ -301,7 +301,9 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
             all_diagnostics.extend(resolve_output.diagnostics);
 
             // Phase 5: Type checking (borrows resolver output)
-            let type_table = if !all_diagnostics.has_errors() {
+            let type_table = if all_diagnostics.has_errors() {
+                None
+            } else {
                 let type_output = spark_types::check(TypeCheckerInput {
                     resolved: &resolve_output.resolved,
                     definitions: &resolve_output.definitions,
@@ -309,8 +311,6 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
                 });
                 all_diagnostics.extend(type_output.diagnostics);
                 Some((Arc::new(type_output.table), type_output.builtins))
-            } else {
-                None
             };
 
             // Cache resolver output for on-demand queries (go-to-definition, hover, etc.)
@@ -753,10 +753,13 @@ fn resolve_names(
 
 /// Maps a [`DefinitionKind`](spark_resolve::DefinitionKind) to an LSP
 /// [`CompletionItemKind`].
-fn def_kind_to_completion_kind(kind: &spark_resolve::DefinitionKind) -> CompletionItemKind {
+const fn def_kind_to_completion_kind(kind: &spark_resolve::DefinitionKind) -> CompletionItemKind {
     use spark_resolve::DefinitionKind;
     match kind {
-        DefinitionKind::Function | DefinitionKind::BuiltinFunction => CompletionItemKind::FUNCTION,
+        DefinitionKind::Function
+        | DefinitionKind::BuiltinFunction
+        | DefinitionKind::Lambda
+        | DefinitionKind::ExternFunction => CompletionItemKind::FUNCTION,
         DefinitionKind::Struct => CompletionItemKind::STRUCT,
         DefinitionKind::StructField(_) => CompletionItemKind::FIELD,
         DefinitionKind::Enum => CompletionItemKind::ENUM,
@@ -764,22 +767,19 @@ fn def_kind_to_completion_kind(kind: &spark_resolve::DefinitionKind) -> Completi
         DefinitionKind::Interface => CompletionItemKind::INTERFACE,
         DefinitionKind::TypeAlias | DefinitionKind::TypeDef => CompletionItemKind::CLASS,
         DefinitionKind::Const => CompletionItemKind::CONSTANT,
-        DefinitionKind::Local => CompletionItemKind::VARIABLE,
-        DefinitionKind::Parameter => CompletionItemKind::VARIABLE,
+        DefinitionKind::Local | DefinitionKind::Parameter => CompletionItemKind::VARIABLE,
         DefinitionKind::GenericParam | DefinitionKind::LifetimeParam => {
             CompletionItemKind::TYPE_PARAMETER
         }
         DefinitionKind::BuiltinMethod | DefinitionKind::BindingMethod(_) => {
             CompletionItemKind::METHOD
         }
-        DefinitionKind::Lambda => CompletionItemKind::FUNCTION,
-        DefinitionKind::ExternFunction => CompletionItemKind::FUNCTION,
     }
 }
 
 /// Returns a sort-text prefix so that locals/params appear first, then
 /// functions, then types, then keywords.
-fn sort_prefix(kind: &spark_resolve::DefinitionKind) -> &'static str {
+const fn sort_prefix(kind: &spark_resolve::DefinitionKind) -> &'static str {
     use spark_resolve::DefinitionKind;
     match kind {
         DefinitionKind::Local | DefinitionKind::Parameter => "0",
@@ -1513,9 +1513,11 @@ impl LanguageServer for Backend {
                         .log_message(MessageType::WARNING, err)
                         .await;
                 }
-                let mut ws_guard = self.workspace.write().unwrap();
-                if let Some(ws) = ws_guard.as_mut() {
-                    ws.dep_sources = dep_sources;
+                {
+                    let mut ws_guard = self.workspace.write().unwrap();
+                    if let Some(ws) = ws_guard.as_mut() {
+                        ws.dep_sources = dep_sources;
+                    }
                 }
                 needs_reanalysis = true;
             }

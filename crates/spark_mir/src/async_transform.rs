@@ -51,7 +51,7 @@ pub struct AsyncTransformOutput {
     pub table: TypeTable,
     /// Definition table (may have new entries for poll functions).
     pub definitions: DefinitionTable,
-    /// Mapping from original async function DefId → poll function DefId.
+    /// Mapping from original async function `DefId` → poll function `DefId`.
     pub poll_fn_map: FxHashMap<DefId, PollFnInfo>,
     /// Diagnostics accumulated during the transform.
     pub diagnostics: Diagnostics,
@@ -60,9 +60,9 @@ pub struct AsyncTransformOutput {
 /// Information about a generated poll function.
 #[derive(Debug, Clone)]
 pub struct PollFnInfo {
-    /// The poll function's DefId.
+    /// The poll function's `DefId`.
     pub poll_def_id: DefId,
-    /// The state struct type (Ty::AsyncState).
+    /// The state struct type (`Ty::AsyncState`).
     pub state_type_id: TypeId,
     /// Field names and types in the state struct, in order.
     pub state_fields: Vec<(Symbol, TypeId)>,
@@ -93,9 +93,8 @@ pub fn transform(input: AsyncTransformInput) -> AsyncTransformOutput {
         .collect();
 
     for def_id in &async_def_ids {
-        let func = match mir.functions.get(def_id) {
-            Some(f) => f,
-            None => continue,
+        let Some(func) = mir.functions.get(def_id) else {
+            continue;
         };
 
         // Find await points (calls to __spark_await).
@@ -352,17 +351,14 @@ fn add_terminator_uses(term: &Terminator, gen: &mut FxHashSet<Local>) {
 /// Adds uses from an rvalue to the gen set.
 fn add_rvalue_uses(rvalue: &Rvalue, gen: &mut FxHashSet<Local>) {
     match rvalue {
-        Rvalue::Use(op) | Rvalue::Cast { operand: op, .. } => {
+        Rvalue::Use(op) | Rvalue::Cast { operand: op, .. } | Rvalue::UnaryOp(_, op) => {
             add_operand_uses(op, gen);
         }
         Rvalue::BinaryOp(_, a, b) => {
             add_operand_uses(a, gen);
             add_operand_uses(b, gen);
         }
-        Rvalue::UnaryOp(_, op) => {
-            add_operand_uses(op, gen);
-        }
-        Rvalue::Ref { place, .. } => {
+        Rvalue::Ref { place, .. } | Rvalue::Discriminant(place) => {
             gen.insert(place.local);
         }
         Rvalue::Aggregate(_, ops) | Rvalue::StringInterp(ops) => {
@@ -379,9 +375,6 @@ fn add_rvalue_uses(rvalue: &Rvalue, gen: &mut FxHashSet<Local>) {
             add_operand_uses(start, gen);
             add_operand_uses(end, gen);
             add_operand_uses(step, gen);
-        }
-        Rvalue::Discriminant(place) => {
-            gen.insert(place.local);
         }
         Rvalue::MapGetOptional { map, key, .. } => {
             add_operand_uses(map, gen);
@@ -410,7 +403,9 @@ fn build_successor_map(func: &MirFunction) -> Vec<Vec<usize>> {
     func.blocks
         .iter()
         .map(|block| match &block.terminator {
-            Terminator::Goto { target } => vec![target.index()],
+            Terminator::Goto { target } | Terminator::Call { target, .. } => {
+                vec![target.index()]
+            }
             Terminator::Return | Terminator::Unreachable => vec![],
             Terminator::SwitchInt {
                 targets, otherwise, ..
@@ -419,7 +414,6 @@ fn build_successor_map(func: &MirFunction) -> Vec<Vec<usize>> {
                 succs.push(otherwise.index());
                 succs
             }
-            Terminator::Call { target, .. } => vec![target.index()],
         })
         .collect()
 }
@@ -853,6 +847,8 @@ fn generate_poll_function(
                     // Find which cloned block corresponds to ap.call_block_idx.
                     if let Some(pos) = seg_blocks.iter().position(|&b| b == ap.call_block_idx) {
                         let cloned_block_idx = first_cloned_block_idx + pos;
+                        #[allow(clippy::cast_possible_wrap)]
+                        let next_tag = (seg_idx + 1) as i64;
                         rewrite_await_block(
                             &mut blocks[cloned_block_idx],
                             &orig_to_poll,
@@ -860,17 +856,17 @@ fn generate_poll_function(
                             &field_index,
                             state_ptr_local,
                             ap,
-                            (seg_idx + 1) as i64,
+                            next_tag,
                             original.span,
                         );
                     }
                 }
 
                 // Rewrite Return terminators in cloned blocks → store result + return 1.
-                for block_idx in first_cloned_block_idx..blocks.len() {
-                    if matches!(blocks[block_idx].terminator, Terminator::Return) {
+                for block in &mut blocks[first_cloned_block_idx..] {
+                    if matches!(block.terminator, Terminator::Return) {
                         rewrite_return_block(
-                            &mut blocks[block_idx],
+                            block,
                             &orig_to_poll,
                             state_ptr_local,
                             original.span,
@@ -940,10 +936,10 @@ fn generate_poll_function(
         }
 
         // Rewrite Return terminators in cloned blocks.
-        for block_idx in first_cloned..blocks.len() {
-            if matches!(blocks[block_idx].terminator, Terminator::Return) {
+        for block in &mut blocks[first_cloned..] {
+            if matches!(block.terminator, Terminator::Return) {
                 rewrite_return_block(
-                    &mut blocks[block_idx],
+                    block,
                     &orig_to_poll,
                     state_ptr_local,
                     original.span,
@@ -1012,7 +1008,7 @@ fn generate_poll_function(
 ///
 /// Segment 0: blocks reachable from entry, stopping at first await call block.
 /// Segment K: blocks reachable from `await_points[K-1].resume_block`, stopping at
-///            `await_points[K].call_block` (if K < await_points.len()).
+///            `await_points[K].call_block` (if K < `await_points.len()`).
 /// Last segment: blocks reachable from last resume block, no barrier.
 fn compute_segment_ranges(func: &MirFunction, await_points: &[AwaitPoint]) -> Vec<Vec<usize>> {
     let num_blocks = func.blocks.len();
@@ -1262,7 +1258,7 @@ fn remap_terminator(
 /// Replaces the `Call { __spark_await }` terminator with:
 /// 1. Save each live-across-await local → `state.__local_N`
 /// 2. Store future pointer → `state.__sub_future`
-/// 3. Set `state.__tag` = next_tag
+/// 3. Set `state.__tag` = `next_tag`
 /// 4. Return 0 (Pending)
 #[allow(clippy::too_many_arguments)]
 fn rewrite_await_block(
@@ -1776,6 +1772,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn multi_await_creates_multiple_segments() {
         let mut table = TypeTable::new();
         let i64_ty = table.intern(Ty::Int(IntWidth::I64));

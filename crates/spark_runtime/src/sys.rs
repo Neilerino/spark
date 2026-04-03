@@ -30,12 +30,14 @@ unsafe fn read_spark_str(ptr: *mut u8) -> String {
 }
 
 /// Creates a new `SparkString` from a Rust `&str`.
+#[allow(clippy::cast_possible_wrap)] // String lengths won't exceed i64::MAX
 fn rust_str_to_spark(s: &str) -> *mut u8 {
     let bytes = s.as_bytes();
     unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
 }
 
 /// Builds a `SparkList` of `SparkString` from an iterator of strings.
+#[allow(clippy::cast_possible_wrap)] // Pointer size won't exceed i64::MAX
 fn string_list_from_iter(iter: impl Iterator<Item = String>) -> *mut u8 {
     let elem_size = std::mem::size_of::<*mut u8>() as i64;
     let elem_drop = __spark_string_rc_dec as *const () as usize;
@@ -70,10 +72,8 @@ pub extern "C" fn __spark_sys_args() -> *mut u8 {
 #[no_mangle]
 pub unsafe extern "C" fn __spark_sys_get_env(name: *mut u8) -> *mut u8 {
     let name_str = unsafe { read_spark_str(name) };
-    match std::env::var(&name_str) {
-        Ok(val) => rust_str_to_spark(&val),
-        Err(_) => rust_str_to_spark(""),
-    }
+    std::env::var(&name_str)
+        .map_or_else(|_| rust_str_to_spark(""), |val| rust_str_to_spark(&val))
 }
 
 /// Returns 1 if the environment variable exists, 0 otherwise.
@@ -84,11 +84,7 @@ pub unsafe extern "C" fn __spark_sys_get_env(name: *mut u8) -> *mut u8 {
 #[no_mangle]
 pub unsafe extern "C" fn __spark_sys_has_env(name: *mut u8) -> i64 {
     let name_str = unsafe { read_spark_str(name) };
-    if std::env::var(&name_str).is_ok() {
-        1
-    } else {
-        0
-    }
+    i64::from(std::env::var(&name_str).is_ok())
 }
 
 /// Sets an environment variable for the current process.
@@ -128,7 +124,8 @@ pub extern "C" fn __spark_sys_env_keys() -> *mut u8 {
 mod tests {
     use super::*;
 
-    /// Helper: read a SparkString result into a Rust String.
+    /// Helper: read a `SparkString` result into a Rust `String`.
+    #[allow(clippy::cast_ptr_alignment)] // SparkString pointers are properly aligned
     unsafe fn read_result_string(ptr: *mut u8) -> String {
         let s = unsafe { &*(ptr.cast::<SparkString>()) };
         if s.len == 0 {
@@ -138,7 +135,7 @@ mod tests {
         std::str::from_utf8(slice).unwrap().to_owned()
     }
 
-    /// Helper: read elements from a SparkList of SparkString pointers.
+    /// Helper: read elements from a `SparkList` of `SparkString` pointers.
     #[allow(clippy::cast_ptr_alignment)]
     unsafe fn read_string_list(ptr: *mut u8) -> Vec<String> {
         let list = unsafe { &*(ptr.cast::<crate::SparkList>()) };

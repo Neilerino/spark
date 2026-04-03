@@ -24,7 +24,7 @@ use crate::mir::{
 #[must_use]
 pub fn validate(mir: &Mir) -> Vec<String> {
     let mut errors = Vec::new();
-    for (_, func) in &mir.functions {
+    for func in mir.functions.values() {
         validate_function(func, &mut errors);
     }
     errors
@@ -206,7 +206,7 @@ fn check_aggregate_kind(
             }
         }
         AggregateKind::Map => {
-            if operand_count % 2 != 0 {
+            if !operand_count.is_multiple_of(2) {
                 errors.push(format!(
                     "DefId({func_id})/{block_id}/stmt[{stmt_idx}]: \
                      map aggregate has odd operand count ({operand_count})"
@@ -326,7 +326,7 @@ mod tests {
             }],
         );
         let mir = Mir {
-            functions: [(DefId::new(0), func)].into_iter().collect(),
+            functions: std::iter::once((DefId::new(0), func)).collect(),
         };
         let errors = validate(&mir);
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
@@ -347,7 +347,7 @@ mod tests {
             }],
         );
         let mir = Mir {
-            functions: [(DefId::new(0), func)].into_iter().collect(),
+            functions: std::iter::once((DefId::new(0), func)).collect(),
         };
         let errors = validate(&mir);
         assert!(!errors.is_empty(), "should detect out-of-bounds local");
@@ -367,7 +367,7 @@ mod tests {
             }],
         );
         let mir = Mir {
-            functions: [(DefId::new(0), func)].into_iter().collect(),
+            functions: std::iter::once((DefId::new(0), func)).collect(),
         };
         let errors = validate(&mir);
         assert!(!errors.is_empty(), "should detect out-of-bounds block");
@@ -396,7 +396,7 @@ mod tests {
             }],
         );
         let mir = Mir {
-            functions: [(DefId::new(0), func)].into_iter().collect(),
+            functions: std::iter::once((DefId::new(0), func)).collect(),
         };
         let errors = validate(&mir);
         assert!(!errors.is_empty(), "should detect field/operand mismatch");
@@ -407,7 +407,7 @@ mod tests {
     fn detects_empty_function() {
         let func = dummy_func(1, vec![]);
         let mir = Mir {
-            functions: [(DefId::new(0), func)].into_iter().collect(),
+            functions: std::iter::once((DefId::new(0), func)).collect(),
         };
         let errors = validate(&mir);
         assert!(!errors.is_empty(), "should detect empty function");
@@ -438,7 +438,7 @@ mod tests {
             }],
         );
         let mir = Mir {
-            functions: [(DefId::new(0), func)].into_iter().collect(),
+            functions: std::iter::once((DefId::new(0), func)).collect(),
         };
         let errors = validate(&mir);
         assert!(!errors.is_empty(), "should detect wrong union operand count");

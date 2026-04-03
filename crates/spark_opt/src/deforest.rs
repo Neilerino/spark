@@ -204,6 +204,7 @@ fn operand_reads_alias(op: &Operand, aliases: &[Local]) -> bool {
 }
 
 /// Analyzes all consumers of a given allocation site (and its aliases).
+#[allow(clippy::too_many_lines)]
 fn analyze_consumers(
     func: &MirFunction,
     site: &AllocationSite,
@@ -301,7 +302,7 @@ fn analyze_consumers(
                     // Check for parallel operations: list is always args[0].
                     if args
                         .first()
-                        .map_or(false, |a| operand_is_alias(a, aliases))
+                        .is_some_and(|a| operand_is_alias(a, aliases))
                     {
                         if Some(callee) == foreach_def {
                             consumers.push(Consumer::ParallelOp {
@@ -390,6 +391,7 @@ fn place_reads_alias(place: &Place, aliases: &[Local]) -> bool {
 }
 
 /// Rewrites consumers to eliminate the allocation.
+#[allow(clippy::too_many_lines)]
 fn rewrite_consumers(
     func: &mut MirFunction,
     site: &AllocationSite,

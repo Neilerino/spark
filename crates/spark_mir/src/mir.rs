@@ -100,6 +100,7 @@ impl MirFunction {
     /// 1. The operand is a direct `FunctionRef` constant.
     /// 2. The operand is a `Copy`/`Move` of a local that was assigned a
     ///    `FunctionRef` — scans all blocks' statements to find the assignment.
+    #[must_use] 
     pub fn resolve_callee_def_id(&self, operand: &Operand) -> Option<DefId> {
         // Direct constant case.
         if let Operand::Constant(Constant::FunctionRef(def_id)) = operand {
@@ -348,7 +349,7 @@ pub enum AggregateKind {
     /// Closure construction: captures are stored into a heap-allocated
     /// environment, and a fat pointer `(fn_ptr, env_ptr)` is produced.
     Closure {
-        /// The DefId of the lifted closure function.
+        /// The `DefId` of the lifted closure function.
         func_def_id: DefId,
     },
     /// Channel construction: `Channel[T]()` allocates a new MPSC channel.
@@ -522,7 +523,7 @@ mod tests {
     #[test]
     fn constant_variants() {
         let _ = Constant::Int(42);
-        let _ = Constant::Float(3.14);
+        let _ = Constant::Float(3.125);
         let _ = Constant::Bool(true);
         let _ = Constant::Char('a');
         let _ = Constant::Null;

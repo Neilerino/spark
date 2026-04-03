@@ -73,7 +73,7 @@ pub fn validate_constraints(
 fn check_interface_constraint(
     concrete_ty: TypeId,
     interface_def_id: DefId,
-    table: &mut TypeTable,
+    table: &TypeTable,
     definitions: &DefinitionTable,
     span: Span,
     diagnostics: &mut spark_diagnostics::Diagnostics,
@@ -216,7 +216,7 @@ mod tests {
         let (mut table, definitions, mut diagnostics) = setup();
         let param = DefId::new(0);
         let concrete = table.intern(Ty::Int(IntWidth::I64));
-        let subst: FxHashMap<DefId, TypeId> = [(param, concrete)].into_iter().collect();
+        let subst: FxHashMap<DefId, TypeId> = std::iter::once((param, concrete)).collect();
         let span = Span::DUMMY;
 
         let result = validate_constraints(&[param], &subst, &mut table, &definitions, span, &mut diagnostics);
@@ -235,7 +235,7 @@ mod tests {
             interface_def_id: interface,
             type_args: vec![],
         });
-        let subst: FxHashMap<DefId, TypeId> = [(param, TypeId::ERROR)].into_iter().collect();
+        let subst: FxHashMap<DefId, TypeId> = std::iter::once((param, TypeId::ERROR)).collect();
         let span = Span::DUMMY;
 
         let result = validate_constraints(&[param], &subst, &mut table, &definitions, span, &mut diagnostics);
@@ -274,7 +274,7 @@ mod tests {
             type_args: vec![],
         });
 
-        let subst: FxHashMap<DefId, TypeId> = [(param_def_id, struct_ty)].into_iter().collect();
+        let subst: FxHashMap<DefId, TypeId> = std::iter::once((param_def_id, struct_ty)).collect();
         let span = Span::DUMMY;
 
         let result = validate_constraints(&[param_def_id], &subst, &mut table, &definitions, span, &mut diagnostics);
@@ -312,7 +312,7 @@ mod tests {
             type_args: vec![],
         });
 
-        let subst: FxHashMap<DefId, TypeId> = [(param_def_id, struct_ty)].into_iter().collect();
+        let subst: FxHashMap<DefId, TypeId> = std::iter::once((param_def_id, struct_ty)).collect();
         let span = Span::DUMMY;
 
         let result = validate_constraints(&[param_def_id], &subst, &mut table, &definitions, span, &mut diagnostics);
@@ -350,7 +350,7 @@ mod tests {
             fields: vec![(sym("id"), int_ty)],
         });
 
-        let subst: FxHashMap<DefId, TypeId> = [(param_def_id, struct_ty)].into_iter().collect();
+        let subst: FxHashMap<DefId, TypeId> = std::iter::once((param_def_id, struct_ty)).collect();
         let span = Span::DUMMY;
 
         let result = validate_constraints(&[param_def_id], &subst, &mut table, &definitions, span, &mut diagnostics);
@@ -387,7 +387,7 @@ mod tests {
             fields: vec![(sym("id"), int_ty)],
         });
 
-        let subst: FxHashMap<DefId, TypeId> = [(param_def_id, struct_ty)].into_iter().collect();
+        let subst: FxHashMap<DefId, TypeId> = std::iter::once((param_def_id, struct_ty)).collect();
         let span = Span::DUMMY;
 
         let result = validate_constraints(&[param_def_id], &subst, &mut table, &definitions, span, &mut diagnostics);

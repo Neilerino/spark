@@ -335,6 +335,7 @@ impl FunctionBuilder {
     }
 
     /// Finishes building and produces a [`MirFunction`] with capture metadata.
+    #[must_use] 
     pub fn finish_with_captures(
         self,
         param_count: u32,

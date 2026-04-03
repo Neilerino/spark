@@ -37,11 +37,11 @@ use self::types as clif_types;
 pub struct CraneliftBackend {
     /// The Cranelift object module.
     module: ObjectModule,
-    /// Cache of thunk FuncIds for named function references used as values.
+    /// Cache of thunk `FuncIds` for named function references used as values.
     /// A thunk is a thin wrapper that accepts+ignores an env pointer and
     /// forwards to the real function, enabling the fat-pointer calling convention.
     thunk_ids: FxHashMap<DefId, FuncId>,
-    /// Cache of env destructor FuncIds for closures with RC captures.
+    /// Cache of env destructor `FuncIds` for closures with RC captures.
     /// Each destructor decrements RC for captured values when the env is freed.
     dtor_ids: FxHashMap<DefId, FuncId>,
 }
@@ -113,7 +113,7 @@ impl CraneliftBackend {
 
         for (def_id, mir_func) in &mir.functions {
             let name = function_name(*def_id, definitions);
-            let is_lambda = definitions.get(*def_id).map_or(false, |info| {
+            let is_lambda = definitions.get(*def_id).is_some_and(|info| {
                 matches!(info.kind, spark_resolve::DefinitionKind::Lambda)
             });
 
@@ -134,11 +134,7 @@ impl CraneliftBackend {
             // Lambda functions get a hidden env_ptr parameter.
             // If sret is present (aggregate return), env_ptr goes after sret.
             if is_lambda {
-                let insert_pos = if abi::needs_sret(mir_func.return_type, table) {
-                    1
-                } else {
-                    0
-                };
+                let insert_pos = usize::from(abi::needs_sret(mir_func.return_type, table));
                 sig.params
                     .insert(insert_pos, cranelift_codegen::ir::AbiParam::new(ptr_type));
             }
@@ -190,7 +186,7 @@ impl CraneliftBackend {
             .functions
             .iter()
             .filter(|(def_id, _)| {
-                definitions.get(**def_id).map_or(false, |info| {
+                definitions.get(**def_id).is_some_and(|info| {
                     !matches!(info.kind, spark_resolve::DefinitionKind::Lambda)
                 })
             })
@@ -308,7 +304,7 @@ impl CraneliftBackend {
     /// the RC of every captured value that [`spark_drop::needs_drop`] returns
     /// true for. The destructor is called by `__spark_env_rc_dec` when the
     /// env's reference count reaches zero, before the allocation is freed.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn generate_env_destructors(
         &mut self,
         mir: &Mir,
@@ -379,7 +375,7 @@ impl CraneliftBackend {
 
                 // Compute capture offsets (same logic as emit_closure_construction).
                 let mut layouts = crate::layout::LayoutCache::new(ptr_type.bytes());
-                let mut offset: u32 = spark_abi::ENV_CAPTURES_OFFSET; // skip header
+                let mut offset: u32 = 24; // skip header
 
                 for (_cap_def_id, cap_ty) in &mir_func.captures {
                     let cap_layout = layouts.layout_of(*cap_ty, table);
@@ -626,7 +622,7 @@ impl CraneliftBackend {
         if is_lambda && !mir_func.captures.is_empty() {
             if let Some(env_ptr_val) = fctx.env_ptr {
                 let mut capture_layouts = crate::layout::LayoutCache::new(ptr_type.bytes());
-                let mut offset: u32 = spark_abi::ENV_CAPTURES_OFFSET; // skip header (rc + alloc_size + dtor)
+                let mut offset: u32 = 24; // skip header (rc: usize, alloc_size: usize, dtor: fn_ptr)
                 let capture_start = 1 + mir_func.param_count;
 
                 for (i, (_cap_def_id, cap_ty)) in mir_func.captures.iter().enumerate() {

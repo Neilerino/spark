@@ -184,6 +184,7 @@ mod tests {
             resolved: resolver_output.resolved,
             definitions: resolver_output.definitions,
             table: type_output.table,
+            builtins: type_output.builtins,
         });
 
         lower(MirInput {
@@ -266,7 +267,7 @@ mod tests {
         let func = output.mir.functions.values().next().unwrap();
         assert_eq!(func.param_count, 2);
         let pp = pretty_function(func);
-        assert!(pp.contains("+"), "MIR:\n{pp}");
+        assert!(pp.contains('+'), "MIR:\n{pp}");
     }
 
     #[test]
@@ -414,7 +415,7 @@ mod tests {
         );
         let func = output.mir.functions.values().next().unwrap();
         let pp = pretty_function(func);
-        assert!(pp.contains("-"), "MIR:\n{pp}");
+        assert!(pp.contains('-'), "MIR:\n{pp}");
     }
 
     #[test]

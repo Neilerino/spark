@@ -538,7 +538,7 @@ fn build_each_loop(
 /// }
 /// ```
 #[must_use]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn desugar_reduce(
     iterable: HirExpr,
     callback: HirExpr,
@@ -728,7 +728,7 @@ pub fn desugar_reduce(
 /// }
 /// ```
 #[must_use]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn desugar_filter(
     iterable: HirExpr,
     predicate: HirExpr,
@@ -932,7 +932,7 @@ pub fn desugar_filter(
 /// }
 /// ```
 #[must_use]
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn desugar_find(
     iterable: HirExpr,
     predicate: HirExpr,

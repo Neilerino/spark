@@ -37,7 +37,7 @@ pub struct EmitCtx<'a> {
     pub elem_dtor_ids: &'a FxHashMap<TypeId, FuncId>,
     /// Poll function info for cooperative async.
     pub poll_fn_map: &'a FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
-    /// Mapping from lambda DefIds to their async function DefIds.
+    /// Mapping from lambda `DefIds` to their async function `DefIds`.
     pub lambda_to_async: &'a FxHashMap<DefId, DefId>,
 }
 
@@ -70,7 +70,7 @@ pub struct FunctionContext<'a> {
     pub mir_func: &'a MirFunction,
     /// Runtime function stubs.
     pub stubs: &'a RuntimeStubs,
-    /// For lambda functions: the env_ptr Value (first Cranelift block param).
+    /// For lambda functions: the `env_ptr` Value (first Cranelift block param).
     /// Used by Phase B to load captured variables from the environment.
     pub env_ptr: Option<Value>,
     /// For functions with aggregate return types: the sret pointer passed by the caller.

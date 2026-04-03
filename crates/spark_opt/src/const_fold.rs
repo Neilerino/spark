@@ -734,14 +734,14 @@ mod tests {
     #[test]
     fn fold_unary_neg_float() {
         let mut func = make_func(vec![BasicBlock {
-            statements: vec![unary_assign(0, UnaryOp::Neg, Constant::Float(3.14))],
+            statements: vec![unary_assign(0, UnaryOp::Neg, Constant::Float(2.5))],
             terminator: Terminator::Return,
             is_cleanup: false,
         }]);
 
         assert!(fold_constants(&mut func));
         let result = expect_float(&func, 0, 0);
-        assert!((result - (-3.14)).abs() < f64::EPSILON);
+        assert!((result - (-2.5)).abs() < f64::EPSILON);
     }
 
     #[test]

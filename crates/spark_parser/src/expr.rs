@@ -137,7 +137,7 @@ impl Parser {
     }
 
     /// Returns true if the expression is an identifier or path.
-    fn lhs_is_path(lhs: &Expr) -> bool {
+    const fn lhs_is_path(lhs: &Expr) -> bool {
         matches!(&lhs.kind, ExprKind::Ident(_) | ExprKind::Path(_))
     }
 
@@ -401,6 +401,7 @@ impl Parser {
     }
 
     /// Parses a postfix operator expression.
+    #[allow(clippy::too_many_lines)]
     fn parse_postfix(&mut self, lhs: Expr, start: Span) -> Expr {
         match self.current_kind() {
             TokenKind::Bang => {
@@ -683,7 +684,7 @@ impl Parser {
             || self.check(TokenKind::Filter)
             || self.check(TokenKind::Find)
         {
-            let token = self.current().kind.clone();
+            let token = self.current().kind;
             self.advance();
             let callback = self.parse_pipeline_callback();
             let span = self.span_from(stage_start);
@@ -1370,35 +1371,14 @@ impl Parser {
 
         while !self.check(TokenKind::RBrace) && !self.at_end() {
             let arm_start = self.current_span();
-            let prev_pos = self.pos;
             let pattern = self.parse_pattern();
-
-            if self.expect(TokenKind::Arrow).is_none() {
-                // Recovery: skip tokens until we find `->`, `}`, or EOF.
-                while !self.at_end()
-                    && !self.check(TokenKind::Arrow)
-                    && !self.check(TokenKind::RBrace)
-                {
-                    self.advance();
-                }
-                if self.eat(TokenKind::Arrow).is_none() {
-                    // Could not find `->` — bail out of this arm loop.
-                    break;
-                }
-            }
-
+            self.expect(TokenKind::Arrow);
             let body = self.parse_expr();
             let arm_span = self.span_from(arm_start);
             arms.push(MatchArm::new(pattern, body, arm_span));
 
-            // Comma is optional between arms.
+            // Comma is optional between arms
             self.eat(TokenKind::Comma);
-
-            // Guard: recovery above may not consume tokens if the pattern
-            // itself fails, so force progress to prevent the loop from stalling.
-            if self.pos == prev_pos {
-                self.advance();
-            }
         }
 
         self.expect(TokenKind::RBrace);
@@ -1836,7 +1816,7 @@ mod tests {
     #[test]
     fn interpolated_string_with_ident() {
         let (expr, diags) = parse_expr_str(r#""hello {name}""#);
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         if let ExprKind::Literal(lit) = &expr.kind {
             if let LiteralKind::String(s) = &lit.kind {
                 assert!(!s.is_simple());
@@ -1860,7 +1840,7 @@ mod tests {
     #[test]
     fn interpolated_string_with_binary_expr() {
         let (expr, diags) = parse_expr_str(r#""result: {1 + 2}""#);
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         if let ExprKind::Literal(lit) = &expr.kind {
             if let LiteralKind::String(s) = &lit.kind {
                 assert_eq!(s.parts.len(), 2);
@@ -1883,7 +1863,7 @@ mod tests {
     #[test]
     fn interpolated_string_multiple_parts() {
         let (expr, diags) = parse_expr_str(r#""{x}{y}""#);
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         if let ExprKind::Literal(lit) = &expr.kind {
             if let LiteralKind::String(s) = &lit.kind {
                 assert_eq!(s.parts.len(), 2);
@@ -1904,7 +1884,7 @@ mod tests {
     #[test]
     fn generic_struct_init_single() {
         let (expr, diags) = parse_expr_str("Box[Int] { value: 42 }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         if let ExprKind::StructInit { type_args, fields, .. } = &expr.kind {
             assert_eq!(type_args.len(), 1);
             assert_eq!(fields.len(), 1);
@@ -1916,7 +1896,7 @@ mod tests {
     #[test]
     fn generic_struct_init_multi() {
         let (expr, diags) = parse_expr_str("Pair[Int, String] { first: 1, second: \"hi\" }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         if let ExprKind::StructInit { type_args, fields, .. } = &expr.kind {
             assert_eq!(type_args.len(), 2);
             assert_eq!(fields.len(), 2);
@@ -1928,14 +1908,14 @@ mod tests {
     #[test]
     fn index_still_works() {
         let (expr, diags) = parse_expr_str("arr[0]");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert!(matches!(expr.kind, ExprKind::Index { .. }));
     }
 
     #[test]
     fn index_before_non_brace() {
         let (expr, diags) = parse_expr_str("arr[0].field");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert!(matches!(expr.kind, ExprKind::Field { .. }));
     }
 
@@ -1946,7 +1926,7 @@ mod tests {
     #[test]
     fn parallel_each_with_lambda() {
         let (expr, diags) = parse_expr_str("items parallel each (x: Int): Void { print(x) }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         if let ExprKind::Pipeline { stages, .. } = &expr.kind {
             assert_eq!(stages.len(), 1);
             assert!(stages[0].parallel);
@@ -1959,7 +1939,7 @@ mod tests {
     #[test]
     fn parallel_map_with_lambda() {
         let (expr, diags) = parse_expr_str("items parallel map (x: Int): Int { x * 2 }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         if let ExprKind::Pipeline { stages, .. } = &expr.kind {
             assert_eq!(stages.len(), 1);
             assert!(stages[0].parallel);
@@ -1972,14 +1952,14 @@ mod tests {
     #[test]
     fn parallel_each_with_fn_ref() {
         let (expr, diags) = parse_expr_str("items parallel each show");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert!(matches!(expr.kind, ExprKind::Pipeline { .. }));
     }
 
     #[test]
     fn parallel_map_with_fn_ref() {
         let (expr, diags) = parse_expr_str("items parallel map double");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert!(matches!(expr.kind, ExprKind::Pipeline { .. }));
     }
 
@@ -1987,14 +1967,14 @@ mod tests {
     fn parallel_each_with_fn_lambda() {
         let (expr, diags) =
             parse_expr_str("items parallel each fn(x: Int): Void { print(x) }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert!(matches!(expr.kind, ExprKind::Pipeline { .. }));
     }
 
     #[test]
     fn reduce_basic() {
         let (expr, diags) = parse_expr_str("[1, 2, 3] reduce 0 (a: Int, b: Int): Int { a + b }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         if let ExprKind::Pipeline { stages, .. } = &expr.kind {
             assert_eq!(stages.len(), 1);
             assert!(!stages[0].parallel);
@@ -2009,7 +1989,7 @@ mod tests {
         let (expr, diags) = parse_expr_str(
             "items map (x: Int): Int { x * 2 } reduce 0 (a: Int, b: Int): Int { a + b }",
         );
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         if let ExprKind::Pipeline { stages, .. } = &expr.kind {
             assert_eq!(stages.len(), 2);
             assert!(matches!(stages[0].kind, PipelineStageKind::Map { .. }));

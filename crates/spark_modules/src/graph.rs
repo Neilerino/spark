@@ -359,7 +359,7 @@ mod tests {
 
         graph.modules.insert(a.clone(), ModuleInfo::new(a.clone()));
         graph.modules.insert(b.clone(), ModuleInfo::new(b.clone()));
-        graph.dependencies.insert(a.clone(), vec![b.clone()]);
+        graph.dependencies.insert(a, vec![b]);
 
         let detector = CycleDetector::new(&graph);
         let cycles = detector.find_cycles();
@@ -378,7 +378,7 @@ mod tests {
         graph.modules.insert(a.clone(), ModuleInfo::new(a.clone()));
         graph.modules.insert(b.clone(), ModuleInfo::new(b.clone()));
         graph.dependencies.insert(a.clone(), vec![b.clone()]);
-        graph.dependencies.insert(b.clone(), vec![a.clone()]);
+        graph.dependencies.insert(b, vec![a]);
 
         let detector = CycleDetector::new(&graph);
         let cycles = detector.find_cycles();
@@ -400,8 +400,8 @@ mod tests {
         graph.modules.insert(b.clone(), ModuleInfo::new(b.clone()));
         graph.modules.insert(c.clone(), ModuleInfo::new(c.clone()));
         graph.dependencies.insert(a.clone(), vec![b.clone()]);
-        graph.dependencies.insert(b.clone(), vec![c.clone()]);
-        graph.dependencies.insert(c.clone(), vec![a.clone()]);
+        graph.dependencies.insert(b, vec![c.clone()]);
+        graph.dependencies.insert(c, vec![a]);
 
         let detector = CycleDetector::new(&graph);
         let cycles = detector.find_cycles();

@@ -135,10 +135,13 @@ mod tests {
 
     #[test]
     fn empty_input() {
+        let mut table = TypeTable::new();
+        let builtins = spark_types::builtins::register_builtins(&mut table);
         let input = HirInput {
             resolved: ResolvedAst::new(HashMap::new()),
             definitions: DefinitionTable::new(),
-            table: TypeTable::new(),
+            table,
+            builtins,
         };
 
         let output = lower(input);
@@ -192,7 +195,7 @@ mod tests {
         let mut asts = HashMap::new();
         asts.insert(file_id, ast);
 
-        let resolver_output = resolve(ResolverInput { graph: graph.clone(), asts });
+        let resolver_output = resolve(ResolverInput { graph, asts });
 
         let type_output = check(TypeCheckerInput {
             resolved: &resolver_output.resolved,
@@ -204,6 +207,7 @@ mod tests {
             resolved: resolver_output.resolved,
             definitions: resolver_output.definitions,
             table: type_output.table,
+            builtins: type_output.builtins,
         })
     }
 
@@ -292,8 +296,7 @@ mod tests {
             HirExprKind::Block { stmts, expr: trailing } => {
                 for stmt in stmts {
                     let inner = match stmt {
-                        HirStmt::Let { value, .. } => find_match(value),
-                        HirStmt::Assign { value, .. } => find_match(value),
+                        HirStmt::Let { value, .. } | HirStmt::Assign { value, .. } => find_match(value),
                         HirStmt::Expr(e) => find_match(e),
                     };
                     if inner.is_some() {
@@ -307,7 +310,7 @@ mod tests {
         }
     }
 
-    /// Returns the single function from an HirOutput, panicking with diagnostics if errors.
+    /// Returns the single function from an `HirOutput`, panicking with diagnostics if errors.
     fn get_function(output: &HirOutput) -> &HirFunction {
         assert!(
             !output.diagnostics.has_errors(),
@@ -378,7 +381,7 @@ mod tests {
             "struct User { name: String }\nfn f(u: User?): String? { return u?.name }",
         );
         let func = output.hir.functions.values()
-            .find(|f| output.definitions.get(f.def_id).map_or(false, |i| i.name.as_str() == "f"))
+            .find(|f| output.definitions.get(f.def_id).is_some_and(|i| i.name.as_str() == "f"))
             .expect("Expected function 'f'");
         let arms = find_match(&func.body).expect("Expected a Match from ?. desugaring");
 

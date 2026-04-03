@@ -171,7 +171,7 @@ struct CaptureCollector<'a> {
     captures: Vec<(DefId, TypeId)>,
     /// Deduplication set.
     seen: rustc_hash::FxHashSet<DefId>,
-    /// DefIds defined locally within the lambda body (let bindings,
+    /// `DefId`s defined locally within the lambda body (let bindings,
     /// match pattern bindings). These are NOT captures.
     local_defs: rustc_hash::FxHashSet<DefId>,
 }
@@ -449,7 +449,7 @@ mod tests {
         Span::DUMMY
     }
 
-    /// Creates a dummy TypeTable with a function type registered.
+    /// Creates a dummy `TypeTable` with a function type registered.
     fn make_table_with_fn_type() -> (TypeTable, TypeId, TypeId) {
         let mut table = TypeTable::new();
         let int_ty = table.intern(Ty::Int(IntWidth::I64));
@@ -461,7 +461,7 @@ mod tests {
         (table, int_ty, fn_ty)
     }
 
-    /// Creates a simple lambda HirExpr: fn(x: Int): Int { x }
+    /// Creates a simple lambda `HirExpr`: fn(x: Int): Int { x }
     fn make_lambda(
         param_def_id: DefId,
         body_def_id: DefId,

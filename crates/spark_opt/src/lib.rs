@@ -366,8 +366,6 @@ mod tests {
         use spark_span::FileId;
         use spark_types::{check, TypeCheckerInput};
 
-        let file_id = FileId::new(0);
-
         fn make_graph(file_id: spark_span::FileId, ast: &spark_ast::Ast) -> ModuleGraph {
             use spark_ast::Item;
 
@@ -395,6 +393,7 @@ mod tests {
             graph
         }
 
+        let file_id = FileId::new(0);
         let tokens = Lexer::new(file_id, source).tokenize();
         let (ast, _) = parse(tokens, file_id);
         let graph = make_graph(file_id, &ast);
@@ -413,6 +412,7 @@ mod tests {
             resolved: resolver_output.resolved,
             definitions: resolver_output.definitions,
             table: type_output.table,
+            builtins: type_output.builtins,
         });
 
         let mir_output = spark_mir::lower(spark_mir::MirInput {

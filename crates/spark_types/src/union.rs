@@ -30,7 +30,7 @@ pub fn strip_null(ty: TypeId, table: &TypeTable) -> TypeId {
                 _ => {
                     // We can't intern here (immutable table), but we can check
                     // if this union already exists
-                    let candidate = Ty::Union(non_null.clone());
+                    let candidate = Ty::Union(non_null);
                     table.lookup(&candidate).unwrap_or(ty)
                 }
             }
@@ -114,11 +114,10 @@ pub fn split_union(
         let ret_members = match table.resolve(ret) {
             Ty::Union(ms) => ms.clone(),
             Ty::Optional(inner) => {
-                if let Some(null_id) = table.lookup(&Ty::Null) {
-                    vec![*inner, null_id]
-                } else {
-                    vec![*inner]
-                }
+                table.lookup(&Ty::Null).map_or_else(
+                    || vec![*inner],
+                    |null_id| vec![*inner, null_id],
+                )
             }
             _ => vec![ret],
         };

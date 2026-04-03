@@ -206,7 +206,7 @@ pub fn mangle_type(ty_id: TypeId, table: &TypeTable) -> String {
 mod tests {
     use super::*;
     use crate::builtins::register_builtins;
-    use crate::ty::{IntWidth, LifetimeId};
+    use crate::ty::LifetimeId;
     use spark_resolve::DefinitionTable;
 
     // ── display_type ──────────────────────────────────────────────

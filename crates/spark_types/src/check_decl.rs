@@ -691,6 +691,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn collect_function_signature() {
         let mut table = crate::table::TypeTable::new();
         let builtins = crate::builtins::register_builtins(&mut table);

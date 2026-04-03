@@ -151,6 +151,6 @@ mod tests {
 
         assert!(!output.diagnostics.has_errors());
         // Built-in functions (e.g., print) are always registered
-        assert!(output.definitions.len() >= 1);
+        assert!(!output.definitions.is_empty());
     }
 }

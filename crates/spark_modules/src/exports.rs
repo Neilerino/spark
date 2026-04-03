@@ -26,6 +26,7 @@ pub const fn item_export_info(item: &Item) -> Option<(Symbol, bool)> {
 
 /// Returns the name of an item, if it has one.
 #[must_use]
+#[allow(dead_code)]
 pub const fn item_name(item: &Item) -> Option<Symbol> {
     match item {
         Item::Function(f) => Some(f.name.name),
@@ -41,6 +42,7 @@ pub const fn item_name(item: &Item) -> Option<Symbol> {
 
 /// Returns the visibility of an item.
 #[must_use]
+#[allow(dead_code)]
 pub const fn item_visibility(item: &Item) -> Visibility {
     match item {
         Item::Function(f) => f.visibility,
@@ -56,6 +58,7 @@ pub const fn item_visibility(item: &Item) -> Visibility {
 
 /// Returns true if the item is public.
 #[must_use]
+#[allow(dead_code)]
 pub const fn is_public(item: &Item) -> bool {
     item_visibility(item).is_public()
 }

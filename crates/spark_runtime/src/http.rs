@@ -676,6 +676,7 @@ pub extern "C" fn __spark_http_close_request(req_handle: i64) {
 mod tests {
     use super::*;
 
+    #[allow(clippy::cast_ptr_alignment)] // SparkString pointers are properly aligned
     unsafe fn read_result_string(ptr: *mut u8) -> String {
         let s = unsafe { &*(ptr.cast::<SparkString>()) };
         if s.len == 0 {

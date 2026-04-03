@@ -63,7 +63,7 @@ pub fn inline_calls(mir: &mut Mir) -> bool {
     changed
 }
 
-/// Collects DefIds of functions eligible for inlining.
+/// Collects `DefId`s of functions eligible for inlining.
 ///
 /// Both regular functions and lambda/closure functions are considered,
 /// as long as they are small enough and not recursive or async.
@@ -95,11 +95,13 @@ fn inline_cost(func: &MirFunction) -> usize {
 /// Returns `true` if the function directly calls itself.
 fn is_recursive(func: &MirFunction) -> bool {
     for block in &func.blocks {
-        if let Terminator::Call { func: op, .. } = &block.terminator {
-            if let Operand::Constant(Constant::FunctionRef(callee)) = op {
-                if *callee == func.def_id {
-                    return true;
-                }
+        if let Terminator::Call {
+            func: Operand::Constant(Constant::FunctionRef(callee)),
+            ..
+        } = &block.terminator
+        {
+            if *callee == func.def_id {
+                return true;
             }
         }
     }
@@ -130,6 +132,7 @@ fn inline_in_function(
 
 /// Performs one round of inlining across all blocks. Returns true if any
 /// call was inlined.
+#[allow(clippy::similar_names)]
 fn inline_one_round(
     caller: &mut MirFunction,
     callee_bodies: &FxHashMap<DefId, MirFunction>,
@@ -147,11 +150,10 @@ fn inline_one_round(
         } = &block.terminator
         {
             // Try to resolve as a FunctionRef first, then as a Closure.
-            let resolved = if let Some(id) = caller.resolve_callee_def_id(func) {
-                Some((id, Vec::new()))
-            } else {
-                resolve_closure_local(func, caller)
-            };
+            let resolved = caller.resolve_callee_def_id(func).map_or_else(
+                || resolve_closure_local(func, caller),
+                |id| Some((id, Vec::new())),
+            );
 
             if let Some((def_id, captures)) = resolved {
                 // Don't inline self-calls (would be infinite).
@@ -227,6 +229,7 @@ fn resolve_closure_local(func_op: &Operand, caller: &MirFunction) -> Option<(Def
 }
 
 /// Applies inlining of `callee` at the given call `site` in `caller`.
+#[allow(clippy::similar_names)]
 fn apply_inline(caller: &mut MirFunction, site: &InlineSite, callee: &MirFunction) {
     let local_offset = caller.locals.len() as u32;
     let block_offset = caller.blocks.len() as u32;
@@ -413,7 +416,7 @@ fn remap_place(place: &Place, local_off: u32) -> Place {
 }
 
 /// Remaps a projection's inner locals.
-fn remap_projection(proj: &Projection, local_off: u32) -> Projection {
+const fn remap_projection(proj: &Projection, local_off: u32) -> Projection {
     match proj {
         Projection::Field(sym) => Projection::Field(*sym),
         Projection::Index(local) => Projection::Index(remap_local(*local, local_off)),
@@ -502,7 +505,7 @@ fn remap_rvalue(rvalue: &Rvalue, local_off: u32, block_off: u32) -> Rvalue {
     }
 }
 
-/// Clones an aggregate kind (DefIds and symbols are interned, so clone is cheap).
+/// Clones an aggregate kind (`DefId`s and symbols are interned, so clone is cheap).
 fn remap_aggregate_kind(kind: &AggregateKind) -> AggregateKind {
     kind.clone()
 }
@@ -518,6 +521,7 @@ const fn remap_block(block: BlockId, offset: u32) -> BlockId {
 }
 
 #[cfg(test)]
+#[allow(clippy::similar_names)]
 mod tests {
     use super::*;
     use spark_ast::BinaryOp;
@@ -652,16 +656,16 @@ mod tests {
 
         // Create a callee with many blocks to exceed the threshold.
         let mut blocks = Vec::new();
-        for i in 0..30 {
+        for i in 0_u32..30 {
             blocks.push(BasicBlock {
                 statements: vec![Statement::Assign {
                     place: Place::from_local(Local(0)),
-                    rvalue: Rvalue::Use(Operand::Constant(Constant::Int(i))),
+                    rvalue: Rvalue::Use(Operand::Constant(Constant::Int(i64::from(i)))),
                     span: Span::DUMMY,
                 }],
                 terminator: if i < 29 {
                     Terminator::Goto {
-                        target: BlockId((i + 1) as u32),
+                        target: BlockId(i + 1),
                     }
                 } else {
                     Terminator::Return

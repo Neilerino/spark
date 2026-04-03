@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn simple_function() {
         let (ast, diags) = parse_source("fn main(): Void { }");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.items.len(), 1);
         assert!(ast.items[0].is_function());
     }

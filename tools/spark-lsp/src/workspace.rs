@@ -303,6 +303,7 @@ pub fn file_path_to_uri(path: &Path) -> Option<Url> {
 /// alongside workspace files, with deduplication by URI. Their
 /// `module_path` is used for module resolution instead of computing
 /// a relative path from the workspace root.
+#[allow(clippy::too_many_lines)]
 pub fn analyze_workspace(
     files: &[(Url, String)],
     dep_files: &[DependencySource],
@@ -457,7 +458,7 @@ pub fn analyze_workspace(
             resolved: resolved.clone(),
             definitions: definitions.clone(),
             table: table.clone(),
-            builtins: builtins.clone(),
+            builtins,
         });
         all_diagnostics.extend(hir_output.diagnostics);
 

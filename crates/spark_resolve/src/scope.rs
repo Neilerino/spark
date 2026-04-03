@@ -442,9 +442,9 @@ mod tests {
         // Module scope: bytes 0..100
         let module = arena.create_scope(None, ScopeKind::Module, Span::new(file, 0, 100));
         // Function scope: bytes 10..50
-        let _func = arena.create_scope(Some(module), ScopeKind::Function, Span::new(file, 10, 50));
+        let func = arena.create_scope(Some(module), ScopeKind::Function, Span::new(file, 10, 50));
         // Block scope: bytes 20..40
-        let block = arena.create_scope(Some(_func), ScopeKind::Block, Span::new(file, 20, 40));
+        let block = arena.create_scope(Some(func), ScopeKind::Block, Span::new(file, 20, 40));
 
         // Offset 25 is in all three — should return innermost (block)
         let found = arena.find_scope_at_offset(25, file);

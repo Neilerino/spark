@@ -177,6 +177,10 @@ impl LayoutCache {
     ///
     /// For `Ty::Applied { base, args }`, builds a substitution map from the base
     /// type's generic params and computes the layout using substituted field types.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the type is not an `Applied` or `Struct` type (ICE).
     pub fn applied_struct_layout_of(
         &mut self,
         applied_ty_id: TypeId,
@@ -326,7 +330,11 @@ impl LayoutCache {
             // CPtr is an opaque C pointer
             | Ty::CPtr
             // Generic parameter — treat as pointer-sized
-            | Ty::Param(_) => TypeLayout {
+            | Ty::Param(_)
+            // Future[T] is a heap-allocated SparkFuture pointer.
+            | Ty::Future { .. }
+            // Channel[T] is a heap-allocated SparkChannel pointer.
+            | Ty::Channel { .. } => TypeLayout {
                 size: self.ptr_size,
                 align: self.ptr_size,
             },
@@ -380,16 +388,6 @@ impl LayoutCache {
                 let members = members.clone();
                 self.compute_union_layout(&members, table)
             }
-            // Future[T] is a heap-allocated SparkFuture pointer.
-            Ty::Future { .. } => TypeLayout {
-                size: self.ptr_size,
-                align: self.ptr_size,
-            },
-            // Channel[T] is a heap-allocated SparkChannel pointer.
-            Ty::Channel { .. } => TypeLayout {
-                size: self.ptr_size,
-                align: self.ptr_size,
-            },
             // Async state struct — compute layout like a C struct from its fields.
             Ty::AsyncState { fields, .. } => {
                 let fields = fields.clone();
@@ -533,6 +531,10 @@ impl LayoutCache {
     /// Computes the byte offset of a field within an enum variant payload.
     ///
     /// The returned offset is absolute (includes the enum's `payload_offset`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `variant_def_id` has no variant fields in the type table (ICE).
     pub fn variant_field_offset(
         &mut self,
         enum_def_id: DefId,

@@ -79,15 +79,13 @@ mod tests {
 
     fn parse_block_str(source: &str) -> (Block, crate::Diagnostics) {
         let file_id = FileId::new(0);
-        let full_source = format!("{{ {} }}", source);
+        let full_source = format!("{{ {source} }}");
         let mut lexer = Lexer::new(file_id, &full_source);
         let tokens = lexer.tokenize();
         let mut parser = crate::Parser::new(tokens, file_id);
         let expr = parser.parse_block_expr();
 
-        let block = if let spark_ast::ExprKind::Block(b) = expr.kind {
-            b
-        } else {
+        let spark_ast::ExprKind::Block(block) = expr.kind else {
             panic!("expected block");
         };
 
@@ -97,7 +95,7 @@ mod tests {
     #[test]
     fn let_binding() {
         let (block, diags) = parse_block_str("x: Int = 42");
-        assert!(!diags.has_errors(), "errors: {:?}", diags);
+        assert!(!diags.has_errors(), "errors: {diags:?}");
         // Let binding is a statement, so it goes in stmts
         // Since there's no trailing expression after it, expr should be None
         assert_eq!(block.stmts.len(), 1);

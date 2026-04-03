@@ -734,6 +734,7 @@ fn check_index_access(
                 ..
             }) = &index.kind
             {
+                #[allow(clippy::cast_sign_loss)]
                 let idx = *val as usize;
                 if idx >= elems.len() {
                     ctx.diagnostics
@@ -1082,10 +1083,10 @@ fn check_call(
             diagnostics::expect_args(params.len(), arg_tys.len(), call_span, ctx.diagnostics);
 
             // Check if the callee is print — Displayable structs are accepted
-            let is_print_callee = callee_def_id.map_or(false, |did| {
+            let is_print_callee = callee_def_id.is_some_and(|did| {
                 ctx.definitions
                     .get(did)
-                    .map_or(false, |info| {
+                    .is_some_and(|info| {
                         info.name == spark_intern::kw::PRINT
                             && matches!(info.kind, DefinitionKind::BuiltinFunction)
                     })
@@ -1227,31 +1228,28 @@ fn check_field_access(
         }
         Ty::Tuple(elems) => {
             let field_str = field_name.as_str();
-            match field_str.parse::<usize>() {
-                Ok(index) => {
-                    if index >= elems.len() {
-                        diagnostics.push(crate::diagnostics::tuple_oob(
-                            index,
-                            elems.len(),
-                            field_span,
-                        ));
-                        TypeId::ERROR
+            if let Ok(index) = field_str.parse::<usize>() {
+                if index >= elems.len() {
+                    diagnostics.push(crate::diagnostics::tuple_oob(
+                        index,
+                        elems.len(),
+                        field_span,
+                    ));
+                    TypeId::ERROR
+                } else {
+                    let field_ty = elems[index];
+                    if base_is_mutable {
+                        field_ty
                     } else {
-                        let field_ty = elems[index];
-                        if !base_is_mutable {
-                            strip_mutable(field_ty, table)
-                        } else {
-                            field_ty
-                        }
+                        strip_mutable(field_ty, table)
                     }
                 }
-                Err(_) => {
-                    diagnostics.push(
-                        Diagnostic::error("tuple fields must be accessed with numeric indices")
-                            .with_label(Label::primary(field_span, "expected a numeric index")),
-                    );
-                    TypeId::ERROR
-                }
+            } else {
+                diagnostics.push(
+                    Diagnostic::error("tuple fields must be accessed with numeric indices")
+                        .with_label(Label::primary(field_span, "expected a numeric index")),
+                );
+                TypeId::ERROR
             }
         }
         Ty::Error => TypeId::ERROR,
@@ -1266,6 +1264,7 @@ fn check_field_access(
 }
 
 /// Checks struct initialization.
+#[allow(clippy::too_many_lines)]
 fn check_struct_init(
     path: &spark_ast::Path,
     type_args: &[spark_ast::TypeExpr],
@@ -1337,26 +1336,7 @@ fn check_struct_init(
             let params = generic_params.as_deref().unwrap_or_default();
 
             // Try explicit type args first, then fall back to inference.
-            let subst = if !type_args.is_empty() {
-                // Explicit type args provided: Pair[Int, String] { ... }
-                if type_args.len() != params.len() {
-                    ctx.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "expected {} type argument(s), found {}",
-                            params.len(),
-                            type_args.len()
-                        ))
-                        .with_label(Label::primary(init_span, "wrong number of type arguments")),
-                    );
-                    None
-                } else {
-                    let lowered: Vec<TypeId> = type_args
-                        .iter()
-                        .map(|ta| lower_type_expr(ta, ctx))
-                        .collect();
-                    Some(crate::substitute::build_subst_map(params, &lowered))
-                }
-            } else {
+            let subst = if type_args.is_empty() {
                 // Infer type args from field values.
                 let mut declared_types = Vec::new();
                 let mut actual_types = Vec::new();
@@ -1373,6 +1353,25 @@ fn check_struct_init(
                     &actual_types,
                     ctx.table,
                 )
+            } else {
+                // Explicit type args provided: Pair[Int, String] { ... }
+                if type_args.len() == params.len() {
+                    let lowered: Vec<TypeId> = type_args
+                        .iter()
+                        .map(|ta| lower_type_expr(ta, ctx))
+                        .collect();
+                    Some(crate::substitute::build_subst_map(params, &lowered))
+                } else {
+                    ctx.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "expected {} type argument(s), found {}",
+                            params.len(),
+                            type_args.len()
+                        ))
+                        .with_label(Label::primary(init_span, "wrong number of type arguments")),
+                    );
+                    None
+                }
             };
 
             if let Some(subst) = subst {
@@ -1646,41 +1645,38 @@ fn validate_each_callback(
         return TypeId::ERROR;
     }
     let label = if is_map { "map" } else { "each" };
-    match table.resolve(cb_ty).clone() {
-        Ty::Function { params, ret, .. } => {
-            if params.len() != 1 {
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "`{label}` callback must take exactly 1 parameter, found {}",
-                        params.len()
-                    ))
-                    .with_label(Label::primary(span, "wrong number of parameters")),
-                );
-                return TypeId::ERROR;
-            }
-            let param_ty = params[0];
-            if param_ty != elem_ty && param_ty != TypeId::ERROR && elem_ty != TypeId::ERROR {
-                let expected = type_name(elem_ty, table, definitions);
-                let found = type_name(param_ty, table, definitions);
-                diagnostics.push(
-                    Diagnostic::error(format!(
-                        "`{label}` callback parameter type mismatch: expected `{expected}`, found `{found}`",
-                    ))
-                    .with_label(Label::primary(span, "type mismatch")),
-                );
-            }
-            ret
-        }
-        _ => {
-            let name = type_name(cb_ty, table, definitions);
+    if let Ty::Function { params, ret, .. } = table.resolve(cb_ty).clone() {
+        if params.len() != 1 {
             diagnostics.push(
                 Diagnostic::error(format!(
-                    "`{label}` callback must be a function, found `{name}`",
+                    "`{label}` callback must take exactly 1 parameter, found {}",
+                    params.len()
                 ))
-                .with_label(Label::primary(span, "not a function")),
+                .with_label(Label::primary(span, "wrong number of parameters")),
             );
-            TypeId::ERROR
+            return TypeId::ERROR;
         }
+        let param_ty = params[0];
+        if param_ty != elem_ty && param_ty != TypeId::ERROR && elem_ty != TypeId::ERROR {
+            let expected = type_name(elem_ty, table, definitions);
+            let found = type_name(param_ty, table, definitions);
+            diagnostics.push(
+                Diagnostic::error(format!(
+                    "`{label}` callback parameter type mismatch: expected `{expected}`, found `{found}`",
+                ))
+                .with_label(Label::primary(span, "type mismatch")),
+            );
+        }
+        ret
+    } else {
+        let name = type_name(cb_ty, table, definitions);
+        diagnostics.push(
+            Diagnostic::error(format!(
+                "`{label}` callback must be a function, found `{name}`",
+            ))
+            .with_label(Label::primary(span, "not a function")),
+        );
+        TypeId::ERROR
     }
 }
 
@@ -1990,10 +1986,10 @@ fn subtract_type(original: TypeId, to_remove: TypeId, table: &mut TypeTable) -> 
     match action {
         Action::RewrapMutable(inner) => {
             let narrowed = subtract_type(inner, to_remove, table);
-            if narrowed != inner {
-                table.intern(Ty::Mutable(narrowed))
-            } else {
+            if narrowed == inner {
                 original
+            } else {
+                table.intern(Ty::Mutable(narrowed))
             }
         }
         Action::RewrapRef {
@@ -2002,14 +1998,14 @@ fn subtract_type(original: TypeId, to_remove: TypeId, table: &mut TypeTable) -> 
             lifetime,
         } => {
             let narrowed = subtract_type(inner, to_remove, table);
-            if narrowed != inner {
+            if narrowed == inner {
+                original
+            } else {
                 table.intern(Ty::Ref {
                     inner: narrowed,
                     mutable,
                     lifetime,
                 })
-            } else {
-                original
             }
         }
         Action::ReturnNull => table.intern(Ty::Null),
@@ -2090,9 +2086,8 @@ fn check_method_call(
         Ty::Struct(def_id) | Ty::Enum(def_id) => {
             check_user_method_call(def_id, method, arg_tys, recv_span, call_span, &[], ctx)
         }
-        Ty::Applied { base, args } => {
-            let args = args.clone();
-            check_user_method_call(base, method, arg_tys, recv_span, call_span, &args, ctx)
+        Ty::Applied { base, ref args } => {
+            check_user_method_call(base, method, arg_tys, recv_span, call_span, args, ctx)
         }
         _ => {
             ctx.diagnostics.push(
@@ -2425,6 +2420,7 @@ fn check_user_method_call(
 /// Type-checks a `to` expression.
 ///
 /// Checks a single pipeline stage, given the input type from the previous stage.
+#[allow(clippy::too_many_lines)]
 fn check_pipeline_stage(
     stage: &spark_ast::PipelineStage,
     input_ty: TypeId,
@@ -2912,9 +2908,8 @@ fn adapt_builtin_list_fn(
     }
 
     // Extract the actual element type from the first argument
-    let actual_elem = match table.resolve(first_arg_ty).clone() {
-        Ty::List(elem) => elem,
-        _ => return (params, ret),
+    let Ty::List(actual_elem) = table.resolve(first_arg_ty).clone() else {
+        return (params, ret);
     };
     let actual_list = table.intern(Ty::List(actual_elem));
 

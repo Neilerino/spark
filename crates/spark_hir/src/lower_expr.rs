@@ -32,6 +32,7 @@ pub(crate) struct LowerCtx<'a> {
     /// Built-in type mappings for name-to-type lookups.
     pub builtins: &'a BuiltinTypes,
     /// Diagnostic accumulator.
+    #[allow(dead_code)]
     pub diagnostics: &'a mut Diagnostics,
     /// Return type of the enclosing function (for propagation desugaring).
     pub current_fn_ret: Option<TypeId>,
@@ -737,7 +738,7 @@ fn lower_pipeline(
 /// Infers the output type of a pipeline stage given its input type.
 fn infer_stage_output_ty(
     stage: &spark_ast::PipelineStage,
-    _input_ty: TypeId,
+    input_ty: TypeId,
     table: &TypeTable,
 ) -> TypeId {
     match &stage.kind {
@@ -757,19 +758,20 @@ fn infer_stage_output_ty(
         }
         PipelineStageKind::Filter { .. } => {
             // Output is List[elem_ty] — same element type as input
-            let elem_ty = extract_list_elem_ty(_input_ty, table);
+            let elem_ty = extract_list_elem_ty(input_ty, table);
             table.lookup(&Ty::List(elem_ty)).unwrap_or(TypeId::ERROR)
         }
         PipelineStageKind::Find { .. } => {
             // Output is Optional(elem_ty) — first match or Null.
             // The type checker already interned this Optional type.
-            let elem_ty = extract_list_elem_ty(_input_ty, table);
+            let elem_ty = extract_list_elem_ty(input_ty, table);
             table.lookup(&Ty::Optional(elem_ty)).unwrap_or(TypeId::ERROR)
         }
     }
 }
 
 /// Lowers a single pipeline stage to HIR, given the already-lowered source.
+#[allow(clippy::too_many_lines)]
 fn lower_single_pipeline_stage(
     stage: &spark_ast::PipelineStage,
     source_hir: HirExpr,
@@ -933,7 +935,16 @@ fn lower_to_narrowing(
 
     // Add passthrough arms for unhandled union members using TypeNarrow
     // so the MIR pattern compiler extracts payloads properly.
-    if !union_members.is_empty() {
+    if union_members.is_empty() {
+        // Non-union: fall back to binding passthrough
+        let pass_id = ctx.definitions.next_synthetic_id(span);
+        hir_arms.push(HirMatchArm {
+            pattern: HirPattern::Binding { def_id: pass_id },
+            guard: None,
+            body: HirExpr::new(HirExprKind::Local(pass_id), ty, span),
+            span,
+        });
+    } else {
         let members = &union_members[..];
         // Collect types already handled by explicit arms
         let handled: Vec<TypeId> = hir_arms
@@ -958,15 +969,6 @@ fn lower_to_narrowing(
                 });
             }
         }
-    } else {
-        // Non-union: fall back to binding passthrough
-        let pass_id = ctx.definitions.next_synthetic_id(span);
-        hir_arms.push(HirMatchArm {
-            pattern: HirPattern::Binding { def_id: pass_id },
-            guard: None,
-            body: HirExpr::new(HirExprKind::Local(pass_id), ty, span),
-            span,
-        });
     }
 
     HirExprKind::Match {
@@ -1114,16 +1116,16 @@ fn lower_literal_expr(
             let parts = s
                 .parts
                 .iter()
-                .filter_map(|part| match part {
-                    StringPart::Text(sym) => Some(HirExpr::new(
+                .map(|part| match part {
+                    StringPart::Text(sym) => HirExpr::new(
                         HirExprKind::Literal(HirLiteral::String(*sym)),
                         string_ty,
                         expr.span,
-                    )),
+                    ),
                     StringPart::Interpolation(sub_expr) => {
                         let lowered = lower_expr(sub_expr, ctx);
                         // Displayable: wrap struct values in toString()
-                        Some(maybe_wrap_displayable(lowered, ctx.table))
+                        maybe_wrap_displayable(lowered, ctx.table)
                     }
                 })
                 .collect();
@@ -1430,14 +1432,14 @@ fn is_print_call(
     definitions: &DefinitionTable,
 ) -> bool {
     let def_id = find_callee_def_id(callee.span, resolutions);
-    def_id.map_or(false, |id| {
-        definitions.get(id).map_or(false, |info| {
+    def_id.is_some_and(|id| {
+        definitions.get(id).is_some_and(|info| {
             info.name == kw::PRINT && matches!(info.kind, DefinitionKind::BuiltinFunction)
         })
     })
 }
 
-/// Finds the DefId of a binding method by struct DefId and method name.
+/// Finds the `DefId` of a binding method by struct `DefId` and method name.
 fn find_binding_method(
     struct_def: spark_resolve::DefId,
     method_name: spark_intern::Symbol,

@@ -82,11 +82,8 @@ pub fn emit_typed_drop<M: Module>(
             builder.ins().call(func_ref, &[ptr_val]);
         }
         _ => {
-            // Non-droppable type — no-op. The caller should have checked
-            // `needs_drop` before calling this; if we reach here it means
-            // a Struct/Tuple/Union/Optional/Enum containing droppable members
-            // is being dropped, but the top-level type itself has no RC.
-            // The drop elaboration pass handles nested drops separately.
+            // Non-droppable type — no-op (shouldn't reach here if the caller
+            // checked `needs_drop` first).
         }
     }
 }
@@ -100,8 +97,9 @@ pub fn emit_typed_drop<M: Module>(
 ///
 /// These functions are stored in collection headers so the runtime can call
 /// them recursively when freeing nested collections.
+#[derive(Default)]
 pub struct DropGlueGenerator {
-    /// Cache: `TypeId` → generated `FuncId` for element destructors.
+    /// Cache: [`TypeId`] to generated [`FuncId`] for element destructors.
     cache: FxHashMap<TypeId, FuncId>,
 }
 
@@ -109,9 +107,7 @@ impl DropGlueGenerator {
     /// Creates a new generator with an empty cache.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            cache: FxHashMap::default(),
-        }
+        Self::default()
     }
 
     /// Returns the element destructor `FuncId` for a collection element type,
@@ -150,6 +146,7 @@ impl DropGlueGenerator {
     ///
     /// The function loads the pointer value from `elem_ptr` and calls
     /// the appropriate `_rc_dec`.
+    #[allow(clippy::unused_self)] // `&self` reserved for future per-instance state
     fn generate_elem_dtor<M: Module>(
         &self,
         elem_ty: TypeId,

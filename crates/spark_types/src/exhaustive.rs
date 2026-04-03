@@ -615,10 +615,10 @@ mod tests {
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         // Should warn about unreachable arm but no errors
         assert!(!ctx.diagnostics.has_errors());
-        let warnings: Vec<_> = ctx.diagnostics.iter()
-            .filter(|d| d.message.contains("unreachable"))
-            .collect();
-        assert!(!warnings.is_empty(), "Should have unreachable warning");
+        assert!(
+            ctx.diagnostics.iter().any(|d| d.message.contains("unreachable")),
+            "Should have unreachable warning",
+        );
     }
 
     #[test]

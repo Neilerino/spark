@@ -18,6 +18,10 @@ use crate::mir::{
 };
 
 /// Lowers an HIR expression, returning the [`Local`] holding the result.
+///
+/// # Panics
+///
+/// Panics on internal compiler errors (e.g., missing struct fields after type check).
 #[allow(clippy::too_many_lines)]
 pub fn lower_expr(
     expr: &HirExpr,
@@ -479,12 +483,13 @@ pub fn lower_expr(
         HirExprKind::ListRange { start, end, inclusive, step } => {
             let start_local = lower_expr(start, fb, mir, type_table, defs);
             let end_local = lower_expr(end, fb, mir, type_table, defs);
-            let step_operand = if let Some(step_expr) = step {
-                let step_local = lower_expr(step_expr, fb, mir, type_table, defs);
-                Operand::Copy(Place::from_local(step_local))
-            } else {
-                Operand::Constant(Constant::Int(1))
-            };
+            let step_operand = step.as_ref().map_or(
+                Operand::Constant(Constant::Int(1)),
+                |step_expr| {
+                    let step_local = lower_expr(step_expr, fb, mir, type_table, defs);
+                    Operand::Copy(Place::from_local(step_local))
+                },
+            );
             let temp = fb.fresh_temp(expr.ty, expr.span);
             fb.push_assign(
                 Place::from_local(temp),
@@ -1297,16 +1302,10 @@ fn unwrap_future_type(ty: TypeId, table: &TypeTable) -> TypeId {
     }
 }
 
-/// Lowers a parallel each / parallel each via node into a MIR call.
-///
-/// The callback (a fat pointer) and list are lowered to locals, then a
-/// `Terminator::Call` is emitted targeting the appropriate parallel runtime stub.
-#[allow(clippy::too_many_arguments)]
 /// Lowers a `spawn` expression into a MIR call to `__spark_spawn`.
 ///
 /// The inner expression is a closure (fat pointer) wrapping the spawn body,
-/// created by the lambda_lift pass. We lower it and pass it to `__spark_spawn`.
-#[allow(clippy::too_many_arguments)]
+/// created by the `lambda_lift` pass. We lower it and pass it to `__spark_spawn`.
 fn lower_spawn(
     inner: &HirExpr,
     expr: &HirExpr,
@@ -1426,8 +1425,7 @@ fn is_optional_narrowing(local_ty: TypeId, expr_ty: TypeId, table: &TypeTable) -
 /// Strips `Mutable` and `Ref` wrappers from a type, returning the innermost type.
 fn unwrap_type_wrappers(ty: TypeId, table: &TypeTable) -> TypeId {
     match table.resolve(ty) {
-        Ty::Mutable(inner) => unwrap_type_wrappers(*inner, table),
-        Ty::Ref { inner, .. } => unwrap_type_wrappers(*inner, table),
+        Ty::Mutable(inner) | Ty::Ref { inner, .. } => unwrap_type_wrappers(*inner, table),
         _ => ty,
     }
 }
@@ -1479,6 +1477,7 @@ fn lower_parallel_each(
     dest
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_parallel_map_reduce(
     list: &HirExpr,
     mapper: &HirExpr,

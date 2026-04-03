@@ -529,6 +529,7 @@ mod tests {
     use super::*;
 
     /// Helper: read a `SparkString` result into a Rust `String`.
+    #[allow(clippy::cast_ptr_alignment)] // SparkString pointers are properly aligned
     unsafe fn read_result_string(ptr: *mut u8) -> String {
         let s = unsafe { &*(ptr.cast::<SparkString>()) };
         if s.len == 0 {
@@ -557,7 +558,7 @@ mod tests {
         // Parse the port from the address.
         let port: i64 = addr_str
             .split(':')
-            .last()
+            .next_back()
             .unwrap()
             .parse()
             .expect("port should be a number");
@@ -587,7 +588,7 @@ mod tests {
         assert!(listener_handle > 0);
 
         let addr_str = unsafe { read_result_string(__spark_net_listener_addr(listener_handle)) };
-        let port: i64 = addr_str.split(':').last().unwrap().parse().unwrap();
+        let port: i64 = addr_str.split(':').next_back().unwrap().parse().unwrap();
 
         let client_thread = std::thread::spawn(move || unsafe {
             let connect_addr = make_spark_str("127.0.0.1");
@@ -636,7 +637,7 @@ mod tests {
         let addr = make_spark_str("127.0.0.1");
         let listener_handle = unsafe { __spark_net_tcp_listen(addr, 0) };
         let addr_str = unsafe { read_result_string(__spark_net_listener_addr(listener_handle)) };
-        let port: i64 = addr_str.split(':').last().unwrap().parse().unwrap();
+        let port: i64 = addr_str.split(':').next_back().unwrap().parse().unwrap();
 
         let client_thread = std::thread::spawn(move || unsafe {
             let connect_addr = make_spark_str("127.0.0.1");
@@ -680,7 +681,7 @@ mod tests {
                 _ => panic!("expected UdpSocket"),
             }
         };
-        let b_port: i64 = b_addr.split(':').last().unwrap().parse().unwrap();
+        let b_port: i64 = b_addr.split(':').next_back().unwrap().parse().unwrap();
 
         // Send from A to B.
         let msg = make_spark_str("udp hello");

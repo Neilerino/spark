@@ -25,7 +25,7 @@ fn parse_file(path: &Path) -> Result<ParseResult, std::io::Error> {
         has_using: ast.using_decl.is_some(),
         import_count: ast.imports.len(),
         error_count: diagnostics.iter().filter(|d| d.is_error()).count(),
-        warning_count: diagnostics.iter().filter(|d| d.is_warning()).count(),
+        _warning_count: diagnostics.iter().filter(|d| d.is_warning()).count(),
         diagnostics,
     })
 }
@@ -37,7 +37,7 @@ struct ParseResult {
     has_using: bool,
     import_count: usize,
     error_count: usize,
-    warning_count: usize,
+    _warning_count: usize,
     diagnostics: spark_diagnostics::Diagnostics,
 }
 

@@ -11,6 +11,7 @@ use crate::hir::{HirExpr, HirExprKind, HirStmt};
 use crate::lower_expr::{auto_deref_ref, coerce_ref, lower_expr, LowerCtx};
 
 /// Lowers a statement from the AST to HIR.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn lower_stmt(
     stmt: &Stmt,
     ctx: &mut LowerCtx<'_>,
@@ -31,10 +32,8 @@ pub(crate) fn lower_stmt(
             // elements are T, wrap each element with Borrow/Deref as needed.
             if let Some((_, stripped)) = declared_info {
                 match (table.resolve(stripped), &mut lowered_value.kind) {
-                    (Ty::List(expected_elem), HirExprKind::ListLit(elems)) => {
-                        coerce_collection_elems(elems, *expected_elem, value.span, table);
-                    }
-                    (Ty::Set(expected_elem), HirExprKind::SetLit(elems)) => {
+                    (Ty::List(expected_elem), HirExprKind::ListLit(elems))
+                    | (Ty::Set(expected_elem), HirExprKind::SetLit(elems)) => {
                         coerce_collection_elems(elems, *expected_elem, value.span, table);
                     }
                     (Ty::Map(expected_key, expected_val), HirExprKind::MapLit(entries)) => {
@@ -280,6 +279,7 @@ mod tests {
             table: &table,
             definitions: &mut defs,
             resolutions: Some(&res),
+            builtins: &builtins,
             diagnostics: &mut diags,
             current_fn_ret: None,
         };
@@ -301,7 +301,7 @@ mod tests {
                     value.kind
                 );
             }
-            other => panic!("Expected Assign, got {:?}", other),
+            other => panic!("Expected Assign, got {other:?}"),
         }
     }
 
@@ -341,6 +341,7 @@ mod tests {
             table: &table,
             definitions: &mut defs,
             resolutions: Some(&res),
+            builtins: &builtins,
             diagnostics: &mut diags,
             current_fn_ret: None,
         };
@@ -354,7 +355,7 @@ mod tests {
                     "Plain Int target should not be wrapped in Deref"
                 );
             }
-            other => panic!("Expected Assign, got {:?}", other),
+            other => panic!("Expected Assign, got {other:?}"),
         }
     }
 }

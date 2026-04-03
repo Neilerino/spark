@@ -162,8 +162,8 @@ pub fn emit_operand<M: Module>(
 ///
 /// For `FunctionRef` constants, produces the address of a fat pointer
 /// `(fn_ptr, env_ptr)` stored in a temporary stack slot. Lambdas use their
-/// own func_id (they already have the env_ptr convention). Named functions
-/// use their thunk (which accepts+ignores the env_ptr).
+/// own `func_id` (they already have the `env_ptr` convention). Named functions
+/// use their thunk (which accepts+ignores the `env_ptr`).
 fn emit_constant<M: Module>(
     ctx: &mut FunctionContext<'_>,
     constant: &Constant,
@@ -214,11 +214,13 @@ fn emit_constant<M: Module>(
             Some(ctx.builder.ins().iconst(ctx.ptr_type, 0))
         }
         Constant::FunctionRef(def_id) => {
+            use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+
             // For lambdas, use their own func_id (they already have env_ptr convention).
             // For named functions, use the thunk (which accepts+ignores env_ptr).
             let is_lambda = ecx.definitions
                 .get(*def_id)
-                .map_or(false, |info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
+                .is_some_and(|info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
 
             let target_func_id = if is_lambda {
                 ecx.func_ids.get(def_id).copied()
@@ -229,7 +231,6 @@ fn emit_constant<M: Module>(
             // Always produce a fat pointer (fn_ptr, env_ptr) in a stack slot.
             // For builtins without a func_id, store (null, null) — the call
             // path intercepts builtins before the fat pointer is used.
-            use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
             let slot = ctx.builder.create_sized_stack_slot(StackSlotData::new(
                 StackSlotKind::ExplicitSlot,
                 ctx.ptr_type.bytes() * 2,
@@ -287,6 +288,7 @@ pub fn emit_place_read<M: Module>(
 /// Returning both values eliminates the need to call [`resolve_place_type`]
 /// separately at sites that also need the address, preventing divergence
 /// between address computation and type computation.
+#[allow(clippy::too_many_lines)]
 pub(super) fn emit_place_addr<M: Module>(
     ctx: &mut FunctionContext<'_>,
     place: &Place,
@@ -594,9 +596,8 @@ fn emit_binop(
 /// Returns `Some(imm)` if the value was produced by an `iconst`, `None` otherwise.
 fn try_get_iconst(ctx: &FunctionContext<'_>, val: Value) -> Option<i64> {
     let dfg = &ctx.builder.func.dfg;
-    let inst = match dfg.value_def(val) {
-        cranelift_codegen::ir::ValueDef::Result(inst, _) => inst,
-        _ => return None,
+    let cranelift_codegen::ir::ValueDef::Result(inst, _) = dfg.value_def(val) else {
+        return None;
     };
     match dfg.insts[inst] {
         InstructionData::UnaryImm { imm, .. } => Some(imm.bits()),
@@ -625,17 +626,19 @@ fn try_strength_reduce_signed_divmod(
     rhs: Value,
 ) -> Option<Value> {
     let divisor = try_get_iconst(ctx, rhs)?;
+    #[allow(clippy::cast_sign_loss)] // divisor is positive (checked above)
     if divisor <= 0 || !(divisor as u64).is_power_of_two() {
         return None;
     }
 
+    #[allow(clippy::cast_sign_loss)] // divisor is positive
     let k = (divisor as u64).trailing_zeros();
     let bits = i64::from(ctx.builder.func.dfg.value_type(lhs).bits());
 
     // Compute signed division: (x + bias) >> k where bias = (2^k - 1) if x < 0
     let sign = ctx.builder.ins().sshr_imm(lhs, bits - 1);
-    let bias = ctx.builder.ins().ushr_imm(sign, bits - i64::from(k));
-    let adjusted = ctx.builder.ins().iadd(lhs, bias);
+    let rounding_bias = ctx.builder.ins().ushr_imm(sign, bits - i64::from(k));
+    let adjusted = ctx.builder.ins().iadd(lhs, rounding_bias);
     let div_result = ctx.builder.ins().sshr_imm(adjusted, i64::from(k));
 
     match op {
@@ -770,6 +773,7 @@ fn emit_unaryop(
 }
 
 /// Emits an aggregate construction.
+#[allow(clippy::too_many_lines)]
 fn emit_aggregate<M: Module>(
     ctx: &mut FunctionContext<'_>,
     kind: &AggregateKind,
@@ -825,7 +829,7 @@ fn emit_aggregate<M: Module>(
                     let offset = sl.field_offsets[i];
                     let field_off = i32::try_from(offset).unwrap_or(0);
                     let field_ty = field_types.get(i).copied();
-                    if field_ty.map_or(true, |ty| abi::is_scalar(ty, table)) {
+                    if field_ty.is_none_or(|ty| abi::is_scalar(ty, table)) {
                         ctx.store(val, dest_addr, field_off);
                     } else {
                         // Aggregate field (e.g. function fat pointer, nested struct) —
@@ -1121,9 +1125,6 @@ fn emit_set_construction<M: Module>(
     Some(set_ptr)
 }
 
-/// Emits closure construction: allocates env, stores captures, builds fat pointer.
-///
-/// 1. Computes the env size from capture operand types
 /// Returns the Cranelift `Value` for an element destructor function address.
 ///
 /// If the element type has a pre-generated dtor in `elem_dtor_ids`, returns
@@ -1429,16 +1430,10 @@ fn emit_union_construction<M: Module>(
             members.iter().position(|m| *m == member_ty)
                 .expect("ICE: union member type not found in union members; this is a compiler bug")
         }
-        Ty::Optional(inner) => {
-            // Optional: tag 0 = Null, tag 1 = Some(inner).
+        Ty::Optional(_) => {
+            // Optional: tag 0 = Null, tag 1 = Some.
             let member_resolved = table.resolve(member_ty);
-            if matches!(member_resolved, Ty::Null) {
-                0
-            } else if member_ty == *inner {
-                1
-            } else {
-                1 // default to Some for non-null values
-            }
+            usize::from(!matches!(member_resolved, Ty::Null))
         }
         other => panic!("ICE: expected Union or Optional type for union tag, found {other:?}; this is a compiler bug"),
     };

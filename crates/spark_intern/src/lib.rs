@@ -253,6 +253,7 @@ impl Interner {
     }
 
     /// Pre-interns all language keywords.
+    #[allow(clippy::too_many_lines)]
     fn intern_keywords(&mut self) {
         // Keywords (must match the order in kw module)
         let keywords = [

@@ -342,7 +342,7 @@ impl TypeTable {
     pub fn type_binds_interface(&self, type_def_id: DefId, interface_def_id: DefId) -> bool {
         self.type_interface_bindings
             .get(&type_def_id)
-            .map_or(false, |bindings| bindings.contains(&interface_def_id))
+            .is_some_and(|bindings| bindings.contains(&interface_def_id))
     }
 
     /// Records a monomorphization instance for a generic function call.

@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn def_id_default() {
-        let id: DefId = Default::default();
+        let id: DefId = DefId::default();
         assert!(id.is_dummy());
     }
 

@@ -14,6 +14,7 @@
 //! for errors. The last parse error message is stored in a thread-local string.
 
 use std::cell::RefCell;
+use std::fmt::Write as _;
 
 use crate::{__spark_string_from_literal, SparkString};
 
@@ -33,8 +34,8 @@ enum JsonNode {
 }
 
 thread_local! {
-    static ARENA: RefCell<Vec<JsonNode>> = RefCell::new(Vec::new());
-    static LAST_ERROR: RefCell<String> = RefCell::new(String::new());
+    static ARENA: RefCell<Vec<JsonNode>> = const { RefCell::new(Vec::new()) };
+    static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// Allocates a node in the arena and returns its handle.
@@ -458,9 +459,8 @@ fn utf8_char_width(lead: u8) -> usize {
 fn stringify_node(handle: usize, pretty: bool, indent: usize, depth: usize) -> String {
     ARENA.with(|arena| {
         let arena = arena.borrow();
-        let node = match arena.get(handle) {
-            Some(n) => n,
-            None => return "null".to_string(),
+        let Some(node) = arena.get(handle) else {
+            return "null".to_string();
         };
         match node {
             JsonNode::Null => "null".to_string(),
@@ -556,6 +556,7 @@ fn push_indent(out: &mut String, indent: usize, depth: usize) {
 /// If the number has no fractional part and fits in an i64, it is formatted as
 /// an integer. Otherwise it uses Rust's default float formatting.
 fn format_number(n: f64) -> String {
+    #[allow(clippy::cast_precision_loss)] // Intentional: checking if f64 fits in i64 range
     if n.is_finite() && n.fract() == 0.0 && n.abs() < (i64::MAX as f64) {
         #[allow(clippy::cast_possible_truncation)]
         let i = n as i64;
@@ -594,7 +595,7 @@ fn escape_json_string(s: &str) -> String {
             c if c < '\u{0020}' => {
                 // Other control characters as \u00XX
                 let code = c as u32;
-                out.push_str(&format!("\\u{code:04x}"));
+                let _ = write!(out, "\\u{code:04x}");
             }
             c => out.push(c),
         }
@@ -607,7 +608,7 @@ fn escape_json_string(s: &str) -> String {
 // Helper: read a SparkString pointer into a Rust &str (borrowed)
 // =============================================================================
 
-/// Reads a SparkString pointer, returning the content as a Rust String.
+/// Reads a `SparkString` pointer, returning the content as a Rust `String`.
 ///
 /// # Safety
 ///
@@ -627,7 +628,8 @@ unsafe fn read_spark_str(ptr: *mut u8) -> String {
         .to_owned()
 }
 
-/// Creates a new SparkString from a Rust str.
+/// Creates a new `SparkString` from a Rust `str`.
+#[allow(clippy::cast_possible_wrap)] // String lengths won't exceed i64::MAX
 fn rust_str_to_spark(s: &str) -> *mut u8 {
     let bytes = s.as_bytes();
     unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
@@ -671,7 +673,7 @@ pub unsafe extern "C" fn __spark_json_parse(text: *mut u8) -> i64 {
     }
 }
 
-/// Returns the last parse error message as a new SparkString.
+/// Returns the last parse error message as a new `SparkString`.
 #[no_mangle]
 pub extern "C" fn __spark_json_error() -> *mut u8 {
     LAST_ERROR.with(|e| {
@@ -685,7 +687,7 @@ pub extern "C" fn __spark_json_error() -> *mut u8 {
 /// Returns the type discriminant of a node: 0=null, 1=bool, 2=number,
 /// 3=string, 4=array, 5=object. Returns -1 for invalid handles.
 #[no_mangle]
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub extern "C" fn __spark_json_type(handle: i64) -> i64 {
     if handle < 0 {
         return -1;
@@ -709,7 +711,7 @@ pub extern "C" fn __spark_json_type(handle: i64) -> i64 {
 /// Returns the boolean value of a node (0 = false, 1 = true).
 /// Returns 0 if the node is not a boolean.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub extern "C" fn __spark_json_bool(handle: i64) -> i8 {
     if handle < 0 {
         return 0;
@@ -725,7 +727,7 @@ pub extern "C" fn __spark_json_bool(handle: i64) -> i8 {
 
 /// Returns the number value of a node. Returns 0.0 if not a number.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub extern "C" fn __spark_json_number(handle: i64) -> f64 {
     if handle < 0 {
         return 0.0;
@@ -739,14 +741,14 @@ pub extern "C" fn __spark_json_number(handle: i64) -> f64 {
     })
 }
 
-/// Returns the string value of a node as a new SparkString.
+/// Returns the string value of a node as a new `SparkString`.
 /// Returns an empty string if the node is not a string.
 ///
 /// # Safety
 ///
-/// The returned pointer is a freshly allocated SparkString (rc = 1).
+/// The returned pointer is a freshly allocated `SparkString` (rc = 1).
 #[no_mangle]
-#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub extern "C" fn __spark_json_string(handle: i64) -> *mut u8 {
     if handle < 0 {
         return rust_str_to_spark("");
@@ -764,7 +766,7 @@ pub extern "C" fn __spark_json_string(handle: i64) -> *mut u8 {
 
 /// Returns the number of elements in a JSON array. Returns -1 if not an array.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 pub extern "C" fn __spark_json_array_len(handle: i64) -> i64 {
     if handle < 0 {
         return -1;
@@ -781,7 +783,7 @@ pub extern "C" fn __spark_json_array_len(handle: i64) -> i64 {
 /// Returns the handle of the element at `index` in a JSON array.
 /// Returns -1 if not an array or index is out of bounds.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 pub extern "C" fn __spark_json_array_get(handle: i64, index: i64) -> i64 {
     if handle < 0 || index < 0 {
         return -1;
@@ -811,7 +813,7 @@ pub extern "C" fn __spark_json_array_get(handle: i64, index: i64) -> i64 {
 ///
 /// `key` must be a valid `SparkString` pointer.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 pub unsafe extern "C" fn __spark_json_object_get(handle: i64, key: *mut u8) -> i64 {
     if handle < 0 {
         return -1;
@@ -839,7 +841,7 @@ pub unsafe extern "C" fn __spark_json_object_get(handle: i64, key: *mut u8) -> i
 ///
 /// `key` must be a valid `SparkString` pointer.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub unsafe extern "C" fn __spark_json_object_has(handle: i64, key: *mut u8) -> i8 {
     if handle < 0 {
         return 0;
@@ -916,7 +918,7 @@ pub extern "C" fn __spark_json_new_object() -> i64 {
 ///
 /// Does nothing if `handle` is not an array or `child` is invalid.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub extern "C" fn __spark_json_array_push(handle: i64, child: i64) {
     if handle < 0 || child < 0 {
         return;
@@ -936,7 +938,7 @@ pub extern "C" fn __spark_json_array_push(handle: i64, child: i64) {
 ///
 /// `key` must be a valid `SparkString` pointer.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub unsafe extern "C" fn __spark_json_object_set(handle: i64, key: *mut u8, value: i64) {
     if handle < 0 || value < 0 {
         return;
@@ -959,9 +961,9 @@ pub unsafe extern "C" fn __spark_json_object_set(handle: i64, key: *mut u8, valu
 
 // --- Serialization ---
 
-/// Stringifies a JSON node to compact JSON. Returns a new SparkString.
+/// Stringifies a JSON node to compact JSON. Returns a new `SparkString`.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub extern "C" fn __spark_json_stringify(handle: i64) -> *mut u8 {
     if handle < 0 {
         return rust_str_to_spark("null");
@@ -971,9 +973,9 @@ pub extern "C" fn __spark_json_stringify(handle: i64) -> *mut u8 {
 }
 
 /// Stringifies a JSON node to pretty-printed JSON with the given indent.
-/// Returns a new SparkString.
+/// Returns a new `SparkString`.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
 pub extern "C" fn __spark_json_stringify_pretty(handle: i64, indent: i64) -> *mut u8 {
     if handle < 0 {
         return rust_str_to_spark("null");
@@ -992,7 +994,8 @@ pub extern "C" fn __spark_json_stringify_pretty(handle: i64, indent: i64) -> *mu
 mod tests {
     use super::*;
 
-    /// Helper: read a SparkString result into a Rust String.
+    /// Helper: read a `SparkString` result into a Rust `String`.
+    #[allow(clippy::cast_ptr_alignment)] // SparkString pointers are properly aligned
     unsafe fn read_result_string(ptr: *mut u8) -> String {
         let s = unsafe { &*(ptr.cast::<SparkString>()) };
         if s.len == 0 {
@@ -1002,7 +1005,7 @@ mod tests {
         std::str::from_utf8(slice).unwrap().to_owned()
     }
 
-    /// Helper: create a SparkString from a &str for use as FFI input.
+    /// Helper: create a `SparkString` from a `&str` for use as FFI input.
     fn make_spark_str(s: &str) -> *mut u8 {
         rust_str_to_spark(s)
     }
@@ -1045,6 +1048,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a test value, not an approximation of PI
     fn parse_negative_number() {
         let input = make_spark_str("-3.14");
         let handle = unsafe { __spark_json_parse(input) };
@@ -1309,6 +1313,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is a test value, not an approximation of PI
     fn stringify_float_number() {
         let n = __spark_json_new_number(3.14);
         unsafe {

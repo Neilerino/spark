@@ -548,7 +548,7 @@ impl Resolver {
             .unwrap_or_default();
 
         // Inject into every non-core file's imports
-        for (file_id, _ast) in &self.asts {
+        for file_id in self.asts.keys() {
             // Skip files that belong to the core module itself
             if core_files.contains(file_id) {
                 continue;
@@ -1611,14 +1611,14 @@ mod tests {
 
         assert!(!output.diagnostics.has_errors());
         // Built-in functions (e.g., print) are always registered
-        assert!(output.definitions.len() >= 1);
+        assert!(!output.definitions.is_empty());
     }
 
     #[test]
     fn resolve_single_function() {
         let output = resolve_source("fn main(): Void {}");
         assert!(!output.diagnostics.has_errors());
-        assert!(output.definitions.len() >= 1);
+        assert!(!output.definitions.is_empty());
 
         // Should have a Function definition for "main"
         let main_def = output
@@ -1632,32 +1632,32 @@ mod tests {
     #[test]
     fn resolve_function_with_params() {
         let output = resolve_source(
-            r#"
+            r"
             fn add(a: Int, b: Int): Int {
                 return a + b
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
 
         // Should have: add (Function), a (Parameter), b (Parameter)
-        let params: Vec<_> = output
+        let param_count = output
             .definitions
             .iter()
             .filter(|(_, info)| matches!(info.kind, DefinitionKind::Parameter))
-            .collect();
-        assert_eq!(params.len(), 2);
+            .count();
+        assert_eq!(param_count, 2);
     }
 
     #[test]
     fn resolve_variable_scoping() {
         let output = resolve_source(
-            r#"
+            r"
             fn test(): Void {
                 x: Int = 42
                 y: Int = x
             }
-            "#,
+            ",
         );
         // x should resolve when used in y's initializer
         assert!(!output.diagnostics.has_errors());
@@ -1666,11 +1666,11 @@ mod tests {
     #[test]
     fn resolve_undefined_name_error() {
         let output = resolve_source(
-            r#"
+            r"
             fn test(): Void {
                 y: Int = unknown_var
             }
-            "#,
+            ",
         );
         assert!(output.diagnostics.has_errors());
     }
@@ -1678,51 +1678,51 @@ mod tests {
     #[test]
     fn resolve_struct_definition() {
         let output = resolve_source(
-            r#"
+            r"
             struct User {
                 id: Int
                 name: String
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
 
         // Should have: User (Struct) + 2 StructField defs
-        let struct_defs: Vec<_> = output
+        let struct_count = output
             .definitions
             .iter()
             .filter(|(_, info)| matches!(info.kind, DefinitionKind::Struct))
-            .collect();
-        assert_eq!(struct_defs.len(), 1);
+            .count();
+        assert_eq!(struct_count, 1);
 
-        let field_defs: Vec<_> = output
+        let field_count = output
             .definitions
             .iter()
             .filter(|(_, info)| matches!(info.kind, DefinitionKind::StructField(_)))
-            .collect();
-        assert_eq!(field_defs.len(), 2);
+            .count();
+        assert_eq!(field_count, 2);
     }
 
     #[test]
     fn resolve_enum_definition() {
         let output = resolve_source(
-            r#"
+            r"
             enum Direction {
                 North
                 South
                 East
                 West
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
 
-        let variant_defs: Vec<_> = output
+        let variant_count = output
             .definitions
             .iter()
             .filter(|(_, info)| matches!(info.kind, DefinitionKind::EnumVariant(_)))
-            .collect();
-        assert_eq!(variant_defs.len(), 4);
+            .count();
+        assert_eq!(variant_count, 4);
     }
 
     #[test]
@@ -1744,7 +1744,7 @@ mod tests {
     #[test]
     fn resolve_shadowing() {
         let output = resolve_source(
-            r#"
+            r"
             fn test(): Void {
                 x: Int = 1
                 {
@@ -1752,7 +1752,7 @@ mod tests {
                     y: Int = x
                 }
             }
-            "#,
+            ",
         );
         // Shadowing is allowed — no errors
         assert!(!output.diagnostics.has_errors());
@@ -1761,14 +1761,14 @@ mod tests {
     #[test]
     fn resolve_block_scoping() {
         let output = resolve_source(
-            r#"
+            r"
             fn test(): Void {
                 {
                     inner: Int = 1
                 }
                 y: Int = inner
             }
-            "#,
+            ",
         );
         // inner is not visible outside its block — should error
         assert!(output.diagnostics.has_errors());
@@ -1777,7 +1777,7 @@ mod tests {
     #[test]
     fn resolve_if_expression() {
         let output = resolve_source(
-            r#"
+            r"
             fn test(x: Int): Int {
                 if x > 0 {
                     return x
@@ -1785,7 +1785,7 @@ mod tests {
                     return 0
                 }
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
     }
@@ -1793,14 +1793,14 @@ mod tests {
     #[test]
     fn resolve_to_pattern_bindings() {
         let output = resolve_source(
-            r#"
+            r"
             fn test(x: Int): Int {
                 x to {
                     n if n > 0 -> n,
                     _ -> 0
                 }
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
     }
@@ -1808,11 +1808,11 @@ mod tests {
     #[test]
     fn resolve_lambda() {
         let output = resolve_source(
-            r#"
+            r"
             fn test(): Void {
                 f: (Int): Int = (x: Int): Int { x + 1 }
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
     }
@@ -1820,12 +1820,12 @@ mod tests {
     #[test]
     fn resolve_const_definition() {
         let output = resolve_source(
-            r#"
+            r"
             const MAX: Int = 100
             fn test(): Int {
                 return MAX
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
     }
@@ -1833,12 +1833,12 @@ mod tests {
     #[test]
     fn resolve_forward_reference() {
         let output = resolve_source(
-            r#"
+            r"
             fn caller(): Void {
                 callee()
             }
             fn callee(): Void {}
-            "#,
+            ",
         );
         // Forward references between top-level items should work
         assert!(!output.diagnostics.has_errors());
@@ -1847,29 +1847,29 @@ mod tests {
     #[test]
     fn resolve_generic_function() {
         let output = resolve_source(
-            r#"
+            r"
             fn identity[T](x: T): T {
                 return x
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
 
-        let generic_defs: Vec<_> = output
+        let generic_count = output
             .definitions
             .iter()
             .filter(|(_, info)| matches!(info.kind, DefinitionKind::GenericParam))
-            .collect();
-        assert_eq!(generic_defs.len(), 1);
+            .count();
+        assert_eq!(generic_count, 1);
     }
 
     #[test]
     fn resolve_multiple_functions() {
         let output = resolve_source(
-            r#"
+            r"
             fn first(x: Int): Int { return x }
             fn second(y: Int): Int { return first(y) }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
     }
@@ -1879,7 +1879,7 @@ mod tests {
         // Use if-blocks to test nested scoping since the parser handles
         // deeply nested bare blocks with bindings imperfectly.
         let output = resolve_source(
-            r#"
+            r"
             fn test(x: Int): Void {
                 a: Int = 1
                 if x > 0 {
@@ -1889,7 +1889,7 @@ mod tests {
                     }
                 }
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
     }
@@ -1955,14 +1955,14 @@ mod tests {
                 ("mod_a", "fn isError(): Bool { return false }", &["isError"]),
                 ("mod_b", "fn isError(): Bool { return true }", &["isError"]),
             ],
-            r#"
+            r"
             import mod_a { isError }
             import mod_b { isError }
 
             fn main(): Void {
                 isError()
             }
-            "#,
+            ",
         );
         assert!(output.diagnostics.has_errors());
         let errors: Vec<_> = output
@@ -1978,14 +1978,14 @@ mod tests {
     fn same_import_twice_from_same_module_no_error() {
         let output = resolve_multi_module(
             &[("mod_a", "fn helper(): Void {}", &["helper"])],
-            r#"
+            r"
             import mod_a { helper }
             import mod_a { helper }
 
             fn main(): Void {
                 helper()
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
     }
@@ -1994,7 +1994,7 @@ mod tests {
     fn import_shadows_local_def_warns() {
         let output = resolve_multi_module(
             &[("mod_a", "fn doStuff(): Void {}", &["doStuff"])],
-            r#"
+            r"
             import mod_a { doStuff }
 
             fn doStuff(): Void {}
@@ -2002,7 +2002,7 @@ mod tests {
             fn main(): Void {
                 doStuff()
             }
-            "#,
+            ",
         );
         // Should not produce errors, but should produce a warning
         assert!(!output.diagnostics.has_errors());
@@ -2023,7 +2023,7 @@ mod tests {
                 ("mod_a", "fn isError(): Bool { return false }", &["isError"]),
                 ("mod_b", "fn isError(): Bool { return true }", &["isError"]),
             ],
-            r#"
+            r"
             import mod_a { isError }
             import mod_b { isError as isErrorB }
 
@@ -2031,7 +2031,7 @@ mod tests {
                 isError()
                 isErrorB()
             }
-            "#,
+            ",
         );
         assert!(!output.diagnostics.has_errors());
     }
