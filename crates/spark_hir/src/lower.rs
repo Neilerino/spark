@@ -9,6 +9,7 @@ use spark_ast::Item;
 use spark_diagnostics::Diagnostics;
 use spark_resolve::{DefId, DefinitionTable, ResolvedAst, ResolutionMap};
 use spark_span::FileId;
+use spark_types::builtins::BuiltinTypes;
 use spark_types::{TypeId, TypeTable};
 
 use crate::hir::{Hir, HirFunction, HirParam, HirStatic};
@@ -24,6 +25,8 @@ pub struct Lowerer<'a> {
     pub(crate) definitions: &'a mut DefinitionTable,
     /// The resolved AST.
     resolved: &'a ResolvedAst,
+    /// Built-in type mappings for name-to-type lookups.
+    pub(crate) builtins: &'a BuiltinTypes,
     /// Accumulated diagnostics.
     pub(crate) diagnostics: Diagnostics,
 }
@@ -35,11 +38,13 @@ impl<'a> Lowerer<'a> {
         table: &'a TypeTable,
         definitions: &'a mut DefinitionTable,
         resolved: &'a ResolvedAst,
+        builtins: &'a BuiltinTypes,
     ) -> Self {
         Self {
             table,
             definitions,
             resolved,
+            builtins,
             diagnostics: Diagnostics::new(),
         }
     }
@@ -125,6 +130,7 @@ impl<'a> Lowerer<'a> {
             table: self.table,
             definitions: &mut *self.definitions,
             resolutions,
+            builtins: self.builtins,
             diagnostics: &mut self.diagnostics,
             current_fn_ret: Some(ret_type),
         };
@@ -162,6 +168,7 @@ impl<'a> Lowerer<'a> {
             table: self.table,
             definitions: &mut *self.definitions,
             resolutions,
+            builtins: self.builtins,
             diagnostics: &mut self.diagnostics,
             current_fn_ret: None,
         };
@@ -217,6 +224,7 @@ impl<'a> Lowerer<'a> {
                         table: self.table,
                         definitions: &mut *self.definitions,
                         resolutions,
+                        builtins: self.builtins,
                         diagnostics: &mut self.diagnostics,
                         current_fn_ret: Some(ret_type),
                     };

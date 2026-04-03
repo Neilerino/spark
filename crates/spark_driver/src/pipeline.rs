@@ -176,12 +176,14 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
     }
     emit_warnings(&type_output.diagnostics, &source_map);
     let table = type_output.table;
+    let builtins = type_output.builtins;
 
     // -- Phase 6: HIR lowering ------------------------------------------------
     let hir_output = spark_hir::lower(HirInput {
         resolved: resolve1.resolved,
         definitions: resolve1.definitions,
         table,
+        builtins,
     });
     if hir_output.diagnostics.has_errors() {
         hir_output.diagnostics.emit_all(&source_map);

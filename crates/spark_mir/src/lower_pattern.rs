@@ -319,54 +319,11 @@ fn compile_pattern(
         }
 
         HirPattern::TypeNarrow { def_id, ty } => {
-            // Type narrowing: check if scrutinee's union tag matches the target type.
+            // Type narrowing: check if scrutinee's union/optional tag matches the target type.
             let scrut_ty = fb.local_type(scrut);
-            let scrut_resolved = type_table.resolve(scrut_ty);
 
-            if let spark_types::Ty::Union(members) = scrut_resolved {
-                // Find the index of `ty` in the union members.
-                if let Some(idx) = members.iter().position(|&m| m == *ty) {
-                    // Read discriminant from the scrutinee.
-                    let disc_temp = fb.fresh_temp(
-                        discriminant_type(type_table),
-                        spark_span::Span::DUMMY,
-                    );
-                    fb.push_assign(
-                        Place::from_local(disc_temp),
-                        Rvalue::Discriminant(Place::from_local(scrut)),
-                        spark_span::Span::DUMMY,
-                    );
-
-                    // Branch: if tag == idx, go to bind block, otherwise fail.
-                    let bind_bb = fb.new_block();
-                    fb.terminate(Terminator::SwitchInt {
-                        discriminant: Operand::Copy(Place::from_local(disc_temp)),
-                        targets: vec![(idx as i128, bind_bb)],
-                        otherwise: fail_bb,
-                    });
-
-                    // In the bind block: extract payload via UnionPayload projection.
-                    fb.switch_to(bind_bb);
-                    let name = defs.get(*def_id).map(|info| info.name);
-                    let local = match name {
-                        Some(sym) => fb.fresh_local(*ty, sym, false, spark_span::Span::DUMMY),
-                        None => fb.fresh_temp(*ty, spark_span::Span::DUMMY),
-                    };
-                    fb.register_def(*def_id, local);
-                    let mut payload_place = Place::from_local(scrut);
-                    payload_place.projections.push(Projection::UnionPayload(*ty));
-                    fb.push_stmt(Statement::Assign {
-                        place: Place::from_local(local),
-                        rvalue: Rvalue::Use(Operand::Copy(payload_place)),
-                        span: spark_span::Span::DUMMY,
-                    });
-                    fb.terminate(Terminator::Goto { target: match_bb });
-                } else {
-                    // Type not in union — always fails.
-                    fb.terminate(Terminator::Goto { target: fail_bb });
-                }
-            } else if let spark_types::Ty::Optional(_inner) = scrut_resolved {
-                // Optional narrowing: tag == 1 means non-null (Some).
+            if let Some(idx) = spark_types::union::find_member_index(scrut_ty, *ty, type_table) {
+                // Read discriminant from the scrutinee.
                 let disc_temp = fb.fresh_temp(
                     discriminant_type(type_table),
                     spark_span::Span::DUMMY,
@@ -377,10 +334,11 @@ fn compile_pattern(
                     spark_span::Span::DUMMY,
                 );
 
+                // Branch: if tag == idx, go to bind block, otherwise fail.
                 let bind_bb = fb.new_block();
                 fb.terminate(Terminator::SwitchInt {
                     discriminant: Operand::Copy(Place::from_local(disc_temp)),
-                    targets: vec![(1, bind_bb)], // 1 = Some (non-null)
+                    targets: vec![(idx as i128, bind_bb)],
                     otherwise: fail_bb,
                 });
 
@@ -400,6 +358,12 @@ fn compile_pattern(
                     span: spark_span::Span::DUMMY,
                 });
                 fb.terminate(Terminator::Goto { target: match_bb });
+            } else if matches!(
+                type_table.resolve(scrut_ty),
+                spark_types::Ty::Union(_) | spark_types::Ty::Optional(_)
+            ) {
+                // Type not in union/optional — always fails.
+                fb.terminate(Terminator::Goto { target: fail_bb });
             } else {
                 // Not a union or optional type — unconditional bind (original behavior).
                 let name = defs.get(*def_id).map(|info| info.name);

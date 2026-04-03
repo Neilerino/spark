@@ -438,6 +438,7 @@ pub fn analyze_workspace(
         graph,
     });
     all_diagnostics.extend(type_output.diagnostics);
+    let builtins = type_output.builtins;
     let type_table = Some(type_output.table);
 
     let resolved = resolve_output.resolved;
@@ -456,6 +457,7 @@ pub fn analyze_workspace(
             resolved: resolved.clone(),
             definitions: definitions.clone(),
             table: table.clone(),
+            builtins: builtins.clone(),
         });
         all_diagnostics.extend(hir_output.diagnostics);
 

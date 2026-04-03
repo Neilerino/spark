@@ -1490,10 +1490,21 @@ fn unify_branches(a: TypeId, b: TypeId, table: &mut TypeTable, _builtins: &Built
         return a;
     }
 
-    // Create a union of the two types
-    let mut members = vec![a, b];
+    // Create a union of the two types, flattening nested unions.
+    let mut members = Vec::new();
+    match a_ty {
+        Ty::Union(ms) => members.extend_from_slice(ms),
+        _ => members.push(a),
+    }
+    match b_ty {
+        Ty::Union(ms) => members.extend_from_slice(ms),
+        _ => members.push(b),
+    }
     members.sort();
     members.dedup();
+    if members.len() == 1 {
+        return members[0];
+    }
     table.intern(Ty::Union(members))
 }
 
@@ -2663,6 +2674,41 @@ fn register_narrowing_binding(
     }
 }
 
+/// Resolves an identifier name as a union member type.
+///
+/// When a bare type name is used as a `to` arm pattern (e.g., `Int -> ...`),
+/// this function checks if the name matches a built-in type or a user-defined
+/// type (struct/enum) that is a member of the scrutinee union.
+fn resolve_ident_as_union_member(
+    name: Symbol,
+    members: &[TypeId],
+    ctx: &TypeCheckCtx<'_>,
+) -> Option<TypeId> {
+    // Check builtins first (Int, String, Bool, etc.)
+    if let Some(builtin_ty) = ctx.builtins.lookup(name) {
+        if members.contains(&builtin_ty) {
+            return Some(builtin_ty);
+        }
+    }
+
+    // Check user-defined types (structs, enums) by looking up definitions
+    // whose name matches the identifier and whose type is a union member.
+    for &member in members {
+        match ctx.table.resolve(member) {
+            Ty::Struct(def_id) | Ty::Enum(def_id) => {
+                if let Some(info) = ctx.definitions.get(*def_id) {
+                    if info.name == name {
+                        return Some(member);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 /// Checks a `to` expression (`expr to { Pattern -> ... }`).
 ///
 /// Behaviour depends on the scrutinee type:
@@ -2695,6 +2741,15 @@ fn check_to_narrowing(
                     .unwrap_or(TypeId::ERROR);
                 if !variant_ty.is_error() {
                     handled_types.push(variant_ty);
+                }
+            } else if let spark_ast::PatternKind::Ident { name, .. } = &arm.pattern.kind {
+                // Bare type name (e.g., `Int -> ...`): resolve as a union member
+                // by matching the identifier against builtin type names or
+                // user-defined type definitions.
+                if let Some(member_ty) =
+                    resolve_ident_as_union_member(name.name, &members, ctx)
+                {
+                    handled_types.push(member_ty);
                 }
             }
 

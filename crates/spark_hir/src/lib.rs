@@ -53,6 +53,7 @@ pub mod lower_stmt;
 pub mod visitor;
 
 use spark_resolve::{DefinitionTable, ResolvedAst};
+use spark_types::builtins::BuiltinTypes;
 use spark_types::{TypeId, TypeTable};
 
 /// Lowers a type expression to a [`TypeId`] by looking it up in the type table.
@@ -84,6 +85,8 @@ pub struct HirInput {
     pub definitions: DefinitionTable,
     /// The type table from the type checker.
     pub table: TypeTable,
+    /// Built-in type mappings from the type checker.
+    pub builtins: BuiltinTypes,
 }
 
 /// Output from the HIR lowering pass.
@@ -109,6 +112,7 @@ pub fn lower(mut input: HirInput) -> HirOutput {
         &input.table,
         &mut input.definitions,
         &input.resolved,
+        &input.builtins,
     );
     let (mut hir, mut diagnostics) = lowerer.lower_all();
 

@@ -1,0 +1,14 @@
+fn check(val: Int | String): String {
+    if val is Int {
+        return "int"
+    }
+    return "other"
+}
+
+fn main(): Int {
+    a: Int | String = 42
+    print(check(a))
+    b: Int | String = "hello"
+    print(check(b))
+    return 0
+}

@@ -696,6 +696,30 @@ fn to_ref_union_inside_each() {
     assert_output("run-pass/to/to_ref_union_inside_each.spark", "test\nok");
 }
 
+#[test]
+fn to_union_all_handled() {
+    assert_output(
+        "run-pass/to/to_union_all_handled.spark",
+        "got int\ngot string",
+    );
+}
+
+#[test]
+fn to_union_assigned_local() {
+    assert_output(
+        "run-pass/to/to_union_assigned_local.spark",
+        "got int\ngot string",
+    );
+}
+
+#[test]
+fn to_union_bare_type() {
+    assert_output(
+        "run-pass/to/to_union_bare_type.spark",
+        "got int\ngot string",
+    );
+}
+
 // ============================================================================
 // Pipeline (complex multi-stage)
 // ============================================================================
@@ -987,6 +1011,16 @@ fn mutable_optional_narrowing() {
 #[test]
 fn optional_reassign() {
     assert_output("run-pass/type_narrowing/optional_reassign.spark", "found");
+}
+
+#[test]
+fn is_union() {
+    assert_output("run-pass/type_narrowing/is_union.spark", "int\nstring");
+}
+
+#[test]
+fn is_union_else() {
+    assert_output("run-pass/type_narrowing/is_union_else.spark", "int\nother");
 }
 
 // ============================================================================

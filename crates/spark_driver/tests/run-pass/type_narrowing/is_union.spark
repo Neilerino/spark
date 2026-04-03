@@ -1,0 +1,16 @@
+fn check(val: Int | String): Void {
+    if val is Int {
+        print("int")
+    }
+    if val is String {
+        print("string")
+    }
+}
+
+fn main(): Int {
+    a: Int | String = 42
+    check(a)
+    b: Int | String = "hello"
+    check(b)
+    return 0
+}

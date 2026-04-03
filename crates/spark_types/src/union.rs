@@ -162,6 +162,36 @@ pub fn union_members(ty: TypeId, table: &TypeTable) -> Vec<TypeId> {
     }
 }
 
+/// Finds the discriminant index of a member type in a union or optional.
+///
+/// - `Union([A, B, C])`: returns `Some(idx)` if `member_ty` is found in members
+/// - `Optional(T)`: returns `Some(0)` for Null, `Some(1)` for the inner type
+/// - Any other type: returns `None`
+#[must_use]
+pub fn find_member_index(union_ty: TypeId, member_ty: TypeId, table: &TypeTable) -> Option<usize> {
+    match table.resolve(union_ty) {
+        Ty::Union(members) => members.iter().position(|&m| m == member_ty),
+        Ty::Optional(inner) => {
+            if matches!(table.resolve(member_ty), Ty::Null) {
+                Some(0)
+            } else if member_ty == *inner {
+                Some(1)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Checks if a type is a member of a union or optional type.
+///
+/// Handles both `Ty::Union` and `Ty::Optional`.
+#[must_use]
+pub fn is_member(union_ty: TypeId, ty: TypeId, table: &TypeTable) -> bool {
+    find_member_index(union_ty, ty, table).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

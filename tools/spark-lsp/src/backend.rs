@@ -308,7 +308,7 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
                     graph,
                 });
                 all_diagnostics.extend(type_output.diagnostics);
-                Some(Arc::new(type_output.table))
+                Some((Arc::new(type_output.table), type_output.builtins))
             } else {
                 None
             };
@@ -319,7 +319,7 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
                 file_id,
                 resolved: Arc::new(resolve_output.resolved.clone()),
                 definitions: Arc::new(resolve_output.definitions.clone()),
-                type_table: type_table.clone(),
+                type_table: type_table.as_ref().map(|(t, _)| t.clone()),
                 scope_arena: Some(scope_arena),
             });
 
@@ -327,11 +327,12 @@ fn analyze(source: &str, uri: &Url) -> (Vec<lsp_types::Diagnostic>, Option<Analy
             // Run when the type table is available. No error gating — the
             // downstream phases handle error types gracefully, and in
             // single-file mode we still want borrow errors reported.
-            if let Some(ref table) = type_table {
+            if let Some((ref table, ref builtins)) = type_table {
                 let hir_output = spark_hir::lower(HirInput {
                     resolved: resolve_output.resolved,
                     definitions: resolve_output.definitions,
                     table: (**table).clone(),
+                    builtins: builtins.clone(),
                 });
                 all_diagnostics.extend(hir_output.diagnostics);
 

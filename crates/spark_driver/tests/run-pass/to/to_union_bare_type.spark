@@ -1,0 +1,14 @@
+fn main(): Int {
+    val: Int | String = 42
+    val to {
+        Int -> print("got int")
+        String -> print("got string")
+    }
+
+    val2: Int | String = "hello"
+    val2 to {
+        Int -> print("got int")
+        String -> print("got string")
+    }
+    return 0
+}

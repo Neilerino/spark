@@ -1370,14 +1370,35 @@ impl Parser {
 
         while !self.check(TokenKind::RBrace) && !self.at_end() {
             let arm_start = self.current_span();
+            let prev_pos = self.pos;
             let pattern = self.parse_pattern();
-            self.expect(TokenKind::Arrow);
+
+            if self.expect(TokenKind::Arrow).is_none() {
+                // Recovery: skip tokens until we find `->`, `}`, or EOF.
+                while !self.at_end()
+                    && !self.check(TokenKind::Arrow)
+                    && !self.check(TokenKind::RBrace)
+                {
+                    self.advance();
+                }
+                if self.eat(TokenKind::Arrow).is_none() {
+                    // Could not find `->` — bail out of this arm loop.
+                    break;
+                }
+            }
+
             let body = self.parse_expr();
             let arm_span = self.span_from(arm_start);
             arms.push(MatchArm::new(pattern, body, arm_span));
 
-            // Comma is optional between arms
+            // Comma is optional between arms.
             self.eat(TokenKind::Comma);
+
+            // Guard: recovery above may not consume tokens if the pattern
+            // itself fails, so force progress to prevent the loop from stalling.
+            if self.pos == prev_pos {
+                self.advance();
+            }
         }
 
         self.expect(TokenKind::RBrace);

@@ -17,19 +17,27 @@ fn strip_mutable(ty: spark_types::ty::TypeId, table: &TypeTable) -> spark_types:
     }
 }
 
-/// If `def_id` has a declared Optional type and `value_ty` is a member
-/// (inner type or Null), returns the declared Optional type. This ensures
-/// the MIR local gets the correct Optional layout for discriminant checks.
-fn optional_declared_type(
+/// If `def_id` has a declared Optional or Union type and `value_ty` is a
+/// member, returns the declared type. This ensures the MIR local gets the
+/// correct tagged-union layout for discriminant checks.
+fn declared_union_type(
     def_id: spark_resolve::DefId,
     value_ty: spark_types::ty::TypeId,
     table: &TypeTable,
 ) -> Option<spark_types::ty::TypeId> {
     let dt = strip_mutable(table.get_def_type(def_id)?, table);
-    if let Ty::Optional(inner) = table.resolve(dt) {
-        if *inner == value_ty || matches!(table.resolve(value_ty), Ty::Null) {
-            return Some(dt);
+    match table.resolve(dt) {
+        Ty::Optional(inner) => {
+            if *inner == value_ty || matches!(table.resolve(value_ty), Ty::Null) {
+                return Some(dt);
+            }
         }
+        Ty::Union(members) => {
+            if members.contains(&value_ty) {
+                return Some(dt);
+            }
+        }
+        _ => {}
     }
     None
 }
@@ -54,7 +62,7 @@ pub fn lower_stmt(
             // Optional type so the local gets the correct layout for `is`
             // discriminant checks. Falls back to the RHS expression type.
             let effective_ty =
-                optional_declared_type(*def_id, value.ty, type_table).unwrap_or(value.ty);
+                declared_union_type(*def_id, value.ty, type_table).unwrap_or(value.ty);
 
             // Allocate a local for this binding
             let name = defs.get(*def_id).map(|info| info.name);

@@ -71,6 +71,7 @@ impl<'a> TypeChecker<'a> {
 
         TypeCheckerOutput {
             table: self.table,
+            builtins: self.builtins,
             diagnostics: self.diagnostics,
         }
     }
@@ -357,6 +358,8 @@ fn check_binding_bodies(
 pub struct TypeCheckerOutput {
     /// The type table with all type information.
     pub table: TypeTable,
+    /// Built-in type mappings (passed through for downstream phases).
+    pub builtins: BuiltinTypes,
     /// Diagnostics accumulated during type checking.
     pub diagnostics: Diagnostics,
 }

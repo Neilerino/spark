@@ -1,0 +1,15 @@
+fn process(val: Int | String): String {
+    result: String = val to {
+        Int -> "got int"
+        String -> "got string"
+    }
+    return result
+}
+
+fn main(): Int {
+    a: Int | String = 42
+    b: Int | String = "hello"
+    print(process(a))
+    print(process(b))
+    return 0
+}

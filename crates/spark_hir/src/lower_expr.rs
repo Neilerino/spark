@@ -8,6 +8,7 @@ use spark_diagnostics::Diagnostics;
 use spark_intern::kw;
 use spark_resolve::{DefinitionKind, DefinitionTable, ResolutionMap};
 use spark_span::Span;
+use spark_types::builtins::BuiltinTypes;
 use spark_types::ty::Ty;
 use spark_types::{TypeId, TypeTable};
 
@@ -28,6 +29,8 @@ pub(crate) struct LowerCtx<'a> {
     pub definitions: &'a mut DefinitionTable,
     /// Name resolution results (None during desugaring phases).
     pub resolutions: Option<&'a ResolutionMap>,
+    /// Built-in type mappings for name-to-type lookups.
+    pub builtins: &'a BuiltinTypes,
     /// Diagnostic accumulator.
     pub diagnostics: &'a mut Diagnostics,
     /// Return type of the enclosing function (for propagation desugaring).
@@ -904,8 +907,21 @@ fn lower_to_narrowing(
 ) -> HirExprKind {
     let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len() + 1);
 
+    // Collect the union members for ident-as-type-narrow resolution.
+    let union_members: Vec<TypeId> = match ctx.table.resolve(inner_hir.ty) {
+        Ty::Union(members) => members.clone(),
+        _ => Vec::new(),
+    };
+
     for arm in arms {
-        let pattern = lower_to_pattern(&arm.pattern, ctx.definitions, ctx.resolutions, ctx.table);
+        let pattern = lower_to_pattern(
+            &arm.pattern,
+            ctx.definitions,
+            ctx.resolutions,
+            ctx.table,
+            ctx.builtins,
+            &union_members,
+        );
         let body = lower_expr(&arm.body, ctx);
         hir_arms.push(HirMatchArm {
             pattern,
@@ -917,9 +933,8 @@ fn lower_to_narrowing(
 
     // Add passthrough arms for unhandled union members using TypeNarrow
     // so the MIR pattern compiler extracts payloads properly.
-    let inner_resolved = ctx.table.resolve(inner_hir.ty);
-    if let Ty::Union(members) = inner_resolved {
-        let members = members.clone();
+    if !union_members.is_empty() {
+        let members = &union_members[..];
         // Collect types already handled by explicit arms
         let handled: Vec<TypeId> = hir_arms
             .iter()
@@ -929,7 +944,7 @@ fn lower_to_narrowing(
             })
             .collect();
 
-        for &member_ty in &members {
+        for &member_ty in members {
             if !handled.contains(&member_ty) {
                 let pass_id = ctx.definitions.next_synthetic_id(span);
                 hir_arms.push(HirMatchArm {
@@ -993,11 +1008,18 @@ fn lower_pipeline_apply(
 }
 
 /// Lowers a pattern from a `to` expression handler arm.
+///
+/// When `union_members` is non-empty and the pattern is a bare identifier
+/// that matches a union member type name, emits `HirPattern::TypeNarrow`
+/// instead of `HirPattern::Binding` so the MIR correctly tests the discriminant
+/// and extracts the payload.
 fn lower_to_pattern(
     pattern: &spark_ast::Pattern,
     definitions: &mut DefinitionTable,
     resolutions: Option<&ResolutionMap>,
     table: &TypeTable,
+    builtins: &BuiltinTypes,
+    union_members: &[TypeId],
 ) -> HirPattern {
     match &pattern.kind {
         spark_ast::PatternKind::TypeNarrowing { name, ty } => {
@@ -1018,11 +1040,24 @@ fn lower_to_pattern(
                 def_id,
                 fields: fields
                     .iter()
-                    .map(|f| lower_to_pattern(f, definitions, resolutions, table))
+                    .map(|f| lower_to_pattern(f, definitions, resolutions, table, builtins, union_members))
                     .collect(),
             }
         }
         spark_ast::PatternKind::Ident { name, .. } => {
+            // In a union `to` expression, a bare type name (e.g., `Int -> ...`)
+            // should be treated as type narrowing, not a variable binding.
+            if !union_members.is_empty() {
+                if let Some(member_ty) =
+                    resolve_ident_as_union_member(name.name, union_members, builtins, table, definitions)
+                {
+                    let def_id = definitions.next_synthetic_id(pattern.span);
+                    return HirPattern::TypeNarrow {
+                        def_id,
+                        ty: member_ty,
+                    };
+                }
+            }
             let def_id = resolutions
                 .and_then(|res| res.get_binding(name.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
@@ -1031,6 +1066,38 @@ fn lower_to_pattern(
         spark_ast::PatternKind::Wildcard => HirPattern::Wildcard,
         _ => crate::lower_pattern::lower_pattern(pattern, resolutions, table),
     }
+}
+
+/// Resolves an identifier name as a union member type.
+///
+/// Uses `BuiltinTypes::lookup` for builtin types (handles aliases like
+/// `Int` → `Int64` automatically) and falls back to definition-name
+/// matching for user-defined structs and enums.
+fn resolve_ident_as_union_member(
+    name: spark_intern::Symbol,
+    members: &[TypeId],
+    builtins: &BuiltinTypes,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+) -> Option<TypeId> {
+    if let Some(builtin_ty) = builtins.lookup(name) {
+        if members.contains(&builtin_ty) {
+            return Some(builtin_ty);
+        }
+    }
+    for &member in members {
+        match table.resolve(member) {
+            Ty::Struct(def_id) | Ty::Enum(def_id) => {
+                if let Some(info) = definitions.get(*def_id) {
+                    if info.name == name {
+                        return Some(member);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Lowers a literal expression, producing either a simple `HirExprKind::Literal`

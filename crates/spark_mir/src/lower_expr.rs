@@ -1418,6 +1418,7 @@ fn is_optional_narrowing(local_ty: TypeId, expr_ty: TypeId, table: &TypeTable) -
     let unwrapped_expr = unwrap_type_wrappers(expr_ty, table);
     match table.resolve(unwrapped_local) {
         Ty::Optional(inner) => *inner == unwrapped_expr,
+        Ty::Union(members) => members.contains(&unwrapped_expr),
         _ => false,
     }
 }
