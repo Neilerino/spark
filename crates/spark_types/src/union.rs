@@ -113,12 +113,9 @@ pub fn split_union(
     if let Some(ret) = fn_ret_ty {
         let ret_members = match table.resolve(ret) {
             Ty::Union(ms) => ms.clone(),
-            Ty::Optional(inner) => {
-                table.lookup(&Ty::Null).map_or_else(
-                    || vec![*inner],
-                    |null_id| vec![*inner, null_id],
-                )
-            }
+            Ty::Optional(inner) => table
+                .lookup(&Ty::Null)
+                .map_or_else(|| vec![*inner], |null_id| vec![*inner, null_id]),
             _ => vec![ret],
         };
 

@@ -48,11 +48,7 @@ pub fn build_signature(
 
 /// Returns the Cranelift type for a MIR local, or `None` if zero-sized.
 #[must_use]
-pub fn local_clif_type(
-    ty_id: TypeId,
-    table: &TypeTable,
-    ptr_type: ClifType,
-) -> Option<ClifType> {
+pub fn local_clif_type(ty_id: TypeId, table: &TypeTable, ptr_type: ClifType) -> Option<ClifType> {
     abi::spark_type_to_clif(ty_id, table, ptr_type)
 }
 
@@ -136,13 +132,7 @@ mod tests {
         let void_ty = table.intern(Ty::Void);
         let i32_ty = table.intern(Ty::Int(IntWidth::I32));
 
-        let sig = build_signature(
-            &[i32_ty],
-            void_ty,
-            &table,
-            types::I64,
-            CallConv::SystemV,
-        );
+        let sig = build_signature(&[i32_ty], void_ty, &table, types::I64, CallConv::SystemV);
 
         assert_eq!(sig.params.len(), 1);
         assert!(sig.returns.is_empty());

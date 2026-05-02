@@ -19,8 +19,8 @@ use crate::registry::{compute_checksum, PackageMetadata, VersionEntry};
 ///
 /// Returns an error if the tarball cannot be created.
 pub fn package_project(root: &Path) -> Result<(PathBuf, String), String> {
-    let manifest = crate::manifest::load_manifest(root)
-        .ok_or_else(|| "no Spark.toml found".to_string())??;
+    let manifest =
+        crate::manifest::load_manifest(root).ok_or_else(|| "no Spark.toml found".to_string())??;
 
     let name = &manifest.project.name;
     let version = &manifest.project.version;
@@ -248,9 +248,7 @@ pub fn upload_release(
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("package.tar.gz");
-    let download_url = format!(
-        "https://github.com/{repo}/releases/download/{tag}/{tarball_name}"
-    );
+    let download_url = format!("https://github.com/{repo}/releases/download/{tag}/{tarball_name}");
 
     Ok(download_url)
 }
@@ -270,9 +268,7 @@ fn extract_github_repo(url: &str) -> Result<String, String> {
 
     let parts: Vec<&str> = path.splitn(3, '/').collect();
     if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
-        return Err(format!(
-            "could not extract owner/repo from URL `{url}`"
-        ));
+        return Err(format!("could not extract owner/repo from URL `{url}`"));
     }
 
     Ok(format!("{}/{}", parts[0], parts[1]))
@@ -475,6 +471,11 @@ mod tests {
         let (tarball, checksum) = package_project(&root).unwrap();
         assert!(tarball.exists());
         assert!(checksum.starts_with("sha256:"));
-        assert!(tarball.file_name().unwrap().to_str().unwrap().contains("mylib-1.0.0"));
+        assert!(tarball
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("mylib-1.0.0"));
     }
 }

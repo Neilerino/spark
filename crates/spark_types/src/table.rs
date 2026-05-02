@@ -312,7 +312,9 @@ impl TypeTable {
     /// Returns the interface `DefId`s bound by a type.
     #[must_use]
     pub fn get_interface_bindings(&self, type_def_id: DefId) -> Option<&[DefId]> {
-        self.type_interface_bindings.get(&type_def_id).map(Vec::as_slice)
+        self.type_interface_bindings
+            .get(&type_def_id)
+            .map(Vec::as_slice)
     }
 
     /// Records the ordered parameter names for a function or method.

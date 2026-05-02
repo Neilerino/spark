@@ -22,10 +22,7 @@ use crate::ty::{Constraint, Ty, TypeId};
 ///
 /// This is called during Pass 1 to register definitions before their
 /// bodies are type-checked.
-pub fn collect_item(
-    item: &Item,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+pub fn collect_item(item: &Item, ctx: &mut TypeCheckCtx<'_>) {
     match item {
         Item::Function(f) => collect_function(f, ctx),
         Item::Struct(s) => collect_struct(s, ctx),
@@ -39,10 +36,7 @@ pub fn collect_item(
 }
 
 /// Collects a function's type signature.
-fn collect_function(
-    func: &FunctionDef,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+fn collect_function(func: &FunctionDef, ctx: &mut TypeCheckCtx<'_>) {
     // Register generic parameter types before lowering param/return types,
     // so that references to `T` in the signature resolve to `Ty::Param`.
     let generic_param_def_ids = collect_generic_params(&func.generics, ctx);
@@ -56,7 +50,11 @@ fn collect_function(
     let ret_type = lower_type_expr(&func.ret_type, ctx);
 
     let (param_types, ret_type) = crate::lower::apply_lifetime_elision(
-        &param_types, ret_type, func.span, ctx.table, ctx.diagnostics,
+        &param_types,
+        ret_type,
+        func.span,
+        ctx.table,
+        ctx.diagnostics,
     );
 
     let fn_type = ctx.table.intern(Ty::Function {
@@ -88,10 +86,7 @@ fn collect_function(
 }
 
 /// Collects a struct's type and field types.
-fn collect_struct(
-    struct_def: &StructDef,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+fn collect_struct(struct_def: &StructDef, ctx: &mut TypeCheckCtx<'_>) {
     if let Some(def_id) = find_item_def(struct_def.name.span, ctx.resolutions) {
         // Register generic parameter types before lowering field types.
         let generic_param_def_ids = collect_generic_params(&struct_def.generics, ctx);
@@ -120,10 +115,7 @@ fn collect_struct(
 }
 
 /// Collects an enum's type and variant types.
-fn collect_enum(
-    enum_def: &EnumDef,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+fn collect_enum(enum_def: &EnumDef, ctx: &mut TypeCheckCtx<'_>) {
     if let Some(def_id) = find_item_def(enum_def.name.span, ctx.resolutions) {
         // Register generic parameter types before lowering variant field types.
         let generic_param_def_ids = collect_generic_params(&enum_def.generics, ctx);
@@ -139,8 +131,7 @@ fn collect_enum(
         let mut variants = Vec::with_capacity(enum_def.variants.len());
 
         for variant in &enum_def.variants {
-            if let Some(variant_def) =
-                find_variant_def(variant.name.name, def_id, ctx.definitions)
+            if let Some(variant_def) = find_variant_def(variant.name.name, def_id, ctx.definitions)
             {
                 // The variant's type is the parent enum type
                 ctx.table.set_def_type(variant_def, enum_type);
@@ -162,10 +153,7 @@ fn collect_enum(
 }
 
 /// Collects a constant's type.
-fn collect_const(
-    const_def: &ConstDef,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+fn collect_const(const_def: &ConstDef, ctx: &mut TypeCheckCtx<'_>) {
     let ty = lower_type_expr(&const_def.ty, ctx);
     if let Some(def_id) = find_item_def(const_def.name.span, ctx.resolutions) {
         ctx.table.set_def_type(def_id, ty);
@@ -173,10 +161,7 @@ fn collect_const(
 }
 
 /// Collects a type alias.
-fn collect_type_alias(
-    alias_def: &TypeAliasDef,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+fn collect_type_alias(alias_def: &TypeAliasDef, ctx: &mut TypeCheckCtx<'_>) {
     let ty = lower_type_expr(&alias_def.ty, ctx);
     if let Some(def_id) = find_item_def(alias_def.name.span, ctx.resolutions) {
         ctx.table.set_def_type(def_id, ty);
@@ -184,10 +169,7 @@ fn collect_type_alias(
 }
 
 /// Collects a distinct type definition.
-fn collect_type_def(
-    type_def: &TypeDefDef,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+fn collect_type_def(type_def: &TypeDefDef, ctx: &mut TypeCheckCtx<'_>) {
     let ty = lower_type_expr(&type_def.ty, ctx);
     if let Some(def_id) = find_item_def(type_def.name.span, ctx.resolutions) {
         ctx.table.set_def_type(def_id, ty);
@@ -200,10 +182,7 @@ fn collect_type_def(
 /// validated against the interface's requirements. Also stores
 /// [`InterfaceMethodInfo`] for each method so that `validate_interface_methods`
 /// can check binding implementations.
-fn collect_interface(
-    iface: &InterfaceDef,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+fn collect_interface(iface: &InterfaceDef, ctx: &mut TypeCheckCtx<'_>) {
     // Register the interface type itself
     let Some(def_id) = find_item_def(iface.name.span, ctx.resolutions) else {
         return;
@@ -227,7 +206,9 @@ fn collect_interface(
         let ret_type = lower_or_placeholder(&method.ret_type, ctx);
         let has_generics = has_placeholder
             || !method.generics.is_empty()
-            || param_types.iter().any(|t| type_involves_param(*t, ctx.table))
+            || param_types
+                .iter()
+                .any(|t| type_involves_param(*t, ctx.table))
             || type_involves_param(ret_type, ctx.table);
 
         method_infos.push(InterfaceMethodInfo {
@@ -249,10 +230,7 @@ fn collect_interface(
 /// interns the function type, and registers it on the method's `DefId`.
 /// Also records the methods in `TypeTable::type_methods` for lookup
 /// during method call resolution.
-fn collect_binding(
-    binding: &BindingDef,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+fn collect_binding(binding: &BindingDef, ctx: &mut TypeCheckCtx<'_>) {
     // Find the bound type's DefId
     let type_def_id = find_type_def_from_binding_ty(&binding.ty, ctx.resolutions);
     if type_def_id.is_dummy() {
@@ -265,17 +243,15 @@ fn collect_binding(
         // Validate interface requirements
         let interface_def_id = find_type_def_from_binding_ty(&target.interface, ctx.resolutions);
         if !interface_def_id.is_dummy() {
-            ctx.table.add_interface_binding(type_def_id, interface_def_id);
+            ctx.table
+                .add_interface_binding(type_def_id, interface_def_id);
             validate_interface_methods(interface_def_id, &target.methods, ctx);
         }
 
         for method in &target.methods {
             // Find the method's DefId (allocated by resolver as BindingMethod)
-            let method_def_id = find_binding_method_def(
-                method.name.name,
-                type_def_id,
-                ctx.definitions,
-            );
+            let method_def_id =
+                find_binding_method_def(method.name.name, type_def_id, ctx.definitions);
 
             if let Some(method_def_id) = method_def_id {
                 // Lower parameter types
@@ -290,7 +266,11 @@ fn collect_binding(
 
                 // Apply lifetime elision
                 let (param_types, ret_type) = crate::lower::apply_lifetime_elision(
-                    &param_types, ret_type, method.span, ctx.table, ctx.diagnostics,
+                    &param_types,
+                    ret_type,
+                    method.span,
+                    ctx.table,
+                    ctx.diagnostics,
                 );
 
                 // Intern the function type
@@ -400,7 +380,10 @@ fn validate_interface_methods(
                         "missing required method `{}` from interface `{iface_name}`",
                         iface_method.name
                     ))
-                    .with_label(Label::secondary(iface_method.span, "required by this interface method")),
+                    .with_label(Label::secondary(
+                        iface_method.span,
+                        "required by this interface method",
+                    )),
                 );
             }
             continue;
@@ -426,16 +409,30 @@ fn validate_interface_methods(
                     if binding_params.len() == 1 { "" } else { "s" },
                     iface_method.param_types.len()
                 ))
-                .with_label(Label::primary(binding_method.span, "wrong number of parameters"))
-                .with_label(Label::secondary(iface_method.span, "interface method defined here")),
+                .with_label(Label::primary(
+                    binding_method.span,
+                    "wrong number of parameters",
+                ))
+                .with_label(Label::secondary(
+                    iface_method.span,
+                    "interface method defined here",
+                )),
             );
             continue; // Skip further checks if param count is wrong.
         }
 
         // Check async mismatch.
         if binding_method.is_async != iface_method.is_async {
-            let expected = if iface_method.is_async { "async" } else { "sync" };
-            let found = if binding_method.is_async { "async" } else { "sync" };
+            let expected = if iface_method.is_async {
+                "async"
+            } else {
+                "sync"
+            };
+            let found = if binding_method.is_async {
+                "async"
+            } else {
+                "sync"
+            };
             ctx.diagnostics.push(
                 Diagnostic::error(format!(
                     "method `{}` is {found}, but interface `{iface_name}` declares it as {expected}",
@@ -453,7 +450,10 @@ fn validate_interface_methods(
 
         // Check return type mismatch.
         let binding_ret = lower_type_expr(&binding_method.ret_type, ctx);
-        if !binding_ret.is_error() && !iface_method.ret_type.is_error() && binding_ret != iface_method.ret_type {
+        if !binding_ret.is_error()
+            && !iface_method.ret_type.is_error()
+            && binding_ret != iface_method.ret_type
+        {
             ctx.diagnostics.push(
                 Diagnostic::error(format!(
                     "method `{}` returns `{}`, but interface `{iface_name}` expects `{}`",
@@ -461,8 +461,14 @@ fn validate_interface_methods(
                     type_name(binding_ret, ctx.table, ctx.definitions),
                     type_name(iface_method.ret_type, ctx.table, ctx.definitions)
                 ))
-                .with_label(Label::primary(binding_method.ret_type.span, "wrong return type"))
-                .with_label(Label::secondary(iface_method.span, "interface method defined here")),
+                .with_label(Label::primary(
+                    binding_method.ret_type.span,
+                    "wrong return type",
+                ))
+                .with_label(Label::secondary(
+                    iface_method.span,
+                    "interface method defined here",
+                )),
             );
         }
 
@@ -470,7 +476,10 @@ fn validate_interface_methods(
         for (i, param) in binding_params.iter().enumerate() {
             let binding_param_ty = lower_type_expr(&param.ty, ctx);
             let iface_param_ty = iface_method.param_types[i];
-            if !binding_param_ty.is_error() && !iface_param_ty.is_error() && binding_param_ty != iface_param_ty {
+            if !binding_param_ty.is_error()
+                && !iface_param_ty.is_error()
+                && binding_param_ty != iface_param_ty
+            {
                 ctx.diagnostics.push(
                     Diagnostic::error(format!(
                         "parameter `{}` of method `{}` has type `{}`, but interface `{iface_name}` expects `{}`",
@@ -518,14 +527,19 @@ fn type_involves_param(ty: TypeId, table: &crate::table::TypeTable) -> bool {
     }
     match table.resolve(ty) {
         Ty::Param(_) => true,
-        Ty::Optional(inner) | Ty::Mutable(inner) | Ty::List(inner) | Ty::Set(inner)
-        | Ty::Future { inner } | Ty::Channel { inner }
+        Ty::Optional(inner)
+        | Ty::Mutable(inner)
+        | Ty::List(inner)
+        | Ty::Set(inner)
+        | Ty::Future { inner }
+        | Ty::Channel { inner }
         | Ty::Ref { inner, .. } => type_involves_param(*inner, table),
         Ty::Map(k, v) => type_involves_param(*k, table) || type_involves_param(*v, table),
         Ty::Tuple(elems) => elems.iter().any(|e| type_involves_param(*e, table)),
         Ty::Union(members) => members.iter().any(|m| type_involves_param(*m, table)),
         Ty::Function { params, ret, .. } => {
-            params.iter().any(|p| type_involves_param(*p, table)) || type_involves_param(*ret, table)
+            params.iter().any(|p| type_involves_param(*p, table))
+                || type_involves_param(*ret, table)
         }
         Ty::Applied { args, .. } => args.iter().any(|a| type_involves_param(*a, table)),
         _ => false,
@@ -549,7 +563,10 @@ fn collect_generic_params(
 
     let mut param_def_ids = Vec::with_capacity(generics.len());
     for generic in generics {
-        if let Some(def_id) = ctx.resolutions.and_then(|res| res.get_binding(generic.name.span)) {
+        if let Some(def_id) = ctx
+            .resolutions
+            .and_then(|res| res.get_binding(generic.name.span))
+        {
             // Register the param type: T -> Ty::Param(def_id)
             let param_ty = ctx.table.intern(Ty::Param(def_id));
             ctx.table.set_def_type(def_id, param_ty);
@@ -579,18 +596,15 @@ fn lower_generic_constraint(
         spark_ast::GenericConstraint::Named(type_expr) => {
             // Resolve the constraint type name to a DefId
             if let spark_ast::TypeExprKind::Named { path, type_args } = &type_expr.kind {
-                let constraint_def_id = ctx.resolutions
-                    .and_then(|res| res.get_path(path.span));
+                let constraint_def_id = ctx.resolutions.and_then(|res| res.get_path(path.span));
 
                 if let Some(cdef_id) = constraint_def_id {
                     let info = ctx.definitions.get(cdef_id)?;
                     match &info.kind {
                         DefinitionKind::Interface => {
                             // Lower type arguments (e.g., [T] in Comparable[T])
-                            let args: Vec<TypeId> = type_args
-                                .iter()
-                                .map(|t| lower_type_expr(t, ctx))
-                                .collect();
+                            let args: Vec<TypeId> =
+                                type_args.iter().map(|t| lower_type_expr(t, ctx)).collect();
                             Some(Constraint::Interface {
                                 interface_def_id: cdef_id,
                                 type_args: args,
@@ -598,8 +612,10 @@ fn lower_generic_constraint(
                         }
                         DefinitionKind::Struct => {
                             // Named type constraint: T must have all fields of the struct
-                            ctx.table.get_struct_fields(cdef_id).map(|fields| Constraint::Structural {
-                                fields: fields.to_vec(),
+                            ctx.table.get_struct_fields(cdef_id).map(|fields| {
+                                Constraint::Structural {
+                                    fields: fields.to_vec(),
+                                }
                             })
                         }
                         _ => None,
@@ -619,7 +635,9 @@ fn lower_generic_constraint(
                     (f.name.name, ty)
                 })
                 .collect();
-            Some(Constraint::Structural { fields: lowered_fields })
+            Some(Constraint::Structural {
+                fields: lowered_fields,
+            })
         }
     }
 }
@@ -665,7 +683,8 @@ fn find_variant_def(
     definitions
         .iter()
         .find(|(_, info)| {
-            info.name == name && matches!(info.kind, DefinitionKind::EnumVariant(parent) if parent == parent_enum)
+            info.name == name
+                && matches!(info.kind, DefinitionKind::EnumVariant(parent) if parent == parent_enum)
         })
         .map(|(id, _)| id)
 }
@@ -751,13 +770,8 @@ mod tests {
         };
 
         let item = Item::Function(func);
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            Some(&resolutions),
-            &mut diags,
-        );
+        let mut ctx =
+            TypeCheckCtx::new(&mut table, &builtins, &defs, Some(&resolutions), &mut diags);
         collect_item(&item, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -815,13 +829,8 @@ mod tests {
         };
 
         let item = Item::Struct(struct_item);
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            Some(&resolutions),
-            &mut diags,
-        );
+        let mut ctx =
+            TypeCheckCtx::new(&mut table, &builtins, &defs, Some(&resolutions), &mut diags);
         collect_item(&item, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());

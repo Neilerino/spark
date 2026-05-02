@@ -157,7 +157,10 @@ fn statement_reads_local(stmt: &Statement, local: Local) -> bool {
 
 /// Returns true if place projections read a local (e.g. Index).
 fn place_projections_read_local(place: &Place, local: Local) -> bool {
-    place.projections.iter().any(|p| matches!(p, Projection::Index(l) if *l == local))
+    place
+        .projections
+        .iter()
+        .any(|p| matches!(p, Projection::Index(l) if *l == local))
 }
 
 /// Returns true if an rvalue reads from `local`.
@@ -175,9 +178,15 @@ fn rvalue_reads_local(rvalue: &spark_mir::Rvalue, local: Local) -> bool {
         spark_mir::Rvalue::Aggregate(_, ops) | spark_mir::Rvalue::StringInterp(ops) => {
             ops.iter().any(|op| operand_reads_local(op, local))
         }
-        spark_mir::Rvalue::ListRange { start, end, step, .. }
-        | spark_mir::Rvalue::RangeLen { start, end, step, .. } => {
-            operand_reads_local(start, local) || operand_reads_local(end, local) || operand_reads_local(step, local)
+        spark_mir::Rvalue::ListRange {
+            start, end, step, ..
+        }
+        | spark_mir::Rvalue::RangeLen {
+            start, end, step, ..
+        } => {
+            operand_reads_local(start, local)
+                || operand_reads_local(end, local)
+                || operand_reads_local(step, local)
         }
         spark_mir::Rvalue::MapGetOptional { map, key, .. } => {
             operand_reads_local(map, local) || operand_reads_local(key, local)
@@ -202,7 +211,10 @@ fn terminator_reads_local(term: &Terminator, local: Local) -> bool {
         Terminator::Goto { .. } | Terminator::Return | Terminator::Unreachable => false,
         Terminator::SwitchInt { discriminant, .. } => operand_reads_local(discriminant, local),
         Terminator::Call {
-            func, args, destination, ..
+            func,
+            args,
+            destination,
+            ..
         } => {
             operand_reads_local(func, local)
                 || args.iter().any(|a| operand_reads_local(a, local))
@@ -274,8 +286,12 @@ fn replace_local_in_rvalue(rvalue: &mut spark_mir::Rvalue, from: Local, to: Loca
             }
             changed
         }
-        spark_mir::Rvalue::ListRange { start, end, step, .. }
-        | spark_mir::Rvalue::RangeLen { start, end, step, .. } => {
+        spark_mir::Rvalue::ListRange {
+            start, end, step, ..
+        }
+        | spark_mir::Rvalue::RangeLen {
+            start, end, step, ..
+        } => {
             let mut changed = replace_local_in_operand(start, from, to);
             changed |= replace_local_in_operand(end, from, to);
             changed |= replace_local_in_operand(step, from, to);
@@ -316,7 +332,10 @@ fn replace_local_in_terminator(term: &mut Terminator, from: Local, to: Local) ->
             replace_local_in_operand(discriminant, from, to)
         }
         Terminator::Call {
-            func, args, destination, ..
+            func,
+            args,
+            destination,
+            ..
         } => {
             let mut changed = replace_local_in_operand(func, from, to);
             for arg in args {
@@ -443,11 +462,7 @@ mod tests {
         // _2 = Copy(_3)   ← _2 assigned twice → not propagated
         let mut func = make_func(
             vec![BasicBlock {
-                statements: vec![
-                    assign_copy(2, 1),
-                    assign_copy(0, 2),
-                    assign_copy(2, 3),
-                ],
+                statements: vec![assign_copy(2, 1), assign_copy(0, 2), assign_copy(2, 3)],
                 terminator: Terminator::Return,
                 is_cleanup: false,
             }],

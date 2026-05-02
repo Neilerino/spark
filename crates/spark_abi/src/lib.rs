@@ -73,7 +73,7 @@ pub struct RuntimeFn {
     pub ret: Option<AbiType>,
 }
 
-use AbiType::{F64, I64, I8, Ptr};
+use AbiType::{Ptr, F64, I64, I8};
 
 // ── String ──────────────────────────────────────────────────────────────
 

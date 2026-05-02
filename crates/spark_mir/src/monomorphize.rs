@@ -313,7 +313,11 @@ mod tests {
         );
 
         // Should have exactly one monomorphized function.
-        assert_eq!(mir.functions.len(), 1, "Expected one monomorphized function");
+        assert_eq!(
+            mir.functions.len(),
+            1,
+            "Expected one monomorphized function"
+        );
 
         let mono_fn = mir.functions.values().next().unwrap();
         // All locals should have concrete types (not Ty::Param).
@@ -360,8 +364,22 @@ mod tests {
             param_count: 1,
             return_type: t_param_ty,
             locals: vec![
-                LocalDecl { local: Local(0), ty: t_param_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: t_param_ty, name: None, is_user_variable: true, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: t_param_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: t_param_ty,
+                    name: None,
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![Statement::Assign {
@@ -392,10 +410,38 @@ mod tests {
             param_count: 0,
             return_type: int_ty,
             locals: vec![
-                LocalDecl { local: Local(0), ty: int_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: int_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(2), ty: int_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(3), ty: int_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: int_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: int_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(2),
+                    ty: int_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(3),
+                    ty: int_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![
                 BasicBlock {
@@ -407,7 +453,9 @@ mod tests {
                         },
                         Statement::Assign {
                             place: Place::from_local(Local(2)),
-                            rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(generic_def))),
+                            rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(
+                                generic_def,
+                            ))),
                             span: Span::DUMMY,
                         },
                     ],

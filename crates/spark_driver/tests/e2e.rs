@@ -119,7 +119,6 @@ fn run_spark_project(project: &str) -> SparkOutput {
 
 /// Runs a fixture and asserts stdout matches expected output (exit code 0).
 fn assert_output(fixture: &str, expected_stdout: &str) {
-
     let result = run_spark(fixture);
     assert_eq!(
         result.exit_code, 0,
@@ -135,7 +134,6 @@ fn assert_output(fixture: &str, expected_stdout: &str) {
 
 /// Runs a fixture and asserts compilation fails with a message fragment in stderr.
 fn assert_compile_error(fixture: &str, expected_fragment: &str) {
-
     let result = run_spark(fixture);
     assert_ne!(
         result.exit_code, 0,
@@ -212,7 +210,6 @@ fn run_spark_with_stdin(fixture: &str, stdin_input: &str) -> SparkOutput {
 
 /// Runs a fixture with piped stdin and asserts stdout matches expected output.
 fn assert_output_with_stdin(fixture: &str, stdin_input: &str, expected_stdout: &str) {
-
     let result = run_spark_with_stdin(fixture, stdin_input);
     assert_eq!(
         result.exit_code, 0,
@@ -313,12 +310,18 @@ fn callable_field() {
 
 #[test]
 fn string_interp_struct_field() {
-    assert_output("run-pass/basics/string_interp_field.spark", "x=10\nname=origin");
+    assert_output(
+        "run-pass/basics/string_interp_field.spark",
+        "x=10\nname=origin",
+    );
 }
 
 #[test]
 fn tuple_field_access() {
-    assert_output("run-pass/basics/tuple_field_access.spark", "10\n20\nalice\n30\ntrue");
+    assert_output(
+        "run-pass/basics/tuple_field_access.spark",
+        "10\n20\nalice\n30\ntrue",
+    );
 }
 
 #[test]
@@ -338,7 +341,10 @@ fn loop_break() {
 
 #[test]
 fn kitchen_sink() {
-    assert_output("run-pass/basics/kitchen_sink.spark", "5\n4\n3\n2\n1\n9\n18\n27\n3\n13\n3");
+    assert_output(
+        "run-pass/basics/kitchen_sink.spark",
+        "5\n4\n3\n2\n1\n9\n18\n27\n3\n13\n3",
+    );
 }
 
 #[test]
@@ -400,7 +406,10 @@ fn list_range() {
 
 #[test]
 fn list_range_each() {
-    assert_output("run-pass/collections/list_range_each.spark", "0\n1\n2\n3\n4");
+    assert_output(
+        "run-pass/collections/list_range_each.spark",
+        "0\n1\n2\n3\n4",
+    );
 }
 
 #[test]
@@ -420,7 +429,10 @@ fn map_get_optional() {
 
 #[test]
 fn map_get_optional_list() {
-    assert_output("run-pass/collections/map_get_optional_list.spark", "found\na");
+    assert_output(
+        "run-pass/collections/map_get_optional_list.spark",
+        "found\na",
+    );
 }
 
 #[test]
@@ -560,7 +572,10 @@ fn map_partial() {
 
 #[test]
 fn standalone_partial() {
-    assert_output("run-pass/partial/standalone_partial.spark", "15\n30\n50\n100");
+    assert_output(
+        "run-pass/partial/standalone_partial.spark",
+        "15\n30\n50\n100",
+    );
 }
 
 #[test]
@@ -843,7 +858,10 @@ fn ref_list_coerce() {
 
 #[test]
 fn stdlib_math() {
-    assert_output("run-pass/stdlib/stdlib_math.spark", "4\n1024\n5\n3\n4\n1\n2\n4");
+    assert_output(
+        "run-pass/stdlib/stdlib_math.spark",
+        "4\n1024\n5\n3\n4\n1\n2\n4",
+    );
 }
 
 #[test]
@@ -871,12 +889,18 @@ fn stdlib_json_array() {
 
 #[test]
 fn stdlib_json_nested() {
-    assert_output("run-pass/stdlib/stdlib_json_nested.spark", "2\nfirst\nsecond");
+    assert_output(
+        "run-pass/stdlib/stdlib_json_nested.spark",
+        "2\nfirst\nsecond",
+    );
 }
 
 #[test]
 fn stdlib_io_write_read() {
-    assert_output("run-pass/stdlib/stdlib_io_write_read.spark", "hello from spark");
+    assert_output(
+        "run-pass/stdlib/stdlib_io_write_read.spark",
+        "hello from spark",
+    );
 }
 
 #[test]
@@ -908,8 +932,15 @@ fn stdlib_sys_args() {
         result.exit_code, result.stderr
     );
     // The output should be "1" (just the program name, no extra args)
-    let count: i64 = result.stdout.trim().parse().expect("expected integer output");
-    assert!(count >= 1, "args() should return at least the program name, got {count}");
+    let count: i64 = result
+        .stdout
+        .trim()
+        .parse()
+        .expect("expected integer output");
+    assert!(
+        count >= 1,
+        "args() should return at least the program name, got {count}"
+    );
 }
 
 #[test]
@@ -975,7 +1006,10 @@ fn propagate_union() {
 
 #[test]
 fn propagate_union_error() {
-    assert_output("run-pass/type_narrowing/propagate_union_error.spark", "error");
+    assert_output(
+        "run-pass/type_narrowing/propagate_union_error.spark",
+        "error",
+    );
 }
 
 #[test]
@@ -1005,7 +1039,10 @@ fn is_positive_narrowing() {
 
 #[test]
 fn mutable_optional_narrowing() {
-    assert_output("run-pass/type_narrowing/mutable_optional_narrowing.spark", "10");
+    assert_output(
+        "run-pass/type_narrowing/mutable_optional_narrowing.spark",
+        "10",
+    );
 }
 
 #[test]
@@ -1029,7 +1066,6 @@ fn is_union_else() {
 
 #[test]
 fn io_stderr() {
-
     let result = run_spark("run-pass/io/io_stderr.spark");
     assert_eq!(
         result.exit_code, 0,
@@ -1054,7 +1090,6 @@ fn io_stderr() {
 
 #[test]
 fn multifile_import() {
-
     let result = run_spark_project("multifile");
     assert_eq!(
         result.exit_code, 0,
@@ -1070,7 +1105,6 @@ fn multifile_import() {
 
 #[test]
 fn multimod_using_import() {
-
     let result = run_spark_project("multimod");
     assert_eq!(
         result.exit_code, 0,
@@ -1100,7 +1134,10 @@ fn equatable() {
 
 #[test]
 fn comparable() {
-    assert_output("run-pass/protocols/comparable.spark", "true\ntrue\ntrue\nfalse");
+    assert_output(
+        "run-pass/protocols/comparable.spark",
+        "true\ntrue\ntrue\nfalse",
+    );
 }
 
 #[test]
@@ -1114,87 +1151,138 @@ fn iterable_each() {
 
 #[test]
 fn immutable_append_error() {
-    assert_compile_error("compile-fail/type_errors/immutable_append.spark", "not mutable");
+    assert_compile_error(
+        "compile-fail/type_errors/immutable_append.spark",
+        "not mutable",
+    );
 }
 
 #[test]
 fn to_nonexhaustive_bool() {
-    assert_compile_error("compile-fail/type_errors/to_nonexhaustive_bool.spark", "non-exhaustive");
+    assert_compile_error(
+        "compile-fail/type_errors/to_nonexhaustive_bool.spark",
+        "non-exhaustive",
+    );
 }
 
 #[test]
 fn to_nonexhaustive_int() {
-    assert_compile_error("compile-fail/type_errors/to_nonexhaustive_int.spark", "non-exhaustive");
+    assert_compile_error(
+        "compile-fail/type_errors/to_nonexhaustive_int.spark",
+        "non-exhaustive",
+    );
 }
 
 #[test]
 fn await_non_future_error() {
-    assert_compile_error("compile-fail/type_errors/await_non_future_error.spark", "cannot `await`");
+    assert_compile_error(
+        "compile-fail/type_errors/await_non_future_error.spark",
+        "cannot `await`",
+    );
 }
 
 #[test]
 fn spawn_non_async_error() {
-    assert_compile_error("compile-fail/type_errors/spawn_non_async_error.spark", "cannot `spawn`");
+    assert_compile_error(
+        "compile-fail/type_errors/spawn_non_async_error.spark",
+        "cannot `spawn`",
+    );
 }
 
 #[test]
 fn spawn_mutable_error() {
-    assert_compile_error("compile-fail/type_errors/spawn_mutable_error.spark", "mutable binding");
+    assert_compile_error(
+        "compile-fail/type_errors/spawn_mutable_error.spark",
+        "mutable binding",
+    );
 }
 
 #[test]
 fn spawn_ref_error() {
-    assert_compile_error("compile-fail/type_errors/spawn_ref_error.spark", "not thread-safe");
+    assert_compile_error(
+        "compile-fail/type_errors/spawn_ref_error.spark",
+        "not thread-safe",
+    );
 }
 
 #[test]
 fn parallel_each_nonlist_error() {
-    assert_compile_error("compile-fail/type_errors/parallel_each_nonlist_error.spark", "requires a List");
+    assert_compile_error(
+        "compile-fail/type_errors/parallel_each_nonlist_error.spark",
+        "requires a List",
+    );
 }
 
 #[test]
 fn parallel_each_ref_mutation_error() {
-    assert_compile_error("compile-fail/type_errors/parallel_each_ref_mutation.spark", "not thread-safe");
+    assert_compile_error(
+        "compile-fail/type_errors/parallel_each_ref_mutation.spark",
+        "not thread-safe",
+    );
 }
 
 #[test]
 fn generic_constraint_fail() {
-    assert_compile_error("compile-fail/type_errors/generic_constraint_fail.spark", "does not satisfy constraint");
+    assert_compile_error(
+        "compile-fail/type_errors/generic_constraint_fail.spark",
+        "does not satisfy constraint",
+    );
 }
 
 #[test]
 fn generic_constraint_structural_fail() {
-    assert_compile_error("compile-fail/type_errors/generic_constraint_structural_fail.spark", "missing required field");
+    assert_compile_error(
+        "compile-fail/type_errors/generic_constraint_structural_fail.spark",
+        "missing required field",
+    );
 }
 
 #[test]
 fn to_non_union_error() {
-    assert_compile_error("compile-fail/type_errors/to_non_union_error.spark", "non-exhaustive");
+    assert_compile_error(
+        "compile-fail/type_errors/to_non_union_error.spark",
+        "non-exhaustive",
+    );
 }
 
 #[test]
 fn immutable_field_assign() {
-    assert_compile_error("compile-fail/type_errors/immutable_field_assign.spark", "immutable");
+    assert_compile_error(
+        "compile-fail/type_errors/immutable_field_assign.spark",
+        "immutable",
+    );
 }
 
 #[test]
 fn immutable_mutable_borrow() {
-    assert_compile_error("compile-fail/type_errors/immutable_mutable_borrow.spark", "cannot pass immutable value as mutable reference");
+    assert_compile_error(
+        "compile-fail/type_errors/immutable_mutable_borrow.spark",
+        "cannot pass immutable value as mutable reference",
+    );
 }
 
 #[test]
 fn propagate_return_mismatch() {
-    assert_compile_error("compile-fail/type_errors/propagate_return_mismatch.spark", "does not include `Null`");
+    assert_compile_error(
+        "compile-fail/type_errors/propagate_return_mismatch.spark",
+        "does not include `Null`",
+    );
 }
 
 #[test]
 fn propagate_union_return_mismatch() {
-    assert_compile_error("compile-fail/type_errors/propagate_union_return_mismatch.spark", "does not include it");
+    assert_compile_error(
+        "compile-fail/type_errors/propagate_union_return_mismatch.spark",
+        "does not include it",
+    );
 }
 
 #[test]
 fn tuple_field_oob() {
-    assert_compile_error("compile-fail/type_errors/tuple_field_oob.spark", "out of range");
+    assert_compile_error(
+        "compile-fail/type_errors/tuple_field_oob.spark",
+        "out of range",
+    );
 }
 
 #[test]
@@ -1215,12 +1303,18 @@ fn continue_in_closure_error() {
 
 #[test]
 fn interface_missing_method() {
-    assert_compile_error("compile-fail/type_errors/interface_missing_method.spark", "missing required method");
+    assert_compile_error(
+        "compile-fail/type_errors/interface_missing_method.spark",
+        "missing required method",
+    );
 }
 
 #[test]
 fn interface_signature_mismatch() {
-    assert_compile_error("compile-fail/type_errors/interface_signature_mismatch.spark", "wrong number of parameters");
+    assert_compile_error(
+        "compile-fail/type_errors/interface_signature_mismatch.spark",
+        "wrong number of parameters",
+    );
 }
 
 // ============================================================================
@@ -1229,27 +1323,42 @@ fn interface_signature_mismatch() {
 
 #[test]
 fn borrow_double_mut() {
-    assert_compile_error("compile-fail/borrow_errors/borrow_double_mut.spark", "cannot borrow value as mutable more than once");
+    assert_compile_error(
+        "compile-fail/borrow_errors/borrow_double_mut.spark",
+        "cannot borrow value as mutable more than once",
+    );
 }
 
 #[test]
 fn borrow_mut_immut() {
-    assert_compile_error("compile-fail/borrow_errors/borrow_mut_immut.spark", "cannot borrow value as mutable because it is also borrowed as immutable");
+    assert_compile_error(
+        "compile-fail/borrow_errors/borrow_mut_immut.spark",
+        "cannot borrow value as mutable because it is also borrowed as immutable",
+    );
 }
 
 #[test]
 fn borrow_immut_assign() {
-    assert_compile_error("compile-fail/borrow_errors/borrow_immut_assign.spark", "cannot assign to immutable variable");
+    assert_compile_error(
+        "compile-fail/borrow_errors/borrow_immut_assign.spark",
+        "cannot assign to immutable variable",
+    );
 }
 
 #[test]
 fn borrow_dangling_return() {
-    assert_compile_error("compile-fail/borrow_errors/borrow_dangling_return.spark", "cannot return reference to local variable");
+    assert_compile_error(
+        "compile-fail/borrow_errors/borrow_dangling_return.spark",
+        "cannot return reference to local variable",
+    );
 }
 
 #[test]
 fn borrow_alias_call() {
-    assert_compile_error("compile-fail/borrow_errors/borrow_alias_call.spark", "cannot pass");
+    assert_compile_error(
+        "compile-fail/borrow_errors/borrow_alias_call.spark",
+        "cannot pass",
+    );
 }
 
 // ============================================================================
@@ -1311,7 +1420,10 @@ fn spark_init() {
     assert!(manifest_path.exists(), "Spark.toml should be created");
 
     let contents = std::fs::read_to_string(&manifest_path).unwrap();
-    assert!(contents.contains("test_project"), "manifest should contain project name");
+    assert!(
+        contents.contains("test_project"),
+        "manifest should contain project name"
+    );
 
     // Running init again should fail.
     let output2 = Command::new(spark_bin)

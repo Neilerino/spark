@@ -81,8 +81,7 @@ fn merge_goto_chains(func: &mut MirFunction) -> bool {
 
             // B must have exactly 1 predecessor, not be the entry block,
             // and A != B.
-            if b_idx == a_idx || b_idx == 0 || pred_counts.get(&BlockId(b_idx as u32)) != Some(&1)
-            {
+            if b_idx == a_idx || b_idx == 0 || pred_counts.get(&BlockId(b_idx as u32)) != Some(&1) {
                 continue;
             }
 
@@ -402,9 +401,7 @@ mod tests {
         let mut func = make_func(vec![
             BasicBlock {
                 statements: vec![assign_int(0, 1)],
-                terminator: Terminator::Goto {
-                    target: BlockId(1),
-                },
+                terminator: Terminator::Goto { target: BlockId(1) },
                 is_cleanup: false,
             },
             BasicBlock {
@@ -432,16 +429,12 @@ mod tests {
         let mut func = make_func(vec![
             BasicBlock {
                 statements: vec![],
-                terminator: Terminator::Goto {
-                    target: BlockId(2),
-                },
+                terminator: Terminator::Goto { target: BlockId(2) },
                 is_cleanup: false,
             },
             BasicBlock {
                 statements: vec![],
-                terminator: Terminator::Goto {
-                    target: BlockId(2),
-                },
+                terminator: Terminator::Goto { target: BlockId(2) },
                 is_cleanup: false,
             },
             BasicBlock {
@@ -470,9 +463,7 @@ mod tests {
             },
             BasicBlock {
                 statements: vec![],
-                terminator: Terminator::Goto {
-                    target: BlockId(0),
-                },
+                terminator: Terminator::Goto { target: BlockId(0) },
                 is_cleanup: false,
             },
         ]);
@@ -487,9 +478,7 @@ mod tests {
         // bb0: goto → bb0 (infinite loop)
         let mut func = make_func(vec![BasicBlock {
             statements: vec![],
-            terminator: Terminator::Goto {
-                target: BlockId(0),
-            },
+            terminator: Terminator::Goto { target: BlockId(0) },
             is_cleanup: false,
         }]);
 
@@ -521,9 +510,7 @@ mod tests {
             },
             BasicBlock {
                 statements: vec![],
-                terminator: Terminator::Goto {
-                    target: BlockId(3),
-                },
+                terminator: Terminator::Goto { target: BlockId(3) },
                 is_cleanup: false,
             },
             BasicBlock {
@@ -558,23 +545,17 @@ mod tests {
         let mut func = make_func(vec![
             BasicBlock {
                 statements: vec![],
-                terminator: Terminator::Goto {
-                    target: BlockId(1),
-                },
+                terminator: Terminator::Goto { target: BlockId(1) },
                 is_cleanup: false,
             },
             BasicBlock {
                 statements: vec![],
-                terminator: Terminator::Goto {
-                    target: BlockId(2),
-                },
+                terminator: Terminator::Goto { target: BlockId(2) },
                 is_cleanup: false,
             },
             BasicBlock {
                 statements: vec![],
-                terminator: Terminator::Goto {
-                    target: BlockId(3),
-                },
+                terminator: Terminator::Goto { target: BlockId(3) },
                 is_cleanup: false,
             },
             BasicBlock {
@@ -598,23 +579,17 @@ mod tests {
         let mut func = make_func(vec![
             BasicBlock {
                 statements: vec![assign_int(0, 1)],
-                terminator: Terminator::Goto {
-                    target: BlockId(1),
-                },
+                terminator: Terminator::Goto { target: BlockId(1) },
                 is_cleanup: false,
             },
             BasicBlock {
                 statements: vec![],
-                terminator: Terminator::Goto {
-                    target: BlockId(2),
-                },
+                terminator: Terminator::Goto { target: BlockId(2) },
                 is_cleanup: false,
             },
             BasicBlock {
                 statements: vec![],
-                terminator: Terminator::Goto {
-                    target: BlockId(3),
-                },
+                terminator: Terminator::Goto { target: BlockId(3) },
                 is_cleanup: false,
             },
             BasicBlock {

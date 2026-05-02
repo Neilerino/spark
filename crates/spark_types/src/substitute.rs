@@ -95,7 +95,11 @@ fn substitute_inner(ty_id: TypeId, subst: &SubstMap, table: &TypeTable) -> TypeI
                 table.lookup(&Ty::Mutable(new_inner)).unwrap_or(ty_id)
             }
         }
-        Ty::Ref { inner, mutable, lifetime } => {
+        Ty::Ref {
+            inner,
+            mutable,
+            lifetime,
+        } => {
             let new_inner = substitute_inner(*inner, subst, table);
             if new_inner == *inner {
                 ty_id
@@ -131,7 +135,11 @@ fn substitute_inner(ty_id: TypeId, subst: &SubstMap, table: &TypeTable) -> TypeI
                 table.lookup(&Ty::Union(new_members)).unwrap_or(ty_id)
             }
         }
-        Ty::Function { params, ret, is_async } => {
+        Ty::Function {
+            params,
+            ret,
+            is_async,
+        } => {
             let new_params: Vec<TypeId> = params
                 .iter()
                 .map(|p| substitute_inner(*p, subst, table))
@@ -171,7 +179,9 @@ fn substitute_inner(ty_id: TypeId, subst: &SubstMap, table: &TypeTable) -> TypeI
             if new_inner == *inner {
                 ty_id
             } else {
-                table.lookup(&Ty::Future { inner: new_inner }).unwrap_or(ty_id)
+                table
+                    .lookup(&Ty::Future { inner: new_inner })
+                    .unwrap_or(ty_id)
             }
         }
 
@@ -180,7 +190,9 @@ fn substitute_inner(ty_id: TypeId, subst: &SubstMap, table: &TypeTable) -> TypeI
             if new_inner == *inner {
                 ty_id
             } else {
-                table.lookup(&Ty::Channel { inner: new_inner }).unwrap_or(ty_id)
+                table
+                    .lookup(&Ty::Channel { inner: new_inner })
+                    .unwrap_or(ty_id)
             }
         }
 
@@ -221,68 +233,150 @@ fn substitute_mut_inner(ty_id: TypeId, subst: &SubstMap, table: &mut TypeTable) 
 
         Ty::List(inner) => {
             let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner { ty_id } else { table.intern(Ty::List(new_inner)) }
+            if new_inner == inner {
+                ty_id
+            } else {
+                table.intern(Ty::List(new_inner))
+            }
         }
         Ty::Set(inner) => {
-            let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner { ty_id } else { table.intern(Ty::Set(new_inner)) }
-        }
-        Ty::Map(k, v) => {
-            let new_k = substitute_mut_inner(k, subst, table);
-            let new_v = substitute_mut_inner(v, subst, table);
-            if new_k == k && new_v == v { ty_id } else { table.intern(Ty::Map(new_k, new_v)) }
-        }
-        Ty::Optional(inner) => {
-            let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner { ty_id } else { table.intern(Ty::Optional(new_inner)) }
-        }
-        Ty::Mutable(inner) => {
-            let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner { ty_id } else { table.intern(Ty::Mutable(new_inner)) }
-        }
-        Ty::Ref { inner, mutable, lifetime } => {
             let new_inner = substitute_mut_inner(inner, subst, table);
             if new_inner == inner {
                 ty_id
             } else {
-                table.intern(Ty::Ref { inner: new_inner, mutable, lifetime })
+                table.intern(Ty::Set(new_inner))
+            }
+        }
+        Ty::Map(k, v) => {
+            let new_k = substitute_mut_inner(k, subst, table);
+            let new_v = substitute_mut_inner(v, subst, table);
+            if new_k == k && new_v == v {
+                ty_id
+            } else {
+                table.intern(Ty::Map(new_k, new_v))
+            }
+        }
+        Ty::Optional(inner) => {
+            let new_inner = substitute_mut_inner(inner, subst, table);
+            if new_inner == inner {
+                ty_id
+            } else {
+                table.intern(Ty::Optional(new_inner))
+            }
+        }
+        Ty::Mutable(inner) => {
+            let new_inner = substitute_mut_inner(inner, subst, table);
+            if new_inner == inner {
+                ty_id
+            } else {
+                table.intern(Ty::Mutable(new_inner))
+            }
+        }
+        Ty::Ref {
+            inner,
+            mutable,
+            lifetime,
+        } => {
+            let new_inner = substitute_mut_inner(inner, subst, table);
+            if new_inner == inner {
+                ty_id
+            } else {
+                table.intern(Ty::Ref {
+                    inner: new_inner,
+                    mutable,
+                    lifetime,
+                })
             }
         }
         Ty::Tuple(elems) => {
-            let new_elems: Vec<TypeId> = elems.iter().map(|e| substitute_mut_inner(*e, subst, table)).collect();
-            if new_elems == elems { ty_id } else { table.intern(Ty::Tuple(new_elems)) }
+            let new_elems: Vec<TypeId> = elems
+                .iter()
+                .map(|e| substitute_mut_inner(*e, subst, table))
+                .collect();
+            if new_elems == elems {
+                ty_id
+            } else {
+                table.intern(Ty::Tuple(new_elems))
+            }
         }
         Ty::Union(members) => {
-            let new_members: Vec<TypeId> = members.iter().map(|m| substitute_mut_inner(*m, subst, table)).collect();
-            if new_members == members { ty_id } else { table.intern(Ty::Union(new_members)) }
+            let new_members: Vec<TypeId> = members
+                .iter()
+                .map(|m| substitute_mut_inner(*m, subst, table))
+                .collect();
+            if new_members == members {
+                ty_id
+            } else {
+                table.intern(Ty::Union(new_members))
+            }
         }
-        Ty::Function { params, ret, is_async } => {
-            let new_params: Vec<TypeId> = params.iter().map(|p| substitute_mut_inner(*p, subst, table)).collect();
+        Ty::Function {
+            params,
+            ret,
+            is_async,
+        } => {
+            let new_params: Vec<TypeId> = params
+                .iter()
+                .map(|p| substitute_mut_inner(*p, subst, table))
+                .collect();
             let new_ret = substitute_mut_inner(ret, subst, table);
             if new_params == params && new_ret == ret {
                 ty_id
             } else {
-                table.intern(Ty::Function { params: new_params, ret: new_ret, is_async })
+                table.intern(Ty::Function {
+                    params: new_params,
+                    ret: new_ret,
+                    is_async,
+                })
             }
         }
         Ty::Applied { base, args } => {
-            let new_args: Vec<TypeId> = args.iter().map(|a| substitute_mut_inner(*a, subst, table)).collect();
-            if new_args == args { ty_id } else { table.intern(Ty::Applied { base, args: new_args }) }
+            let new_args: Vec<TypeId> = args
+                .iter()
+                .map(|a| substitute_mut_inner(*a, subst, table))
+                .collect();
+            if new_args == args {
+                ty_id
+            } else {
+                table.intern(Ty::Applied {
+                    base,
+                    args: new_args,
+                })
+            }
         }
 
         Ty::Future { inner } => {
             let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner { ty_id } else { table.intern(Ty::Future { inner: new_inner }) }
+            if new_inner == inner {
+                ty_id
+            } else {
+                table.intern(Ty::Future { inner: new_inner })
+            }
         }
 
         Ty::Channel { inner } => {
             let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner { ty_id } else { table.intern(Ty::Channel { inner: new_inner }) }
+            if new_inner == inner {
+                ty_id
+            } else {
+                table.intern(Ty::Channel { inner: new_inner })
+            }
         }
 
-        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::String | Ty::Byte
-        | Ty::CPtr | Ty::Void | Ty::Null | Ty::Never | Ty::Struct(_) | Ty::Enum(_)
-        | Ty::AsyncState { .. } | Ty::Error => ty_id,
+        Ty::Int(_)
+        | Ty::Float(_)
+        | Ty::Bool
+        | Ty::Char
+        | Ty::String
+        | Ty::Byte
+        | Ty::CPtr
+        | Ty::Void
+        | Ty::Null
+        | Ty::Never
+        | Ty::Struct(_)
+        | Ty::Enum(_)
+        | Ty::AsyncState { .. }
+        | Ty::Error => ty_id,
     }
 }
 
@@ -356,7 +450,12 @@ fn unify(declared: TypeId, actual: TypeId, subst: &mut SubstMap, table: &TypeTab
             }
         }
         Ty::Function { params, ret, .. } => {
-            if let Ty::Function { params: ap, ret: ar, .. } = table.resolve(actual) {
+            if let Ty::Function {
+                params: ap,
+                ret: ar,
+                ..
+            } = table.resolve(actual)
+            {
                 for (p, ap_item) in params.iter().zip(ap.iter()) {
                     unify(*p, *ap_item, subst, table);
                 }
@@ -373,12 +472,18 @@ fn unify(declared: TypeId, actual: TypeId, subst: &mut SubstMap, table: &TypeTab
             }
         }
         Ty::Future { inner } => {
-            if let Ty::Future { inner: actual_inner } = table.resolve(actual) {
+            if let Ty::Future {
+                inner: actual_inner,
+            } = table.resolve(actual)
+            {
                 unify(*inner, *actual_inner, subst, table);
             }
         }
         Ty::Channel { inner } => {
-            if let Ty::Channel { inner: actual_inner } = table.resolve(actual) {
+            if let Ty::Channel {
+                inner: actual_inner,
+            } = table.resolve(actual)
+            {
                 unify(*inner, *actual_inner, subst, table);
             }
         }
@@ -491,12 +596,7 @@ mod tests {
         let param_def = DefId::new(100);
         let param_ty = table.intern(Ty::Param(param_def));
 
-        let result = infer_type_args(
-            &[param_def],
-            &[param_ty],
-            &[builtins.int],
-            &table,
-        );
+        let result = infer_type_args(&[param_def], &[param_ty], &[builtins.int], &table);
         assert!(result.is_some());
         let subst = result.unwrap();
         assert_eq!(subst[&param_def], builtins.int);
@@ -511,12 +611,7 @@ mod tests {
         let list_of_param = table.intern(Ty::List(param_ty));
         let list_of_string = table.intern(Ty::List(builtins.string));
 
-        let result = infer_type_args(
-            &[param_def],
-            &[list_of_param],
-            &[list_of_string],
-            &table,
-        );
+        let result = infer_type_args(&[param_def], &[list_of_param], &[list_of_string], &table);
         assert!(result.is_some());
         let subst = result.unwrap();
         assert_eq!(subst[&param_def], builtins.string);
@@ -531,12 +626,7 @@ mod tests {
         let param_a_ty = table.intern(Ty::Param(param_a));
 
         // Only param_a appears in the declared types, param_b cannot be inferred
-        let result = infer_type_args(
-            &[param_a, param_b],
-            &[param_a_ty],
-            &[builtins.int],
-            &table,
-        );
+        let result = infer_type_args(&[param_a, param_b], &[param_a_ty], &[builtins.int], &table);
         assert!(result.is_none());
     }
 }

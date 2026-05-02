@@ -38,9 +38,9 @@ pub mod lower_function;
 pub mod lower_pattern;
 pub mod lower_stmt;
 pub mod mir;
-pub mod validate;
 pub mod monomorphize;
 pub mod pretty;
+pub mod validate;
 
 use spark_diagnostics::Diagnostics;
 use spark_hir::Hir;
@@ -96,12 +96,8 @@ pub fn lower(input: MirInput) -> MirOutput {
         let mut mir_builder = builder::MirBuilder::new(&table);
 
         for (def_id, hir_fn) in &hir.functions {
-            let mir_fn = lower_function::lower_function(
-                hir_fn,
-                &mut mir_builder,
-                &table,
-                &definitions,
-            );
+            let mir_fn =
+                lower_function::lower_function(hir_fn, &mut mir_builder, &table, &definitions);
             functions.insert(*def_id, mir_fn);
         }
 
@@ -124,8 +120,8 @@ pub fn lower(input: MirInput) -> MirOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use spark_modules::ModuleGraph;
+    use std::collections::HashMap;
 
     /// Builds a module graph for a single file's AST.
     fn make_graph(file_id: spark_span::FileId, ast: &spark_ast::Ast) -> ModuleGraph {
@@ -309,7 +305,8 @@ mod tests {
 
     #[test]
     fn lower_function_call() {
-        let output = lower_source("fn id(x: Int): Int { return x }\nfn main(): Int { return id(42) }");
+        let output =
+            lower_source("fn id(x: Int): Int { return x }\nfn main(): Int { return id(42) }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -388,7 +385,9 @@ mod tests {
 
     #[test]
     fn lower_multiple_functions() {
-        let output = lower_source("fn a(): Int { return 1 }\nfn b(): Int { return 2 }\nfn c(): Int { return 3 }");
+        let output = lower_source(
+            "fn a(): Int { return 1 }\nfn b(): Int { return 2 }\nfn c(): Int { return 3 }",
+        );
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
@@ -481,12 +480,19 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         let func = output.mir.functions.values().next().unwrap();
         let pp = pretty_function(func);
         // Should contain a switch (from match desugaring) and the literal 0
-        assert!(pp.contains("switch") || pp.contains("goto"), "Expected branch in MIR:\n{pp}");
+        assert!(
+            pp.contains("switch") || pp.contains("goto"),
+            "Expected branch in MIR:\n{pp}"
+        );
     }
 
     #[test]
@@ -497,7 +503,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         assert_eq!(output.mir.functions.len(), 1);
     }
@@ -508,7 +518,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         let func = output.mir.functions.values().next().unwrap();
         let pp = pretty_function(func);
@@ -522,7 +536,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         assert_eq!(output.mir.functions.len(), 1);
     }
@@ -531,52 +549,73 @@ mod tests {
 
     #[test]
     fn is_union_member() {
-        let output = lower_source(
-            "fn check(x: Int | String): Bool { return x is Int }",
-        );
+        let output = lower_source("fn check(x: Int | String): Bool { return x is Int }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         let func = output.mir.functions.values().next().unwrap();
         let pp = pretty_function(func);
-        assert!(pp.contains("discriminant"), "Expected discriminant check in MIR:\n{pp}");
+        assert!(
+            pp.contains("discriminant"),
+            "Expected discriminant check in MIR:\n{pp}"
+        );
         assert!(pp.contains("switchInt"), "Expected switchInt in MIR:\n{pp}");
-        assert!(pp.contains("const true"), "Expected const true branch in MIR:\n{pp}");
-        assert!(pp.contains("const false"), "Expected const false branch in MIR:\n{pp}");
+        assert!(
+            pp.contains("const true"),
+            "Expected const true branch in MIR:\n{pp}"
+        );
+        assert!(
+            pp.contains("const false"),
+            "Expected const false branch in MIR:\n{pp}"
+        );
     }
 
     #[test]
     fn is_optional_null() {
-        let output = lower_source(
-            "fn check(x: Int?): Bool { return x is Null }",
-        );
+        let output = lower_source("fn check(x: Int?): Bool { return x is Null }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         let func = output.mir.functions.values().next().unwrap();
         let pp = pretty_function(func);
-        assert!(pp.contains("discriminant"), "Expected discriminant check in MIR:\n{pp}");
+        assert!(
+            pp.contains("discriminant"),
+            "Expected discriminant check in MIR:\n{pp}"
+        );
         assert!(pp.contains("switchInt"), "Expected switchInt in MIR:\n{pp}");
     }
 
     #[test]
     fn is_primitive_same_type() {
-        let output = lower_source(
-            "fn check(x: Int): Bool { return x is Int }",
-        );
+        let output = lower_source("fn check(x: Int): Bool { return x is Int }");
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         let func = output.mir.functions.values().next().unwrap();
         let pp = pretty_function(func);
         // Same type known at compile time — should emit `const true`
-        assert!(pp.contains("const true"), "Expected const true for same-type is check:\n{pp}");
+        assert!(
+            pp.contains("const true"),
+            "Expected const true for same-type is check:\n{pp}"
+        );
     }
 
     #[test]
@@ -591,7 +630,9 @@ mod tests {
             let pp = pretty_function(func);
             // Should contain either discriminant check or const bool
             assert!(
-                pp.contains("discriminant") || pp.contains("const true") || pp.contains("const false"),
+                pp.contains("discriminant")
+                    || pp.contains("const true")
+                    || pp.contains("const false"),
                 "Expected discriminant or const bool in MIR:\n{pp}"
             );
         }
@@ -600,15 +641,16 @@ mod tests {
     #[test]
     fn is_error_recovery() {
         // Use an undefined type to trigger an error type — lowering should not panic
-        let output = lower_source(
-            "fn check(x: Int): Bool { return x is Undefined }",
-        );
+        let output = lower_source("fn check(x: Int): Bool { return x is Undefined }");
         // Should have errors but not panic
         let func = output.mir.functions.values().next();
         if let Some(func) = func {
             let pp = pretty_function(func);
             // Error type should result in const false
-            assert!(pp.contains("const false"), "Expected const false for error type:\n{pp}");
+            assert!(
+                pp.contains("const false"),
+                "Expected const false for error type:\n{pp}"
+            );
         }
     }
 }

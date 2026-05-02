@@ -3,8 +3,7 @@
 use std::fmt::{self, Write as _};
 
 use crate::mir::{
-    AggregateKind, BasicBlock, Constant, Local, MirFunction, Operand, Rvalue, Statement,
-    Terminator,
+    AggregateKind, BasicBlock, Constant, Local, MirFunction, Operand, Rvalue, Statement, Terminator,
 };
 
 /// Pretty-prints a [`MirFunction`] into a human-readable string.
@@ -89,9 +88,7 @@ impl PrettyPrinter<'_> {
 
     fn print_statement(&mut self, stmt: &Statement) {
         match stmt {
-            Statement::Assign {
-                place, rvalue, ..
-            } => {
+            Statement::Assign { place, rvalue, .. } => {
                 let _ = write!(self.out, "{place} = ");
                 self.print_rvalue(rvalue);
             }
@@ -127,81 +124,82 @@ impl PrettyPrinter<'_> {
                     let _ = write!(self.out, "&{place}");
                 }
             }
-            Rvalue::Aggregate(kind, ops) => {
-                match kind {
-                    AggregateKind::Struct { def_id, fields } => {
-                        let _ = write!(self.out, "Struct(def{}", def_id.as_u32());
-                        for (field, op) in fields.iter().zip(ops) {
-                            let _ = write!(self.out, ", {}: ", field.as_str());
-                            self.print_operand(op);
-                        }
-                        self.out.push(')');
+            Rvalue::Aggregate(kind, ops) => match kind {
+                AggregateKind::Struct { def_id, fields } => {
+                    let _ = write!(self.out, "Struct(def{}", def_id.as_u32());
+                    for (field, op) in fields.iter().zip(ops) {
+                        let _ = write!(self.out, ", {}: ", field.as_str());
+                        self.print_operand(op);
                     }
-                    AggregateKind::EnumVariant { def_id, variant } => {
-                        let _ = write!(
-                            self.out,
-                            "Variant(def{}, {}",
-                            def_id.as_u32(),
-                            variant.as_str()
-                        );
-                        for op in ops {
-                            self.out.push_str(", ");
-                            self.print_operand(op);
-                        }
-                        self.out.push(')');
-                    }
-                    AggregateKind::Tuple => {
-                        self.out.push('(');
-                        self.print_operand_list(ops);
-                        self.out.push(')');
-                    }
-                    AggregateKind::List => {
-                        self.out.push('[');
-                        self.print_operand_list(ops);
-                        self.out.push(']');
-                    }
-                    AggregateKind::Set => {
-                        self.out.push_str("Set{");
-                        self.print_operand_list(ops);
-                        self.out.push('}');
-                    }
-                    AggregateKind::Map => {
-                        self.out.push_str("Map{");
-                        for (i, pair) in ops.chunks(2).enumerate() {
-                            if i > 0 {
-                                self.out.push_str(", ");
-                            }
-                            if pair.len() == 2 {
-                                self.print_operand(&pair[0]);
-                                self.out.push_str(": ");
-                                self.print_operand(&pair[1]);
-                            }
-                        }
-                        self.out.push('}');
-                    }
-                    AggregateKind::Closure { func_def_id } => {
-                        let _ = write!(self.out, "Closure(def{}", func_def_id.as_u32());
-                        for op in ops {
-                            self.out.push_str(", ");
-                            self.print_operand(op);
-                        }
-                        self.out.push(')');
-                    }
-                    AggregateKind::Union { union_ty, member_ty } => {
-                        let _ = write!(
-                            self.out,
-                            "Union(ty{}, member ty{}, ",
-                            union_ty.as_u32(),
-                            member_ty.as_u32()
-                        );
-                        self.print_operand_list(ops);
-                        self.out.push(')');
-                    }
-                    AggregateKind::Channel => {
-                        self.out.push_str("Channel()");
-                    }
+                    self.out.push(')');
                 }
-            }
+                AggregateKind::EnumVariant { def_id, variant } => {
+                    let _ = write!(
+                        self.out,
+                        "Variant(def{}, {}",
+                        def_id.as_u32(),
+                        variant.as_str()
+                    );
+                    for op in ops {
+                        self.out.push_str(", ");
+                        self.print_operand(op);
+                    }
+                    self.out.push(')');
+                }
+                AggregateKind::Tuple => {
+                    self.out.push('(');
+                    self.print_operand_list(ops);
+                    self.out.push(')');
+                }
+                AggregateKind::List => {
+                    self.out.push('[');
+                    self.print_operand_list(ops);
+                    self.out.push(']');
+                }
+                AggregateKind::Set => {
+                    self.out.push_str("Set{");
+                    self.print_operand_list(ops);
+                    self.out.push('}');
+                }
+                AggregateKind::Map => {
+                    self.out.push_str("Map{");
+                    for (i, pair) in ops.chunks(2).enumerate() {
+                        if i > 0 {
+                            self.out.push_str(", ");
+                        }
+                        if pair.len() == 2 {
+                            self.print_operand(&pair[0]);
+                            self.out.push_str(": ");
+                            self.print_operand(&pair[1]);
+                        }
+                    }
+                    self.out.push('}');
+                }
+                AggregateKind::Closure { func_def_id } => {
+                    let _ = write!(self.out, "Closure(def{}", func_def_id.as_u32());
+                    for op in ops {
+                        self.out.push_str(", ");
+                        self.print_operand(op);
+                    }
+                    self.out.push(')');
+                }
+                AggregateKind::Union {
+                    union_ty,
+                    member_ty,
+                } => {
+                    let _ = write!(
+                        self.out,
+                        "Union(ty{}, member ty{}, ",
+                        union_ty.as_u32(),
+                        member_ty.as_u32()
+                    );
+                    self.print_operand_list(ops);
+                    self.out.push(')');
+                }
+                AggregateKind::Channel => {
+                    self.out.push_str("Channel()");
+                }
+            },
             Rvalue::Discriminant(place) => {
                 let _ = write!(self.out, "discriminant({place})");
             }
@@ -214,7 +212,12 @@ impl PrettyPrinter<'_> {
                 self.print_operand_list(ops);
                 self.out.push(')');
             }
-            Rvalue::ListRange { start, end, inclusive, step } => {
+            Rvalue::ListRange {
+                start,
+                end,
+                inclusive,
+                step,
+            } => {
                 self.out.push_str("ListRange(");
                 self.print_operand(start);
                 if *inclusive {
@@ -227,7 +230,12 @@ impl PrettyPrinter<'_> {
                 self.print_operand(step);
                 self.out.push(')');
             }
-            Rvalue::RangeLen { start, end, inclusive, step } => {
+            Rvalue::RangeLen {
+                start,
+                end,
+                inclusive,
+                step,
+            } => {
                 self.out.push_str("RangeLen(");
                 self.print_operand(start);
                 if *inclusive {

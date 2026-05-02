@@ -9,9 +9,7 @@ use spark_types::TypeTable;
 
 use crate::builder::{FunctionBuilder, MirBuilder};
 use crate::lower_expr::lower_expr;
-use crate::mir::{
-    Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator,
-};
+use crate::mir::{Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator};
 
 /// Lowers a single HIR function into a MIR function.
 pub fn lower_function(
@@ -20,9 +18,8 @@ pub fn lower_function(
     type_table: &TypeTable,
     defs: &DefinitionTable,
 ) -> MirFunction {
-    let mut fb = FunctionBuilder::new_with_async(hir_fn.def_id, hir_fn.ret_type, hir_fn.is_async, hir_fn.span);
+    let mut fb = FunctionBuilder::new_with_async(hir_fn.def_id, hir_fn.ret_type, hir_fn.span);
 
-    // Allocate parameter locals
     for param in &hir_fn.params {
         let local = alloc_param(&mut fb, param, defs);
         fb.register_def(param.def_id, local);
@@ -66,7 +63,12 @@ pub fn lower_function(
         fb.terminate(Terminator::Return);
     }
 
-    fb.finish_with_captures(param_count, hir_fn.span, hir_fn.captures.clone(), hir_fn.is_async)
+    fb.finish_with_captures(
+        param_count,
+        hir_fn.span,
+        hir_fn.captures.clone(),
+        hir_fn.is_async,
+    )
 }
 
 /// Allocates a local for a function parameter.

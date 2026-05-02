@@ -299,9 +299,7 @@ mod tests {
                         },
                         Statement::Nop,
                     ],
-                    terminator: Terminator::Goto {
-                        target: BlockId(1),
-                    },
+                    terminator: Terminator::Goto { target: BlockId(1) },
                     is_cleanup: false,
                 },
                 BasicBlock {

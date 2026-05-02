@@ -82,12 +82,12 @@ impl FunctionBuilder {
     /// Creates a new function builder with a return place and entry block.
     #[must_use]
     pub fn new(def_id: DefId, return_type: TypeId, span: Span) -> Self {
-        Self::new_with_async(def_id, return_type, false, span)
+        Self::new_with_async(def_id, return_type, span)
     }
 
     /// Creates a new function builder, specifying whether this is an async function.
     #[must_use]
-    pub fn new_with_async(def_id: DefId, return_type: TypeId, _is_async: bool, span: Span) -> Self {
+    pub fn new_with_async(def_id: DefId, return_type: TypeId, span: Span) -> Self {
         let mut builder = Self {
             def_id,
             return_type,
@@ -134,13 +134,7 @@ impl FunctionBuilder {
     }
 
     /// Allocates a named local for a user variable (binding or parameter).
-    pub fn fresh_local(
-        &mut self,
-        ty: TypeId,
-        name: Symbol,
-        mutable: bool,
-        span: Span,
-    ) -> Local {
+    pub fn fresh_local(&mut self, ty: TypeId, name: Symbol, mutable: bool, span: Span) -> Local {
         self.alloc_local(ty, Some(name), true, mutable, span)
     }
 
@@ -301,9 +295,7 @@ impl FunctionBuilder {
 
     /// Emits drops for scopes above the current loop (for `break`/`continue`).
     pub fn drops_to_loop(&mut self, exclude: Option<Local>, span: Span) {
-        let loop_depth = self
-            .current_loop()
-            .map_or(0, |ctx| ctx.scope_depth);
+        let loop_depth = self.current_loop().map_or(0, |ctx| ctx.scope_depth);
 
         // Drop locals from scopes at indices >= loop_depth (innermost first).
         let mut locals_to_drop: Vec<Local> = Vec::new();
@@ -335,7 +327,7 @@ impl FunctionBuilder {
     }
 
     /// Finishes building and produces a [`MirFunction`] with capture metadata.
-    #[must_use] 
+    #[must_use]
     pub fn finish_with_captures(
         self,
         param_count: u32,

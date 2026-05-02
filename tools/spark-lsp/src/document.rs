@@ -176,9 +176,10 @@ pub fn diagnostic_to_lsp(
     lsp_types::Diagnostic {
         range,
         severity,
-        code: diag.code.as_ref().map(|c| {
-            lsp_types::NumberOrString::String(c.as_str().to_string())
-        }),
+        code: diag
+            .code
+            .as_ref()
+            .map(|c| lsp_types::NumberOrString::String(c.as_str().to_string())),
         source: Some("spark".to_string()),
         message: diag.message.clone(),
         related_information: if related_information.is_empty() {
@@ -223,7 +224,10 @@ mod tests {
         // Start of first line
         let off = position_to_offset(
             &rope,
-            lsp_types::Position { line: 0, character: 0 },
+            lsp_types::Position {
+                line: 0,
+                character: 0,
+            },
         )
         .unwrap();
         assert_eq!(off, 0);
@@ -231,7 +235,10 @@ mod tests {
         // Middle of first line
         let off = position_to_offset(
             &rope,
-            lsp_types::Position { line: 0, character: 3 },
+            lsp_types::Position {
+                line: 0,
+                character: 3,
+            },
         )
         .unwrap();
         assert_eq!(off, 3);
@@ -239,7 +246,10 @@ mod tests {
         // Start of second line
         let off = position_to_offset(
             &rope,
-            lsp_types::Position { line: 1, character: 0 },
+            lsp_types::Position {
+                line: 1,
+                character: 0,
+            },
         )
         .unwrap();
         assert_eq!(off, 6);
@@ -250,7 +260,10 @@ mod tests {
         let rope = Rope::from_str("hi");
         assert!(position_to_offset(
             &rope,
-            lsp_types::Position { line: 5, character: 0 },
+            lsp_types::Position {
+                line: 5,
+                character: 0
+            },
         )
         .is_none());
     }

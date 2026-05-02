@@ -176,10 +176,7 @@ mod tests {
     }
 
     /// Helper: registers a function definition.
-    fn register_fn(
-        definitions: &mut DefinitionTable,
-        name: &str,
-    ) -> DefId {
+    fn register_fn(definitions: &mut DefinitionTable, name: &str) -> DefId {
         definitions.insert(DefinitionInfo::new(
             DefinitionKind::Function,
             spark_intern::sym(name),
@@ -561,9 +558,30 @@ mod tests {
             param_count: 1,
             return_type: i64_ty,
             locals: vec![
-                LocalDecl { local: Local(0), ty: i64_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: i64_ty, name: Some(spark_intern::sym("x")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(2), ty: bool_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: i64_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: i64_ty,
+                    name: Some(spark_intern::sym("x")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(2),
+                    ty: bool_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![
                 // bb0: compare and branch
@@ -688,9 +706,30 @@ mod tests {
             param_count: 2,
             return_type: f64_ty,
             locals: vec![
-                LocalDecl { local: Local(0), ty: f64_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: f64_ty, name: Some(spark_intern::sym("a")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(2), ty: f64_ty, name: Some(spark_intern::sym("b")), is_user_variable: true, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: f64_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: f64_ty,
+                    name: Some(spark_intern::sym("a")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(2),
+                    ty: f64_ty,
+                    name: Some(spark_intern::sym("b")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![Statement::Assign {
@@ -739,10 +778,38 @@ mod tests {
             param_count: 0,
             return_type: i64_ty,
             locals: vec![
-                LocalDecl { local: Local(0), ty: i64_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: i64_ty, name: Some(spark_intern::sym("a")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(2), ty: i64_ty, name: Some(spark_intern::sym("b")), is_user_variable: true, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(3), ty: i64_ty, name: Some(spark_intern::sym("c")), is_user_variable: true, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: i64_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: i64_ty,
+                    name: Some(spark_intern::sym("a")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(2),
+                    ty: i64_ty,
+                    name: Some(spark_intern::sym("b")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(3),
+                    ty: i64_ty,
+                    name: Some(spark_intern::sym("c")),
+                    is_user_variable: true,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![
@@ -802,8 +869,22 @@ mod tests {
             param_count: 0,
             return_type: i64_ty,
             locals: vec![
-                LocalDecl { local: Local(0), ty: i64_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
-                LocalDecl { local: Local(1), ty: i64_ty, name: None, is_user_variable: false, mutable: false, span: Span::DUMMY },
+                LocalDecl {
+                    local: Local(0),
+                    ty: i64_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
+                LocalDecl {
+                    local: Local(1),
+                    ty: i64_ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                },
             ],
             blocks: vec![BasicBlock {
                 statements: vec![

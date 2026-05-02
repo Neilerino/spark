@@ -68,17 +68,28 @@ fn validate_block(
     for (stmt_idx, stmt) in block.statements.iter().enumerate() {
         match stmt {
             Statement::Assign { place, rvalue, .. } => {
-                check_place(place, num_locals, func_id, block_id, stmt_idx, "dest", errors);
+                check_place(
+                    place, num_locals, func_id, block_id, stmt_idx, "dest", errors,
+                );
                 check_rvalue(rvalue, num_locals, func_id, block_id, stmt_idx, errors);
             }
             Statement::Drop { place, .. } => {
-                check_place(place, num_locals, func_id, block_id, stmt_idx, "drop", errors);
+                check_place(
+                    place, num_locals, func_id, block_id, stmt_idx, "drop", errors,
+                );
             }
             Statement::Nop => {}
         }
     }
 
-    check_terminator(&block.terminator, num_locals, num_blocks, func_id, block_id, errors);
+    check_terminator(
+        &block.terminator,
+        num_locals,
+        num_blocks,
+        func_id,
+        block_id,
+        errors,
+    );
 }
 
 /// Checks that all locals referenced in a place are in bounds.
@@ -142,14 +153,34 @@ fn check_rvalue(
 ) {
     match rvalue {
         Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast { operand: op, .. } => {
-            check_operand(op, num_locals, func_id, block_id, stmt_idx, "rvalue", errors);
+            check_operand(
+                op, num_locals, func_id, block_id, stmt_idx, "rvalue", errors,
+            );
         }
         Rvalue::BinaryOp(_, lhs, rhs) => {
-            check_operand(lhs, num_locals, func_id, block_id, stmt_idx, "binop.lhs", errors);
-            check_operand(rhs, num_locals, func_id, block_id, stmt_idx, "binop.rhs", errors);
+            check_operand(
+                lhs,
+                num_locals,
+                func_id,
+                block_id,
+                stmt_idx,
+                "binop.lhs",
+                errors,
+            );
+            check_operand(
+                rhs,
+                num_locals,
+                func_id,
+                block_id,
+                stmt_idx,
+                "binop.rhs",
+                errors,
+            );
         }
         Rvalue::Ref { place, .. } => {
-            check_place(place, num_locals, func_id, block_id, stmt_idx, "ref", errors);
+            check_place(
+                place, num_locals, func_id, block_id, stmt_idx, "ref", errors,
+            );
         }
         Rvalue::Aggregate(kind, operands) => {
             for (i, op) in operands.iter().enumerate() {
@@ -159,21 +190,70 @@ fn check_rvalue(
             check_aggregate_kind(kind, operands.len(), func_id, block_id, stmt_idx, errors);
         }
         Rvalue::Discriminant(place) => {
-            check_place(place, num_locals, func_id, block_id, stmt_idx, "discrim", errors);
+            check_place(
+                place, num_locals, func_id, block_id, stmt_idx, "discrim", errors,
+            );
         }
         Rvalue::StringInterp(operands) => {
             for op in operands {
-                check_operand(op, num_locals, func_id, block_id, stmt_idx, "interp", errors);
+                check_operand(
+                    op, num_locals, func_id, block_id, stmt_idx, "interp", errors,
+                );
             }
         }
-        Rvalue::ListRange { start, end, step, .. } | Rvalue::RangeLen { start, end, step, .. } => {
-            check_operand(start, num_locals, func_id, block_id, stmt_idx, "range.start", errors);
-            check_operand(end, num_locals, func_id, block_id, stmt_idx, "range.end", errors);
-            check_operand(step, num_locals, func_id, block_id, stmt_idx, "range.step", errors);
+        Rvalue::ListRange {
+            start, end, step, ..
+        }
+        | Rvalue::RangeLen {
+            start, end, step, ..
+        } => {
+            check_operand(
+                start,
+                num_locals,
+                func_id,
+                block_id,
+                stmt_idx,
+                "range.start",
+                errors,
+            );
+            check_operand(
+                end,
+                num_locals,
+                func_id,
+                block_id,
+                stmt_idx,
+                "range.end",
+                errors,
+            );
+            check_operand(
+                step,
+                num_locals,
+                func_id,
+                block_id,
+                stmt_idx,
+                "range.step",
+                errors,
+            );
         }
         Rvalue::MapGetOptional { map, key, .. } => {
-            check_operand(map, num_locals, func_id, block_id, stmt_idx, "map_get.map", errors);
-            check_operand(key, num_locals, func_id, block_id, stmt_idx, "map_get.key", errors);
+            check_operand(
+                map,
+                num_locals,
+                func_id,
+                block_id,
+                stmt_idx,
+                "map_get.map",
+                errors,
+            );
+            check_operand(
+                key,
+                num_locals,
+                func_id,
+                block_id,
+                stmt_idx,
+                "map_get.key",
+                errors,
+            );
         }
     }
 }
@@ -251,7 +331,15 @@ fn check_terminator(
             targets,
             otherwise,
         } => {
-            check_operand(discriminant, num_locals, func_id, block_id, stmt_idx, "switch", errors);
+            check_operand(
+                discriminant,
+                num_locals,
+                func_id,
+                block_id,
+                stmt_idx,
+                "switch",
+                errors,
+            );
             for (_, target) in targets {
                 check_block_ref(*target, num_blocks, func_id, block_id, errors);
             }
@@ -264,18 +352,42 @@ fn check_terminator(
             target,
             ..
         } => {
-            check_operand(func, num_locals, func_id, block_id, stmt_idx, "call.func", errors);
+            check_operand(
+                func,
+                num_locals,
+                func_id,
+                block_id,
+                stmt_idx,
+                "call.func",
+                errors,
+            );
             for arg in args {
-                check_operand(arg, num_locals, func_id, block_id, stmt_idx, "call.arg", errors);
+                check_operand(
+                    arg, num_locals, func_id, block_id, stmt_idx, "call.arg", errors,
+                );
             }
-            check_place(destination, num_locals, func_id, block_id, stmt_idx, "call.dest", errors);
+            check_place(
+                destination,
+                num_locals,
+                func_id,
+                block_id,
+                stmt_idx,
+                "call.dest",
+                errors,
+            );
             check_block_ref(*target, num_blocks, func_id, block_id, errors);
         }
     }
 }
 
 /// Checks that a block ID is within the function's block list.
-fn check_block_ref(id: BlockId, num_blocks: usize, func_id: u32, block_id: BlockId, errors: &mut Vec<String>) {
+fn check_block_ref(
+    id: BlockId,
+    num_blocks: usize,
+    func_id: u32,
+    block_id: BlockId,
+    errors: &mut Vec<String>,
+) {
     if id.index() >= num_blocks {
         errors.push(format!(
             "DefId({func_id})/{block_id}: references {id} but function only has {num_blocks} blocks"
@@ -441,7 +553,10 @@ mod tests {
             functions: std::iter::once((DefId::new(0), func)).collect(),
         };
         let errors = validate(&mir);
-        assert!(!errors.is_empty(), "should detect wrong union operand count");
+        assert!(
+            !errors.is_empty(),
+            "should detect wrong union operand count"
+        );
         assert!(errors[0].contains("exactly 1 operand"));
     }
 }

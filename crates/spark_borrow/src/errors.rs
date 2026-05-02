@@ -81,8 +81,9 @@ pub fn emit_mutation_through_immutable_ref(
     let span = span_for_point(assign_point, func);
 
     diagnostics.push(
-        Diagnostic::error("cannot assign through an immutable reference")
-            .with_label(Label::primary(span, "assignment through immutable reference")),
+        Diagnostic::error("cannot assign through an immutable reference").with_label(
+            Label::primary(span, "assignment through immutable reference"),
+        ),
     );
 }
 
@@ -140,8 +141,9 @@ fn span_for_point(point: Point, func: &MirFunction) -> Span {
 
     if stmt_idx < block.statements.len() {
         match &block.statements[stmt_idx] {
-            spark_mir::Statement::Assign { span, .. }
-            | spark_mir::Statement::Drop { span, .. } => *span,
+            spark_mir::Statement::Assign { span, .. } | spark_mir::Statement::Drop { span, .. } => {
+                *span
+            }
             spark_mir::Statement::Nop => func.span,
         }
     } else {

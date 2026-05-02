@@ -113,9 +113,9 @@ impl CraneliftBackend {
 
         for (def_id, mir_func) in &mir.functions {
             let name = function_name(*def_id, definitions);
-            let is_lambda = definitions.get(*def_id).is_some_and(|info| {
-                matches!(info.kind, spark_resolve::DefinitionKind::Lambda)
-            });
+            let is_lambda = definitions
+                .get(*def_id)
+                .is_some_and(|info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
 
             // Build signature from parameter types and return type.
             let param_types: Vec<_> = mir_func.locals[1..=mir_func.param_count as usize]
@@ -186,9 +186,9 @@ impl CraneliftBackend {
             .functions
             .iter()
             .filter(|(def_id, _)| {
-                definitions.get(**def_id).is_some_and(|info| {
-                    !matches!(info.kind, spark_resolve::DefinitionKind::Lambda)
-                })
+                definitions
+                    .get(**def_id)
+                    .is_some_and(|info| !matches!(info.kind, spark_resolve::DefinitionKind::Lambda))
             })
             .map(|(def_id, mir_func)| (*def_id, mir_func.clone()))
             .collect();
@@ -698,13 +698,7 @@ impl CraneliftBackend {
 
             // Emit statements.
             for stmt in &mir_block.statements {
-                emit_stmt::emit_statement(
-                    &mut fctx,
-                    stmt,
-                    &ecx,
-                    &mut self.module,
-                    diagnostics,
-                );
+                emit_stmt::emit_statement(&mut fctx, stmt, &ecx, &mut self.module, diagnostics);
             }
 
             // Emit terminator.

@@ -161,9 +161,7 @@ pub fn walk_expr<V: HirVisitor>(v: &mut V, expr: &HirExpr) {
                 v.visit_expr(f);
             }
         }
-        HirExprKind::ListLit(elems)
-        | HirExprKind::SetLit(elems)
-        | HirExprKind::TupleLit(elems) => {
+        HirExprKind::ListLit(elems) | HirExprKind::SetLit(elems) | HirExprKind::TupleLit(elems) => {
             for e in elems {
                 v.visit_expr(e);
             }
@@ -430,9 +428,7 @@ pub fn walk_expr_mut<V: HirMutVisitor>(v: &mut V, expr: &mut HirExpr) {
                 v.visit_expr_mut(f);
             }
         }
-        HirExprKind::ListLit(elems)
-        | HirExprKind::SetLit(elems)
-        | HirExprKind::TupleLit(elems) => {
+        HirExprKind::ListLit(elems) | HirExprKind::SetLit(elems) | HirExprKind::TupleLit(elems) => {
             for e in elems {
                 v.visit_expr_mut(e);
             }
@@ -624,10 +620,7 @@ mod tests {
     fn visitor_walks_block_stmts() {
         let expr = HirExpr::new(
             HirExprKind::Block {
-                stmts: vec![
-                    HirStmt::Expr(int_expr(1)),
-                    HirStmt::Expr(int_expr(2)),
-                ],
+                stmts: vec![HirStmt::Expr(int_expr(1)), HirStmt::Expr(int_expr(2))],
                 expr: Some(Box::new(int_expr(3))),
             },
             TypeId::ERROR,
@@ -758,8 +751,14 @@ mod tests {
 
         match &expr.kind {
             HirExprKind::BinaryOp { lhs, rhs, .. } => {
-                assert!(matches!(&lhs.kind, HirExprKind::Literal(HirLiteral::Int(0))));
-                assert!(matches!(&rhs.kind, HirExprKind::Literal(HirLiteral::Int(0))));
+                assert!(matches!(
+                    &lhs.kind,
+                    HirExprKind::Literal(HirLiteral::Int(0))
+                ));
+                assert!(matches!(
+                    &rhs.kind,
+                    HirExprKind::Literal(HirLiteral::Int(0))
+                ));
             }
             other => panic!("Expected BinaryOp, got: {other:?}"),
         }
@@ -779,10 +778,7 @@ mod tests {
 
         let mut expr = HirExpr::new(
             HirExprKind::Block {
-                stmts: vec![
-                    HirStmt::Expr(int_expr(1)),
-                    HirStmt::Expr(int_expr(2)),
-                ],
+                stmts: vec![HirStmt::Expr(int_expr(1)), HirStmt::Expr(int_expr(2))],
                 expr: None,
             },
             TypeId::ERROR,

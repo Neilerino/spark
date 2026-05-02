@@ -70,14 +70,11 @@ fn collect_spark_files(
     dep_name: &str,
     out: &mut Vec<ResolvedSource>,
 ) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| {
-        format!("could not read directory `{}`: {e}", dir.display())
-    })?;
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("could not read directory `{}`: {e}", dir.display()))?;
 
     for entry in entries {
-        let entry = entry.map_err(|e| {
-            format!("could not read directory entry: {e}")
-        })?;
+        let entry = entry.map_err(|e| format!("could not read directory entry: {e}"))?;
         let path = entry.path();
 
         if path.is_dir() {
@@ -86,9 +83,8 @@ fn collect_spark_files(
             let relative = path.strip_prefix(dep_root).unwrap_or(&path);
             // Prefix with the dependency name so module paths are namespaced.
             let module_path = PathBuf::from(dep_name).join(relative);
-            let source = std::fs::read_to_string(&path).map_err(|e| {
-                format!("could not read `{}`: {e}", path.display())
-            })?;
+            let source = std::fs::read_to_string(&path)
+                .map_err(|e| format!("could not read `{}`: {e}", path.display()))?;
             out.push(ResolvedSource {
                 module_path,
                 absolute_path: path,

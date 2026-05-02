@@ -117,7 +117,12 @@ pub fn lower(mut input: HirInput) -> HirOutput {
     let (mut hir, mut diagnostics) = lowerer.lower_all();
 
     // Lambda lifting: extract non-capturing lambdas into top-level functions.
-    lambda_lift::lift_lambdas(&mut hir, &mut input.definitions, &mut input.table, &mut diagnostics);
+    lambda_lift::lift_lambdas(
+        &mut hir,
+        &mut input.definitions,
+        &mut input.table,
+        &mut diagnostics,
+    );
 
     HirOutput {
         hir,
@@ -130,8 +135,8 @@ pub fn lower(mut input: HirInput) -> HirOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use spark_modules::ModuleGraph;
+    use std::collections::HashMap;
 
     #[test]
     fn empty_input() {
@@ -217,7 +222,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         assert_eq!(output.hir.functions.len(), 1);
     }
@@ -228,7 +237,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         assert_eq!(output.hir.functions.len(), 1);
     }
@@ -239,7 +252,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         assert_eq!(output.hir.statics.len(), 1);
     }
@@ -250,7 +267,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -262,7 +283,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -272,7 +297,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -282,7 +311,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         assert_eq!(output.hir.functions.len(), 2);
     }
@@ -293,10 +326,15 @@ mod tests {
     fn find_match(expr: &HirExpr) -> Option<&[HirMatchArm]> {
         match &expr.kind {
             HirExprKind::Match { arms, .. } => Some(arms),
-            HirExprKind::Block { stmts, expr: trailing } => {
+            HirExprKind::Block {
+                stmts,
+                expr: trailing,
+            } => {
                 for stmt in stmts {
                     let inner = match stmt {
-                        HirStmt::Let { value, .. } | HirStmt::Assign { value, .. } => find_match(value),
+                        HirStmt::Let { value, .. } | HirStmt::Assign { value, .. } => {
+                            find_match(value)
+                        }
                         HirStmt::Expr(e) => find_match(e),
                     };
                     if inner.is_some() {
@@ -315,7 +353,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
         assert_eq!(output.hir.functions.len(), 1, "Expected exactly 1 function");
         output.hir.functions.values().next().unwrap()
@@ -337,12 +379,14 @@ mod tests {
         // First arm: Null literal pattern
         assert!(
             matches!(arms[0].pattern, HirPattern::Literal(HirLiteral::Null)),
-            "First arm should match Null, got: {:?}", arms[0].pattern
+            "First arm should match Null, got: {:?}",
+            arms[0].pattern
         );
         // Null arm body should be the default value (literal 0)
         assert!(
             matches!(arms[0].body.kind, HirExprKind::Literal(HirLiteral::Int(0))),
-            "Null arm body should be literal 0, got: {:?}", arms[0].body.kind
+            "Null arm body should be literal 0, got: {:?}",
+            arms[0].body.kind
         );
 
         // Second arm: Binding pattern (not Wildcard)
@@ -352,8 +396,10 @@ mod tests {
         };
         // Binding arm body should reference the same DefId via Local
         match &arms[1].body.kind {
-            HirExprKind::Local(id) => assert_eq!(*id, binding_def,
-                "Binding arm body should reference the bound variable"),
+            HirExprKind::Local(id) => assert_eq!(
+                *id, binding_def,
+                "Binding arm body should reference the bound variable"
+            ),
             other => panic!("Binding arm body should be Local, got: {other:?}"),
         }
     }
@@ -361,13 +407,25 @@ mod tests {
     #[test]
     fn lower_null_coalesce_creates_synthetic_def() {
         let output = lower_source("fn f(x: Int?): Int { return x ?? 0 }");
-        assert!(!output.diagnostics.has_errors(),
-            "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
         // The ?? desugaring should have created at least one synthetic DefId
-        let synth_count = output.definitions.iter()
+        let synth_count = output
+            .definitions
+            .iter()
             .filter(|(_, info)| info.name.as_str().starts_with("__synth_"))
             .count();
-        assert!(synth_count >= 1, "Expected at least 1 synthetic definition, found {synth_count}");
+        assert!(
+            synth_count >= 1,
+            "Expected at least 1 synthetic definition, found {synth_count}"
+        );
     }
 
     // ── Optional field (?.) ──────────────────────────────────────
@@ -380,8 +438,16 @@ mod tests {
         let output = lower_source(
             "struct User { name: String }\nfn f(u: User?): String? { return u?.name }",
         );
-        let func = output.hir.functions.values()
-            .find(|f| output.definitions.get(f.def_id).is_some_and(|i| i.name.as_str() == "f"))
+        let func = output
+            .hir
+            .functions
+            .values()
+            .find(|f| {
+                output
+                    .definitions
+                    .get(f.def_id)
+                    .is_some_and(|i| i.name.as_str() == "f")
+            })
             .expect("Expected function 'f'");
         let arms = find_match(&func.body).expect("Expected a Match from ?. desugaring");
 
@@ -390,7 +456,8 @@ mod tests {
         // First arm: Null
         assert!(
             matches!(arms[0].pattern, HirPattern::Literal(HirLiteral::Null)),
-            "First arm should match Null, got: {:?}", arms[0].pattern
+            "First arm should match Null, got: {:?}",
+            arms[0].pattern
         );
 
         // Second arm: Binding with field access body
@@ -403,8 +470,10 @@ mod tests {
             HirExprKind::FieldAccess { base, field } => {
                 assert_eq!(field.as_str(), "name", "Should access field 'name'");
                 match &base.kind {
-                    HirExprKind::Local(id) => assert_eq!(*id, binding_def,
-                        "Field base should reference the bound variable"),
+                    HirExprKind::Local(id) => assert_eq!(
+                        *id, binding_def,
+                        "Field base should reference the bound variable"
+                    ),
                     other => panic!("Field base should be Local, got: {other:?}"),
                 }
             }
@@ -427,11 +496,13 @@ mod tests {
         // First arm: Null with return
         assert!(
             matches!(arms[0].pattern, HirPattern::Literal(HirLiteral::Null)),
-            "First arm should match Null, got: {:?}", arms[0].pattern
+            "First arm should match Null, got: {:?}",
+            arms[0].pattern
         );
         assert!(
             matches!(arms[0].body.kind, HirExprKind::Return(_)),
-            "Null arm should return, got: {:?}", arms[0].body.kind
+            "Null arm should return, got: {:?}",
+            arms[0].body.kind
         );
 
         // Second arm: TypeNarrow that extracts the payload
@@ -440,8 +511,10 @@ mod tests {
             other => panic!("Success arm should be TypeNarrow, got: {other:?}"),
         };
         match &arms[1].body.kind {
-            HirExprKind::Local(id) => assert_eq!(*id, binding_def,
-                "Success arm body should reference the bound variable"),
+            HirExprKind::Local(id) => assert_eq!(
+                *id, binding_def,
+                "Success arm body should reference the bound variable"
+            ),
             other => panic!("Success arm body should be Local, got: {other:?}"),
         }
     }
@@ -456,8 +529,12 @@ mod tests {
         assert_eq!(arms.len(), 2);
         // Null arm body should be the string literal
         assert!(
-            matches!(arms[0].body.kind, HirExprKind::Literal(HirLiteral::String(_))),
-            "Null arm body should be string literal, got: {:?}", arms[0].body.kind
+            matches!(
+                arms[0].body.kind,
+                HirExprKind::Literal(HirLiteral::String(_))
+            ),
+            "Null arm body should be string literal, got: {:?}",
+            arms[0].body.kind
         );
     }
 
@@ -467,7 +544,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 }

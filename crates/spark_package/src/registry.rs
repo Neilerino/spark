@@ -125,9 +125,8 @@ pub fn sync_index_from(project_root: &Path, index_url: &str) -> Result<PathBuf, 
         }
     } else {
         // Clone fresh.
-        std::fs::create_dir_all(index_dir.parent().unwrap_or(project_root)).map_err(|e| {
-            format!("could not create .spark directory: {e}")
-        })?;
+        std::fs::create_dir_all(index_dir.parent().unwrap_or(project_root))
+            .map_err(|e| format!("could not create .spark directory: {e}"))?;
 
         let output = Command::new("git")
             .args([
@@ -212,10 +211,7 @@ pub fn parse_version_req(constraint: &str) -> Result<semver::VersionReq, String>
 
     // If it looks like a bare version (no operators), convert to compatible range.
     if !trimmed.is_empty()
-        && trimmed
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_digit())
+        && trimmed.chars().next().is_some_and(|c| c.is_ascii_digit())
         && !trimmed.contains(',')
     {
         // Parse as a version to validate.
@@ -272,9 +268,8 @@ pub fn fetch_registry_dep(
     verify_checksum(&tarball_path, &entry.checksum)?;
 
     // Extract tarball.
-    std::fs::create_dir_all(&target_dir).map_err(|e| {
-        format!("could not create directory `{}`: {e}", target_dir.display())
-    })?;
+    std::fs::create_dir_all(&target_dir)
+        .map_err(|e| format!("could not create directory `{}`: {e}", target_dir.display()))?;
     extract_tarball(&tarball_path, &target_dir)?;
 
     // Clean up tarball.
@@ -416,8 +411,8 @@ fn extract_tarball(tarball: &Path, dest: &Path) -> Result<(), String> {
 ///
 /// Returns an error if the file cannot be read.
 pub fn compute_checksum(path: &Path) -> Result<String, String> {
-    let data = std::fs::read(path)
-        .map_err(|e| format!("could not read `{}`: {e}", path.display()))?;
+    let data =
+        std::fs::read(path).map_err(|e| format!("could not read `{}`: {e}", path.display()))?;
 
     let mut hasher = Sha256::new();
     hasher.update(&data);
@@ -643,11 +638,7 @@ mod tests {
         // Create a local git repo to serve as the index.
         let index_source = tmp.path().join("source");
         std::fs::create_dir_all(index_source.join("packages")).unwrap();
-        std::fs::write(
-            index_source.join("config.json"),
-            r#"{"index_version": 1}"#,
-        )
-        .unwrap();
+        std::fs::write(index_source.join("config.json"), r#"{"index_version": 1}"#).unwrap();
 
         let meta = PackageMetadata {
             name: "testpkg".to_string(),

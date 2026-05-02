@@ -424,7 +424,10 @@ impl Parser {
                 // Accept either an identifier or an integer literal (for tuple field access: t.0, t.1)
                 let field = if self.check(TokenKind::IntLiteral) {
                     let span = self.current_span();
-                    let name = self.current().value.as_ref()
+                    let name = self
+                        .current()
+                        .value
+                        .as_ref()
                         .and_then(spark_lexer::TokenValue::as_int)
                         .map_or_else(|| sym("0"), |v| sym(&v.to_string()));
                     self.advance();
@@ -689,12 +692,24 @@ impl Parser {
             let callback = self.parse_pipeline_callback();
             let span = self.span_from(stage_start);
             let kind = match token {
-                TokenKind::Map => PipelineStageKind::Map { callback: Box::new(callback) },
-                TokenKind::Filter => PipelineStageKind::Filter { callback: Box::new(callback) },
-                TokenKind::Find => PipelineStageKind::Find { callback: Box::new(callback) },
-                _ => PipelineStageKind::ForEach { callback: Box::new(callback) },
+                TokenKind::Map => PipelineStageKind::Map {
+                    callback: Box::new(callback),
+                },
+                TokenKind::Filter => PipelineStageKind::Filter {
+                    callback: Box::new(callback),
+                },
+                TokenKind::Find => PipelineStageKind::Find {
+                    callback: Box::new(callback),
+                },
+                _ => PipelineStageKind::ForEach {
+                    callback: Box::new(callback),
+                },
             };
-            PipelineStage { kind, parallel, span }
+            PipelineStage {
+                kind,
+                parallel,
+                span,
+            }
         } else if self.check(TokenKind::Reduce) {
             self.advance();
             // Parse initial value as a primary expression (atom only)
@@ -711,7 +726,9 @@ impl Parser {
             }
         } else {
             if parallel {
-                self.error_expected("'each', 'map', 'reduce', 'filter', or 'find' after 'parallel'");
+                self.error_expected(
+                    "'each', 'map', 'reduce', 'filter', or 'find' after 'parallel'",
+                );
             } else {
                 self.error_expected("pipeline stage ('each', 'map', 'reduce', 'filter', 'find')");
             }
@@ -749,7 +766,13 @@ impl Parser {
             if self.check(TokenKind::LBrace) {
                 let args = self.parse_partial_args();
                 let span = self.span_from(ident_span);
-                Expr::new(ExprKind::Partial { callee: Box::new(callee), args }, span)
+                Expr::new(
+                    ExprKind::Partial {
+                        callee: Box::new(callee),
+                        args,
+                    },
+                    span,
+                )
             } else {
                 callee
             }
@@ -766,7 +789,13 @@ impl Parser {
             // Narrowing block: to { Pattern -> Expr, ... }
             let arms = self.parse_to_arms();
             let span = self.span_from(start);
-            Expr::new(ExprKind::To { expr: Box::new(expr), arms }, span)
+            Expr::new(
+                ExprKind::To {
+                    expr: Box::new(expr),
+                    arms,
+                },
+                span,
+            )
         } else {
             // Pipeline apply: to operation or to operation{args}
             let operation = self
@@ -779,7 +808,11 @@ impl Parser {
             };
             let span = self.span_from(start);
             Expr::new(
-                ExprKind::PipelineApply { expr: Box::new(expr), operation, args },
+                ExprKind::PipelineApply {
+                    expr: Box::new(expr),
+                    operation,
+                    args,
+                },
                 span,
             )
         }
@@ -1087,11 +1120,7 @@ impl Parser {
             i += 1;
         }
         // After the closing paren, check for : (return type) or { (body with omitted return type)
-        i < 100
-            && matches!(
-                self.peek_nth(i).kind,
-                TokenKind::Colon | TokenKind::LBrace
-            )
+        i < 100 && matches!(self.peek_nth(i).kind, TokenKind::Colon | TokenKind::LBrace)
     }
 
     fn parse_lambda_from_params(&mut self, start: Span) -> Expr {
@@ -1822,10 +1851,14 @@ mod tests {
                 assert!(!s.is_simple());
                 assert_eq!(s.parts.len(), 2);
                 // First part: Text("hello ")
-                assert!(matches!(&s.parts[0], spark_ast::StringPart::Text(sym) if sym.as_str() == "hello "));
+                assert!(
+                    matches!(&s.parts[0], spark_ast::StringPart::Text(sym) if sym.as_str() == "hello ")
+                );
                 // Second part: Interpolation(Ident(name))
                 if let spark_ast::StringPart::Interpolation(expr) = &s.parts[1] {
-                    assert!(matches!(&expr.kind, ExprKind::Ident(id) if id.name.as_str() == "name"));
+                    assert!(
+                        matches!(&expr.kind, ExprKind::Ident(id) if id.name.as_str() == "name")
+                    );
                 } else {
                     panic!("expected interpolation part");
                 }
@@ -1848,7 +1881,13 @@ mod tests {
                 assert!(matches!(&s.parts[0], spark_ast::StringPart::Text(_)));
                 // Second part: Interpolation with Binary expr
                 if let spark_ast::StringPart::Interpolation(expr) = &s.parts[1] {
-                    assert!(matches!(&expr.kind, ExprKind::Binary { op: BinaryOp::Add, .. }));
+                    assert!(matches!(
+                        &expr.kind,
+                        ExprKind::Binary {
+                            op: BinaryOp::Add,
+                            ..
+                        }
+                    ));
                 } else {
                     panic!("expected interpolation part");
                 }
@@ -1867,8 +1906,14 @@ mod tests {
         if let ExprKind::Literal(lit) = &expr.kind {
             if let LiteralKind::String(s) = &lit.kind {
                 assert_eq!(s.parts.len(), 2);
-                assert!(matches!(&s.parts[0], spark_ast::StringPart::Interpolation(_)));
-                assert!(matches!(&s.parts[1], spark_ast::StringPart::Interpolation(_)));
+                assert!(matches!(
+                    &s.parts[0],
+                    spark_ast::StringPart::Interpolation(_)
+                ));
+                assert!(matches!(
+                    &s.parts[1],
+                    spark_ast::StringPart::Interpolation(_)
+                ));
             } else {
                 panic!("expected string literal");
             }
@@ -1885,7 +1930,10 @@ mod tests {
     fn generic_struct_init_single() {
         let (expr, diags) = parse_expr_str("Box[Int] { value: 42 }");
         assert!(!diags.has_errors(), "errors: {diags:?}");
-        if let ExprKind::StructInit { type_args, fields, .. } = &expr.kind {
+        if let ExprKind::StructInit {
+            type_args, fields, ..
+        } = &expr.kind
+        {
             assert_eq!(type_args.len(), 1);
             assert_eq!(fields.len(), 1);
         } else {
@@ -1897,7 +1945,10 @@ mod tests {
     fn generic_struct_init_multi() {
         let (expr, diags) = parse_expr_str("Pair[Int, String] { first: 1, second: \"hi\" }");
         assert!(!diags.has_errors(), "errors: {diags:?}");
-        if let ExprKind::StructInit { type_args, fields, .. } = &expr.kind {
+        if let ExprKind::StructInit {
+            type_args, fields, ..
+        } = &expr.kind
+        {
             assert_eq!(type_args.len(), 2);
             assert_eq!(fields.len(), 2);
         } else {
@@ -1965,8 +2016,7 @@ mod tests {
 
     #[test]
     fn parallel_each_with_fn_lambda() {
-        let (expr, diags) =
-            parse_expr_str("items parallel each fn(x: Int): Void { print(x) }");
+        let (expr, diags) = parse_expr_str("items parallel each fn(x: Int): Void { print(x) }");
         assert!(!diags.has_errors(), "errors: {diags:?}");
         assert!(matches!(expr.kind, ExprKind::Pipeline { .. }));
     }

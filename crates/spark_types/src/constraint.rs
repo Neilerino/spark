@@ -47,18 +47,28 @@ pub fn validate_constraints(
         }
 
         match &constraint {
-            Constraint::Interface { interface_def_id, .. } => {
+            Constraint::Interface {
+                interface_def_id, ..
+            } => {
                 if !check_interface_constraint(
-                    concrete_ty, *interface_def_id,
-                    table, definitions, span, diagnostics,
+                    concrete_ty,
+                    *interface_def_id,
+                    table,
+                    definitions,
+                    span,
+                    diagnostics,
                 ) {
                     all_satisfied = false;
                 }
             }
             Constraint::Structural { fields } => {
                 if !check_structural_constraint(
-                    concrete_ty, fields,
-                    table, definitions, span, diagnostics,
+                    concrete_ty,
+                    fields,
+                    table,
+                    definitions,
+                    span,
+                    diagnostics,
                 ) {
                     all_satisfied = false;
                 }
@@ -82,7 +92,14 @@ fn check_interface_constraint(
 
     let Some(concrete_did) = concrete_def_id else {
         // Primitive or unresolvable type — emit diagnostic
-        emit_interface_error(concrete_ty, interface_def_id, table, definitions, span, diagnostics);
+        emit_interface_error(
+            concrete_ty,
+            interface_def_id,
+            table,
+            definitions,
+            span,
+            diagnostics,
+        );
         return false;
     };
 
@@ -92,7 +109,14 @@ fn check_interface_constraint(
         .is_some_and(|bindings| bindings.contains(&interface_def_id));
 
     if !has_binding {
-        emit_interface_error(concrete_ty, interface_def_id, table, definitions, span, diagnostics);
+        emit_interface_error(
+            concrete_ty,
+            interface_def_id,
+            table,
+            definitions,
+            span,
+            diagnostics,
+        );
         return false;
     }
 
@@ -109,9 +133,10 @@ fn emit_interface_error(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     let concrete_name = type_name(concrete_ty, table, definitions);
-    let interface_name = definitions
-        .get(interface_def_id)
-        .map_or_else(|| "<unknown>".to_string(), |info| info.name.as_str().to_string());
+    let interface_name = definitions.get(interface_def_id).map_or_else(
+        || "<unknown>".to_string(),
+        |info| info.name.as_str().to_string(),
+    );
 
     diagnostics.push(
         Diagnostic::error(format!(
@@ -150,9 +175,8 @@ fn check_structural_constraint(
     let mut all_ok = true;
 
     for &(req_name, req_type) in required_fields {
-        let found = actual_fields.and_then(|fields| {
-            fields.iter().find(|(name, _)| *name == req_name)
-        });
+        let found =
+            actual_fields.and_then(|fields| fields.iter().find(|(name, _)| *name == req_name));
 
         if let Some(&(_, actual_type)) = found {
             if !is_compatible(actual_type, req_type, table) {
@@ -208,7 +232,11 @@ mod tests {
 
     /// Helper to create a minimal test setup.
     fn setup() -> (TypeTable, DefinitionTable, spark_diagnostics::Diagnostics) {
-        (TypeTable::new(), DefinitionTable::new(), spark_diagnostics::Diagnostics::new())
+        (
+            TypeTable::new(),
+            DefinitionTable::new(),
+            spark_diagnostics::Diagnostics::new(),
+        )
     }
 
     #[test]
@@ -219,7 +247,14 @@ mod tests {
         let subst: FxHashMap<DefId, TypeId> = std::iter::once((param, concrete)).collect();
         let span = Span::DUMMY;
 
-        let result = validate_constraints(&[param], &subst, &mut table, &definitions, span, &mut diagnostics);
+        let result = validate_constraints(
+            &[param],
+            &subst,
+            &mut table,
+            &definitions,
+            span,
+            &mut diagnostics,
+        );
         assert!(result);
         assert!(!diagnostics.has_errors());
     }
@@ -231,14 +266,24 @@ mod tests {
         let interface = DefId::new(1);
 
         // Set a constraint but provide Ty::Error as the concrete type
-        table.set_generic_constraint(param, Constraint::Interface {
-            interface_def_id: interface,
-            type_args: vec![],
-        });
+        table.set_generic_constraint(
+            param,
+            Constraint::Interface {
+                interface_def_id: interface,
+                type_args: vec![],
+            },
+        );
         let subst: FxHashMap<DefId, TypeId> = std::iter::once((param, TypeId::ERROR)).collect();
         let span = Span::DUMMY;
 
-        let result = validate_constraints(&[param], &subst, &mut table, &definitions, span, &mut diagnostics);
+        let result = validate_constraints(
+            &[param],
+            &subst,
+            &mut table,
+            &definitions,
+            span,
+            &mut diagnostics,
+        );
         assert!(result);
         assert!(!diagnostics.has_errors());
     }
@@ -269,15 +314,25 @@ mod tests {
 
         let struct_ty = table.intern(Ty::Struct(struct_def_id));
         table.add_interface_binding(struct_def_id, interface_def_id);
-        table.set_generic_constraint(param_def_id, Constraint::Interface {
-            interface_def_id,
-            type_args: vec![],
-        });
+        table.set_generic_constraint(
+            param_def_id,
+            Constraint::Interface {
+                interface_def_id,
+                type_args: vec![],
+            },
+        );
 
         let subst: FxHashMap<DefId, TypeId> = std::iter::once((param_def_id, struct_ty)).collect();
         let span = Span::DUMMY;
 
-        let result = validate_constraints(&[param_def_id], &subst, &mut table, &definitions, span, &mut diagnostics);
+        let result = validate_constraints(
+            &[param_def_id],
+            &subst,
+            &mut table,
+            &definitions,
+            span,
+            &mut diagnostics,
+        );
         assert!(result);
         assert!(!diagnostics.has_errors());
     }
@@ -307,15 +362,25 @@ mod tests {
 
         let struct_ty = table.intern(Ty::Struct(struct_def_id));
         // NOTE: No binding registered — constraint should fail
-        table.set_generic_constraint(param_def_id, Constraint::Interface {
-            interface_def_id,
-            type_args: vec![],
-        });
+        table.set_generic_constraint(
+            param_def_id,
+            Constraint::Interface {
+                interface_def_id,
+                type_args: vec![],
+            },
+        );
 
         let subst: FxHashMap<DefId, TypeId> = std::iter::once((param_def_id, struct_ty)).collect();
         let span = Span::DUMMY;
 
-        let result = validate_constraints(&[param_def_id], &subst, &mut table, &definitions, span, &mut diagnostics);
+        let result = validate_constraints(
+            &[param_def_id],
+            &subst,
+            &mut table,
+            &definitions,
+            span,
+            &mut diagnostics,
+        );
         assert!(!result);
         assert!(diagnostics.has_errors());
     }
@@ -340,20 +405,30 @@ mod tests {
         let struct_ty = table.intern(Ty::Struct(struct_def_id));
 
         // Struct has id: Int and name: String
-        table.set_struct_fields(struct_def_id, vec![
-            (sym("id"), int_ty),
-            (sym("name"), string_ty),
-        ]);
+        table.set_struct_fields(
+            struct_def_id,
+            vec![(sym("id"), int_ty), (sym("name"), string_ty)],
+        );
 
         // Constraint requires id: Int
-        table.set_generic_constraint(param_def_id, Constraint::Structural {
-            fields: vec![(sym("id"), int_ty)],
-        });
+        table.set_generic_constraint(
+            param_def_id,
+            Constraint::Structural {
+                fields: vec![(sym("id"), int_ty)],
+            },
+        );
 
         let subst: FxHashMap<DefId, TypeId> = std::iter::once((param_def_id, struct_ty)).collect();
         let span = Span::DUMMY;
 
-        let result = validate_constraints(&[param_def_id], &subst, &mut table, &definitions, span, &mut diagnostics);
+        let result = validate_constraints(
+            &[param_def_id],
+            &subst,
+            &mut table,
+            &definitions,
+            span,
+            &mut diagnostics,
+        );
         assert!(result);
         assert!(!diagnostics.has_errors());
     }
@@ -377,20 +452,27 @@ mod tests {
         let struct_ty = table.intern(Ty::Struct(struct_def_id));
 
         // Struct has x: Int, y: Int but NOT id
-        table.set_struct_fields(struct_def_id, vec![
-            (sym("x"), int_ty),
-            (sym("y"), int_ty),
-        ]);
+        table.set_struct_fields(struct_def_id, vec![(sym("x"), int_ty), (sym("y"), int_ty)]);
 
         // Constraint requires id: Int
-        table.set_generic_constraint(param_def_id, Constraint::Structural {
-            fields: vec![(sym("id"), int_ty)],
-        });
+        table.set_generic_constraint(
+            param_def_id,
+            Constraint::Structural {
+                fields: vec![(sym("id"), int_ty)],
+            },
+        );
 
         let subst: FxHashMap<DefId, TypeId> = std::iter::once((param_def_id, struct_ty)).collect();
         let span = Span::DUMMY;
 
-        let result = validate_constraints(&[param_def_id], &subst, &mut table, &definitions, span, &mut diagnostics);
+        let result = validate_constraints(
+            &[param_def_id],
+            &subst,
+            &mut table,
+            &definitions,
+            span,
+            &mut diagnostics,
+        );
         assert!(!result);
         assert!(diagnostics.has_errors());
     }

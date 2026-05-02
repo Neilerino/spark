@@ -52,7 +52,9 @@ pub fn emit_rvalue<M: Module>(
                 }
             } else {
                 let result_ty = ctx.local_type_id(dest_local);
-                Some(emit_binop(ctx, *op, lhs_val, rhs_val, result_ty, lhs_ty, ecx.table))
+                Some(emit_binop(
+                    ctx, *op, lhs_val, rhs_val, result_ty, lhs_ty, ecx.table,
+                ))
             }
         }
 
@@ -72,9 +74,7 @@ pub fn emit_rvalue<M: Module>(
             emit_aggregate(ctx, kind, operands, dest_local, ecx, module, diagnostics)
         }
 
-        Rvalue::Discriminant(place) => {
-            Some(emit_discriminant(ctx, place, ecx.table, module))
-        }
+        Rvalue::Discriminant(place) => Some(emit_discriminant(ctx, place, ecx.table, module)),
 
         Rvalue::Cast { operand, target_ty } => {
             let val = emit_operand(ctx, operand, ecx, module)?;
@@ -83,17 +83,26 @@ pub fn emit_rvalue<M: Module>(
             Some(emit_cast(ctx, val, src_ty, *target_ty, ecx.table))
         }
 
-        Rvalue::StringInterp(operands) => {
-            emit_string_interp(ctx, operands, ecx, module)
-        }
+        Rvalue::StringInterp(operands) => emit_string_interp(ctx, operands, ecx, module),
 
-        Rvalue::ListRange { start, end, inclusive, step } => {
+        Rvalue::ListRange {
+            start,
+            end,
+            inclusive,
+            step,
+        } => {
             let start_val = emit_operand(ctx, start, ecx, module)?;
             let end_val = emit_operand(ctx, end, ecx, module)?;
             let step_val = emit_operand(ctx, step, ecx, module)?;
-            let inclusive_val = ctx.builder.ins().iconst(types::I8, i64::from(u8::from(*inclusive)));
+            let inclusive_val = ctx
+                .builder
+                .ins()
+                .iconst(types::I8, i64::from(u8::from(*inclusive)));
             let func_ref = module.declare_func_in_func(ctx.stubs.list_from_range, ctx.builder.func);
-            let call = ctx.builder.ins().call(func_ref, &[start_val, end_val, inclusive_val, step_val]);
+            let call = ctx
+                .builder
+                .ins()
+                .call(func_ref, &[start_val, end_val, inclusive_val, step_val]);
             Some(ctx.builder.inst_results(call)[0])
         }
 
@@ -101,13 +110,24 @@ pub fn emit_rvalue<M: Module>(
             emit_map_get_optional(ctx, map, key, *value_ty, dest_local, ecx, module)
         }
 
-        Rvalue::RangeLen { start, end, inclusive, step } => {
+        Rvalue::RangeLen {
+            start,
+            end,
+            inclusive,
+            step,
+        } => {
             let start_val = emit_operand(ctx, start, ecx, module)?;
             let end_val = emit_operand(ctx, end, ecx, module)?;
             let step_val = emit_operand(ctx, step, ecx, module)?;
-            let inclusive_val = ctx.builder.ins().iconst(types::I8, i64::from(u8::from(*inclusive)));
+            let inclusive_val = ctx
+                .builder
+                .ins()
+                .iconst(types::I8, i64::from(u8::from(*inclusive)));
             let func_ref = module.declare_func_in_func(ctx.stubs.range_len, ctx.builder.func);
-            let call = ctx.builder.ins().call(func_ref, &[start_val, end_val, inclusive_val, step_val]);
+            let call = ctx
+                .builder
+                .ins()
+                .call(func_ref, &[start_val, end_val, inclusive_val, step_val]);
             Some(ctx.builder.inst_results(call)[0])
         }
     }
@@ -152,9 +172,7 @@ pub fn emit_operand<M: Module>(
             // Move: no RC change — ownership transfers.
             Some(emit_place_read(ctx, place, ecx.table, module))
         }
-        Operand::Constant(constant) => {
-            emit_constant(ctx, constant, ecx, module)
-        }
+        Operand::Constant(constant) => emit_constant(ctx, constant, ecx, module),
     }
 }
 
@@ -182,8 +200,8 @@ fn emit_constant<M: Module>(
             let name = format!(".str.{}", sym.as_raw());
             let bytes = sym.as_str().as_bytes();
 
-            let Ok(data_id) = module
-                .declare_data(&name, cranelift_module::Linkage::Local, false, false)
+            let Ok(data_id) =
+                module.declare_data(&name, cranelift_module::Linkage::Local, false, false)
             else {
                 return None;
             };
@@ -204,7 +222,8 @@ fn emit_constant<M: Module>(
             let len = ctx.builder.ins().iconst(types::I64, bytes.len() as i64);
 
             // Call __spark_string_from_literal(ptr, len) to create a heap String.
-            let func_ref = module.declare_func_in_func(ctx.stubs.string_from_literal, ctx.builder.func);
+            let func_ref =
+                module.declare_func_in_func(ctx.stubs.string_from_literal, ctx.builder.func);
             let call = ctx.builder.ins().call(func_ref, &[data_ptr, len]);
             Some(ctx.builder.inst_results(call)[0])
         }
@@ -218,14 +237,18 @@ fn emit_constant<M: Module>(
 
             // For lambdas, use their own func_id (they already have env_ptr convention).
             // For named functions, use the thunk (which accepts+ignores env_ptr).
-            let is_lambda = ecx.definitions
+            let is_lambda = ecx
+                .definitions
                 .get(*def_id)
                 .is_some_and(|info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda));
 
             let target_func_id = if is_lambda {
                 ecx.func_ids.get(def_id).copied()
             } else {
-                ecx.thunk_ids.get(def_id).copied().or_else(|| ecx.func_ids.get(def_id).copied())
+                ecx.thunk_ids
+                    .get(def_id)
+                    .copied()
+                    .or_else(|| ecx.func_ids.get(def_id).copied())
             };
 
             // Always produce a fat pointer (fn_ptr, env_ptr) in a stack slot.
@@ -243,11 +266,15 @@ fn emit_constant<M: Module>(
                 let fn_ptr = ctx.builder.ins().func_addr(ctx.ptr_type, func_ref);
                 let null = ctx.builder.ins().iconst(ctx.ptr_type, 0);
                 ctx.builder.ins().store(MemFlags::new(), fn_ptr, addr, 0);
-                ctx.builder.ins().store(MemFlags::new(), null, addr, ctx.ptr_type.bytes() as i32);
+                ctx.builder
+                    .ins()
+                    .store(MemFlags::new(), null, addr, ctx.ptr_type.bytes() as i32);
             } else {
                 let null = ctx.builder.ins().iconst(ctx.ptr_type, 0);
                 ctx.builder.ins().store(MemFlags::new(), null, addr, 0);
-                ctx.builder.ins().store(MemFlags::new(), null, addr, ctx.ptr_type.bytes() as i32);
+                ctx.builder
+                    .ins()
+                    .store(MemFlags::new(), null, addr, ctx.ptr_type.bytes() as i32);
             }
             Some(addr)
         }
@@ -321,7 +348,9 @@ pub(super) fn emit_place_addr<M: Module>(
                         }
                         // Update current type to the field's type.
                         if let Some(fields) = table.get_struct_fields(def_id) {
-                            if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
+                            if let Some((_, field_ty)) =
+                                fields.iter().find(|(n, _)| *n == *field_name)
+                            {
                                 current_ty = *field_ty;
                             }
                         }
@@ -329,27 +358,38 @@ pub(super) fn emit_place_addr<M: Module>(
                     Ty::Applied { base, args } => {
                         let base = *base;
                         let args = args.clone();
-                        if let Some(offset) = ctx.layouts.field_offset_for_type(unwrapped_id, *field_name, table) {
+                        if let Some(offset) =
+                            ctx.layouts
+                                .field_offset_for_type(unwrapped_id, *field_name, table)
+                        {
                             addr = ctx.builder.ins().iadd_imm(addr, i64::from(offset));
                         }
                         // Update current type to the substituted field type.
                         if let Some(fields) = table.get_struct_fields(base) {
-                            if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
+                            if let Some((_, field_ty)) =
+                                fields.iter().find(|(n, _)| *n == *field_name)
+                            {
                                 let params = table
                                     .get_generic_params(base)
                                     .map(<[_]>::to_vec)
                                     .unwrap_or_default();
-                                let subst = spark_types::substitute::build_subst_map(&params, &args);
-                                current_ty = spark_types::substitute::substitute(*field_ty, &subst, table);
+                                let subst =
+                                    spark_types::substitute::build_subst_map(&params, &args);
+                                current_ty =
+                                    spark_types::substitute::substitute(*field_ty, &subst, table);
                             }
                         }
                     }
                     Ty::AsyncState { fields, .. } => {
                         let fields = fields.clone();
-                        if let Some(offset) = ctx.layouts.field_offset_for_type(unwrapped_id, *field_name, table) {
+                        if let Some(offset) =
+                            ctx.layouts
+                                .field_offset_for_type(unwrapped_id, *field_name, table)
+                        {
                             addr = ctx.builder.ins().iadd_imm(addr, i64::from(offset));
                         }
-                        if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
+                        if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name)
+                        {
                             current_ty = *field_ty;
                         }
                     }
@@ -390,12 +430,9 @@ pub(super) fn emit_place_addr<M: Module>(
                 let variant_fields = table
                     .get_variant_fields(*variant)
                     .expect("ICE: missing variant fields for enum variant");
-                let offset = ctx.layouts.variant_field_offset(
-                    enum_def_id,
-                    *variant,
-                    field_index,
-                    table,
-                );
+                let offset =
+                    ctx.layouts
+                        .variant_field_offset(enum_def_id, *variant, field_index, table);
                 addr = ctx.builder.ins().iadd_imm(addr, i64::from(offset));
                 current_ty = variant_fields[field_index].1;
             }
@@ -408,10 +445,8 @@ pub(super) fn emit_place_addr<M: Module>(
                         // Load the list pointer from the address (addr points to
                         // the local's storage, not the list itself).
                         let list_ptr = ctx.load(ctx.ptr_type, addr, 0);
-                        let func_ref = module.declare_func_in_func(
-                            ctx.stubs.list_get,
-                            ctx.builder.func,
-                        );
+                        let func_ref =
+                            module.declare_func_in_func(ctx.stubs.list_get, ctx.builder.func);
                         let call = ctx.builder.ins().call(func_ref, &[list_ptr, idx_val]);
                         addr = ctx.builder.inst_results(call)[0];
                         current_ty = elem_ty;
@@ -422,10 +457,8 @@ pub(super) fn emit_place_addr<M: Module>(
                         // Store the key to a temp slot, then call __spark_map_get.
                         let key_addr = store_scalar_to_temp(ctx, idx_val, key_ty, table);
                         let map_ptr = ctx.load(ctx.ptr_type, addr, 0);
-                        let func_ref = module.declare_func_in_func(
-                            ctx.stubs.map_get,
-                            ctx.builder.func,
-                        );
+                        let func_ref =
+                            module.declare_func_in_func(ctx.stubs.map_get, ctx.builder.func);
                         let call = ctx.builder.ins().call(func_ref, &[map_ptr, key_addr]);
                         addr = ctx.builder.inst_results(call)[0];
                         current_ty = value_ty;
@@ -440,7 +473,10 @@ pub(super) fn emit_place_addr<M: Module>(
             }
             Projection::Deref => {
                 // Load the pointer value.
-                addr = ctx.builder.ins().load(ctx.ptr_type, MemFlags::new(), addr, 0);
+                addr = ctx
+                    .builder
+                    .ins()
+                    .load(ctx.ptr_type, MemFlags::new(), addr, 0);
                 let (_, unwrapped_ty) = clif_types::unwrap_mutable(current_ty, table);
                 if let Ty::Ref { inner, .. } = unwrapped_ty {
                     current_ty = *inner;
@@ -457,7 +493,10 @@ pub(super) fn emit_place_addr<M: Module>(
                 } else {
                     // Union: use the union layout's payload offset.
                     let ul = ctx.layouts.union_layout_of(current_ty, table);
-                    addr = ctx.builder.ins().iadd_imm(addr, i64::from(ul.payload_offset));
+                    addr = ctx
+                        .builder
+                        .ins()
+                        .iadd_imm(addr, i64::from(ul.payload_offset));
                 }
                 current_ty = *member_ty;
             }
@@ -468,65 +507,69 @@ pub(super) fn emit_place_addr<M: Module>(
 }
 
 /// Resolves the type of a place after all projections.
-pub(super) fn resolve_place_type(ctx: &FunctionContext<'_>, place: &Place, table: &TypeTable) -> TypeId {
+pub(super) fn resolve_place_type(
+    ctx: &FunctionContext<'_>,
+    place: &Place,
+    table: &TypeTable,
+) -> TypeId {
     let mut current_ty = ctx.local_type_id(place.local);
 
     for proj in &place.projections {
         let (_, unwrapped) = clif_types::unwrap_mutable(current_ty, table);
         match proj {
-            Projection::Field(field_name) => {
-                match unwrapped {
-                    Ty::Struct(def_id) => {
-                        if let Some(fields) = table.get_struct_fields(*def_id) {
-                            if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
-                                current_ty = *field_ty;
-                            }
-                        }
-                    }
-                    Ty::Applied { base, args } => {
-                        if let Some(fields) = table.get_struct_fields(*base) {
-                            if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
-                                let params = table
-                                    .get_generic_params(*base)
-                                    .map(<[_]>::to_vec)
-                                    .unwrap_or_default();
-                                let subst = spark_types::substitute::build_subst_map(&params, &args.clone());
-                                current_ty = spark_types::substitute::substitute(*field_ty, &subst, table);
-                            }
-                        }
-                    }
-                    Ty::AsyncState { fields, .. } => {
-                        if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
+            Projection::Field(field_name) => match unwrapped {
+                Ty::Struct(def_id) => {
+                    if let Some(fields) = table.get_struct_fields(*def_id) {
+                        if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name)
+                        {
                             current_ty = *field_ty;
                         }
                     }
-                    Ty::Tuple(elems) => {
-                        if let Ok(index) = field_name.as_str().parse::<usize>() {
-                            if index < elems.len() {
-                                current_ty = elems[index];
-                            }
+                }
+                Ty::Applied { base, args } => {
+                    if let Some(fields) = table.get_struct_fields(*base) {
+                        if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name)
+                        {
+                            let params = table
+                                .get_generic_params(*base)
+                                .map(<[_]>::to_vec)
+                                .unwrap_or_default();
+                            let subst =
+                                spark_types::substitute::build_subst_map(&params, &args.clone());
+                            current_ty =
+                                spark_types::substitute::substitute(*field_ty, &subst, table);
                         }
                     }
-                    _ => {
-                        panic!(
-                            "ICE: resolve_place_type: Projection::Field on unsupported type \
-                             {unwrapped:?}"
-                        );
+                }
+                Ty::AsyncState { fields, .. } => {
+                    if let Some((_, field_ty)) = fields.iter().find(|(n, _)| *n == *field_name) {
+                        current_ty = *field_ty;
                     }
                 }
-            }
-            Projection::Index(_) => {
-                match unwrapped {
-                    Ty::List(elem_ty) => current_ty = *elem_ty,
-                    Ty::Map(_, value_ty) => current_ty = *value_ty,
-                    _ => {
-                        panic!(
-                            "ICE: resolve_place_type: Projection::Index on unsupported type \
-                             {unwrapped:?}"
-                        );
+                Ty::Tuple(elems) => {
+                    if let Ok(index) = field_name.as_str().parse::<usize>() {
+                        if index < elems.len() {
+                            current_ty = elems[index];
+                        }
                     }
                 }
-            }
+                _ => {
+                    panic!(
+                        "ICE: resolve_place_type: Projection::Field on unsupported type \
+                             {unwrapped:?}"
+                    );
+                }
+            },
+            Projection::Index(_) => match unwrapped {
+                Ty::List(elem_ty) => current_ty = *elem_ty,
+                Ty::Map(_, value_ty) => current_ty = *value_ty,
+                _ => {
+                    panic!(
+                        "ICE: resolve_place_type: Projection::Index on unsupported type \
+                             {unwrapped:?}"
+                    );
+                }
+            },
             Projection::Deref => {
                 if let Ty::Ref { inner, .. } = unwrapped {
                     current_ty = *inner;
@@ -586,7 +629,10 @@ fn emit_binop(
         }
     } else {
         // Default: check if the result is a signed integer for div/mod.
-        let signed = matches!(ty, Ty::Int(IntWidth::I8 | IntWidth::I16 | IntWidth::I32 | IntWidth::I64));
+        let signed = matches!(
+            ty,
+            Ty::Int(IntWidth::I8 | IntWidth::I16 | IntWidth::I32 | IntWidth::I64)
+        );
         emit_int_binop(ctx, op, lhs, rhs, signed)
     }
 }
@@ -687,19 +733,35 @@ fn emit_int_binop(
         BinaryOp::Eq => ctx.builder.ins().icmp(IntCC::Equal, lhs, rhs),
         BinaryOp::Ne => ctx.builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
         BinaryOp::Lt => {
-            let cc = if signed { IntCC::SignedLessThan } else { IntCC::UnsignedLessThan };
+            let cc = if signed {
+                IntCC::SignedLessThan
+            } else {
+                IntCC::UnsignedLessThan
+            };
             ctx.builder.ins().icmp(cc, lhs, rhs)
         }
         BinaryOp::Le => {
-            let cc = if signed { IntCC::SignedLessThanOrEqual } else { IntCC::UnsignedLessThanOrEqual };
+            let cc = if signed {
+                IntCC::SignedLessThanOrEqual
+            } else {
+                IntCC::UnsignedLessThanOrEqual
+            };
             ctx.builder.ins().icmp(cc, lhs, rhs)
         }
         BinaryOp::Gt => {
-            let cc = if signed { IntCC::SignedGreaterThan } else { IntCC::UnsignedGreaterThan };
+            let cc = if signed {
+                IntCC::SignedGreaterThan
+            } else {
+                IntCC::UnsignedGreaterThan
+            };
             ctx.builder.ins().icmp(cc, lhs, rhs)
         }
         BinaryOp::Ge => {
-            let cc = if signed { IntCC::SignedGreaterThanOrEqual } else { IntCC::UnsignedGreaterThanOrEqual };
+            let cc = if signed {
+                IntCC::SignedGreaterThanOrEqual
+            } else {
+                IntCC::UnsignedGreaterThanOrEqual
+            };
             ctx.builder.ins().icmp(cc, lhs, rhs)
         }
         BinaryOp::And | BinaryOp::BitAnd => ctx.builder.ins().band(lhs, rhs),
@@ -805,21 +867,25 @@ fn emit_aggregate<M: Module>(
                     Ty::Applied { base, args } => {
                         let base = *base;
                         let args = args.clone();
-                        let raw_fields = table.get_struct_fields(base)
+                        let raw_fields = table
+                            .get_struct_fields(base)
                             .map(<[(spark_intern::Symbol, TypeId)]>::to_vec)
                             .unwrap_or_default();
-                        let params = table.get_generic_params(base)
+                        let params = table
+                            .get_generic_params(base)
                             .map(<[_]>::to_vec)
                             .unwrap_or_default();
                         let subst = spark_types::substitute::build_subst_map(&params, &args);
-                        raw_fields.iter()
+                        raw_fields
+                            .iter()
                             .map(|(_, ty)| spark_types::substitute::substitute(*ty, &subst, table))
                             .collect()
                     }
                     _ => vec![],
                 }
             } else {
-                table.get_struct_fields(*def_id)
+                table
+                    .get_struct_fields(*def_id)
                     .map(|fs| fs.iter().map(|(_, ty)| *ty).collect())
                     .unwrap_or_default()
             };
@@ -836,14 +902,17 @@ fn emit_aggregate<M: Module>(
                         // val is a pointer to the source data; memcpy into the struct.
                         let ft = field_ty.unwrap();
                         let field_layout = ctx.layouts.layout_of(ft, table);
-                        let field_addr = ctx.builder.ins().iadd_imm(dest_addr, i64::from(field_off));
+                        let field_addr =
+                            ctx.builder.ins().iadd_imm(dest_addr, i64::from(field_off));
                         let config = module.target_config();
                         ctx.builder.emit_small_memory_copy(
                             config,
                             field_addr,
                             val,
                             u64::from(field_layout.size),
-                            1, 1, true,
+                            1,
+                            1,
+                            true,
                             MemFlags::new(),
                         );
                     }
@@ -878,12 +947,9 @@ fn emit_aggregate<M: Module>(
                 .expect("ICE: enum variant not found; this is a compiler bug");
 
             for (i, operand) in operands.iter().enumerate() {
-                let offset = ctx.layouts.variant_field_offset(
-                    *def_id,
-                    variant_def_id,
-                    i,
-                    table,
-                );
+                let offset = ctx
+                    .layouts
+                    .variant_field_offset(*def_id, variant_def_id, i, table);
                 if let Some(val) = emit_operand(ctx, operand, ecx, module) {
                     ctx.store(val, dest_addr, i32::try_from(offset).unwrap_or(0));
                 }
@@ -920,13 +986,9 @@ fn emit_aggregate<M: Module>(
             Some(dest_addr)
         }
 
-        AggregateKind::List => {
-            emit_list_construction(ctx, operands, dest_local, ecx, module)
-        }
+        AggregateKind::List => emit_list_construction(ctx, operands, dest_local, ecx, module),
 
-        AggregateKind::Map => {
-            emit_map_construction(ctx, operands, dest_local, ecx, module)
-        }
+        AggregateKind::Map => emit_map_construction(ctx, operands, dest_local, ecx, module),
 
         AggregateKind::Set => {
             emit_set_construction(ctx, operands, dest_local, ecx, module, diagnostics)
@@ -936,9 +998,12 @@ fn emit_aggregate<M: Module>(
             emit_closure_construction(ctx, *func_def_id, operands, dest_local, ecx, module)
         }
 
-        AggregateKind::Union { union_ty, member_ty } => {
-            emit_union_construction(ctx, *union_ty, *member_ty, operands, dest_local, ecx, module)
-        }
+        AggregateKind::Union {
+            union_ty,
+            member_ty,
+        } => emit_union_construction(
+            ctx, *union_ty, *member_ty, operands, dest_local, ecx, module,
+        ),
 
         AggregateKind::Channel => {
             // Channel[T]() → call __spark_channel_new(elem_size)
@@ -981,7 +1046,10 @@ fn emit_list_construction<M: Module>(
     };
 
     let elem_layout = ctx.layouts.layout_of(elem_ty, table);
-    let elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(elem_layout.size));
+    let elem_size_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I64, i64::from(elem_layout.size));
 
     // Get the element destructor function address (or null).
     let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
@@ -1031,8 +1099,14 @@ fn emit_map_construction<M: Module>(
 
     let key_layout = ctx.layouts.layout_of(key_ty, table);
     let val_layout = ctx.layouts.layout_of(value_ty, table);
-    let key_size_val = ctx.builder.ins().iconst(types::I64, i64::from(key_layout.size));
-    let val_size_val = ctx.builder.ins().iconst(types::I64, i64::from(val_layout.size));
+    let key_size_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I64, i64::from(key_layout.size));
+    let val_size_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I64, i64::from(val_layout.size));
 
     // Get key/value destructor function addresses (or null).
     let key_drop_val = elem_dtor_func_addr(ctx, key_ty, ecx.elem_dtor_ids, module);
@@ -1097,7 +1171,10 @@ fn emit_set_construction<M: Module>(
     };
 
     let elem_layout = ctx.layouts.layout_of(elem_ty, table);
-    let elem_size_val = ctx.builder.ins().iconst(types::I64, i64::from(elem_layout.size));
+    let elem_size_val = ctx
+        .builder
+        .ins()
+        .iconst(types::I64, i64::from(elem_layout.size));
 
     // Get the element destructor function address (or null).
     let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
@@ -1273,7 +1350,9 @@ fn emit_closure_construction<M: Module>(
                 dest,
                 val,
                 u64::from(layout.size),
-                1, 1, true,
+                1,
+                1,
+                true,
                 MemFlags::new(),
             );
         }
@@ -1288,7 +1367,9 @@ fn emit_closure_construction<M: Module>(
     };
 
     // Store (fn_ptr, env_ptr) into the destination fat pointer slot.
-    ctx.builder.ins().store(MemFlags::new(), fn_ptr, dest_addr, 0);
+    ctx.builder
+        .ins()
+        .store(MemFlags::new(), fn_ptr, dest_addr, 0);
     ctx.builder.ins().store(
         MemFlags::new(),
         env_ptr,
@@ -1380,8 +1461,8 @@ fn emit_map_get_optional<M: Module>(
         .ins()
         .iadd_imm(dest_addr, i64::from(ul.payload_offset));
     if abi::is_scalar(value_ty, table) {
-        let clif_ty = abi::spark_type_to_clif(value_ty, table, ctx.ptr_type)
-            .unwrap_or(ctx.ptr_type);
+        let clif_ty =
+            abi::spark_type_to_clif(value_ty, table, ctx.ptr_type).unwrap_or(ctx.ptr_type);
         let loaded = ctx.load(clif_ty, raw_ptr, 0);
         ctx.store(loaded, payload_addr, 0);
     } else {
@@ -1448,7 +1529,10 @@ fn emit_union_construction<M: Module>(
     // Write the payload at payload_offset.
     if let Some(operand) = operands.first() {
         if let Some(val) = emit_operand(ctx, operand, ecx, module) {
-            let payload_addr = ctx.builder.ins().iadd_imm(dest_addr, i64::from(ul.payload_offset));
+            let payload_addr = ctx
+                .builder
+                .ins()
+                .iadd_imm(dest_addr, i64::from(ul.payload_offset));
             if abi::is_scalar(member_ty, table) {
                 ctx.store(val, payload_addr, 0);
             } else {
@@ -1460,7 +1544,9 @@ fn emit_union_construction<M: Module>(
                     payload_addr,
                     val,
                     u64::from(member_layout.size),
-                    1, 1, true,
+                    1,
+                    1,
+                    true,
                     MemFlags::new(),
                 );
             }
@@ -1683,19 +1769,22 @@ fn emit_string_interp<M: Module>(
             }
             Ty::Int(_) => {
                 let v = val?;
-                let func_ref = module.declare_func_in_func(ctx.stubs.int_to_string, ctx.builder.func);
+                let func_ref =
+                    module.declare_func_in_func(ctx.stubs.int_to_string, ctx.builder.func);
                 let call = ctx.builder.ins().call(func_ref, &[v]);
                 ctx.builder.inst_results(call)[0]
             }
             Ty::Float(_) => {
                 let v = val?;
-                let func_ref = module.declare_func_in_func(ctx.stubs.float_to_string, ctx.builder.func);
+                let func_ref =
+                    module.declare_func_in_func(ctx.stubs.float_to_string, ctx.builder.func);
                 let call = ctx.builder.ins().call(func_ref, &[v]);
                 ctx.builder.inst_results(call)[0]
             }
             Ty::Bool => {
                 let v = val?;
-                let func_ref = module.declare_func_in_func(ctx.stubs.bool_to_string, ctx.builder.func);
+                let func_ref =
+                    module.declare_func_in_func(ctx.stubs.bool_to_string, ctx.builder.func);
                 let call = ctx.builder.ins().call(func_ref, &[v]);
                 ctx.builder.inst_results(call)[0]
             }
@@ -1704,7 +1793,8 @@ fn emit_string_interp<M: Module>(
                 let v = val?;
                 // Extend i32 char to i64 for int_to_string.
                 let wide = ctx.builder.ins().sextend(types::I64, v);
-                let func_ref = module.declare_func_in_func(ctx.stubs.int_to_string, ctx.builder.func);
+                let func_ref =
+                    module.declare_func_in_func(ctx.stubs.int_to_string, ctx.builder.func);
                 let call = ctx.builder.ins().call(func_ref, &[wide]);
                 ctx.builder.inst_results(call)[0]
             }

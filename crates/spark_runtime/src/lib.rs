@@ -15,11 +15,14 @@
 #![allow(clippy::missing_const_for_fn)] // extern "C" FFI stubs are not const
 
 mod channel;
+mod error;
+mod handles;
 mod http;
 mod io;
 mod json;
 mod math;
 mod net;
+mod string;
 mod sys;
 mod time;
 
@@ -391,11 +394,12 @@ pub unsafe extern "C" fn __spark_map_insert(
                 first_tombstone = Some(idx);
             }
         } else if slot_hash == h {
-            // Hash match — verify key equality.
             let existing_key = unsafe { map.keys.add(idx * map.key_size) };
             if unsafe { eq_elem(existing_key, key_ptr, map.key_size, map.key_eq) } {
-                // Overwrite value.
+                unsafe { drop_elem_if_needed(map.key_drop, key_ptr.cast_mut()) };
+
                 let existing_val = unsafe { map.values.add(idx * map.value_size) };
+                unsafe { drop_elem_if_needed(map.val_drop, existing_val) };
                 unsafe {
                     std::ptr::copy_nonoverlapping(value_ptr, existing_val, map.value_size);
                 }
@@ -627,6 +631,7 @@ pub unsafe extern "C" fn __spark_set_insert(set: *mut u8, elem_ptr: *const u8) {
         } else if slot_hash == h {
             let existing = unsafe { set.data.add(idx * set.elem_size) };
             if unsafe { eq_elem(existing, elem_ptr, set.elem_size, set.elem_eq) } {
+                unsafe { drop_elem_if_needed(set.elem_drop, elem_ptr.cast_mut()) };
                 return; // Already present — dedup.
             }
         }
@@ -989,7 +994,12 @@ pub unsafe extern "C" fn __spark_string_eq(a: *mut u8, b: *mut u8) -> i8 {
 /// If the range is empty (e.g. `start >= end` with positive step), returns
 /// an empty list.
 #[no_mangle]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_ptr_alignment)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment
+)]
 pub extern "C" fn __spark_list_from_range(
     start: i64,
     end: i64,
@@ -1404,6 +1414,18 @@ unsafe fn eq_elem(a: *const u8, b: *const u8, elem_size: usize, eq_fn: usize) ->
     }
 }
 
+/// Drops an element slot using a type-specific destructor when one is provided.
+///
+/// # Safety
+///
+/// `elem_ptr` must point to a valid element slot for the destructor's type.
+unsafe fn drop_elem_if_needed(drop_fn: usize, elem_ptr: *mut u8) {
+    if drop_fn != 0 {
+        let f: unsafe extern "C" fn(*mut u8) = unsafe { std::mem::transmute(drop_fn) };
+        unsafe { f(elem_ptr) };
+    }
+}
+
 /// Maps raw hash values 0 and 1 to 2 so they don't collide with sentinel
 /// values [`HASH_EMPTY`] and [`HASH_TOMBSTONE`].
 const fn fix_hash(h: u64) -> u64 {
@@ -1582,12 +1604,16 @@ pub unsafe extern "C" fn __spark_map_rc_dec(ptr: *mut u8) {
         // Scan all cap slots — occupied entries are scattered across the table.
         if map.cap > 0 && !map.hashes.is_null() {
             let key_drop_fn: Option<unsafe extern "C" fn(*mut u8)> = if map.key_drop != 0 {
-                Some(unsafe { std::mem::transmute::<usize, unsafe extern "C" fn(*mut u8)>(map.key_drop) })
+                Some(unsafe {
+                    std::mem::transmute::<usize, unsafe extern "C" fn(*mut u8)>(map.key_drop)
+                })
             } else {
                 None
             };
             let val_drop_fn: Option<unsafe extern "C" fn(*mut u8)> = if map.val_drop != 0 {
-                Some(unsafe { std::mem::transmute::<usize, unsafe extern "C" fn(*mut u8)>(map.val_drop) })
+                Some(unsafe {
+                    std::mem::transmute::<usize, unsafe extern "C" fn(*mut u8)>(map.val_drop)
+                })
             } else {
                 None
             };
@@ -1944,7 +1970,11 @@ pub extern "C" fn __spark_rc_release(_ptr: *mut u8) {
 /// Returns null if `size` is 0 (zero captures → no env needed).
 /// The initial reference count is 1.
 #[no_mangle]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_ptr_alignment)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_ptr_alignment
+)]
 pub extern "C" fn __spark_env_alloc(size: i64) -> *mut u8 {
     let payload_size = size as usize;
     if payload_size == 0 {
@@ -2526,6 +2556,74 @@ mod tests {
     }
 
     #[test]
+    fn map_overwrite_drops_old_value() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_drop(_slot: *mut u8) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        unsafe {
+            DROPS.store(0, Ordering::SeqCst);
+            let m = __spark_map_new(8, 8, 0, count_drop as *const () as usize, 0, 0);
+            let key: i64 = 1;
+            let v1: i64 = 10;
+            let v2: i64 = 20;
+
+            __spark_map_insert(
+                m,
+                (&raw const key).cast::<u8>(),
+                (&raw const v1).cast::<u8>(),
+            );
+            __spark_map_insert(
+                m,
+                (&raw const key).cast::<u8>(),
+                (&raw const v2).cast::<u8>(),
+            );
+
+            assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+            __spark_map_rc_dec(m);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
+    fn map_duplicate_insert_drops_unused_key() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_drop(_slot: *mut u8) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        unsafe {
+            DROPS.store(0, Ordering::SeqCst);
+            let m = __spark_map_new(8, 8, count_drop as *const () as usize, 0, 0, 0);
+            let key: i64 = 1;
+            let v1: i64 = 10;
+            let v2: i64 = 20;
+
+            __spark_map_insert(
+                m,
+                (&raw const key).cast::<u8>(),
+                (&raw const v1).cast::<u8>(),
+            );
+            __spark_map_insert(
+                m,
+                (&raw const key).cast::<u8>(),
+                (&raw const v2).cast::<u8>(),
+            );
+
+            assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+            __spark_map_rc_dec(m);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 2);
+        }
+    }
+
+    #[test]
     fn map_get_missing() {
         unsafe {
             let m = __spark_map_new(8, 8, 0, 0, 0, 0);
@@ -2705,11 +2803,7 @@ mod tests {
             let k2 = __spark_string_from_literal("hello".as_ptr(), 5);
             let v: i64 = 123;
 
-            __spark_map_insert(
-                m,
-                (&raw const k1).cast::<u8>(),
-                (&raw const v).cast::<u8>(),
-            );
+            __spark_map_insert(m, (&raw const k1).cast::<u8>(), (&raw const v).cast::<u8>());
 
             let got = __spark_map_get(m, (&raw const k2).cast::<u8>());
             assert!(!got.is_null());
@@ -2749,6 +2843,30 @@ mod tests {
             assert_eq!(__spark_set_len(s), 1);
 
             __spark_set_rc_dec(s);
+        }
+    }
+
+    #[test]
+    fn set_duplicate_insert_drops_unused_elem() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_drop(_slot: *mut u8) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+
+        unsafe {
+            DROPS.store(0, Ordering::SeqCst);
+            let s = __spark_set_new(8, count_drop as *const () as usize, 0, 0);
+            let val: i64 = 10;
+
+            __spark_set_insert(s, (&raw const val).cast::<u8>());
+            __spark_set_insert(s, (&raw const val).cast::<u8>());
+
+            assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+            __spark_set_rc_dec(s);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 2);
         }
     }
 
@@ -2832,10 +2950,7 @@ mod tests {
             assert_ne!(cow, s);
 
             assert_eq!(__spark_set_contains(s, (&raw const val).cast::<u8>()), 1);
-            assert_eq!(
-                __spark_set_contains(cow, (&raw const val).cast::<u8>()),
-                1
-            );
+            assert_eq!(__spark_set_contains(cow, (&raw const val).cast::<u8>()), 1);
 
             __spark_set_rc_dec(s);
             __spark_set_rc_dec(cow);
@@ -2873,10 +2988,7 @@ mod tests {
             __spark_set_insert(s, (&raw const v2).cast::<u8>());
 
             assert_eq!(__spark_set_len(s), 1);
-            assert_eq!(
-                __spark_set_contains(s, (&raw const v2).cast::<u8>()),
-                1
-            );
+            assert_eq!(__spark_set_contains(s, (&raw const v2).cast::<u8>()), 1);
 
             __spark_string_rc_dec(v1);
             __spark_string_rc_dec(v2);

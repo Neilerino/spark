@@ -17,10 +17,7 @@ use crate::ty::{LifetimeId, Ty, TypeId};
 /// - Named types are resolved via builtins or the resolver's definition table
 /// - Compound types (optional, union, mutable) are recursively lowered
 /// - Structural and infer types produce `Ty::Error` with a diagnostic
-pub fn lower_type_expr(
-    type_expr: &TypeExpr,
-    ctx: &mut TypeCheckCtx<'_>,
-) -> TypeId {
+pub fn lower_type_expr(type_expr: &TypeExpr, ctx: &mut TypeCheckCtx<'_>) -> TypeId {
     let ty = lower_type_expr_inner(type_expr, ctx);
     // Record the lowered type at this ExprId so HIR lowering can look it up.
     ctx.table.set_expr_type(type_expr.id, ty);
@@ -28,10 +25,7 @@ pub fn lower_type_expr(
 }
 
 /// Inner implementation of type-expression lowering.
-fn lower_type_expr_inner(
-    type_expr: &TypeExpr,
-    ctx: &mut TypeCheckCtx<'_>,
-) -> TypeId {
+fn lower_type_expr_inner(type_expr: &TypeExpr, ctx: &mut TypeCheckCtx<'_>) -> TypeId {
     match &type_expr.kind {
         TypeExprKind::Named { path, type_args } => {
             lower_named_type(path, type_args, type_expr, ctx)
@@ -43,10 +37,7 @@ fn lower_type_expr_inner(
         }
 
         TypeExprKind::Union(types) => {
-            let mut members: Vec<TypeId> = types
-                .iter()
-                .map(|t| lower_type_expr(t, ctx))
-                .collect();
+            let mut members: Vec<TypeId> = types.iter().map(|t| lower_type_expr(t, ctx)).collect();
             members.sort();
             members.dedup();
 
@@ -63,18 +54,12 @@ fn lower_type_expr_inner(
         }
 
         TypeExprKind::Tuple(elems) => {
-            let elem_ids: Vec<TypeId> = elems
-                .iter()
-                .map(|t| lower_type_expr(t, ctx))
-                .collect();
+            let elem_ids: Vec<TypeId> = elems.iter().map(|t| lower_type_expr(t, ctx)).collect();
             ctx.table.intern(Ty::Tuple(elem_ids))
         }
 
         TypeExprKind::Function { params, ret } => {
-            let param_ids: Vec<TypeId> = params
-                .iter()
-                .map(|t| lower_type_expr(t, ctx))
-                .collect();
+            let param_ids: Vec<TypeId> = params.iter().map(|t| lower_type_expr(t, ctx)).collect();
             let ret_id = lower_type_expr(ret, ctx);
             ctx.table.intern(Ty::Function {
                 params: param_ids,
@@ -83,7 +68,11 @@ fn lower_type_expr_inner(
             })
         }
 
-        TypeExprKind::Ref { inner, mutable, lifetime } => {
+        TypeExprKind::Ref {
+            inner,
+            mutable,
+            lifetime,
+        } => {
             let inner_id = lower_type_expr(inner, ctx);
             let lifetime_id = ctx.table.intern_lifetime(lifetime.name);
             ctx.table.intern(Ty::Ref {
@@ -131,24 +120,23 @@ fn lower_named_type(
     // Try to resolve via the resolution map
     if let Some(res) = ctx.resolutions {
         if let Some(def_id) = res.get_path(path.span) {
-            return lower_named_def(
-                def_id, type_args, type_expr, ctx,
-            );
+            return lower_named_def(def_id, type_args, type_expr, ctx);
         }
     }
 
     // For simple builtin collection types with type args
     if path.is_simple() {
         let name = path.segments[0].name;
-        return lower_builtin_generic(
-            name, type_args, type_expr, ctx,
-        );
+        return lower_builtin_generic(name, type_args, type_expr, ctx);
     }
 
     // Unresolved type — report error
     ctx.diagnostics.push(
-        Diagnostic::error(format!("unresolved type `{}`", path.last().map_or("<empty>", |s| s.name.as_str())))
-            .with_label(Label::primary(type_expr.span, "not found")),
+        Diagnostic::error(format!(
+            "unresolved type `{}`",
+            path.last().map_or("<empty>", |s| s.name.as_str())
+        ))
+        .with_label(Label::primary(type_expr.span, "not found")),
     );
     TypeId::ERROR
 }
@@ -174,9 +162,8 @@ fn lower_named_def(
     match &info.kind {
         DefinitionKind::Struct => {
             if !type_args.is_empty() {
-                let arg_types: Vec<TypeId> = type_args.iter()
-                    .map(|t| lower_type_expr(t, ctx))
-                    .collect();
+                let arg_types: Vec<TypeId> =
+                    type_args.iter().map(|t| lower_type_expr(t, ctx)).collect();
                 // Validate arity against registered generic params
                 if let Some(params) = ctx.table.get_generic_params(def_id).map(<[_]>::to_vec) {
                     if arg_types.len() != params.len() {
@@ -187,23 +174,41 @@ fn lower_named_def(
                                 if params.len() == 1 { "" } else { "s" },
                                 arg_types.len()
                             ))
-                            .with_label(Label::primary(type_expr.span, "wrong number of type arguments")),
+                            .with_label(Label::primary(
+                                type_expr.span,
+                                "wrong number of type arguments",
+                            )),
                         );
                         return TypeId::ERROR;
                     }
                     // Validate generic constraints on type arguments
                     let subst = crate::substitute::build_subst_map(&params, &arg_types);
                     crate::constraint::validate_constraints(
-                        &params, &subst, ctx.table, ctx.definitions, type_expr.span, ctx.diagnostics,
+                        &params,
+                        &subst,
+                        ctx.table,
+                        ctx.definitions,
+                        type_expr.span,
+                        ctx.diagnostics,
                     );
                 }
-                return ctx.table.intern(Ty::Applied { base: def_id, args: arg_types });
+                return ctx.table.intern(Ty::Applied {
+                    base: def_id,
+                    args: arg_types,
+                });
             }
             // Check if this type requires type args
-            if ctx.table.get_generic_params(def_id).is_some_and(|p| !p.is_empty()) {
+            if ctx
+                .table
+                .get_generic_params(def_id)
+                .is_some_and(|p| !p.is_empty())
+            {
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!("missing type arguments for generic type `{}`", info.name))
-                        .with_label(Label::primary(type_expr.span, "requires type arguments")),
+                    Diagnostic::error(format!(
+                        "missing type arguments for generic type `{}`",
+                        info.name
+                    ))
+                    .with_label(Label::primary(type_expr.span, "requires type arguments")),
                 );
                 return TypeId::ERROR;
             }
@@ -211,9 +216,8 @@ fn lower_named_def(
         }
         DefinitionKind::Enum => {
             if !type_args.is_empty() {
-                let arg_types: Vec<TypeId> = type_args.iter()
-                    .map(|t| lower_type_expr(t, ctx))
-                    .collect();
+                let arg_types: Vec<TypeId> =
+                    type_args.iter().map(|t| lower_type_expr(t, ctx)).collect();
                 if let Some(params) = ctx.table.get_generic_params(def_id).map(<[_]>::to_vec) {
                     if arg_types.len() != params.len() {
                         ctx.diagnostics.push(
@@ -223,22 +227,40 @@ fn lower_named_def(
                                 if params.len() == 1 { "" } else { "s" },
                                 arg_types.len()
                             ))
-                            .with_label(Label::primary(type_expr.span, "wrong number of type arguments")),
+                            .with_label(Label::primary(
+                                type_expr.span,
+                                "wrong number of type arguments",
+                            )),
                         );
                         return TypeId::ERROR;
                     }
                     // Validate generic constraints on type arguments
                     let subst = crate::substitute::build_subst_map(&params, &arg_types);
                     crate::constraint::validate_constraints(
-                        &params, &subst, ctx.table, ctx.definitions, type_expr.span, ctx.diagnostics,
+                        &params,
+                        &subst,
+                        ctx.table,
+                        ctx.definitions,
+                        type_expr.span,
+                        ctx.diagnostics,
                     );
                 }
-                return ctx.table.intern(Ty::Applied { base: def_id, args: arg_types });
+                return ctx.table.intern(Ty::Applied {
+                    base: def_id,
+                    args: arg_types,
+                });
             }
-            if ctx.table.get_generic_params(def_id).is_some_and(|p| !p.is_empty()) {
+            if ctx
+                .table
+                .get_generic_params(def_id)
+                .is_some_and(|p| !p.is_empty())
+            {
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!("missing type arguments for generic type `{}`", info.name))
-                        .with_label(Label::primary(type_expr.span, "requires type arguments")),
+                    Diagnostic::error(format!(
+                        "missing type arguments for generic type `{}`",
+                        info.name
+                    ))
+                    .with_label(Label::primary(type_expr.span, "requires type arguments")),
                 );
                 return TypeId::ERROR;
             }
@@ -255,9 +277,7 @@ fn lower_named_def(
             );
             TypeId::ERROR
         }
-        DefinitionKind::GenericParam => {
-            ctx.table.intern(Ty::Param(def_id))
-        }
+        DefinitionKind::GenericParam => ctx.table.intern(Ty::Param(def_id)),
         _ => {
             ctx.diagnostics.push(
                 Diagnostic::error(format!("`{}` is not a type", info.name))
@@ -393,8 +413,9 @@ pub fn apply_lifetime_elision(
     // Rule 5: No input refs but output has ref
     if input_ref_indices.is_empty() {
         diagnostics.push(
-            Diagnostic::error("cannot infer output lifetime: no input references")
-                .with_label(Label::primary(fn_span, "no input references to share lifetime with")),
+            Diagnostic::error("cannot infer output lifetime: no input references").with_label(
+                Label::primary(fn_span, "no input references to share lifetime with"),
+            ),
         );
         return (param_types.to_vec(), ret_type);
     }
@@ -403,7 +424,8 @@ pub fn apply_lifetime_elision(
     if input_ref_indices.len() == 1 {
         let fresh_lt = table.intern_lifetime(spark_intern::sym("'elided"));
         let mut new_params = param_types.to_vec();
-        new_params[input_ref_indices[0]] = rewrite_ref_lifetime(param_types[input_ref_indices[0]], fresh_lt, table);
+        new_params[input_ref_indices[0]] =
+            rewrite_ref_lifetime(param_types[input_ref_indices[0]], fresh_lt, table);
         let new_ret = rewrite_ref_lifetime(ret_type, fresh_lt, table);
         return (new_params, new_ret);
     }
@@ -419,8 +441,9 @@ pub fn apply_lifetime_elision(
 
     // Rule 4: Multiple input refs, no self
     diagnostics.push(
-        Diagnostic::error("ambiguous output lifetime: multiple input references")
-            .with_label(Label::primary(fn_span, "cannot determine which input lifetime to use")),
+        Diagnostic::error("ambiguous output lifetime: multiple input references").with_label(
+            Label::primary(fn_span, "cannot determine which input lifetime to use"),
+        ),
     );
     (param_types.to_vec(), ret_type)
 }
@@ -449,7 +472,11 @@ fn rewrite_ref_lifetime(ty: TypeId, new_lt: LifetimeId, table: &mut TypeTable) -
     }
     let resolved = table.resolve(ty).clone();
     match resolved {
-        Ty::Ref { inner, mutable, lifetime } => {
+        Ty::Ref {
+            inner,
+            mutable,
+            lifetime,
+        } => {
             let new_inner = rewrite_ref_lifetime(inner, new_lt, table);
             if lifetime.is_anonymous() {
                 table.intern(Ty::Ref {
@@ -469,15 +496,30 @@ fn rewrite_ref_lifetime(ty: TypeId, new_lt: LifetimeId, table: &mut TypeTable) -
         }
         Ty::Optional(inner) => {
             let new_inner = rewrite_ref_lifetime(inner, new_lt, table);
-            if new_inner == inner { ty } else { table.intern(Ty::Optional(new_inner)) }
+            if new_inner == inner {
+                ty
+            } else {
+                table.intern(Ty::Optional(new_inner))
+            }
         }
         Ty::Tuple(elems) => {
-            let new_elems: Vec<_> = elems.iter().map(|e| rewrite_ref_lifetime(*e, new_lt, table)).collect();
-            if new_elems == elems { ty } else { table.intern(Ty::Tuple(new_elems)) }
+            let new_elems: Vec<_> = elems
+                .iter()
+                .map(|e| rewrite_ref_lifetime(*e, new_lt, table))
+                .collect();
+            if new_elems == elems {
+                ty
+            } else {
+                table.intern(Ty::Tuple(new_elems))
+            }
         }
         Ty::Mutable(inner) => {
             let new_inner = rewrite_ref_lifetime(inner, new_lt, table);
-            if new_inner == inner { ty } else { table.intern(Ty::Mutable(new_inner)) }
+            if new_inner == inner {
+                ty
+            } else {
+                table.intern(Ty::Mutable(new_inner))
+            }
         }
         _ => ty,
     }
@@ -521,13 +563,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named("Int");
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -542,13 +578,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named("Bool");
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -566,13 +596,7 @@ mod tests {
             TypeExprKind::Optional(Box::new(make_named("Int"))),
             Span::DUMMY,
         );
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -590,13 +614,7 @@ mod tests {
             TypeExprKind::Mutable(Box::new(make_named("Int"))),
             Span::DUMMY,
         );
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -614,13 +632,7 @@ mod tests {
             TypeExprKind::Union(vec![make_named("Int"), make_named("String")]),
             Span::DUMMY,
         );
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -638,13 +650,7 @@ mod tests {
             TypeExprKind::Tuple(vec![make_named("Int"), make_named("Bool")]),
             Span::DUMMY,
         );
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -665,13 +671,7 @@ mod tests {
             },
             Span::DUMMY,
         );
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -686,13 +686,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named_generic("List", vec![make_named("Int")]);
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -707,13 +701,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named_generic("Map", vec![make_named("String"), make_named("Int")]);
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -728,13 +716,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = TypeExpr::error(Span::DUMMY);
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(!ctx.diagnostics.has_errors());
@@ -749,13 +731,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = TypeExpr::new(TypeExprKind::Structural(vec![]), Span::DUMMY);
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(ctx.diagnostics.has_errors());
@@ -770,13 +746,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let te = make_named("NonExistent");
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         let id = lower_type_expr(&te, &mut ctx);
 
         assert!(ctx.diagnostics.has_errors());
@@ -802,9 +772,8 @@ mod tests {
         let ref_int = make_ref_ty(builtins.int, &mut table);
         let ref_string = make_ref_ty(builtins.string, &mut table);
 
-        let (new_params, new_ret) = apply_lifetime_elision(
-            &[ref_int], ref_string, Span::DUMMY, &mut table, &mut diags,
-        );
+        let (new_params, new_ret) =
+            apply_lifetime_elision(&[ref_int], ref_string, Span::DUMMY, &mut table, &mut diags);
         assert!(!diags.has_errors());
 
         // Both should have the same non-anonymous lifetime
@@ -829,7 +798,11 @@ mod tests {
         let ref_int = make_ref_ty(builtins.int, &mut table);
 
         let (_new_params, _new_ret) = apply_lifetime_elision(
-            &[builtins.int], ref_int, Span::DUMMY, &mut table, &mut diags,
+            &[builtins.int],
+            ref_int,
+            Span::DUMMY,
+            &mut table,
+            &mut diags,
         );
         assert!(diags.has_errors());
     }
@@ -846,7 +819,11 @@ mod tests {
 
         // Two non-self refs with output ref → ambiguous
         let (_new_params, _new_ret) = apply_lifetime_elision(
-            &[builtins.int, ref_int, ref_string], ref_bool, Span::DUMMY, &mut table, &mut diags,
+            &[builtins.int, ref_int, ref_string],
+            ref_bool,
+            Span::DUMMY,
+            &mut table,
+            &mut diags,
         );
         assert!(diags.has_errors());
     }
@@ -863,10 +840,17 @@ mod tests {
 
         // param 0 is ref → self rule applies
         let (new_params, new_ret) = apply_lifetime_elision(
-            &[ref_int, ref_string], ref_bool, Span::DUMMY, &mut table, &mut diags,
+            &[ref_int, ref_string],
+            ref_bool,
+            Span::DUMMY,
+            &mut table,
+            &mut diags,
         );
-        assert!(!diags.has_errors(), "Errors: {:?}",
-            diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !diags.has_errors(),
+            "Errors: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
 
         // Self param and return should share lifetime
         let self_lt = match table.resolve(new_params[0]) {
@@ -897,11 +881,15 @@ mod tests {
         let ref_int = make_ref_ty(builtins.int, &mut table);
 
         let (new_params, new_ret) = apply_lifetime_elision(
-            &[ref_int], builtins.int, Span::DUMMY, &mut table, &mut diags,
+            &[ref_int],
+            builtins.int,
+            Span::DUMMY,
+            &mut table,
+            &mut diags,
         );
         assert!(!diags.has_errors());
         assert_eq!(new_params[0], ref_int); // unchanged
-        assert_eq!(new_ret, builtins.int);  // unchanged
+        assert_eq!(new_ret, builtins.int); // unchanged
     }
 
     #[test]
@@ -919,7 +907,11 @@ mod tests {
         });
 
         let (new_params, new_ret) = apply_lifetime_elision(
-            &[ref_with_explicit], builtins.int, Span::DUMMY, &mut table, &mut diags,
+            &[ref_with_explicit],
+            builtins.int,
+            Span::DUMMY,
+            &mut table,
+            &mut diags,
         );
         assert!(!diags.has_errors());
         // Should be completely unchanged — no anonymous refs in output
@@ -936,9 +928,8 @@ mod tests {
         let ref_int = make_ref_ty(builtins.int, &mut table);
         let ret_tuple = table.intern(Ty::Tuple(vec![ref_int, builtins.int]));
 
-        let (new_params, new_ret) = apply_lifetime_elision(
-            &[ref_int], ret_tuple, Span::DUMMY, &mut table, &mut diags,
-        );
+        let (new_params, new_ret) =
+            apply_lifetime_elision(&[ref_int], ret_tuple, Span::DUMMY, &mut table, &mut diags);
         assert!(!diags.has_errors());
 
         // The ref inside the tuple should have a non-anonymous lifetime

@@ -12,20 +12,24 @@ use crate::lower_expr::{auto_deref_ref, coerce_ref, lower_expr, LowerCtx};
 
 /// Lowers a statement from the AST to HIR.
 #[allow(clippy::too_many_lines)]
-pub(crate) fn lower_stmt(
-    stmt: &Stmt,
-    ctx: &mut LowerCtx<'_>,
-) -> HirStmt {
+pub(crate) fn lower_stmt(stmt: &Stmt, ctx: &mut LowerCtx<'_>) -> HirStmt {
     let table = ctx.table;
     match &stmt.kind {
-        StmtKind::Let { name, ty: _, mutable, value } => {
-            let def_id = ctx.resolutions
+        StmtKind::Let {
+            name,
+            ty: _,
+            mutable,
+            value,
+        } => {
+            let def_id = ctx
+                .resolutions
                 .and_then(|res| res.get_binding(name.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
 
             let mut lowered_value = lower_expr(value, ctx);
 
-            let declared_info = table.get_def_type(def_id)
+            let declared_info = table
+                .get_def_type(def_id)
                 .map(|ty| (ty, strip_mutable(ty, table)));
 
             // Collection element coercion: if declared type is List[Ref[T]] and
@@ -41,10 +45,12 @@ pub(crate) fn lower_stmt(
                         let expected_val = *expected_val;
                         *entries = std::mem::take(entries)
                             .into_iter()
-                            .map(|(k, v)| (
-                                coerce_ref(k, expected_key, value.span, table),
-                                coerce_ref(v, expected_val, value.span, table),
-                            ))
+                            .map(|(k, v)| {
+                                (
+                                    coerce_ref(k, expected_key, value.span, table),
+                                    coerce_ref(v, expected_val, value.span, table),
+                                )
+                            })
                             .collect();
                     }
                     _ => {}
@@ -53,7 +59,10 @@ pub(crate) fn lower_stmt(
 
             // Auto-borrow: if declared type is Ref[T] and value is T, wrap in Borrow
             if let Some((declared_ty, stripped_declared)) = declared_info {
-                if let Ty::Ref { mutable: ref_mut, .. } = table.resolve(stripped_declared) {
+                if let Ty::Ref {
+                    mutable: ref_mut, ..
+                } = table.resolve(stripped_declared)
+                {
                     let value_stripped = strip_mutable(lowered_value.ty, table);
                     if !matches!(table.resolve(value_stripped), Ty::Ref { .. })
                         && !lowered_value.ty.is_error()
@@ -63,8 +72,12 @@ pub(crate) fn lower_stmt(
                         let is_outer_mutable = matches!(table.resolve(declared_ty), Ty::Mutable(_));
                         let borrow_mutable = *ref_mut || is_outer_mutable;
                         lowered_value = HirExpr::new(
-                            HirExprKind::Borrow { operand: Box::new(lowered_value), mutable: borrow_mutable },
-                            declared_ty, value.span,
+                            HirExprKind::Borrow {
+                                operand: Box::new(lowered_value),
+                                mutable: borrow_mutable,
+                            },
+                            declared_ty,
+                            value.span,
                         );
                     }
                 }
@@ -78,7 +91,8 @@ pub(crate) fn lower_stmt(
                     if !matches!(table.resolve(decl_stripped), Ty::Ref { .. }) {
                         lowered_value = HirExpr::new(
                             HirExprKind::Deref(Box::new(lowered_value)),
-                            inner_ty, value.span,
+                            inner_ty,
+                            value.span,
                         );
                     }
                 }
@@ -104,7 +118,8 @@ pub(crate) fn lower_stmt(
                     let inner_ty = *inner;
                     target_hir = HirExpr::new(
                         HirExprKind::Deref(Box::new(target_hir)),
-                        inner_ty, target.span,
+                        inner_ty,
+                        target.span,
                     );
                 }
             }
@@ -116,7 +131,8 @@ pub(crate) fn lower_stmt(
                     let inner_ty = *inner;
                     value_hir = HirExpr::new(
                         HirExprKind::Deref(Box::new(value_hir)),
-                        inner_ty, value.span,
+                        inner_ty,
+                        value.span,
                     );
                 }
             }
@@ -157,7 +173,11 @@ pub(crate) fn lower_stmt(
             let target_inner = strip_mutable(target_hir.ty, table);
             let store_target = if let Ty::Ref { inner, .. } = table.resolve(target_inner) {
                 let inner_ty = *inner;
-                HirExpr::new(HirExprKind::Deref(Box::new(target_hir)), inner_ty, stmt.span)
+                HirExpr::new(
+                    HirExprKind::Deref(Box::new(target_hir)),
+                    inner_ty,
+                    stmt.span,
+                )
             } else {
                 target_hir
             };
@@ -168,9 +188,7 @@ pub(crate) fn lower_stmt(
             }
         }
 
-        StmtKind::Expr(expr) => {
-            HirStmt::Expr(lower_expr(expr, ctx))
-        }
+        StmtKind::Expr(expr) => HirStmt::Expr(lower_expr(expr, ctx)),
     }
 }
 
@@ -255,7 +273,10 @@ mod tests {
 
         // Create target ident expression
         let target_span = Span::new(spark_span::FileId::new(0), 0, 1);
-        let target = Expr::new(ExprKind::Ident(Ident::new(sym("x"), target_span)), target_span);
+        let target = Expr::new(
+            ExprKind::Ident(Ident::new(sym("x"), target_span)),
+            target_span,
+        );
         // Set expression type in the table (as the type checker would)
         table.set_expr_type(target.id, mut_ref_ty);
 
@@ -319,7 +340,10 @@ mod tests {
         table.set_def_type(def_id, mut_int);
 
         let target_span = Span::new(spark_span::FileId::new(0), 5, 6);
-        let target = Expr::new(ExprKind::Ident(Ident::new(sym("y"), target_span)), target_span);
+        let target = Expr::new(
+            ExprKind::Ident(Ident::new(sym("y"), target_span)),
+            target_span,
+        );
         table.set_expr_type(target.id, mut_int);
 
         let value = Expr::new(ExprKind::Literal(Literal::int(2, Span::DUMMY)), Span::DUMMY);

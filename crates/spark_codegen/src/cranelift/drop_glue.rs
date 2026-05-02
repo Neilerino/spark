@@ -64,12 +64,10 @@ pub fn emit_typed_drop<M: Module>(
         Ty::Function { .. } => {
             // Function fat pointer: (fn_ptr, env_ptr).
             // Load env_ptr from the second slot and call __spark_env_rc_dec.
-            let env_ptr = builder.ins().load(
-                ptr_type,
-                MemFlags::new(),
-                ptr_val,
-                ptr_type.bytes() as i32,
-            );
+            let env_ptr =
+                builder
+                    .ins()
+                    .load(ptr_type, MemFlags::new(), ptr_val, ptr_type.bytes() as i32);
             let func_ref = module.declare_func_in_func(stubs.env_rc_dec, builder.func);
             builder.ins().call(func_ref, &[env_ptr]);
         }
@@ -166,11 +164,7 @@ impl DropGlueGenerator {
             .push(cranelift_codegen::ir::AbiParam::new(ptr_type));
 
         let dtor_func_id = module
-            .declare_function(
-                &dtor_name,
-                cranelift_module::Linkage::Local,
-                &dtor_sig,
-            )
+            .declare_function(&dtor_name, cranelift_module::Linkage::Local, &dtor_sig)
             .unwrap_or_else(|e| panic!("ICE: failed to declare elem dtor '{dtor_name}': {e}"));
 
         // Build the function body.
@@ -206,10 +200,7 @@ impl DropGlueGenerator {
             } else {
                 // Scalar RC types: the element slot contains a pointer to
                 // the RC object. Load it and pass to emit_typed_drop.
-                let inner_ptr =
-                    builder
-                        .ins()
-                        .load(ptr_type, MemFlags::new(), elem_ptr, 0);
+                let inner_ptr = builder.ins().load(ptr_type, MemFlags::new(), elem_ptr, 0);
                 emit_typed_drop(
                     &mut builder,
                     inner_ptr,
@@ -230,14 +221,10 @@ impl DropGlueGenerator {
         #[allow(clippy::default_trait_access)]
         clif_ctx
             .compile(module.isa(), &mut Default::default())
-            .unwrap_or_else(|e| {
-                panic!("ICE: codegen error in elem dtor '{dtor_name}': {e:?}")
-            });
+            .unwrap_or_else(|e| panic!("ICE: codegen error in elem dtor '{dtor_name}': {e:?}"));
         module
             .define_function(dtor_func_id, &mut clif_ctx)
-            .unwrap_or_else(|e| {
-                panic!("ICE: failed to define elem dtor '{dtor_name}': {e}")
-            });
+            .unwrap_or_else(|e| panic!("ICE: failed to define elem dtor '{dtor_name}': {e}"));
 
         dtor_func_id
     }

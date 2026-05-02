@@ -104,9 +104,7 @@ pub fn lower_stmt(
             let place = lower_place(target, fb, mir, type_table, defs);
 
             // If reassigning a mutable RC variable, drop the old value first.
-            if place.projections.is_empty()
-                && spark_drop::needs_drop(value.ty, type_table)
-            {
+            if place.projections.is_empty() && spark_drop::needs_drop(value.ty, type_table) {
                 fb.push_stmt(Statement::Drop {
                     place: place.clone(),
                     span: value.span,
@@ -126,7 +124,10 @@ pub fn lower_stmt(
                 let dt_stripped = strip_mutable(dt, type_table);
                 let val_ty = value.ty;
                 dt_stripped != val_ty
-                    && (matches!(type_table.resolve(dt_stripped), Ty::Optional(_) | Ty::Union(_)))
+                    && (matches!(
+                        type_table.resolve(dt_stripped),
+                        Ty::Optional(_) | Ty::Union(_)
+                    ))
             });
 
             if needs_wrap {

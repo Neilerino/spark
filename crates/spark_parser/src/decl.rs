@@ -141,7 +141,10 @@ impl Parser {
 
         // Optional `from "path"` clause.
         let search_path = if self.check(TokenKind::Identifier) {
-            let ident_sym = self.current().as_ident().unwrap_or(spark_intern::kw::UNDERSCORE);
+            let ident_sym = self
+                .current()
+                .as_ident()
+                .unwrap_or(spark_intern::kw::UNDERSCORE);
             if ident_sym.as_str() == "from" {
                 self.advance(); // consume `from`
                 if self.check(TokenKind::StringLiteral) {
@@ -1239,8 +1242,7 @@ mod tests {
 
     #[test]
     fn link_directive_multiple() {
-        let (ast, diags) =
-            parse_source("link \"sqlite3\"\nlink \"z\"\nfn main(): Void { }");
+        let (ast, diags) = parse_source("link \"sqlite3\"\nlink \"z\"\nfn main(): Void { }");
         assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.links.len(), 2);
         assert_eq!(ast.links[0].library.as_str(), "sqlite3");
@@ -1250,13 +1252,15 @@ mod tests {
     #[test]
     fn link_directive_without_string_error() {
         let (_, diags) = parse_source("link fn main(): Void { }");
-        assert!(diags.has_errors(), "expected error for link without string literal");
+        assert!(
+            diags.has_errors(),
+            "expected error for link without string literal"
+        );
     }
 
     #[test]
     fn link_directive_with_imports() {
-        let (ast, diags) =
-            parse_source("import utils\nlink \"m\"\nfn main(): Void { }");
+        let (ast, diags) = parse_source("import utils\nlink \"m\"\nfn main(): Void { }");
         assert!(!diags.has_errors(), "errors: {diags:?}");
         assert_eq!(ast.imports.len(), 1);
         assert_eq!(ast.links.len(), 1);
@@ -1278,9 +1282,11 @@ mod tests {
 
     #[test]
     fn link_directive_from_without_path_error() {
-        let (_, diags) =
-            parse_source("link \"m\" from fn main(): Void { }");
-        assert!(diags.has_errors(), "expected error for `from` without path string");
+        let (_, diags) = parse_source("link \"m\" from fn main(): Void { }");
+        assert!(
+            diags.has_errors(),
+            "expected error for `from` without path string"
+        );
     }
 
     #[test]
@@ -1351,13 +1357,18 @@ mod tests {
     #[test]
     fn link_directive_when_missing_platform() {
         let (_, diags) = parse_source("link \"m\" when\nfn main(): Void { }");
-        assert!(diags.has_errors(), "expected error for `when` without platform");
+        assert!(
+            diags.has_errors(),
+            "expected error for `when` without platform"
+        );
     }
 
     #[test]
     fn link_directive_when_bad_identifier() {
-        let (_, diags) =
-            parse_source("link \"m\" when foo == \"x\"\nfn main(): Void { }");
-        assert!(diags.has_errors(), "expected error for bad identifier after `when`");
+        let (_, diags) = parse_source("link \"m\" when foo == \"x\"\nfn main(): Void { }");
+        assert!(
+            diags.has_errors(),
+            "expected error for bad identifier after `when`"
+        );
     }
 }

@@ -71,9 +71,7 @@ pub fn display_type(ty: TypeId, table: &TypeTable, definitions: &DefinitionTable
         }
         Ty::Optional(inner) => format!("{}?", display_type(*inner, table, definitions)),
         Ty::Mutable(inner) => format!("{}!", display_type(*inner, table, definitions)),
-        Ty::Ref {
-            inner, mutable, ..
-        } => {
+        Ty::Ref { inner, mutable, .. } => {
             if *mutable {
                 format!("Ref[{}]!", display_type(*inner, table, definitions))
             } else {
@@ -256,10 +254,7 @@ mod tests {
         let builtins = register_builtins(&mut table);
         let defs = DefinitionTable::new();
         let union_ty = table.intern(Ty::Union(vec![builtins.int, builtins.string]));
-        assert_eq!(
-            display_type(union_ty, &table, &defs),
-            "Int64 | String"
-        );
+        assert_eq!(display_type(union_ty, &table, &defs), "Int64 | String");
     }
 
     #[test]
@@ -272,10 +267,7 @@ mod tests {
             ret: builtins.bool_ty,
             is_async: false,
         });
-        assert_eq!(
-            display_type(fn_ty, &table, &defs),
-            "(Int64, String): Bool"
-        );
+        assert_eq!(display_type(fn_ty, &table, &defs), "(Int64, String): Bool");
     }
 
     #[test]
@@ -347,11 +339,12 @@ mod tests {
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
         let defs = DefinitionTable::new();
-        let tup = table.intern(Ty::Tuple(vec![builtins.int, builtins.string, builtins.bool_ty]));
-        assert_eq!(
-            display_type(tup, &table, &defs),
-            "Tup[Int64, String, Bool]"
-        );
+        let tup = table.intern(Ty::Tuple(vec![
+            builtins.int,
+            builtins.string,
+            builtins.bool_ty,
+        ]));
+        assert_eq!(display_type(tup, &table, &defs), "Tup[Int64, String, Bool]");
     }
 
     #[test]
@@ -368,7 +361,9 @@ mod tests {
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
         let defs = DefinitionTable::new();
-        let fut = table.intern(Ty::Future { inner: builtins.int });
+        let fut = table.intern(Ty::Future {
+            inner: builtins.int,
+        });
         assert_eq!(display_type(fut, &table, &defs), "Future[Int64]");
     }
 
@@ -377,7 +372,9 @@ mod tests {
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
         let defs = DefinitionTable::new();
-        let ch = table.intern(Ty::Channel { inner: builtins.string });
+        let ch = table.intern(Ty::Channel {
+            inner: builtins.string,
+        });
         assert_eq!(display_type(ch, &table, &defs), "Channel[String]");
     }
 
@@ -458,7 +455,9 @@ mod tests {
     fn mangle_future() {
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
-        let fut = table.intern(Ty::Future { inner: builtins.int });
+        let fut = table.intern(Ty::Future {
+            inner: builtins.int,
+        });
         assert_eq!(mangle_type(fut, &table), "Fut_I64");
     }
 
@@ -466,7 +465,9 @@ mod tests {
     fn mangle_channel() {
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
-        let ch = table.intern(Ty::Channel { inner: builtins.string });
+        let ch = table.intern(Ty::Channel {
+            inner: builtins.string,
+        });
         assert_eq!(mangle_type(ch, &table), "Chan_String");
     }
 }

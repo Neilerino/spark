@@ -45,10 +45,7 @@ pub fn lower_match(
 
     for (i, arm) in arms.iter().enumerate() {
         let test_bb = arm_test_blocks[i];
-        let next_bb = arm_test_blocks
-            .get(i + 1)
-            .copied()
-            .unwrap_or(otherwise_bb);
+        let next_bb = arm_test_blocks.get(i + 1).copied().unwrap_or(otherwise_bb);
         let body_bb = fb.new_block();
 
         fb.switch_to(test_bb);
@@ -99,7 +96,11 @@ pub fn lower_match(
 ///
 /// On match, jumps to `match_bb` (bindings are set up before the jump).
 /// On failure, jumps to `fail_bb`.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines, clippy::only_used_in_recursion)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::only_used_in_recursion
+)]
 fn compile_pattern(
     pattern: &HirPattern,
     scrut: Local,
@@ -182,10 +183,8 @@ fn compile_pattern(
                 }
                 Constant::Float(_) | Constant::String(_) => {
                     // Emit BinaryOp::Eq(scrutinee, literal) → bool temp → SwitchInt
-                    let eq_temp = fb.fresh_temp(
-                        discriminant_type(type_table),
-                        spark_span::Span::DUMMY,
-                    );
+                    let eq_temp =
+                        fb.fresh_temp(discriminant_type(type_table), spark_span::Span::DUMMY);
                     fb.push_assign(
                         Place::from_local(eq_temp),
                         Rvalue::BinaryOp(
@@ -201,9 +200,7 @@ fn compile_pattern(
                         otherwise: fail_bb,
                     });
                 }
-                Constant::FunctionRef(_)
-                | Constant::Void
-                | Constant::IntrinsicRef(_) => {
+                Constant::FunctionRef(_) | Constant::Void | Constant::IntrinsicRef(_) => {
                     // These constants cannot appear as literal patterns.
                     fb.terminate(Terminator::Unreachable);
                 }
@@ -212,8 +209,7 @@ fn compile_pattern(
 
         HirPattern::Variant { def_id, fields } => {
             // Test discriminant, then bind fields
-            let disc_temp =
-                fb.fresh_temp(discriminant_type(type_table), spark_span::Span::DUMMY);
+            let disc_temp = fb.fresh_temp(discriminant_type(type_table), spark_span::Span::DUMMY);
             fb.push_assign(
                 Place::from_local(disc_temp),
                 Rvalue::Discriminant(Place::from_local(scrut)),
@@ -233,8 +229,7 @@ fn compile_pattern(
 
             // Bind sub-patterns to projected fields
             for (idx, sub_pat) in fields.iter().enumerate() {
-                let field_temp =
-                    fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
+                let field_temp = fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
                 let mut place = Place::from_local(scrut);
                 place.projections.push(Projection::EnumField {
                     variant: *def_id,
@@ -248,18 +243,30 @@ fn compile_pattern(
 
                 // Recursively compile sub-pattern
                 let sub_match_bb = fb.new_block();
-                compile_pattern(sub_pat, field_temp, sub_match_bb, fail_bb, fb, mir, type_table, defs);
+                compile_pattern(
+                    sub_pat,
+                    field_temp,
+                    sub_match_bb,
+                    fail_bb,
+                    fb,
+                    mir,
+                    type_table,
+                    defs,
+                );
                 fb.switch_to(sub_match_bb);
             }
 
             fb.terminate(Terminator::Goto { target: match_bb });
         }
 
-        HirPattern::Struct { def_id: _, fields, rest: _ } => {
+        HirPattern::Struct {
+            def_id: _,
+            fields,
+            rest: _,
+        } => {
             // For struct patterns, project each field and match sub-patterns
             for (field_name, sub_pat) in fields {
-                let field_temp =
-                    fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
+                let field_temp = fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
                 let mut place = Place::from_local(scrut);
                 place.projections.push(Projection::Field(*field_name));
                 fb.push_assign(
@@ -269,7 +276,16 @@ fn compile_pattern(
                 );
 
                 let sub_match_bb = fb.new_block();
-                compile_pattern(sub_pat, field_temp, sub_match_bb, fail_bb, fb, mir, type_table, defs);
+                compile_pattern(
+                    sub_pat,
+                    field_temp,
+                    sub_match_bb,
+                    fail_bb,
+                    fb,
+                    mir,
+                    type_table,
+                    defs,
+                );
                 fb.switch_to(sub_match_bb);
             }
             fb.terminate(Terminator::Goto { target: match_bb });
@@ -277,12 +293,11 @@ fn compile_pattern(
 
         HirPattern::Tuple(elements) => {
             for (idx, sub_pat) in elements.iter().enumerate() {
-                let field_temp =
-                    fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
+                let field_temp = fb.fresh_temp(spark_types::TypeId::ERROR, spark_span::Span::DUMMY);
                 let mut place = Place::from_local(scrut);
-                place.projections.push(Projection::Field(
-                    spark_intern::sym(&idx.to_string()),
-                ));
+                place
+                    .projections
+                    .push(Projection::Field(spark_intern::sym(&idx.to_string())));
                 fb.push_assign(
                     Place::from_local(field_temp),
                     Rvalue::Use(Operand::Copy(place)),
@@ -290,7 +305,16 @@ fn compile_pattern(
                 );
 
                 let sub_match_bb = fb.new_block();
-                compile_pattern(sub_pat, field_temp, sub_match_bb, fail_bb, fb, mir, type_table, defs);
+                compile_pattern(
+                    sub_pat,
+                    field_temp,
+                    sub_match_bb,
+                    fail_bb,
+                    fb,
+                    mir,
+                    type_table,
+                    defs,
+                );
                 fb.switch_to(sub_match_bb);
             }
             fb.terminate(Terminator::Goto { target: match_bb });
@@ -305,7 +329,16 @@ fn compile_pattern(
                 } else {
                     fail_bb
                 };
-                compile_pattern(alt, scrut, alt_match_bb, alt_fail_bb, fb, mir, type_table, defs);
+                compile_pattern(
+                    alt,
+                    scrut,
+                    alt_match_bb,
+                    alt_fail_bb,
+                    fb,
+                    mir,
+                    type_table,
+                    defs,
+                );
 
                 // If this alternative matched, go to the outer match_bb
                 fb.switch_to(alt_match_bb);
@@ -324,10 +357,8 @@ fn compile_pattern(
 
             if let Some(idx) = spark_types::union::find_member_index(scrut_ty, *ty, type_table) {
                 // Read discriminant from the scrutinee.
-                let disc_temp = fb.fresh_temp(
-                    discriminant_type(type_table),
-                    spark_span::Span::DUMMY,
-                );
+                let disc_temp =
+                    fb.fresh_temp(discriminant_type(type_table), spark_span::Span::DUMMY);
                 fb.push_assign(
                     Place::from_local(disc_temp),
                     Rvalue::Discriminant(Place::from_local(scrut)),
@@ -351,7 +382,9 @@ fn compile_pattern(
                 };
                 fb.register_def(*def_id, local);
                 let mut payload_place = Place::from_local(scrut);
-                payload_place.projections.push(Projection::UnionPayload(*ty));
+                payload_place
+                    .projections
+                    .push(Projection::UnionPayload(*ty));
                 fb.push_stmt(Statement::Assign {
                     place: Place::from_local(local),
                     rvalue: Rvalue::Use(Operand::Copy(payload_place)),

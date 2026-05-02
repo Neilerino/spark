@@ -100,7 +100,7 @@ impl MirFunction {
     /// 1. The operand is a direct `FunctionRef` constant.
     /// 2. The operand is a `Copy`/`Move` of a local that was assigned a
     ///    `FunctionRef` — scans all blocks' statements to find the assignment.
-    #[must_use] 
+    #[must_use]
     pub fn resolve_callee_def_id(&self, operand: &Operand) -> Option<DefId> {
         // Direct constant case.
         if let Operand::Constant(Constant::FunctionRef(def_id)) = operand {

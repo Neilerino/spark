@@ -97,10 +97,7 @@ pub fn generate_bindings(
         };
 
         // Skip variadic functions (e.g. printf) — Spark doesn't support them.
-        if entity
-            .get_type()
-            .is_some_and(|t| t.is_variadic())
-        {
+        if entity.get_type().is_some_and(|t| t.is_variadic()) {
             warnings.push(BindgenWarning {
                 entity: name,
                 reason: "variadic functions are not supported".to_string(),
@@ -173,6 +170,5 @@ fn is_from_main_file(entity: &clang::Entity<'_>, header_filename: &str) -> bool 
     };
 
     let path = file.get_path();
-    path.file_name()
-        .and_then(|n| n.to_str()) == Some(header_filename)
+    path.file_name().and_then(|n| n.to_str()) == Some(header_filename)
 }

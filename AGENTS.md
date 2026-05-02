@@ -1,6 +1,6 @@
 ## Project Philosophy
 
-**Spark is a "lower-level Python"** - statically typed, compiled, immutable by default, with union types for error handling.
+**Spark** - a statically typed, compiled, immutable by default, with union types for error handling.
 
 **Core Principles** (influence ALL decisions):
 
@@ -11,23 +11,6 @@
 - **Single responsibility** - Each crate does exactly one thing
 
 ---
-
-## Where to Find Information
-## Project Philosophy
-
-**Spark is a "lower-level Python"** - statically typed, compiled, immutable by default, with union types for error handling.
-
-**Core Principles** (influence ALL decisions):
-
-- **Explicitness over implicitness** - All types explicitly declared
-- **Readability over writability** - Code for readers, not writers
-- **Progressive complexity** - Simple things simple, advanced features opt-in
-- **No exceptions** - Errors are values in union types
-- **Single responsibility** - Each crate does exactly one thing
-
----
-
-## Where to Find Information
 
 ### Documentation Structure
 
@@ -84,42 +67,12 @@ Tooling:         tools/spark-lsp, spark_stdlib
 
 ## Task Tracking System
 
-All open work is tracked in the **[Linear project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c)**.
-Every issue title includes its `[SPARK-NNN]` ID for cross-referencing with code comments.
+All open work is tracked in the **[Linear project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c)**
 
-### How it works
+**Linear** — The single source of truth for all open, in-progress, and completed tasks.
+Issues are labelled (Bug, Performance, Feature, Refactor, Documentation, Testing, Research)
+and prioritized (Urgent, High, Medium, Low).
 
-1. **Linear** — The single source of truth for all open, in-progress, and completed tasks.
-   Issues are labelled (Bug, Performance, Feature, Refactor, Documentation, Testing, Research)
-   and prioritized (Urgent, High, Medium, Low).
-2. **Code comments** — In any source file, a comment like `// TODO [SPARK-001]` links that location
-   to the corresponding Linear issue. The **TODO Tree** VS Code extension indexes these and
-   shows them in a sidebar tree view, grouped by tag.
-3. **[tasks/research/](tasks/research/)** — Research and planning tasks produce deliverables as
-   markdown files here, named `SPARK-NNN.md` matching the ticket ID.
-
-### Tags
-
-| Tag     | Meaning                                | When to use                              |
-| ------- | -------------------------------------- | ---------------------------------------- |
-| `TODO`  | Planned work, not yet started          | Default for new tasks                    |
-| `FIXME` | Broken behaviour that needs correcting | Something works but incorrectly          |
-| `BUG`   | User-facing correctness issue          | End users would encounter this           |
-| `PERF`  | Performance improvement opportunity    | Measurable or architectural perf concern |
-| `HACK`  | Temporary workaround, must be replaced | Known tech debt with a plan to fix       |
-| `NOTE`  | Context for future readers, no action  | Explain _why_ something is a certain way |
-
-### Adding a task
-
-1. Create a new issue in the [Linear Spark project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c)
-
-### VS Code integration
-
-The TODO Tree extension is configured in `.vscode/settings.json`. It scans `**/*.rs`, `**/*.spark`,
-`**/*.md`, and `**/*.toml` for tag patterns. Open the TODO Tree sidebar to browse all tagged
-comments, grouped by tag type and filterable by crate.
-
----
 
 ## Critical Rules (Non-Negotiable)
 
@@ -128,6 +81,7 @@ comments, grouped by tag type and filterable by crate.
 3. **SINGLE RESPONSIBILITY** - Each crate has exactly one job
 4. **NO TEMPORARY WORKAROUNDS** - If we're refactoring, and need to make a change that would break old unit tests get confirmation how to proceed. We will either create a task to clean up later, or if it makes sense resolve in current task.
 5. **LOW COUPLING, HIGH COHESION** - Crates should work together seamlessly. Without depending too heavily on one another. So that we can make a change in one crate independant of the rest of the codebase.
+6. **NO REDUNDANT COMMENTS** - When code changes, comments can easily drift from the source of truth. Prioritize self-explanitory readable code over verbose comments. 
 
 ---
 
@@ -395,28 +349,6 @@ Tooling:         tools/spark-lsp, spark_stdlib
 All open work is tracked in the **[Linear project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c)**.
 Every issue title includes its `[SPARK-NNN]` ID for cross-referencing with code comments.
 
-### How it works
-
-1. **Linear** — The single source of truth for all open, in-progress, and completed tasks.
-   Issues are labelled (Bug, Performance, Feature, Refactor, Documentation, Testing, Research)
-   and prioritized (Urgent, High, Medium, Low).
-2. **Code comments** — In any source file, a comment like `// TODO [SPARK-001]` links that location
-   to the corresponding Linear issue. The **TODO Tree** VS Code extension indexes these and
-   shows them in a sidebar tree view, grouped by tag.
-3. **[tasks/research/](tasks/research/)** — Research and planning tasks produce deliverables as
-   markdown files here, named `SPARK-NNN.md` matching the ticket ID.
-
-### Tags
-
-| Tag     | Meaning                                | When to use                              |
-| ------- | -------------------------------------- | ---------------------------------------- |
-| `TODO`  | Planned work, not yet started          | Default for new tasks                    |
-| `FIXME` | Broken behaviour that needs correcting | Something works but incorrectly          |
-| `BUG`   | User-facing correctness issue          | End users would encounter this           |
-| `PERF`  | Performance improvement opportunity    | Measurable or architectural perf concern |
-| `HACK`  | Temporary workaround, must be replaced | Known tech debt with a plan to fix       |
-| `NOTE`  | Context for future readers, no action  | Explain _why_ something is a certain way |
-
 ### Adding a task
 
 1. Create a new issue in the [Linear Spark project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c)
@@ -425,23 +357,15 @@ Every issue title includes its `[SPARK-NNN]` ID for cross-referencing with code 
 3. Add `// TAG [SPARK-NNN]` comments in every affected source file.
 4. For research/planning tasks, create `tasks/research/SPARK-NNN.md` with deliverables.
 
-### VS Code integration
-
-The TODO Tree extension is configured in `.vscode/settings.json`. It scans `**/*.rs`, `**/*.spark`,
-`**/*.md`, and `**/*.toml` for tag patterns. Open the TODO Tree sidebar to browse all tagged
-comments, grouped by tag type and filterable by crate.
-
----
 
 ## Critical Rules (Non-Negotiable)
 
 1. **NO UNSAFE CODE** - `#![forbid(unsafe_code)]` in every crate (except `spark_runtime` which uses `extern "C"` FFI)
 2. **NO PANICS ON INVALID INPUT** - Use error nodes (`ExprKind::Error`), continue parsing
 3. **COMPREHENSIVE TESTS** - Every feature, every error path, edge cases
-4. **ALL PUBLIC ITEMS DOCUMENTED** - Doc comments required
-5. **SINGLE RESPONSIBILITY** - Each crate has exactly one job
-6. **NO TEMPORARY WORKAROUNDS** - If we're refactoring, and need to make a change that would break old unit tests get confirmation how to proceed. We will either create a task to clean up later, or if it makes sense resolve in current task.
-7. **LOW COUPLING, HIGH COHESION** - Crates should work together seamlessly. Without depending too heavily on one another. So that we can make a change in one crate independant of the rest of the codebase.
+4. **SINGLE RESPONSIBILITY** - Each crate has exactly one job
+5. **NO TEMPORARY WORKAROUNDS** - If we're refactoring, and need to make a change that would break old unit tests get confirmation how to proceed. We will either create a task to clean up later, or if it makes sense resolve in current task.
+6. **LOW COUPLING, HIGH COHESION** - Crates should work together seamlessly. Without depending too heavily on one another. So that we can make a change in one crate independant of the rest of the codebase.
 
 ---
 

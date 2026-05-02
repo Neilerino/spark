@@ -34,48 +34,44 @@ pub fn emit_statement<M: Module>(
             // (e.g. `result: T?! = Null`). Zero-fill the slot instead of
             // trying to memcpy from address 0 (which would segfault).
             if place.projections.is_empty()
-                && matches!(rvalue, spark_mir::Rvalue::Use(spark_mir::Operand::Constant(
-                    spark_mir::Constant::Null,
-                )))
-                {
-                    if let LocalStorage::StackSlot(slot, size) = ctx.local_storage(dest_local) {
-                        let dest_addr =
-                            ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0);
-                        ctx.builder.emit_small_memset(
-                            module.target_config(),
-                            dest_addr,
-                            0_u8,
-                            u64::from(size),
-                            1,
-                            MemFlags::new(),
-                        );
-                        return;
-                    }
+                && matches!(
+                    rvalue,
+                    spark_mir::Rvalue::Use(
+                        spark_mir::Operand::Constant(spark_mir::Constant::Null,)
+                    )
+                )
+            {
+                if let LocalStorage::StackSlot(slot, size) = ctx.local_storage(dest_local) {
+                    let dest_addr = ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0);
+                    ctx.builder.emit_small_memset(
+                        module.target_config(),
+                        dest_addr,
+                        0_u8,
+                        u64::from(size),
+                        1,
+                        MemFlags::new(),
+                    );
+                    return;
                 }
+            }
 
-            if let Some(val) = emit_rvalue::emit_rvalue(
-                ctx,
-                rvalue,
-                dest_local,
-                ecx,
-                module,
-                diagnostics,
-            ) {
+            if let Some(val) =
+                emit_rvalue::emit_rvalue(ctx, rvalue, dest_local, ecx, module, diagnostics)
+            {
                 if place.projections.is_empty() {
                     // Check if the destination is a stack slot (aggregate).
                     // For aggregates, `val` is a pointer to the source data
                     // and we need to memcpy it into the destination slot.
                     if let LocalStorage::StackSlot(slot, size) = ctx.local_storage(dest_local) {
-                        let dest_addr =
-                            ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0);
+                        let dest_addr = ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0);
                         let config = module.target_config();
                         ctx.builder.emit_small_memory_copy(
                             config,
                             dest_addr,
                             val,
                             u64::from(size),
-                            1, // dest align
-                            1, // src align
+                            1,    // dest align
+                            1,    // src align
                             true, // non-overlapping
                             MemFlags::new(),
                         );

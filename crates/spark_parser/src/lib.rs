@@ -180,15 +180,12 @@ impl Parser {
         if !self.at_end() {
             self.pos += 1;
         }
-        self.tokens
-            .get(self.pos - 1)
-            .cloned()
-            .unwrap_or_else(|| {
-                self.tokens
-                    .last()
-                    .cloned()
-                    .expect("ICE: token stream must not be empty")
-            })
+        self.tokens.get(self.pos - 1).cloned().unwrap_or_else(|| {
+            self.tokens
+                .last()
+                .cloned()
+                .expect("ICE: token stream must not be empty")
+        })
     }
 
     /// Consumes the current token if it matches the given kind.
@@ -520,7 +517,9 @@ impl Parser {
             TokenKind::Const => Some(self.parse_const(is_pub)),
             TokenKind::Identifier if self.is_binding_start() => Some(self.parse_binding()),
             _ => {
-                self.error_expected("item (fn, extern fn, struct, enum, interface, type, alias, const)");
+                self.error_expected(
+                    "item (fn, extern fn, struct, enum, interface, type, alias, const)",
+                );
                 None
             }
         };

@@ -63,12 +63,12 @@ pub extern "C" fn __spark_channel_new(elem_size: i64) -> *mut u8 {
 /// - `ch` must be a valid `SparkChannel*` from `__spark_channel_new`.
 /// - `value_ptr` must point to at least `elem_size` bytes of valid data.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub unsafe extern "C" fn __spark_channel_send(
-    ch: *mut u8,
-    value_ptr: *const u8,
-    elem_size: i64,
-) {
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub unsafe extern "C" fn __spark_channel_send(ch: *mut u8, value_ptr: *const u8, elem_size: i64) {
     let channel = unsafe { &*(ch.cast::<SparkChannel>()) };
     let size = elem_size as usize;
 
@@ -80,7 +80,9 @@ pub unsafe extern "C" fn __spark_channel_send(
 
     // Send through the channel.
     let sender_mutex = unsafe { &*(channel.sender.cast::<SenderMutex>()) };
-    let guard = sender_mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = sender_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(ref tx) = *guard {
         let _ = tx.send(data); // Silently ignore if receiver is dropped.
     }
@@ -99,12 +101,18 @@ pub unsafe extern "C" fn __spark_channel_send(
 ///
 /// - `ch` must be a valid `SparkChannel*`.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub unsafe extern "C" fn __spark_channel_recv(ch: *mut u8, _elem_size: i64) -> *mut u8 {
     let channel = unsafe { &*(ch.cast::<SparkChannel>()) };
 
     let receiver_mutex = unsafe { &*(channel.receiver.cast::<ReceiverMutex>()) };
-    let guard = receiver_mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = receiver_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     guard.recv().map_or(std::ptr::null_mut(), |data| {
         // Leak the Vec's buffer so the pointer remains valid for the caller.
@@ -126,7 +134,11 @@ pub unsafe extern "C" fn __spark_channel_recv(ch: *mut u8, _elem_size: i64) -> *
 /// - `ch` must be a valid `SparkChannel*`.
 /// - `dest_ptr` must point to a buffer large enough for the Optional struct.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_ptr_alignment,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub unsafe extern "C" fn __spark_channel_try_recv(
     ch: *mut u8,
     elem_size: i64,
@@ -138,7 +150,9 @@ pub unsafe extern "C" fn __spark_channel_try_recv(
     let offset = payload_offset as usize;
 
     let receiver_mutex = unsafe { &*(channel.receiver.cast::<ReceiverMutex>()) };
-    let guard = receiver_mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = receiver_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     match guard.try_recv() {
         Ok(data) => {
@@ -173,7 +187,9 @@ pub unsafe extern "C" fn __spark_channel_close(ch: *mut u8) {
     let channel = unsafe { &*(ch.cast::<SparkChannel>()) };
 
     let sender_mutex = unsafe { &*(channel.sender.cast::<SenderMutex>()) };
-    let mut guard = sender_mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = sender_mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     *guard = None; // Drop the sender.
 }
 

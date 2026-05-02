@@ -127,8 +127,7 @@ mod tests {
     use super::*;
     use crate::facts::extract_facts;
     use spark_mir::{
-        BasicBlock, Constant, LocalDecl, MirFunction, Operand, Place, Rvalue, Statement,
-        Terminator,
+        BasicBlock, Constant, LocalDecl, MirFunction, Operand, Place, Rvalue, Statement, Terminator,
     };
     use spark_resolve::DefId;
     use spark_span::Span;
@@ -271,9 +270,7 @@ mod tests {
                         rvalue: Rvalue::Use(Operand::Constant(Constant::Int(10))),
                         span: Span::DUMMY,
                     }],
-                    terminator: Terminator::Goto {
-                        target: BlockId(3),
-                    },
+                    terminator: Terminator::Goto { target: BlockId(3) },
                     is_cleanup: false,
                 },
                 // bb2
@@ -283,9 +280,7 @@ mod tests {
                         rvalue: Rvalue::Use(Operand::Constant(Constant::Int(20))),
                         span: Span::DUMMY,
                     }],
-                    terminator: Terminator::Goto {
-                        target: BlockId(3),
-                    },
+                    terminator: Terminator::Goto { target: BlockId(3) },
                     is_cleanup: false,
                 },
                 // bb3
@@ -345,9 +340,7 @@ mod tests {
                         rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))),
                         span: Span::DUMMY,
                     }],
-                    terminator: Terminator::Goto {
-                        target: BlockId(1),
-                    },
+                    terminator: Terminator::Goto { target: BlockId(1) },
                     is_cleanup: false,
                 },
                 // bb1: _0 = _1; switchInt(_1) -> [10: bb2, _: bb1]

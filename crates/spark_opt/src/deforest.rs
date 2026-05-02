@@ -93,8 +93,15 @@ pub fn deforest(func: &mut MirFunction, defs: &DefinitionTable) -> bool {
         let aliases = collect_aliases(func, site.local);
 
         // Phase 2: Analyze consumers.
-        let consumers =
-            analyze_consumers(func, site, &aliases, len_def, foreach_def, map_def, map_reduce_def);
+        let consumers = analyze_consumers(
+            func,
+            site,
+            &aliases,
+            len_def,
+            foreach_def,
+            map_def,
+            map_reduce_def,
+        );
 
         // If any consumer escapes, skip this site.
         if consumers.iter().any(|c| matches!(c, Consumer::Escapes)) {
@@ -300,10 +307,7 @@ fn analyze_consumers(
                     }
 
                     // Check for parallel operations: list is always args[0].
-                    if args
-                        .first()
-                        .is_some_and(|a| operand_is_alias(a, aliases))
-                    {
+                    if args.first().is_some_and(|a| operand_is_alias(a, aliases)) {
                         if Some(callee) == foreach_def {
                             consumers.push(Consumer::ParallelOp {
                                 block_idx,
@@ -560,9 +564,7 @@ fn find_builtin_fn(
     name: spark_intern::Symbol,
 ) -> Option<spark_resolve::DefId> {
     defs.iter()
-        .find(
-            |(_, info)| matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == name,
-        )
+        .find(|(_, info)| matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == name)
         .map(|(id, _)| id)
 }
 
@@ -646,9 +648,6 @@ mod tests {
 
         let defs = DefinitionTable::new();
         assert!(deforest(&mut func, &defs));
-        assert!(matches!(
-            func.blocks[0].statements[1],
-            Statement::Nop
-        ));
+        assert!(matches!(func.blocks[0].statements[1], Statement::Nop));
     }
 }

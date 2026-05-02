@@ -111,7 +111,8 @@ impl Resolver {
         let def_id = self.definitions.insert(info);
 
         // Store the builtin DefId so it can be added to ribs during resolution
-        self.builtin_defs.push((kw::PRINT, def_id, DefinitionKind::BuiltinFunction));
+        self.builtin_defs
+            .push((kw::PRINT, def_id, DefinitionKind::BuiltinFunction));
 
         // Register sort/take/reverse as built-in functions (callable via `to` or directly)
         for &fn_name in &[kw::SORT, kw::TAKE, kw::REVERSE] {
@@ -123,15 +124,23 @@ impl Resolver {
                 ModulePath::root(),
             );
             let fn_def_id = self.definitions.insert(info);
-            self.builtin_defs.push((fn_name, fn_def_id, DefinitionKind::BuiltinFunction));
+            self.builtin_defs
+                .push((fn_name, fn_def_id, DefinitionKind::BuiltinFunction));
         }
 
         // Register built-in methods (len, append, contains, remove, add, send, recv, tryRecv, close).
         // These are NOT added to ribs (can't be called as free functions),
         // but need DefIds so MIR and codegen can reference them.
         for &method_name in &[
-            kw::LEN, kw::APPEND, kw::CONTAINS, kw::REMOVE, kw::ADD,
-            kw::SEND, kw::RECV, kw::TRY_RECV, kw::CLOSE,
+            kw::LEN,
+            kw::APPEND,
+            kw::CONTAINS,
+            kw::REMOVE,
+            kw::ADD,
+            kw::SEND,
+            kw::RECV,
+            kw::TRY_RECV,
+            kw::CLOSE,
         ] {
             let info = DefinitionInfo::new(
                 DefinitionKind::BuiltinMethod,
@@ -145,7 +154,11 @@ impl Resolver {
 
         // Register internal parallel runtime stubs.
         // NOT added to ribs — only called from desugared HIR/MIR.
-        for &stub_name in &[kw::PARALLEL_FOREACH, kw::PARALLEL_MAP, kw::PARALLEL_MAP_REDUCE] {
+        for &stub_name in &[
+            kw::PARALLEL_FOREACH,
+            kw::PARALLEL_MAP,
+            kw::PARALLEL_MAP_REDUCE,
+        ] {
             let info = DefinitionInfo::new(
                 DefinitionKind::BuiltinFunction,
                 stub_name,
@@ -204,7 +217,11 @@ impl Resolver {
             let (name, kind, visibility) = match item {
                 Item::Function(f) => (
                     f.name.name,
-                    if f.is_extern { DefinitionKind::ExternFunction } else { DefinitionKind::Function },
+                    if f.is_extern {
+                        DefinitionKind::ExternFunction
+                    } else {
+                        DefinitionKind::Function
+                    },
                     Visibility::from(f.visibility),
                 ),
                 Item::Struct(s) => (
@@ -385,11 +402,7 @@ impl Resolver {
     ///
     /// Used during the collection pass to resolve the bound type in bindings.
     /// Only handles simple named types (e.g., `Foo`), not complex type expressions.
-    fn find_type_def_from_type_expr(
-        &self,
-        ty: &TypeExpr,
-        module_path: &ModulePath,
-    ) -> DefId {
+    fn find_type_def_from_type_expr(&self, ty: &TypeExpr, module_path: &ModulePath) -> DefId {
         if let TypeExprKind::Named { path, .. } = &ty.kind {
             if path.is_simple() {
                 let name = path.segments[0].name;
@@ -442,14 +455,8 @@ impl Resolver {
                                 target_module
                             ))
                             .with_code("E0252")
-                            .with_label(Label::primary(
-                                import_item.span,
-                                "conflicting import",
-                            ))
-                            .with_label(Label::secondary(
-                                *prev_span,
-                                "previously imported here",
-                            ))
+                            .with_label(Label::primary(import_item.span, "conflicting import"))
+                            .with_label(Label::secondary(*prev_span, "previously imported here"))
                             .with_help(format!(
                                 "use an alias: `{} as {}_alias`",
                                 local_name.as_str(),
@@ -480,12 +487,13 @@ impl Resolver {
                         .definitions
                         .get(def_id)
                         .map_or(DefinitionKind::Function, |info| info.kind.clone());
-                    imported_names
-                        .insert(local_name, (target_module.clone(), import_item.span));
-                    self.file_imports
-                        .entry(file_id)
-                        .or_default()
-                        .push((local_name, def_id, kind, import_item.span));
+                    imported_names.insert(local_name, (target_module.clone(), import_item.span));
+                    self.file_imports.entry(file_id).or_default().push((
+                        local_name,
+                        def_id,
+                        kind,
+                        import_item.span,
+                    ));
                 }
             }
         }
@@ -542,7 +550,9 @@ impl Resolver {
         }
 
         // Collect FileIds that belong to the core module
-        let core_files: std::collections::HashSet<FileId> = self.graph.modules
+        let core_files: std::collections::HashSet<FileId> = self
+            .graph
+            .modules
             .get(&core_path)
             .map(|m| m.files.iter().copied().collect())
             .unwrap_or_default();
@@ -635,8 +645,7 @@ impl Resolver {
                 if let Some(imports) = self.file_imports.get(&file_id).cloned() {
                     for (local_name, def_id, kind, import_span) in &imports {
                         if kind.is_value() {
-                            if let Some(prev_id) =
-                                self.rib_stack.define_value(*local_name, *def_id)
+                            if let Some(prev_id) = self.rib_stack.define_value(*local_name, *def_id)
                             {
                                 self.warn_import_shadows_local(
                                     *local_name,
@@ -648,8 +657,7 @@ impl Resolver {
                             self.scope_define_value(*local_name, *def_id);
                         }
                         if kind.is_type() {
-                            if let Some(prev_id) =
-                                self.rib_stack.define_type(*local_name, *def_id)
+                            if let Some(prev_id) = self.rib_stack.define_type(*local_name, *def_id)
                             {
                                 // Only warn for type-only imports to avoid
                                 // double warnings for names in both namespaces
@@ -766,9 +774,12 @@ impl Resolver {
         self.rib_stack.push_type_rib(RibKind::Generic);
 
         // Push a generic scope in the arena spanning from the first to the last generic param.
-        let generic_span = generics.first().unwrap().name.span.merge(
-            generics.last().unwrap().name.span,
-        );
+        let generic_span = generics
+            .first()
+            .unwrap()
+            .name
+            .span
+            .merge(generics.last().unwrap().name.span);
         self.push_scope(ScopeKind::Generic, generic_span);
 
         for generic in generics {
@@ -1077,7 +1088,11 @@ impl Resolver {
                 }
             }
 
-            ExprKind::PipelineApply { expr, operation, args } => {
+            ExprKind::PipelineApply {
+                expr,
+                operation,
+                args,
+            } => {
                 self.resolve_expr(expr);
                 // Resolve the pipeline operation as a value-namespace identifier
                 if let Some(def_id) = self.rib_stack.lookup_value(operation.name) {
@@ -1523,7 +1538,10 @@ impl Resolver {
     /// read-only snapshot for LSP queries and does not need its own diagnostics.
     fn scope_define_value(&mut self, name: Symbol, def_id: DefId) {
         if !self.scope_stack.is_empty() {
-            let _ = self.scope_arena.get_mut(self.current_scope).define_value(name, def_id);
+            let _ = self
+                .scope_arena
+                .get_mut(self.current_scope)
+                .define_value(name, def_id);
         }
     }
 
@@ -1532,7 +1550,10 @@ impl Resolver {
     /// See [`scope_define_value`](Self::scope_define_value) for why the error is discarded.
     fn scope_define_type(&mut self, name: Symbol, def_id: DefId) {
         if !self.scope_stack.is_empty() {
-            let _ = self.scope_arena.get_mut(self.current_scope).define_type(name, def_id);
+            let _ = self
+                .scope_arena
+                .get_mut(self.current_scope)
+                .define_type(name, def_id);
         }
     }
 
@@ -1938,9 +1959,7 @@ mod tests {
         let mut main_info = ModuleInfo::new(main_module_path.clone());
         main_info.files.push(main_file_id);
 
-        graph
-            .modules
-            .insert(main_module_path.clone(), main_info);
+        graph.modules.insert(main_module_path.clone(), main_info);
         graph.compilation_order.push(main_module_path);
         asts.insert(main_file_id, ast);
 
@@ -1965,11 +1984,7 @@ mod tests {
             ",
         );
         assert!(output.diagnostics.has_errors());
-        let errors: Vec<_> = output
-            .diagnostics
-            .iter()
-            .filter(|d| d.is_error())
-            .collect();
+        let errors: Vec<_> = output.diagnostics.iter().filter(|d| d.is_error()).collect();
         assert_eq!(errors.len(), 1);
         assert!(errors[0].message.contains("imported from both"));
     }
@@ -2045,7 +2060,11 @@ mod tests {
         let output = resolve_source("fn main(): Void { x: Int = 1 }");
         assert!(!output.diagnostics.has_errors());
         // Should have at least a module scope and a function scope
-        assert!(output.scope_arena.len() >= 2, "Expected >=2 scopes, got {}", output.scope_arena.len());
+        assert!(
+            output.scope_arena.len() >= 2,
+            "Expected >=2 scopes, got {}",
+            output.scope_arena.len()
+        );
     }
 
     #[test]
@@ -2055,13 +2074,21 @@ mod tests {
 
         let file_id = FileId::new(0);
         // Find innermost scope at offset inside the function body
-        let scope_id = output.scope_arena.find_scope_at_offset(35, file_id)
+        let scope_id = output
+            .scope_arena
+            .find_scope_at_offset(35, file_id)
             .expect("should find a scope inside the function body");
         let visible = output.scope_arena.visible_values(scope_id);
         let names: Vec<&str> = visible.iter().map(|(sym, _)| sym.as_str()).collect();
         // Parameters should be visible
-        assert!(names.contains(&"a"), "Expected 'a' in visible values: {names:?}");
-        assert!(names.contains(&"b"), "Expected 'b' in visible values: {names:?}");
+        assert!(
+            names.contains(&"a"),
+            "Expected 'a' in visible values: {names:?}"
+        );
+        assert!(
+            names.contains(&"b"),
+            "Expected 'b' in visible values: {names:?}"
+        );
     }
 
     #[test]
@@ -2074,26 +2101,40 @@ mod tests {
         // find_scope_at_offset returns the innermost scope, which at offset 0
         // is the Function scope (since `fn main()` starts at byte 0). Walk up
         // the parent chain to find the Module scope.
-        let innermost = output.scope_arena.find_scope_at_offset(0, file_id)
+        let innermost = output
+            .scope_arena
+            .find_scope_at_offset(0, file_id)
             .expect("should find a scope at offset 0");
         let mut module_scope = innermost;
         while output.scope_arena.get(module_scope).kind != crate::scope::ScopeKind::Module {
-            module_scope = output.scope_arena.get(module_scope).parent
+            module_scope = output
+                .scope_arena
+                .get(module_scope)
+                .parent
                 .expect("should have parent leading to module scope");
         }
         let module_values = output.scope_arena.visible_values(module_scope);
         let names: Vec<&str> = module_values.iter().map(|(sym, _)| sym.as_str()).collect();
-        assert!(names.contains(&"main"), "Expected 'main' in module scope: {names:?}");
-        assert!(!names.contains(&"x"), "Did not expect 'x' in module scope: {names:?}");
+        assert!(
+            names.contains(&"main"),
+            "Expected 'main' in module scope: {names:?}"
+        );
+        assert!(
+            !names.contains(&"x"),
+            "Did not expect 'x' in module scope: {names:?}"
+        );
     }
 
     #[test]
     fn scope_arena_nested_blocks_create_nested_scopes() {
-        let output = resolve_source(
-            "fn main(): Void { x: Int = 1\nif x > 0 { y: Int = 2\ny } else { 0 } }",
-        );
+        let output =
+            resolve_source("fn main(): Void { x: Int = 1\nif x > 0 { y: Int = 2\ny } else { 0 } }");
         assert!(!output.diagnostics.has_errors());
         // Should have module + function + block (for func body) + at least 2 blocks (if/else)
-        assert!(output.scope_arena.len() >= 4, "Expected >=4 scopes, got {}", output.scope_arena.len());
+        assert!(
+            output.scope_arena.len() >= 4,
+            "Expected >=4 scopes, got {}",
+            output.scope_arena.len()
+        );
     }
 }

@@ -17,24 +17,21 @@
 use std::cell::RefCell;
 use std::io::Write;
 
-use crate::{__spark_string_from_literal, SparkString};
+use crate::error as runtime_error;
+use crate::string::{read_spark_str, rust_str_to_spark};
 
 thread_local! {
     static LAST_IO_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// Sets the last IO error message.
-fn set_error(msg: String) {
-    LAST_IO_ERROR.with(|e| {
-        *e.borrow_mut() = msg;
-    });
+fn set_error(msg: impl Into<String>) {
+    runtime_error::set(&LAST_IO_ERROR, msg);
 }
 
 /// Clears the last IO error message.
 fn clear_error() {
-    LAST_IO_ERROR.with(|e| {
-        e.borrow_mut().clear();
-    });
+    runtime_error::clear(&LAST_IO_ERROR);
 }
 
 /// Maps a `std::io::ErrorKind` to a Spark IO error code.
@@ -45,33 +42,6 @@ fn error_code(err: &std::io::Error) -> i64 {
         std::io::ErrorKind::AlreadyExists => 3,
         _ => 4,
     }
-}
-
-/// Reads a `SparkString` pointer, returning the content as a Rust `String`.
-///
-/// # Safety
-///
-/// `ptr` must be a valid pointer to a `SparkString`.
-#[allow(clippy::cast_ptr_alignment)]
-unsafe fn read_spark_str(ptr: *mut u8) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    let s = unsafe { &*(ptr.cast::<SparkString>()) };
-    if s.len == 0 {
-        return String::new();
-    }
-    let slice = unsafe { std::slice::from_raw_parts(s.data, s.len) };
-    std::str::from_utf8(slice)
-        .unwrap_or("<invalid utf-8>")
-        .to_owned()
-}
-
-/// Creates a new `SparkString` from a Rust `&str`.
-#[allow(clippy::cast_possible_wrap)] // String lengths won't exceed i64::MAX
-fn rust_str_to_spark(s: &str) -> *mut u8 {
-    let bytes = s.as_bytes();
-    unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
 }
 
 // =============================================================================
@@ -311,10 +281,7 @@ pub unsafe extern "C" fn __spark_io_write_stderr(text: *mut u8) {
 /// Returns the last IO error message as a new `SparkString`.
 #[no_mangle]
 pub extern "C" fn __spark_io_error() -> *mut u8 {
-    LAST_IO_ERROR.with(|e| {
-        let msg = e.borrow();
-        rust_str_to_spark(&msg)
-    })
+    runtime_error::to_spark(&LAST_IO_ERROR)
 }
 
 // =============================================================================
@@ -324,6 +291,7 @@ pub extern "C" fn __spark_io_error() -> *mut u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SparkString;
 
     /// Helper: read a `SparkString` result into a Rust `String`.
     #[allow(clippy::cast_ptr_alignment)] // SparkString pointers are properly aligned

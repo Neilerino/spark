@@ -452,7 +452,10 @@ mod tests {
             TypeId::ERROR, // placeholder
             Span::DUMMY,
         );
-        assert!(matches!(expr.kind, HirExprKind::Literal(HirLiteral::Int(42))));
+        assert!(matches!(
+            expr.kind,
+            HirExprKind::Literal(HirLiteral::Int(42))
+        ));
     }
 
     #[test]

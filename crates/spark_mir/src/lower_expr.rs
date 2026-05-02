@@ -13,9 +13,7 @@ use spark_types::{Ty, TypeId, TypeTable};
 use crate::builder::{FunctionBuilder, LoopContext, MirBuilder};
 use crate::lower_pattern::lower_match;
 use crate::lower_stmt::lower_stmt;
-use crate::mir::{
-    AggregateKind, Constant, Local, Operand, Place, Projection, Rvalue, Terminator,
-};
+use crate::mir::{AggregateKind, Constant, Local, Operand, Place, Projection, Rvalue, Terminator};
 
 /// Lowers an HIR expression, returning the [`Local`] holding the result.
 ///
@@ -131,7 +129,10 @@ pub fn lower_expr(
             // For user-written map index (expr.ty is Optional), we use the
             // MapGetOptional rvalue which handles null safely and produces
             // Optional(V) directly.
-            if is_map && expr.ty != elem_ty && matches!(type_table.resolve(expr.ty), Ty::Optional(_)) {
+            if is_map
+                && expr.ty != elem_ty
+                && matches!(type_table.resolve(expr.ty), Ty::Optional(_))
+            {
                 let opt_temp = fb.fresh_temp(expr.ty, expr.span);
                 fb.push_assign(
                     Place::from_local(opt_temp),
@@ -202,28 +203,25 @@ pub fn lower_expr(
 
             // Reorder to match the struct's declaration order so that
             // codegen stores each value at the correct memory offset.
-            let (field_names, operands) =
-                if let Some(decl_fields) = type_table.get_struct_fields(*def_id) {
-                    let mut field_map: FxHashMap<Symbol, Operand> =
-                        source_fields.into_iter().collect();
-                    let mut ordered_names = Vec::with_capacity(decl_fields.len());
-                    let mut ordered_ops = Vec::with_capacity(decl_fields.len());
-                    for (decl_name, _) in decl_fields {
-                        let op = field_map
-                            .remove(decl_name)
-                            .expect("ICE: struct field missing after type check");
-                        ordered_names.push(*decl_name);
-                        ordered_ops.push(op);
-                    }
-                    debug_assert!(
-                        field_map.is_empty(),
-                        "ICE: extra fields in struct init"
-                    );
-                    (ordered_names, ordered_ops)
-                } else {
-                    // Fallback: keep source order.
-                    source_fields.into_iter().unzip()
-                };
+            let (field_names, operands) = if let Some(decl_fields) =
+                type_table.get_struct_fields(*def_id)
+            {
+                let mut field_map: FxHashMap<Symbol, Operand> = source_fields.into_iter().collect();
+                let mut ordered_names = Vec::with_capacity(decl_fields.len());
+                let mut ordered_ops = Vec::with_capacity(decl_fields.len());
+                for (decl_name, _) in decl_fields {
+                    let op = field_map
+                        .remove(decl_name)
+                        .expect("ICE: struct field missing after type check");
+                    ordered_names.push(*decl_name);
+                    ordered_ops.push(op);
+                }
+                debug_assert!(field_map.is_empty(), "ICE: extra fields in struct init");
+                (ordered_names, ordered_ops)
+            } else {
+                // Fallback: keep source order.
+                source_fields.into_iter().unzip()
+            };
 
             let temp = fb.fresh_temp(expr.ty, expr.span);
             fb.push_assign(
@@ -321,11 +319,16 @@ pub fn lower_expr(
             result
         }
 
-        HirExprKind::If {
+        HirExprKind::If { cond, then_, else_ } => lower_if(
             cond,
             then_,
-            else_,
-        } => lower_if(cond, then_, else_.as_deref(), expr, fb, mir, type_table, defs),
+            else_.as_deref(),
+            expr,
+            fb,
+            mir,
+            type_table,
+            defs,
+        ),
 
         HirExprKind::Match { scrutinee, arms } => {
             lower_match(scrutinee, arms, expr, fb, mir, type_table, defs)
@@ -333,9 +336,7 @@ pub fn lower_expr(
 
         HirExprKind::Loop { body } => lower_loop(body, expr, fb, mir, type_table, defs),
 
-        HirExprKind::Break(value) => {
-            lower_break(value.as_deref(), expr, fb, mir, type_table, defs)
-        }
+        HirExprKind::Break(value) => lower_break(value.as_deref(), expr, fb, mir, type_table, defs),
 
         HirExprKind::Continue => {
             if let Some(ctx) = fb.current_loop() {
@@ -373,7 +374,10 @@ pub fn lower_expr(
         }
 
         // ── Type operations ──────────────────────────────────────
-        HirExprKind::As { expr: inner, target_ty } => {
+        HirExprKind::As {
+            expr: inner,
+            target_ty,
+        } => {
             let operand_local = lower_expr(inner, fb, mir, type_table, defs);
             let temp = fb.fresh_temp(expr.ty, expr.span);
             fb.push_assign(
@@ -416,9 +420,10 @@ pub fn lower_expr(
         }
 
         // ── Type test ─────────────────────────────────────────────
-        HirExprKind::Is { expr: inner, target_ty } => {
-            lower_is_expr(inner, *target_ty, expr, fb, mir, type_table, defs)
-        }
+        HirExprKind::Is {
+            expr: inner,
+            target_ty,
+        } => lower_is_expr(inner, *target_ty, expr, fb, mir, type_table, defs),
 
         HirExprKind::Lambda { .. } => {
             // After lambda lifting, no Lambda nodes should reach MIR.
@@ -466,13 +471,9 @@ pub fn lower_expr(
             temp
         }
 
-        HirExprKind::Await(inner) => {
-            lower_await(inner, expr, fb, mir, type_table, defs)
-        }
+        HirExprKind::Await(inner) => lower_await(inner, expr, fb, mir, type_table, defs),
 
-        HirExprKind::Spawn(inner) => {
-            lower_spawn(inner, expr, fb, mir, type_table, defs)
-        }
+        HirExprKind::Spawn(inner) => lower_spawn(inner, expr, fb, mir, type_table, defs),
 
         // ── String interpolation ──────────────────────────────────
         HirExprKind::StringInterp { parts } => {
@@ -480,16 +481,20 @@ pub fn lower_expr(
         }
 
         // ── List range ───────────────────────────────────────────
-        HirExprKind::ListRange { start, end, inclusive, step } => {
+        HirExprKind::ListRange {
+            start,
+            end,
+            inclusive,
+            step,
+        } => {
             let start_local = lower_expr(start, fb, mir, type_table, defs);
             let end_local = lower_expr(end, fb, mir, type_table, defs);
-            let step_operand = step.as_ref().map_or(
-                Operand::Constant(Constant::Int(1)),
-                |step_expr| {
-                    let step_local = lower_expr(step_expr, fb, mir, type_table, defs);
-                    Operand::Copy(Place::from_local(step_local))
-                },
-            );
+            let step_operand =
+                step.as_ref()
+                    .map_or(Operand::Constant(Constant::Int(1)), |step_expr| {
+                        let step_local = lower_expr(step_expr, fb, mir, type_table, defs);
+                        Operand::Copy(Place::from_local(step_local))
+                    });
             let temp = fb.fresh_temp(expr.ty, expr.span);
             fb.push_assign(
                 Place::from_local(temp),
@@ -511,9 +516,15 @@ pub fn lower_expr(
         }
 
         // ── Fused parallel map + reduce ──────────────────────────
-        HirExprKind::ParallelMapReduce { list, mapper, combiner, initial, .. } => {
-            lower_parallel_map_reduce(list, mapper, combiner, initial, expr, fb, mir, type_table, defs)
-        }
+        HirExprKind::ParallelMapReduce {
+            list,
+            mapper,
+            combiner,
+            initial,
+            ..
+        } => lower_parallel_map_reduce(
+            list, mapper, combiner, initial, expr, fb, mir, type_table, defs,
+        ),
 
         // ── Error recovery ───────────────────────────────────────
         HirExprKind::Error => void_temp(fb, expr),
@@ -533,9 +544,9 @@ pub fn lower_place(
 ) -> Place {
     match &expr.kind {
         HirExprKind::Local(def_id) => {
-            let local = fb.lookup_def(*def_id).unwrap_or_else(|| {
-                lower_expr(expr, fb, mir, type_table, defs)
-            });
+            let local = fb
+                .lookup_def(*def_id)
+                .unwrap_or_else(|| lower_expr(expr, fb, mir, type_table, defs));
             Place::from_local(local)
         }
 
@@ -684,7 +695,8 @@ fn lower_method_call(
     // Look up the method DefId: prefer user-defined (binding) methods from the
     // type checker, then fall back to builtins.  The type checker resolves based
     // on receiver type, so its answer is more precise than a name-only lookup.
-    let method_def_id = type_table.get_method_resolution(expr.span)
+    let method_def_id = type_table
+        .get_method_resolution(expr.span)
         .or_else(|| find_builtin_method(defs, method))
         .unwrap_or(spark_resolve::DefId::DUMMY);
 
@@ -876,18 +888,25 @@ fn lower_is_expr(
                         return result;
                     }
                     // target is a specific variant — find it
-                    variants.iter().find(|(_, vid)| {
-                        type_table.get_def_type(*vid) == Some(target_ty)
-                    })
+                    variants
+                        .iter()
+                        .find(|(_, vid)| type_table.get_def_type(*vid) == Some(target_ty))
                 } else {
                     // Target might be found via variant DefId matching
-                    variants.iter().find(|(_, vid)| {
-                        type_table.get_def_type(*vid) == Some(target_ty)
-                    })
+                    variants
+                        .iter()
+                        .find(|(_, vid)| type_table.get_def_type(*vid) == Some(target_ty))
                 };
 
                 if let Some((_, variant_def_id)) = matching_variant {
-                    emit_discriminant_check(inner_local, i128::from(variant_def_id.as_u32()), result, expr, fb, type_table);
+                    emit_discriminant_check(
+                        inner_local,
+                        i128::from(variant_def_id.as_u32()),
+                        result,
+                        expr,
+                        fb,
+                        type_table,
+                    );
                 } else {
                     // No matching variant — always false
                     fb.push_assign(
@@ -965,9 +984,7 @@ fn emit_discriminant_check(
     // Use Bool type for the discriminant temp so it's allocated as a
     // scalar register (Var), not a StackSlot. SwitchInt reads the local's
     // value, which for StackSlot returns an address, not the actual value.
-    let disc_ty = type_table
-        .lookup(&Ty::Bool)
-        .unwrap_or(TypeId::ERROR);
+    let disc_ty = type_table.lookup(&Ty::Bool).unwrap_or(TypeId::ERROR);
     let disc_temp = fb.fresh_temp(disc_ty, expr.span);
     fb.push_assign(
         Place::from_local(disc_temp),
@@ -1234,9 +1251,9 @@ pub fn emit_assign_with_union_wrap(
         // member is Ref { inner: src_ty } and use that member for wrapping.
         // This handles `return r` where `r: Ref[T]` is auto-deref'd to `T`
         // but the union contains `Ref[T]`.
-        let ref_member = members.iter().find(|&&m| {
-            matches!(type_table.resolve(m), Ty::Ref { inner, .. } if *inner == src_ty)
-        });
+        let ref_member = members
+            .iter()
+            .find(|&&m| matches!(type_table.resolve(m), Ty::Ref { inner, .. } if *inner == src_ty));
         if let Some(&member_ty) = ref_member {
             fb.push_assign(
                 Place::from_local(dest),
@@ -1318,10 +1335,12 @@ fn lower_spawn(
     let closure_local = lower_expr(inner, fb, mir, type_table, defs);
 
     // Find the __spark_spawn builtin.
-    let builtin_def_id = find_builtin_function(defs, kw::SPARK_SPAWN)
-        .unwrap_or(spark_resolve::DefId::DUMMY);
+    let builtin_def_id =
+        find_builtin_function(defs, kw::SPARK_SPAWN).unwrap_or(spark_resolve::DefId::DUMMY);
 
-    let func_ty = type_table.get_def_type(builtin_def_id).unwrap_or(TypeId::ERROR);
+    let func_ty = type_table
+        .get_def_type(builtin_def_id)
+        .unwrap_or(TypeId::ERROR);
     let func_temp = fb.fresh_temp(func_ty, expr.span);
     fb.push_assign(
         Place::from_local(func_temp),
@@ -1377,10 +1396,12 @@ fn lower_await(
     // Phase 2: the inner holds a SparkFuture* — call __spark_await.
     let future_local = lower_expr(inner, fb, mir, type_table, defs);
 
-    let builtin_def_id = find_builtin_function(defs, kw::SPARK_AWAIT)
-        .unwrap_or(spark_resolve::DefId::DUMMY);
+    let builtin_def_id =
+        find_builtin_function(defs, kw::SPARK_AWAIT).unwrap_or(spark_resolve::DefId::DUMMY);
 
-    let func_ty = type_table.get_def_type(builtin_def_id).unwrap_or(TypeId::ERROR);
+    let func_ty = type_table
+        .get_def_type(builtin_def_id)
+        .unwrap_or(TypeId::ERROR);
     let func_temp = fb.fresh_temp(func_ty, expr.span);
     fb.push_assign(
         Place::from_local(func_temp),
@@ -1441,15 +1462,21 @@ fn lower_parallel_each(
 ) -> Local {
     let is_map = matches!(&expr.kind, HirExprKind::ParallelMap { .. });
 
-    let builtin_name = if is_map { kw::PARALLEL_MAP } else { kw::PARALLEL_FOREACH };
-    let builtin_def_id = find_builtin_function(defs, builtin_name)
-        .unwrap_or(spark_resolve::DefId::DUMMY);
+    let builtin_name = if is_map {
+        kw::PARALLEL_MAP
+    } else {
+        kw::PARALLEL_FOREACH
+    };
+    let builtin_def_id =
+        find_builtin_function(defs, builtin_name).unwrap_or(spark_resolve::DefId::DUMMY);
 
     let list_local = lower_expr(list, fb, mir, type_table, defs);
     let cb_local = lower_expr(callback, fb, mir, type_table, defs);
 
     // The builtin function is referenced via Constant::FunctionRef
-    let func_ty = type_table.get_def_type(builtin_def_id).unwrap_or(TypeId::ERROR);
+    let func_ty = type_table
+        .get_def_type(builtin_def_id)
+        .unwrap_or(TypeId::ERROR);
     let func_temp = fb.fresh_temp(func_ty, expr.span);
     fb.push_assign(
         Place::from_local(func_temp),
@@ -1489,15 +1516,17 @@ fn lower_parallel_map_reduce(
     type_table: &TypeTable,
     defs: &DefinitionTable,
 ) -> Local {
-    let builtin_def_id = find_builtin_function(defs, kw::PARALLEL_MAP_REDUCE)
-        .unwrap_or(spark_resolve::DefId::DUMMY);
+    let builtin_def_id =
+        find_builtin_function(defs, kw::PARALLEL_MAP_REDUCE).unwrap_or(spark_resolve::DefId::DUMMY);
 
     let list_local = lower_expr(list, fb, mir, type_table, defs);
     let mapper_local = lower_expr(mapper, fb, mir, type_table, defs);
     let combiner_local = lower_expr(combiner, fb, mir, type_table, defs);
     let initial_local = lower_expr(initial, fb, mir, type_table, defs);
 
-    let func_ty = type_table.get_def_type(builtin_def_id).unwrap_or(TypeId::ERROR);
+    let func_ty = type_table
+        .get_def_type(builtin_def_id)
+        .unwrap_or(TypeId::ERROR);
     let func_temp = fb.fresh_temp(func_ty, expr.span);
     fb.push_assign(
         Place::from_local(func_temp),

@@ -5,7 +5,9 @@
 
 use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::ir::types;
-use cranelift_codegen::ir::{Block, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Type as ClifType, Value};
+use cranelift_codegen::ir::{
+    Block, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Type as ClifType, Value,
+};
 use cranelift_frontend::{FunctionBuilder, Variable};
 use cranelift_module::FuncId;
 use rustc_hash::FxHashMap;
@@ -104,8 +106,8 @@ impl<'a> FunctionContext<'a> {
             if abi::is_zero_sized(ty_id, table) {
                 locals.push(LocalStorage::ZeroSized);
             } else if abi::is_scalar(ty_id, table) {
-                let clif_ty = clif_types::local_clif_type(ty_id, table, ptr_type)
-                    .unwrap_or(types::I64);
+                let clif_ty =
+                    clif_types::local_clif_type(ty_id, table, ptr_type).unwrap_or(types::I64);
                 let var = Variable::new(next_var);
                 next_var += 1;
                 builder.declare_var(var, clif_ty);
@@ -186,17 +188,13 @@ impl<'a> FunctionContext<'a> {
 
     /// Stores a value at a memory address.
     pub fn store(&mut self, val: Value, addr: Value, offset: i32) {
-        self.builder
-            .ins()
-            .store(MemFlags::new(), val, addr, offset);
+        self.builder.ins().store(MemFlags::new(), val, addr, offset);
     }
 
     /// Loads a value from a memory address.
     #[must_use]
     pub fn load(&mut self, ty: ClifType, addr: Value, offset: i32) -> Value {
-        self.builder
-            .ins()
-            .load(ty, MemFlags::new(), addr, offset)
+        self.builder.ins().load(ty, MemFlags::new(), addr, offset)
     }
 
     /// Returns the type ID of a MIR local.

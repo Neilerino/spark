@@ -16,19 +16,17 @@ use dashmap::DashMap;
 use ropey::Rope;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
-    self, CompletionItem, CompletionItemKind, CompletionList, CompletionOptions,
-    CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
-    DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams,
-    DocumentSymbolResponse, FileChangeType, FileSystemWatcher,
-    GotoDefinitionParams, GotoDefinitionResponse, GlobPattern, Hover,
-    HoverContents, HoverParams, HoverProviderCapability, InitializeParams,
-    InitializeResult, InitializedParams, Location, MarkupContent, MarkupKind,
-    MessageType, ReferenceParams, Registration, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities,
-    ServerInfo, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind,
-    Url, DidChangeWatchedFilesRegistrationOptions, WatchKind,
+    self, CompletionItem, CompletionItemKind, CompletionList, CompletionOptions, CompletionParams,
+    CompletionResponse, DidChangeTextDocumentParams, DidChangeWatchedFilesParams,
+    DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    FileChangeType, FileSystemWatcher, GlobPattern, GotoDefinitionParams, GotoDefinitionResponse,
+    Hover, HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    InitializedParams, Location, MarkupContent, MarkupKind, MessageType, ReferenceParams,
+    Registration, SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
+    ServerCapabilities, ServerInfo, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind,
+    Url, WatchKind,
 };
 use tower_lsp::{Client, LanguageServer};
 
@@ -76,10 +74,7 @@ impl Backend {
 
     /// Returns `true` if a workspace root is configured.
     fn has_workspace(&self) -> bool {
-        self.workspace
-            .read()
-            .ok()
-            .is_some_and(|ws| ws.is_some())
+        self.workspace.read().ok().is_some_and(|ws| ws.is_some())
     }
 
     /// Runs the single-file compiler frontend on a document, caches
@@ -210,10 +205,12 @@ impl Backend {
                 // Clean up stale disk entries for files no longer in the workspace.
                 let current_uris: std::collections::HashSet<&Url> =
                     ws.file_id_to_uri.values().collect();
-                ws.disk_sources
-                    .retain(|uri, _| current_uris.contains(uri) || self.documents.contains_key(uri));
-                ws.disk_ropes
-                    .retain(|uri, _| current_uris.contains(uri) || self.documents.contains_key(uri));
+                ws.disk_sources.retain(|uri, _| {
+                    current_uris.contains(uri) || self.documents.contains_key(uri)
+                });
+                ws.disk_ropes.retain(|uri, _| {
+                    current_uris.contains(uri) || self.documents.contains_key(uri)
+                });
             }
         }
 
@@ -250,8 +247,7 @@ impl Backend {
             let ws_guard = self.workspace.read().ok()?;
             let ws = ws_guard.as_ref()?;
             let target_uri = ws.file_id_to_uri.get(&def_span.file)?;
-            let target_rope =
-                document::get_rope_for_file(&self.documents, ws, target_uri)?;
+            let target_rope = document::get_rope_for_file(&self.documents, ws, target_uri)?;
             let range = document::span_to_range(&target_rope, def_span)?;
             Some(Location {
                 uri: target_uri.clone(),
@@ -400,7 +396,11 @@ fn find_method_at_offset(
 fn def_type_str(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Option<String> {
     let table = analysis.type_table.as_ref()?;
     let type_id = table.get_def_type(def_id)?;
-    Some(spark_types::display_type(type_id, table, &analysis.definitions))
+    Some(spark_types::display_type(
+        type_id,
+        table,
+        &analysis.definitions,
+    ))
 }
 
 /// Formats a single generic constraint for display (e.g., `Comparable` or `{ id: Int }`).
@@ -481,15 +481,19 @@ fn format_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Opti
     let content = match &def_info.kind {
         DefinitionKind::Function => {
             let generics = format_generic_params(def_id, analysis).unwrap_or_default();
-            def_type_str(analysis, def_id)
-                .map_or_else(|| format!("fn {name}{generics}(...)"), |ty| format!("fn {name}{generics}{ty}"))
+            def_type_str(analysis, def_id).map_or_else(
+                || format!("fn {name}{generics}(...)"),
+                |ty| format!("fn {name}{generics}{ty}"),
+            )
         }
         DefinitionKind::Struct => format_struct_hover(analysis, def_id, name),
         DefinitionKind::Enum => format_enum_hover(analysis, def_id, name),
         DefinitionKind::Local | DefinitionKind::Parameter => def_type_str(analysis, def_id)
             .map_or_else(|| name.to_string(), |ty| format!("{name}: {ty}")),
-        DefinitionKind::Const => def_type_str(analysis, def_id)
-            .map_or_else(|| format!("const {name}"), |ty| format!("const {name}: {ty}")),
+        DefinitionKind::Const => def_type_str(analysis, def_id).map_or_else(
+            || format!("const {name}"),
+            |ty| format!("const {name}: {ty}"),
+        ),
         DefinitionKind::StructField(parent_id) => {
             let parent_name = analysis
                 .definitions
@@ -526,18 +530,24 @@ fn format_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Opti
         DefinitionKind::BuiltinFunction => format!("fn {name}(...)"),
         DefinitionKind::BuiltinMethod | DefinitionKind::BindingMethod(_) => {
             let generics = format_generic_params(def_id, analysis).unwrap_or_default();
-            def_type_str(analysis, def_id)
-                .map_or_else(|| format!("fn .{name}{generics}(...)"), |ty| format!("fn {name}{generics}{ty}"))
+            def_type_str(analysis, def_id).map_or_else(
+                || format!("fn .{name}{generics}(...)"),
+                |ty| format!("fn {name}{generics}{ty}"),
+            )
         }
         DefinitionKind::Lambda => {
             let generics = format_generic_params(def_id, analysis).unwrap_or_default();
-            def_type_str(analysis, def_id)
-                .map_or_else(|| format!("fn {name}{generics}(...)"), |ty| format!("fn {name}{generics}{ty}"))
+            def_type_str(analysis, def_id).map_or_else(
+                || format!("fn {name}{generics}(...)"),
+                |ty| format!("fn {name}{generics}{ty}"),
+            )
         }
         DefinitionKind::ExternFunction => {
             let generics = format_generic_params(def_id, analysis).unwrap_or_default();
-            def_type_str(analysis, def_id)
-                .map_or_else(|| format!("extern fn {name}{generics}(...)"), |ty| format!("extern fn {name}{generics}{ty}"))
+            def_type_str(analysis, def_id).map_or_else(
+                || format!("extern fn {name}{generics}(...)"),
+                |ty| format!("extern fn {name}{generics}{ty}"),
+            )
         }
     };
 
@@ -551,20 +561,17 @@ fn format_struct_hover(
     name: &str,
 ) -> String {
     let generics = format_generic_params(def_id, analysis).unwrap_or_default();
-    let fields = analysis
-        .type_table
-        .as_ref()
-        .and_then(|table| {
-            table.get_struct_fields(def_id).map(|fields| {
-                fields
-                    .iter()
-                    .map(|(sym, tid)| {
-                        let ty = spark_types::display_type(*tid, table, &analysis.definitions);
-                        format!("    {sym}: {ty}")
-                    })
-                    .collect::<Vec<_>>()
-            })
-        });
+    let fields = analysis.type_table.as_ref().and_then(|table| {
+        table.get_struct_fields(def_id).map(|fields| {
+            fields
+                .iter()
+                .map(|(sym, tid)| {
+                    let ty = spark_types::display_type(*tid, table, &analysis.definitions);
+                    format!("    {sym}: {ty}")
+                })
+                .collect::<Vec<_>>()
+        })
+    });
     match fields {
         Some(f) if f.is_empty() => format!("struct {name}{generics} {{ }}"),
         Some(f) => format!("struct {name}{generics} {{\n{}\n}}", f.join(",\n")),
@@ -579,17 +586,14 @@ fn format_enum_hover(
     name: &str,
 ) -> String {
     let generics = format_generic_params(def_id, analysis).unwrap_or_default();
-    let variants = analysis
-        .type_table
-        .as_ref()
-        .and_then(|table| {
-            table.get_enum_variants(def_id).map(|variants| {
-                variants
-                    .iter()
-                    .map(|(sym, _)| format!("    {sym}"))
-                    .collect::<Vec<_>>()
-            })
-        });
+    let variants = analysis.type_table.as_ref().and_then(|table| {
+        table.get_enum_variants(def_id).map(|variants| {
+            variants
+                .iter()
+                .map(|(sym, _)| format!("    {sym}"))
+                .collect::<Vec<_>>()
+        })
+    });
     match variants {
         Some(v) if v.is_empty() => format!("enum {name}{generics} {{ }}"),
         Some(v) => format!("enum {name}{generics} {{\n{}\n}}", v.join(",\n")),
@@ -606,22 +610,48 @@ fn item_to_document_symbol(item: &Item, rope: &ropey::Rope) -> Option<DocumentSy
         Item::Function(f) => (f.name.name, SymbolKind::FUNCTION, f.span, f.name.span, None),
         Item::Struct(s) => {
             let kids = struct_field_symbols(&s.fields, rope);
-            (s.name.name, SymbolKind::STRUCT, s.span, s.name.span, Some(kids))
+            (
+                s.name.name,
+                SymbolKind::STRUCT,
+                s.span,
+                s.name.span,
+                Some(kids),
+            )
         }
         Item::Enum(e) => {
             let kids = enum_variant_symbols(&e.variants, rope);
-            (e.name.name, SymbolKind::ENUM, e.span, e.name.span, Some(kids))
+            (
+                e.name.name,
+                SymbolKind::ENUM,
+                e.span,
+                e.name.span,
+                Some(kids),
+            )
         }
         Item::Interface(i) => {
             let kids = interface_method_symbols(&i.methods, rope);
-            (i.name.name, SymbolKind::INTERFACE, i.span, i.name.span, Some(kids))
+            (
+                i.name.name,
+                SymbolKind::INTERFACE,
+                i.span,
+                i.name.span,
+                Some(kids),
+            )
         }
-        Item::TypeAlias(t) => {
-            (t.name.name, SymbolKind::TYPE_PARAMETER, t.span, t.name.span, None)
-        }
-        Item::TypeDef(t) => {
-            (t.name.name, SymbolKind::TYPE_PARAMETER, t.span, t.name.span, None)
-        }
+        Item::TypeAlias(t) => (
+            t.name.name,
+            SymbolKind::TYPE_PARAMETER,
+            t.span,
+            t.name.span,
+            None,
+        ),
+        Item::TypeDef(t) => (
+            t.name.name,
+            SymbolKind::TYPE_PARAMETER,
+            t.span,
+            t.name.span,
+            None,
+        ),
         Item::Const(c) => (c.name.name, SymbolKind::CONSTANT, c.span, c.name.span, None),
         Item::Binding(_) => return None,
     };
@@ -790,10 +820,7 @@ const fn sort_prefix(kind: &spark_resolve::DefinitionKind) -> &'static str {
 }
 
 /// Generates scope-aware completions (general, non-dot context).
-fn scope_completions(
-    analysis: &AnalysisResult,
-    offset: u32,
-) -> Option<Vec<CompletionItem>> {
+fn scope_completions(analysis: &AnalysisResult, offset: u32) -> Option<Vec<CompletionItem>> {
     let mut items = Vec::new();
 
     // Try scope arena first
@@ -868,14 +895,35 @@ fn scope_completions(
         });
     }
 
-    if items.is_empty() { None } else { Some(items) }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 /// Keywords to include in general completions.
 const KEYWORD_COMPLETIONS: &[&str] = &[
-    "fn", "if", "else", "match", "return", "struct", "enum", "interface",
-    "import", "const", "pub", "loop", "break", "continue", "spawn", "async",
-    "await", "alias", "type", "binding",
+    "fn",
+    "if",
+    "else",
+    "match",
+    "return",
+    "struct",
+    "enum",
+    "interface",
+    "import",
+    "const",
+    "pub",
+    "loop",
+    "break",
+    "continue",
+    "spawn",
+    "async",
+    "await",
+    "alias",
+    "type",
+    "binding",
 ];
 
 /// Generates dot-completions for member access.
@@ -968,28 +1016,51 @@ fn dot_completions_for_ty(
             }
         }
         spark_types::Ty::String => {
-            add_builtin_methods(&mut items, &[
-                ("len", "Int"), ("contains", "(String): Bool"),
-                ("toInt", "Int?"), ("toFloat", "Float?"), ("toString", "String"),
-            ]);
+            add_builtin_methods(
+                &mut items,
+                &[
+                    ("len", "Int"),
+                    ("contains", "(String): Bool"),
+                    ("toInt", "Int?"),
+                    ("toFloat", "Float?"),
+                    ("toString", "String"),
+                ],
+            );
         }
         spark_types::Ty::List(_) => {
-            add_builtin_methods(&mut items, &[
-                ("len", "Int"), ("append", "(T): Void"), ("contains", "(T): Bool"),
-                ("remove", "(Int): Void"), ("sort", "List[T]"),
-                ("take", "(Int): List[T]"), ("reverse", "List[T]"),
-            ]);
+            add_builtin_methods(
+                &mut items,
+                &[
+                    ("len", "Int"),
+                    ("append", "(T): Void"),
+                    ("contains", "(T): Bool"),
+                    ("remove", "(Int): Void"),
+                    ("sort", "List[T]"),
+                    ("take", "(Int): List[T]"),
+                    ("reverse", "List[T]"),
+                ],
+            );
         }
         spark_types::Ty::Map(_, _) => {
-            add_builtin_methods(&mut items, &[
-                ("len", "Int"), ("contains", "(K): Bool"), ("remove", "(K): Void"),
-            ]);
+            add_builtin_methods(
+                &mut items,
+                &[
+                    ("len", "Int"),
+                    ("contains", "(K): Bool"),
+                    ("remove", "(K): Void"),
+                ],
+            );
         }
         spark_types::Ty::Set(_) => {
-            add_builtin_methods(&mut items, &[
-                ("len", "Int"), ("contains", "(T): Bool"),
-                ("remove", "(T): Void"), ("add", "(T): Void"),
-            ]);
+            add_builtin_methods(
+                &mut items,
+                &[
+                    ("len", "Int"),
+                    ("contains", "(T): Bool"),
+                    ("remove", "(T): Void"),
+                    ("add", "(T): Void"),
+                ],
+            );
         }
         spark_types::Ty::Mutable(inner_id) => {
             let inner_ty = table.resolve(*inner_id);
@@ -997,7 +1068,11 @@ fn dot_completions_for_ty(
         }
         _ => {}
     }
-    if items.is_empty() { None } else { Some(items) }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 /// Adds built-in method completions.
@@ -1100,8 +1175,7 @@ impl LanguageServer for Backend {
                         for path in &spark_files {
                             if let Some(uri) = workspace::file_path_to_uri(path) {
                                 if let Ok(source) = std::fs::read_to_string(path) {
-                                    ws.disk_ropes
-                                        .insert(uri.clone(), Rope::from_str(&source));
+                                    ws.disk_ropes.insert(uri.clone(), Rope::from_str(&source));
                                     ws.disk_sources.insert(uri, source);
                                 }
                             }
@@ -1110,21 +1184,15 @@ impl LanguageServer for Backend {
                 }
 
                 // Resolve Spark.toml dependencies from all projects in the workspace.
-                let (dep_sources, dep_errors) =
-                    workspace::resolve_all_workspace_deps(&root);
+                let (dep_sources, dep_errors) = workspace::resolve_all_workspace_deps(&root);
                 for err in &dep_errors {
-                    self.client
-                        .log_message(MessageType::WARNING, err)
-                        .await;
+                    self.client.log_message(MessageType::WARNING, err).await;
                 }
                 if !dep_sources.is_empty() {
                     self.client
                         .log_message(
                             MessageType::INFO,
-                            format!(
-                                "Resolved {} dependency source files",
-                                dep_sources.len()
-                            ),
+                            format!("Resolved {} dependency source files", dep_sources.len()),
                         )
                         .await;
                     let mut ws_guard = self.workspace.write().unwrap();
@@ -1159,10 +1227,7 @@ impl LanguageServer for Backend {
                 ),
             };
 
-            let _ = self
-                .client
-                .register_capability(vec![registration])
-                .await;
+            let _ = self.client.register_capability(vec![registration]).await;
         }
     }
 
@@ -1182,8 +1247,7 @@ impl LanguageServer for Backend {
             .map(|doc| {
                 let source = doc.rope.to_string();
                 let context = doc.analysis.as_ref().and_then(|analysis| {
-                    let resolutions =
-                        analysis.resolved.get_resolutions(analysis.file_id)?;
+                    let resolutions = analysis.resolved.get_resolutions(analysis.file_id)?;
                     Some(semantic_tokens::SemanticContext {
                         resolutions,
                         definitions: &analysis.definitions,
@@ -1216,7 +1280,8 @@ impl LanguageServer for Backend {
                 def_id
             } else {
                 let table = analysis.type_table.as_ref()?;
-                if let Some((_span, def_id)) = find_field_at_offset(table, offset, analysis.file_id) {
+                if let Some((_span, def_id)) = find_field_at_offset(table, offset, analysis.file_id)
+                {
                     def_id
                 } else {
                     let (_span, def_id) = find_method_at_offset(table, offset, analysis.file_id)?;
@@ -1226,12 +1291,7 @@ impl LanguageServer for Backend {
 
             let def_info = analysis.definitions.get(def_id)?;
 
-            self.resolve_def_location(
-                def_info.span,
-                analysis.file_id,
-                uri,
-                &doc.rope,
-            )
+            self.resolve_def_location(def_info.span, analysis.file_id, uri, &doc.rope)
         });
 
         Ok(location.map(GotoDefinitionResponse::Scalar))
@@ -1291,12 +1351,9 @@ impl LanguageServer for Backend {
             for res_map in analysis.resolved.resolutions.values() {
                 let ref_spans = res_map.find_references(def_id);
                 for span in ref_spans {
-                    if let Some(loc) = self.resolve_def_location(
-                        span,
-                        analysis.file_id,
-                        uri,
-                        &doc.rope,
-                    ) {
+                    if let Some(loc) =
+                        self.resolve_def_location(span, analysis.file_id, uri, &doc.rope)
+                    {
                         locs.push(loc);
                     }
                 }
@@ -1305,18 +1362,19 @@ impl LanguageServer for Backend {
             // Include the definition site if requested.
             if params.context.include_declaration {
                 if let Some(def_info) = analysis.definitions.get(def_id) {
-                    if let Some(loc) = self.resolve_def_location(
-                        def_info.span,
-                        analysis.file_id,
-                        uri,
-                        &doc.rope,
-                    ) {
+                    if let Some(loc) =
+                        self.resolve_def_location(def_info.span, analysis.file_id, uri, &doc.rope)
+                    {
                         locs.push(loc);
                     }
                 }
             }
 
-            if locs.is_empty() { None } else { Some(locs) }
+            if locs.is_empty() {
+                None
+            } else {
+                Some(locs)
+            }
         });
 
         Ok(locations)
@@ -1337,7 +1395,11 @@ impl LanguageServer for Backend {
                 .filter_map(|item| item_to_document_symbol(item, &doc.rope))
                 .collect();
 
-            if syms.is_empty() { None } else { Some(syms) }
+            if syms.is_empty() {
+                None
+            } else {
+                Some(syms)
+            }
         });
 
         Ok(symbols.map(DocumentSymbolResponse::Nested))
@@ -1355,8 +1417,7 @@ impl LanguageServer for Backend {
             // materializing the entire rope into a String.
             let is_dot = offset > 0 && {
                 let byte_idx = (offset - 1) as usize;
-                byte_idx < doc.rope.len_bytes()
-                    && doc.rope.byte(byte_idx) == b'.'
+                byte_idx < doc.rope.len_bytes() && doc.rope.byte(byte_idx) == b'.'
             };
 
             if is_dot {
@@ -1380,8 +1441,7 @@ impl LanguageServer for Backend {
         let text = &params.text_document.text;
         let version = params.text_document.version;
 
-        self.documents
-            .insert(uri.clone(), DocumentState::new(text));
+        self.documents.insert(uri.clone(), DocumentState::new(text));
 
         if self.has_workspace() {
             // Remove from disk sources (now tracked by editor).
@@ -1428,8 +1488,7 @@ impl LanguageServer for Backend {
                 if let Ok(source) = std::fs::read_to_string(&path) {
                     let mut ws_guard = self.workspace.write().unwrap();
                     if let Some(ws) = ws_guard.as_mut() {
-                        ws.disk_ropes
-                            .insert(uri.clone(), Rope::from_str(&source));
+                        ws.disk_ropes.insert(uri.clone(), Rope::from_str(&source));
                         ws.disk_sources.insert(uri.clone(), source);
                     }
                 }
@@ -1437,9 +1496,7 @@ impl LanguageServer for Backend {
             self.analyze_and_publish_workspace().await;
         } else {
             // Clear diagnostics for closed document.
-            self.client
-                .publish_diagnostics(uri, Vec::new(), None)
-                .await;
+            self.client.publish_diagnostics(uri, Vec::new(), None).await;
         }
     }
 
@@ -1506,12 +1563,9 @@ impl LanguageServer for Backend {
                 ws_guard.as_ref().map(|ws| ws.root_path.clone())
             };
             if let Some(root) = root {
-                let (dep_sources, dep_errors) =
-                    workspace::resolve_all_workspace_deps(&root);
+                let (dep_sources, dep_errors) = workspace::resolve_all_workspace_deps(&root);
                 for err in &dep_errors {
-                    self.client
-                        .log_message(MessageType::WARNING, err)
-                        .await;
+                    self.client.log_message(MessageType::WARNING, err).await;
                 }
                 {
                     let mut ws_guard = self.workspace.write().unwrap();
@@ -1565,7 +1619,11 @@ mod tests {
             }
         }
 
-        if spans.is_empty() { None } else { Some(spans) }
+        if spans.is_empty() {
+            None
+        } else {
+            Some(spans)
+        }
     }
 
     #[test]
@@ -1574,8 +1632,14 @@ mod tests {
         let analysis = analyze_source(source).expect("analysis should succeed");
         // Hover over `add` at offset 3 (inside "add")
         let hover = hover_at(&analysis, 3).expect("hover should produce content");
-        assert!(hover.starts_with("fn add"), "Expected fn signature, got: {hover}");
-        assert!(hover.contains("Int"), "Expected Int in signature, got: {hover}");
+        assert!(
+            hover.starts_with("fn add"),
+            "Expected fn signature, got: {hover}"
+        );
+        assert!(
+            hover.contains("Int"),
+            "Expected Int in signature, got: {hover}"
+        );
     }
 
     #[test]
@@ -1593,7 +1657,10 @@ mod tests {
         let analysis = analyze_source(source).expect("analysis should succeed");
         // `Point` starts at offset 7
         let hover = hover_at(&analysis, 7).expect("hover should produce content");
-        assert!(hover.contains("struct Point"), "Expected struct, got: {hover}");
+        assert!(
+            hover.contains("struct Point"),
+            "Expected struct, got: {hover}"
+        );
         assert!(hover.contains("x: Int"), "Expected field x, got: {hover}");
         assert!(hover.contains("y: Int"), "Expected field y, got: {hover}");
     }
@@ -1635,7 +1702,10 @@ mod tests {
         let analysis = analyze_source(source).expect("analysis should succeed");
         // `name` usage at offset 31 (inside the body)
         let hover = hover_at(&analysis, 31).expect("hover should produce content");
-        assert!(hover.contains("String"), "Expected param type, got: {hover}");
+        assert!(
+            hover.contains("String"),
+            "Expected param type, got: {hover}"
+        );
     }
 
     #[test]
@@ -1672,7 +1742,11 @@ mod tests {
         // `add` call at offset 63 (first call in main body)
         let refs = references_at(&analysis, 63, false).expect("should find references");
         // At least 2 call-site references to `add`
-        assert!(refs.len() >= 2, "Expected >=2 references, got: {}", refs.len());
+        assert!(
+            refs.len() >= 2,
+            "Expected >=2 references, got: {}",
+            refs.len()
+        );
     }
 
     #[test]
@@ -1682,7 +1756,11 @@ mod tests {
         // `x` usage at offset 30 (first `x` after newline)
         let refs = references_at(&analysis, 30, false).expect("should find references");
         // `x` is used twice in `x + x`
-        assert!(refs.len() >= 2, "Expected >=2 references, got: {}", refs.len());
+        assert!(
+            refs.len() >= 2,
+            "Expected >=2 references, got: {}",
+            refs.len()
+        );
     }
 
     #[test]
@@ -1755,7 +1833,10 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "Point");
         assert_eq!(symbols[0].kind, SymbolKind::STRUCT);
-        let children = symbols[0].children.as_ref().expect("struct should have children");
+        let children = symbols[0]
+            .children
+            .as_ref()
+            .expect("struct should have children");
         assert_eq!(children.len(), 2);
         assert_eq!(children[0].name, "x");
         assert_eq!(children[0].kind, SymbolKind::FIELD);
@@ -1769,7 +1850,10 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "Color");
         assert_eq!(symbols[0].kind, SymbolKind::ENUM);
-        let children = symbols[0].children.as_ref().expect("enum should have children");
+        let children = symbols[0]
+            .children
+            .as_ref()
+            .expect("enum should have children");
         assert_eq!(children.len(), 3);
         assert_eq!(children[0].name, "Red");
         assert_eq!(children[0].kind, SymbolKind::ENUM_MEMBER);
@@ -1781,7 +1865,10 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "Printable");
         assert_eq!(symbols[0].kind, SymbolKind::INTERFACE);
-        let children = symbols[0].children.as_ref().expect("interface should have children");
+        let children = symbols[0]
+            .children
+            .as_ref()
+            .expect("interface should have children");
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].name, "print");
         assert_eq!(children[0].kind, SymbolKind::METHOD);
@@ -1831,14 +1918,20 @@ mod tests {
         // "p.x }" → x is at len - 3 (before the space and closing brace).
         let x_offset = (source.len() - 3) as u32;
         // Normal resolution won't find it, but field resolution fallback should.
-        let table = analysis.type_table.as_ref().expect("type table should exist");
+        let table = analysis
+            .type_table
+            .as_ref()
+            .expect("type table should exist");
         let field_result = find_field_at_offset(table, x_offset, analysis.file_id);
         assert!(field_result.is_some(), "field resolution should find x");
         let (_span, def_id) = field_result.unwrap();
         let hover = format_hover(&analysis, def_id);
         assert!(hover.is_some(), "hover should produce content for field");
         let content = hover.unwrap();
-        assert!(content.contains("Int"), "Expected field type Int, got: {content}");
+        assert!(
+            content.contains("Int"),
+            "Expected field type Int, got: {content}"
+        );
     }
 
     // ── Generic constraint hover tests ────────────────────────────────────
@@ -1913,8 +2006,14 @@ mod tests {
         let body_offset = source.rfind('}').unwrap() as u32 - 1;
         let items = scope_completions(&analysis, body_offset).expect("should return completions");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"add"), "Expected 'add' in completions: {labels:?}");
-        assert!(labels.contains(&"main"), "Expected 'main' in completions: {labels:?}");
+        assert!(
+            labels.contains(&"add"),
+            "Expected 'add' in completions: {labels:?}"
+        );
+        assert!(
+            labels.contains(&"main"),
+            "Expected 'main' in completions: {labels:?}"
+        );
     }
 
     #[test]
@@ -1924,7 +2023,10 @@ mod tests {
         // Offset at the `x` usage (after newline)
         let items = scope_completions(&analysis, 30).expect("should return completions");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(labels.contains(&"x"), "Expected 'x' in completions: {labels:?}");
+        assert!(
+            labels.contains(&"x"),
+            "Expected 'x' in completions: {labels:?}"
+        );
     }
 
     #[test]
@@ -1935,7 +2037,10 @@ mod tests {
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"fn"), "Expected 'fn' keyword: {labels:?}");
         assert!(labels.contains(&"if"), "Expected 'if' keyword: {labels:?}");
-        assert!(labels.contains(&"return"), "Expected 'return' keyword: {labels:?}");
+        assert!(
+            labels.contains(&"return"),
+            "Expected 'return' keyword: {labels:?}"
+        );
     }
 
     #[test]
@@ -1967,7 +2072,10 @@ mod tests {
         if let Some(items) = items {
             let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
             assert!(labels.contains(&"len"), "Expected 'len' method: {labels:?}");
-            assert!(labels.contains(&"contains"), "Expected 'contains' method: {labels:?}");
+            assert!(
+                labels.contains(&"contains"),
+                "Expected 'contains' method: {labels:?}"
+            );
         }
     }
 
@@ -1977,8 +2085,12 @@ mod tests {
         let analysis = analyze_source(source).expect("analysis should succeed");
         // Inside main body — `inner` should NOT be visible
         let main_body_offset = source.rfind('}').unwrap() as u32 - 1;
-        let items = scope_completions(&analysis, main_body_offset).expect("should return completions");
+        let items =
+            scope_completions(&analysis, main_body_offset).expect("should return completions");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert!(!labels.contains(&"inner"), "Did not expect 'inner' outside its scope: {labels:?}");
+        assert!(
+            !labels.contains(&"inner"),
+            "Did not expect 'inner' outside its scope: {labels:?}"
+        );
     }
 }

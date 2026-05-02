@@ -4,51 +4,7 @@
 //! Wraps `std::env` operations for command-line arguments and environment
 //! variables.
 
-use crate::{
-    SparkString, __spark_eq_string_elem, __spark_list_new, __spark_list_push,
-    __spark_string_from_literal, __spark_string_rc_dec,
-};
-
-/// Reads a `SparkString` pointer, returning the content as a Rust `String`.
-///
-/// # Safety
-///
-/// `ptr` must be a valid pointer to a `SparkString`.
-#[allow(clippy::cast_ptr_alignment)]
-unsafe fn read_spark_str(ptr: *mut u8) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    let s = unsafe { &*(ptr.cast::<SparkString>()) };
-    if s.len == 0 {
-        return String::new();
-    }
-    let slice = unsafe { std::slice::from_raw_parts(s.data, s.len) };
-    std::str::from_utf8(slice)
-        .unwrap_or("<invalid utf-8>")
-        .to_owned()
-}
-
-/// Creates a new `SparkString` from a Rust `&str`.
-#[allow(clippy::cast_possible_wrap)] // String lengths won't exceed i64::MAX
-fn rust_str_to_spark(s: &str) -> *mut u8 {
-    let bytes = s.as_bytes();
-    unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
-}
-
-/// Builds a `SparkList` of `SparkString` from an iterator of strings.
-#[allow(clippy::cast_possible_wrap)] // Pointer size won't exceed i64::MAX
-fn string_list_from_iter(iter: impl Iterator<Item = String>) -> *mut u8 {
-    let elem_size = std::mem::size_of::<*mut u8>() as i64;
-    let elem_drop = __spark_string_rc_dec as *const () as usize;
-    let elem_eq = __spark_eq_string_elem as *const () as usize;
-    let list = __spark_list_new(elem_size, elem_drop, elem_eq);
-    for s in iter {
-        let spark_str = rust_str_to_spark(&s);
-        unsafe { __spark_list_push(list, std::ptr::addr_of!(spark_str).cast::<u8>()) };
-    }
-    list
-}
+use crate::string::{read_spark_str, rust_str_to_spark, string_list_from_iter};
 
 // =============================================================================
 // FFI functions
@@ -72,8 +28,7 @@ pub extern "C" fn __spark_sys_args() -> *mut u8 {
 #[no_mangle]
 pub unsafe extern "C" fn __spark_sys_get_env(name: *mut u8) -> *mut u8 {
     let name_str = unsafe { read_spark_str(name) };
-    std::env::var(&name_str)
-        .map_or_else(|_| rust_str_to_spark(""), |val| rust_str_to_spark(&val))
+    std::env::var(&name_str).map_or_else(|_| rust_str_to_spark(""), |val| rust_str_to_spark(&val))
 }
 
 /// Returns 1 if the environment variable exists, 0 otherwise.
@@ -123,6 +78,7 @@ pub extern "C" fn __spark_sys_env_keys() -> *mut u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SparkString;
 
     /// Helper: read a `SparkString` result into a Rust `String`.
     #[allow(clippy::cast_ptr_alignment)] // SparkString pointers are properly aligned

@@ -16,7 +16,8 @@
 use std::cell::RefCell;
 use std::fmt::Write as _;
 
-use crate::{__spark_string_from_literal, SparkString};
+use crate::error as runtime_error;
+use crate::string::{read_spark_str, rust_str_to_spark};
 
 // =============================================================================
 // Node arena
@@ -49,10 +50,8 @@ fn alloc_node(node: JsonNode) -> usize {
 }
 
 /// Sets the last error message.
-fn set_error(msg: String) {
-    LAST_ERROR.with(|e| {
-        *e.borrow_mut() = msg;
-    });
+fn set_error(msg: impl Into<String>) {
+    runtime_error::set(&LAST_ERROR, msg);
 }
 
 // =============================================================================
@@ -131,9 +130,7 @@ impl<'a> JsonParser<'a> {
                     } else {
                         // Need `width - 1` more bytes
                         if self.pos + width - 1 > self.input.len() {
-                            return Err(format!(
-                                "incomplete UTF-8 sequence at position {start}"
-                            ));
+                            return Err(format!("incomplete UTF-8 sequence at position {start}"));
                         }
                         let bytes = &self.input[start..start + width];
                         match std::str::from_utf8(bytes) {
@@ -142,9 +139,7 @@ impl<'a> JsonParser<'a> {
                                 self.pos = start + width;
                             }
                             Err(_) => {
-                                return Err(format!(
-                                    "invalid UTF-8 sequence at position {start}"
-                                ));
+                                return Err(format!("invalid UTF-8 sequence at position {start}"));
                             }
                         }
                     }
@@ -189,18 +184,15 @@ impl<'a> JsonParser<'a> {
                 ));
             }
             let code_point = 0x10000 + ((hex - 0xD800) << 10) + (low - 0xDC00);
-            char::from_u32(code_point).ok_or_else(|| {
-                format!("invalid Unicode code point U+{code_point:04X}")
-            })
+            char::from_u32(code_point)
+                .ok_or_else(|| format!("invalid Unicode code point U+{code_point:04X}"))
         } else if (0xDC00..=0xDFFF).contains(&hex) {
             Err(format!(
                 "unexpected low surrogate \\u{hex:04X} at position {}",
                 self.pos - 4
             ))
         } else {
-            char::from_u32(hex).ok_or_else(|| {
-                format!("invalid Unicode code point U+{hex:04X}")
-            })
+            char::from_u32(hex).ok_or_else(|| format!("invalid Unicode code point U+{hex:04X}"))
         }
     }
 
@@ -244,10 +236,7 @@ impl<'a> JsonParser<'a> {
                 self.skip_digits();
             }
             _ => {
-                return Err(format!(
-                    "expected digit at position {}",
-                    self.pos
-                ));
+                return Err(format!("expected digit at position {}", self.pos));
             }
         }
 
@@ -255,10 +244,7 @@ impl<'a> JsonParser<'a> {
         if self.peek() == Some(&b'.') {
             self.pos += 1;
             if !matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-                return Err(format!(
-                    "expected digit after '.' at position {}",
-                    self.pos
-                ));
+                return Err(format!("expected digit after '.' at position {}", self.pos));
             }
             self.skip_digits();
         }
@@ -327,10 +313,7 @@ impl<'a> JsonParser<'a> {
                     return Ok(alloc_node(JsonNode::Array(elements)));
                 }
                 _ => {
-                    return Err(format!(
-                        "expected ',' or ']' at position {}",
-                        self.pos
-                    ));
+                    return Err(format!("expected ',' or ']' at position {}", self.pos));
                 }
             }
         }
@@ -364,10 +347,7 @@ impl<'a> JsonParser<'a> {
                     return Ok(alloc_node(JsonNode::Object(entries)));
                 }
                 _ => {
-                    return Err(format!(
-                        "expected ',' or '}}' at position {}",
-                        self.pos
-                    ));
+                    return Err(format!("expected ',' or '}}' at position {}", self.pos));
                 }
             }
         }
@@ -605,37 +585,6 @@ fn escape_json_string(s: &str) -> String {
 }
 
 // =============================================================================
-// Helper: read a SparkString pointer into a Rust &str (borrowed)
-// =============================================================================
-
-/// Reads a `SparkString` pointer, returning the content as a Rust `String`.
-///
-/// # Safety
-///
-/// `ptr` must be a valid pointer to a `SparkString`.
-#[allow(clippy::cast_ptr_alignment)]
-unsafe fn read_spark_str(ptr: *mut u8) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    let s = unsafe { &*(ptr.cast::<SparkString>()) };
-    if s.len == 0 {
-        return String::new();
-    }
-    let slice = unsafe { std::slice::from_raw_parts(s.data, s.len) };
-    std::str::from_utf8(slice)
-        .unwrap_or("<invalid utf-8>")
-        .to_owned()
-}
-
-/// Creates a new `SparkString` from a Rust `str`.
-#[allow(clippy::cast_possible_wrap)] // String lengths won't exceed i64::MAX
-fn rust_str_to_spark(s: &str) -> *mut u8 {
-    let bytes = s.as_bytes();
-    unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
-}
-
-// =============================================================================
 // Type discriminant constants
 // =============================================================================
 
@@ -676,10 +625,7 @@ pub unsafe extern "C" fn __spark_json_parse(text: *mut u8) -> i64 {
 /// Returns the last parse error message as a new `SparkString`.
 #[no_mangle]
 pub extern "C" fn __spark_json_error() -> *mut u8 {
-    LAST_ERROR.with(|e| {
-        let msg = e.borrow();
-        rust_str_to_spark(&msg)
-    })
+    runtime_error::to_spark(&LAST_ERROR)
 }
 
 // --- Type checking ---
@@ -687,7 +633,11 @@ pub extern "C" fn __spark_json_error() -> *mut u8 {
 /// Returns the type discriminant of a node: 0=null, 1=bool, 2=number,
 /// 3=string, 4=array, 5=object. Returns -1 for invalid handles.
 #[no_mangle]
-#[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
 pub extern "C" fn __spark_json_type(handle: i64) -> i64 {
     if handle < 0 {
         return -1;
@@ -766,7 +716,11 @@ pub extern "C" fn __spark_json_string(handle: i64) -> *mut u8 {
 
 /// Returns the number of elements in a JSON array. Returns -1 if not an array.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation
+)]
 pub extern "C" fn __spark_json_array_len(handle: i64) -> i64 {
     if handle < 0 {
         return -1;
@@ -783,7 +737,11 @@ pub extern "C" fn __spark_json_array_len(handle: i64) -> i64 {
 /// Returns the handle of the element at `index` in a JSON array.
 /// Returns -1 if not an array or index is out of bounds.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation
+)]
 pub extern "C" fn __spark_json_array_get(handle: i64, index: i64) -> i64 {
     if handle < 0 || index < 0 {
         return -1;
@@ -813,7 +771,11 @@ pub extern "C" fn __spark_json_array_get(handle: i64, index: i64) -> i64 {
 ///
 /// `key` must be a valid `SparkString` pointer.
 #[no_mangle]
-#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation
+)]
 pub unsafe extern "C" fn __spark_json_object_get(handle: i64, key: *mut u8) -> i64 {
     if handle < 0 {
         return -1;
@@ -993,6 +955,7 @@ pub extern "C" fn __spark_json_stringify_pretty(handle: i64, indent: i64) -> *mu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SparkString;
 
     /// Helper: read a `SparkString` result into a Rust `String`.
     #[allow(clippy::cast_ptr_alignment)] // SparkString pointers are properly aligned
@@ -1071,7 +1034,10 @@ mod tests {
         assert!(handle >= 0);
         assert_eq!(__spark_json_type(handle), JSON_TYPE_STRING);
         unsafe {
-            assert_eq!(read_result_string(__spark_json_string(handle)), "hello world");
+            assert_eq!(
+                read_result_string(__spark_json_string(handle)),
+                "hello world"
+            );
         }
     }
 
@@ -1142,7 +1108,10 @@ mod tests {
         let name_handle = unsafe { __spark_json_object_get(handle, name_key) };
         assert!(name_handle >= 0);
         unsafe {
-            assert_eq!(read_result_string(__spark_json_string(name_handle)), "Alice");
+            assert_eq!(
+                read_result_string(__spark_json_string(name_handle)),
+                "Alice"
+            );
         }
 
         let age_key = make_spark_str("age");

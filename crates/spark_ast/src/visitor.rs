@@ -369,7 +369,11 @@ pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
                 v.visit_expr(&arm.body);
             }
         }
-        ExprKind::PipelineApply { expr, operation, args } => {
+        ExprKind::PipelineApply {
+            expr,
+            operation,
+            args,
+        } => {
             v.visit_expr(expr);
             v.visit_ident(operation);
             for arg in args {

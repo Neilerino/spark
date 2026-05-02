@@ -20,11 +20,12 @@
 #![allow(clippy::similar_names)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::{__spark_string_from_literal, tokio_runtime, SparkString};
+use crate::error as runtime_error;
+use crate::handles::HandleTable;
+use crate::string::{read_spark_str, rust_str_to_spark};
+use crate::tokio_runtime;
 
 // =============================================================================
 // Handle table
@@ -41,51 +42,47 @@ enum NetResource {
 }
 
 /// Global handle table for networking resources.
-static HANDLE_TABLE: std::sync::LazyLock<Mutex<HashMap<i64, NetResource>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Next handle ID (starts at 1; 0 is reserved, negative = error).
-static NEXT_HANDLE: AtomicI64 = AtomicI64::new(1);
+static HANDLE_TABLE: std::sync::LazyLock<HandleTable<NetResource>> =
+    std::sync::LazyLock::new(HandleTable::new);
 
 /// Allocates a new handle ID and inserts the resource.
 fn insert_resource(resource: NetResource) -> i64 {
-    let id = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    let mut table = HANDLE_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    table.insert(id, resource);
-    id
+    HANDLE_TABLE.insert(resource)
 }
 
 /// Removes a resource from the handle table by ID.
 fn remove_resource(id: i64) -> Option<NetResource> {
-    let mut table = HANDLE_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    table.remove(&id)
+    HANDLE_TABLE.remove(id)
 }
 
 /// Gets a clone of the `TcpListener` Arc for the given handle.
 fn get_tcp_listener(id: i64) -> Option<Arc<tokio::net::TcpListener>> {
-    let table = HANDLE_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    match table.get(&id) {
-        Some(NetResource::TcpListener(l)) => Some(Arc::clone(l)),
-        _ => None,
-    }
+    HANDLE_TABLE
+        .with(id, |resource| match resource {
+            NetResource::TcpListener(listener) => Some(Arc::clone(listener)),
+            _ => None,
+        })
+        .flatten()
 }
 
 /// Gets a clone of the `TcpStream` Arc for the given handle.
 fn get_tcp_stream(id: i64) -> Option<Arc<tokio::sync::Mutex<tokio::net::TcpStream>>> {
-    let table = HANDLE_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    match table.get(&id) {
-        Some(NetResource::TcpStream(s)) => Some(Arc::clone(s)),
-        _ => None,
-    }
+    HANDLE_TABLE
+        .with(id, |resource| match resource {
+            NetResource::TcpStream(stream) => Some(Arc::clone(stream)),
+            _ => None,
+        })
+        .flatten()
 }
 
 /// Gets a clone of the `UdpSocket` Arc for the given handle.
 fn get_udp_socket(id: i64) -> Option<Arc<tokio::net::UdpSocket>> {
-    let table = HANDLE_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    match table.get(&id) {
-        Some(NetResource::UdpSocket(s)) => Some(Arc::clone(s)),
-        _ => None,
-    }
+    HANDLE_TABLE
+        .with(id, |resource| match resource {
+            NetResource::UdpSocket(socket) => Some(Arc::clone(socket)),
+            _ => None,
+        })
+        .flatten()
 }
 
 // =============================================================================
@@ -97,48 +94,13 @@ thread_local! {
 }
 
 /// Sets the last network error message.
-fn set_error(msg: String) {
-    LAST_NET_ERROR.with(|e| {
-        *e.borrow_mut() = msg;
-    });
+fn set_error(msg: impl Into<String>) {
+    runtime_error::set(&LAST_NET_ERROR, msg);
 }
 
 /// Clears the last network error message.
 fn clear_error() {
-    LAST_NET_ERROR.with(|e| {
-        e.borrow_mut().clear();
-    });
-}
-
-// =============================================================================
-// String helpers
-// =============================================================================
-
-/// Reads a `SparkString` pointer, returning the content as a Rust `String`.
-///
-/// # Safety
-///
-/// `ptr` must be a valid pointer to a `SparkString`.
-#[allow(clippy::cast_ptr_alignment)]
-unsafe fn read_spark_str(ptr: *mut u8) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    let s = unsafe { &*(ptr.cast::<SparkString>()) };
-    if s.len == 0 {
-        return String::new();
-    }
-    let slice = unsafe { std::slice::from_raw_parts(s.data, s.len) };
-    std::str::from_utf8(slice)
-        .unwrap_or("<invalid utf-8>")
-        .to_owned()
-}
-
-/// Creates a new `SparkString` from a Rust `&str`.
-#[allow(clippy::cast_possible_wrap)]
-fn rust_str_to_spark(s: &str) -> *mut u8 {
-    let bytes = s.as_bytes();
-    unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
+    runtime_error::clear(&LAST_NET_ERROR);
 }
 
 // =============================================================================
@@ -514,10 +476,7 @@ pub extern "C" fn __spark_net_close(handle: i64) {
 /// Returns the last network error message as a `SparkString`.
 #[no_mangle]
 pub extern "C" fn __spark_net_error() -> *mut u8 {
-    LAST_NET_ERROR.with(|e| {
-        let msg = e.borrow();
-        rust_str_to_spark(&msg)
-    })
+    runtime_error::to_spark(&LAST_NET_ERROR)
 }
 
 // =============================================================================
@@ -527,6 +486,7 @@ pub extern "C" fn __spark_net_error() -> *mut u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SparkString;
 
     /// Helper: read a `SparkString` result into a Rust `String`.
     #[allow(clippy::cast_ptr_alignment)] // SparkString pointers are properly aligned
@@ -553,7 +513,10 @@ mod tests {
 
         // Get the assigned address.
         let addr_str = unsafe { read_result_string(__spark_net_listener_addr(listener_handle)) };
-        assert!(addr_str.starts_with("127.0.0.1:"), "should be 127.0.0.1:PORT");
+        assert!(
+            addr_str.starts_with("127.0.0.1:"),
+            "should be 127.0.0.1:PORT"
+        );
 
         // Parse the port from the address.
         let port: i64 = addr_str
@@ -572,7 +535,9 @@ mod tests {
         let server_stream = __spark_net_tcp_accept(listener_handle);
         assert!(server_stream > 0, "accept should return valid handle");
 
-        let client_stream = client_thread.join().expect("client thread should not panic");
+        let client_stream = client_thread
+            .join()
+            .expect("client thread should not panic");
         assert!(client_stream > 0, "connect should return valid handle");
 
         // Clean up.
@@ -649,7 +614,10 @@ mod tests {
 
         unsafe {
             let peer = read_result_string(__spark_net_tcp_peer_addr(server_stream));
-            assert!(peer.starts_with("127.0.0.1:"), "peer should be 127.0.0.1:PORT");
+            assert!(
+                peer.starts_with("127.0.0.1:"),
+                "peer should be 127.0.0.1:PORT"
+            );
 
             let local = read_result_string(__spark_net_tcp_local_addr(server_stream));
             assert!(
@@ -674,13 +642,12 @@ mod tests {
         assert!(sock_b > 0);
 
         // Get sock_b's address.
-        let b_addr = {
-            let table = HANDLE_TABLE.lock().unwrap();
-            match table.get(&sock_b) {
-                Some(NetResource::UdpSocket(s)) => s.local_addr().unwrap().to_string(),
+        let b_addr = HANDLE_TABLE
+            .with(sock_b, |resource| match resource {
+                NetResource::UdpSocket(socket) => socket.local_addr().unwrap().to_string(),
                 _ => panic!("expected UdpSocket"),
-            }
-        };
+            })
+            .expect("socket handle should exist");
         let b_port: i64 = b_addr.split(':').next_back().unwrap().parse().unwrap();
 
         // Send from A to B.

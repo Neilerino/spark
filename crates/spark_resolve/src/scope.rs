@@ -247,7 +247,11 @@ impl ScopeArena {
     /// Filters scopes by file and containment, then picks the narrowest
     /// (smallest span length).
     #[must_use]
-    pub fn find_scope_at_offset(&self, offset: u32, file_id: spark_span::FileId) -> Option<ScopeId> {
+    pub fn find_scope_at_offset(
+        &self,
+        offset: u32,
+        file_id: spark_span::FileId,
+    ) -> Option<ScopeId> {
         self.scopes
             .iter()
             .filter(|s| s.span.file == file_id && s.span.contains(offset))
@@ -389,8 +393,14 @@ mod tests {
         let outer_def = DefId::new(0);
         let inner_def = DefId::new(1);
 
-        arena.get_mut(root).define_value(sym("outer"), outer_def).unwrap();
-        arena.get_mut(child).define_value(sym("inner"), inner_def).unwrap();
+        arena
+            .get_mut(root)
+            .define_value(sym("outer"), outer_def)
+            .unwrap();
+        arena
+            .get_mut(child)
+            .define_value(sym("inner"), inner_def)
+            .unwrap();
 
         let visible = arena.visible_values(child);
         assert!(visible.contains(&(sym("inner"), inner_def)));
@@ -407,8 +417,14 @@ mod tests {
         let root_def = DefId::new(0);
         let child_def = DefId::new(1);
 
-        arena.get_mut(root).define_value(sym("x"), root_def).unwrap();
-        arena.get_mut(child).define_value(sym("x"), child_def).unwrap();
+        arena
+            .get_mut(root)
+            .define_value(sym("x"), root_def)
+            .unwrap();
+        arena
+            .get_mut(child)
+            .define_value(sym("x"), child_def)
+            .unwrap();
 
         let visible = arena.visible_values(child);
         // Should see child's x (shadow), not root's
@@ -425,8 +441,14 @@ mod tests {
         let struct_def = DefId::new(0);
         let generic_def = DefId::new(1);
 
-        arena.get_mut(root).define_type(sym("User"), struct_def).unwrap();
-        arena.get_mut(child).define_type(sym("T"), generic_def).unwrap();
+        arena
+            .get_mut(root)
+            .define_type(sym("User"), struct_def)
+            .unwrap();
+        arena
+            .get_mut(child)
+            .define_type(sym("T"), generic_def)
+            .unwrap();
 
         let visible = arena.visible_types(child);
         assert!(visible.contains(&(sym("User"), struct_def)));

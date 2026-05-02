@@ -52,45 +52,48 @@ pub fn fetch_git_dep(
 
     // Ensure the packages directory exists.
     std::fs::create_dir_all(&packages_dir).map_err(|e| {
-        format!("could not create packages directory `{}`: {e}", packages_dir.display())
+        format!(
+            "could not create packages directory `{}`: {e}",
+            packages_dir.display()
+        )
     })?;
 
     // Clone the repository.
     if let Some(exact_rev) = rev {
         // Full clone + checkout for exact commits.
-        run_git(&[
-            "clone",
-            "--quiet",
-            url,
-            &target_dir.display().to_string(),
-        ], dep_name)?;
-        run_git_in(
-            &["checkout", "--quiet", exact_rev],
-            &target_dir,
+        run_git(
+            &["clone", "--quiet", url, &target_dir.display().to_string()],
             dep_name,
         )?;
+        run_git_in(&["checkout", "--quiet", exact_rev], &target_dir, dep_name)?;
     } else if let Some(ref_name) = tag.or(branch) {
         // Shallow clone with specific branch/tag.
-        run_git(&[
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            ref_name,
-            "--quiet",
-            url,
-            &target_dir.display().to_string(),
-        ], dep_name)?;
+        run_git(
+            &[
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                ref_name,
+                "--quiet",
+                url,
+                &target_dir.display().to_string(),
+            ],
+            dep_name,
+        )?;
     } else {
         // Shallow clone of default branch.
-        run_git(&[
-            "clone",
-            "--depth",
-            "1",
-            "--quiet",
-            url,
-            &target_dir.display().to_string(),
-        ], dep_name)?;
+        run_git(
+            &[
+                "clone",
+                "--depth",
+                "1",
+                "--quiet",
+                url,
+                &target_dir.display().to_string(),
+            ],
+            dep_name,
+        )?;
     }
 
     Ok(FetchedGitDep {
@@ -117,22 +120,16 @@ fn resolve_commit(
     }
 
     let ref_pattern = tag.map_or_else(
-        || {
-            branch.map_or_else(
-                || "HEAD".to_string(),
-                |b| format!("refs/heads/{b}"),
-            )
-        },
+        || branch.map_or_else(|| "HEAD".to_string(), |b| format!("refs/heads/{b}")),
         |t| format!("refs/tags/{t}"),
     );
 
     let output = run_git(&["ls-remote", url, &ref_pattern], dep_name)?;
 
     // Parse the first line: "<commit>\t<ref>"
-    let line = output
-        .lines()
-        .next()
-        .ok_or_else(|| format!("dependency `{dep_name}`: ref `{ref_pattern}` not found in {url}"))?;
+    let line = output.lines().next().ok_or_else(|| {
+        format!("dependency `{dep_name}`: ref `{ref_pattern}` not found in {url}")
+    })?;
 
     let commit = line
         .split_whitespace()
@@ -278,8 +275,10 @@ mod tests {
 
         let url = format!("file://{}", bare_repo.display());
 
-        let first = fetch_git_dep("testlib", &url, Some("v1.0.0"), None, None, &project_root).unwrap();
-        let second = fetch_git_dep("testlib", &url, Some("v1.0.0"), None, None, &project_root).unwrap();
+        let first =
+            fetch_git_dep("testlib", &url, Some("v1.0.0"), None, None, &project_root).unwrap();
+        let second =
+            fetch_git_dep("testlib", &url, Some("v1.0.0"), None, None, &project_root).unwrap();
 
         assert_eq!(first.commit, second.commit);
         assert_eq!(first.path, second.path);

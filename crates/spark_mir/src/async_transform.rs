@@ -865,12 +865,7 @@ fn generate_poll_function(
                 // Rewrite Return terminators in cloned blocks → store result + return 1.
                 for block in &mut blocks[first_cloned_block_idx..] {
                     if matches!(block.terminator, Terminator::Return) {
-                        rewrite_return_block(
-                            block,
-                            &orig_to_poll,
-                            state_ptr_local,
-                            original.span,
-                        );
+                        rewrite_return_block(block, &orig_to_poll, state_ptr_local, original.span);
                     }
                 }
             }
@@ -938,12 +933,7 @@ fn generate_poll_function(
         // Rewrite Return terminators in cloned blocks.
         for block in &mut blocks[first_cloned..] {
             if matches!(block.terminator, Terminator::Return) {
-                rewrite_return_block(
-                    block,
-                    &orig_to_poll,
-                    state_ptr_local,
-                    original.span,
-                );
+                rewrite_return_block(block, &orig_to_poll, state_ptr_local, original.span);
             }
         }
     }
@@ -1195,11 +1185,7 @@ fn remap_rvalue(rvalue: &Rvalue, local_remap: &FxHashMap<Local, Local>) -> Rvalu
             step: remap_operand(step, local_remap),
             inclusive: *inclusive,
         },
-        Rvalue::MapGetOptional {
-            map,
-            key,
-            value_ty,
-        } => Rvalue::MapGetOptional {
+        Rvalue::MapGetOptional { map, key, value_ty } => Rvalue::MapGetOptional {
             map: remap_operand(map, local_remap),
             key: remap_operand(key, local_remap),
             value_ty: *value_ty,

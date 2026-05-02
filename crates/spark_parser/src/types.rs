@@ -488,7 +488,12 @@ mod tests {
     #[test]
     fn ref_type_two_args() {
         let ty = parse_type_str("Ref[Int, A]");
-        if let TypeExprKind::Ref { inner, mutable, lifetime } = ty.kind {
+        if let TypeExprKind::Ref {
+            inner,
+            mutable,
+            lifetime,
+        } = ty.kind
+        {
             assert!(matches!(inner.kind, TypeExprKind::Named { .. }));
             assert!(!mutable);
             assert_eq!(lifetime.name.as_str(), "A");

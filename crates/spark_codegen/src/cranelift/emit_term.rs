@@ -216,9 +216,9 @@ fn emit_call<M: Module>(
     // in their Cranelift signature that isn't present in MIR call args.
     // Calling a lambda directly without env_ptr would cause a verifier error.
     let is_lambda = |id: &spark_resolve::DefId| {
-        ecx.definitions.get(*id).is_some_and(|info| {
-            matches!(info.kind, spark_resolve::DefinitionKind::Lambda)
-        })
+        ecx.definitions
+            .get(*id)
+            .is_some_and(|info| matches!(info.kind, spark_resolve::DefinitionKind::Lambda))
     };
     let resolved_def_id = match func {
         spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(def_id)) => Some(*def_id),

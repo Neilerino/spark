@@ -10,8 +10,8 @@ use spark_diagnostics::{Diagnostic, Label};
 use spark_resolve::{DefId, DefinitionTable};
 use spark_span::Span;
 
-use crate::display::display_type as type_name;
 use crate::ctx::TypeCheckCtx;
+use crate::display::display_type as type_name;
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
 use crate::ty::{Ty, TypeId};
@@ -67,14 +67,28 @@ impl Coverage {
             }
 
             // Merge booleans
-            (Self::BoolValues { has_true: t1, has_false: f1 },
-             Self::BoolValues { has_true: t2, has_false: f2 }) => {
+            (
+                Self::BoolValues {
+                    has_true: t1,
+                    has_false: f1,
+                },
+                Self::BoolValues {
+                    has_true: t2,
+                    has_false: f2,
+                },
+            ) => {
                 *self = Self::BoolValues {
                     has_true: *t1 || *t2,
                     has_false: *f1 || *f2,
                 };
             }
-            (Self::Empty, Self::BoolValues { has_true, has_false }) => {
+            (
+                Self::Empty,
+                Self::BoolValues {
+                    has_true,
+                    has_false,
+                },
+            ) => {
                 *self = Self::BoolValues {
                     has_true: *has_true,
                     has_false: *has_false,
@@ -95,16 +109,18 @@ impl Coverage {
     fn subsumes(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Full, _) => true,
-            (Self::EnumVariants(covered), Self::EnumVariants(new)) => {
-                new.is_subset(covered)
-            }
-            (Self::UnionMembers(covered), Self::UnionMembers(new)) => {
-                new.is_subset(covered)
-            }
-            (Self::BoolValues { has_true: t, has_false: f },
-             Self::BoolValues { has_true: nt, has_false: nf }) => {
-                (!nt || *t) && (!nf || *f)
-            }
+            (Self::EnumVariants(covered), Self::EnumVariants(new)) => new.is_subset(covered),
+            (Self::UnionMembers(covered), Self::UnionMembers(new)) => new.is_subset(covered),
+            (
+                Self::BoolValues {
+                    has_true: t,
+                    has_false: f,
+                },
+                Self::BoolValues {
+                    has_true: nt,
+                    has_false: nf,
+                },
+            ) => (!nt || *t) && (!nf || *f),
             _ => false,
         }
     }
@@ -135,12 +151,8 @@ pub fn check_exhaustiveness(
     let mut coverage = Coverage::Empty;
 
     for arm in arms {
-        let arm_coverage = pattern_coverage(
-            &arm.pattern.kind,
-            scrutinee_ty,
-            &scrutinee_resolved,
-            ctx,
-        );
+        let arm_coverage =
+            pattern_coverage(&arm.pattern.kind, scrutinee_ty, &scrutinee_resolved, ctx);
 
         // Check if this arm is unreachable
         if coverage.subsumes(&arm_coverage) {
@@ -160,14 +172,24 @@ pub fn check_exhaustiveness(
 
     match &scrutinee_resolved {
         Ty::Enum(def_id) => check_enum_exhaustiveness(
-            *def_id, &coverage, match_span, ctx.table, ctx.definitions, ctx.diagnostics,
+            *def_id,
+            &coverage,
+            match_span,
+            ctx.table,
+            ctx.definitions,
+            ctx.diagnostics,
         ),
         Ty::Applied { base, .. } => {
             // Delegate to the base type's exhaustiveness rules
             let base_ty = ctx.table.get_def_type(*base).unwrap_or(TypeId::ERROR);
             if matches!(ctx.table.resolve(base_ty), Ty::Enum(_)) {
                 check_enum_exhaustiveness(
-                    *base, &coverage, match_span, ctx.table, ctx.definitions, ctx.diagnostics,
+                    *base,
+                    &coverage,
+                    match_span,
+                    ctx.table,
+                    ctx.definitions,
+                    ctx.diagnostics,
                 );
             } else {
                 ctx.diagnostics.push(
@@ -178,17 +200,26 @@ pub fn check_exhaustiveness(
             }
         }
         Ty::Union(members) => check_union_exhaustiveness(
-            members, &coverage, match_span, ctx.table, ctx.definitions, ctx.diagnostics,
+            members,
+            &coverage,
+            match_span,
+            ctx.table,
+            ctx.definitions,
+            ctx.diagnostics,
         ),
         Ty::Optional(inner) => {
             let null_ty = ctx.builtins.null;
             check_optional_exhaustiveness(
-                *inner, null_ty, &coverage, match_span, ctx.table, ctx.definitions, ctx.diagnostics,
+                *inner,
+                null_ty,
+                &coverage,
+                match_span,
+                ctx.table,
+                ctx.definitions,
+                ctx.diagnostics,
             );
         }
-        Ty::Bool => check_bool_exhaustiveness(
-            &coverage, match_span, ctx.diagnostics,
-        ),
+        Ty::Bool => check_bool_exhaustiveness(&coverage, match_span, ctx.diagnostics),
         _ => {
             // Int, String, Float, Char, Struct, Tuple, etc. require wildcard
             ctx.diagnostics.push(
@@ -209,10 +240,14 @@ fn pattern_coverage(
 ) -> Coverage {
     match kind {
         // Wildcard, plain bindings, and error patterns cover everything
-        PatternKind::Wildcard | PatternKind::Ident { ty: None, .. } | PatternKind::Error => Coverage::Full,
+        PatternKind::Wildcard | PatternKind::Ident { ty: None, .. } | PatternKind::Error => {
+            Coverage::Full
+        }
 
         // Typed binding — covers that type in a union
-        PatternKind::Ident { ty: Some(ty_expr), .. } => {
+        PatternKind::Ident {
+            ty: Some(ty_expr), ..
+        } => {
             let lowered = lower_type_expr(ty_expr, ctx);
             union_member_coverage(lowered, scrutinee_ty, scrutinee_resolved, ctx.table)
         }
@@ -262,9 +297,7 @@ fn pattern_coverage(
         PatternKind::Or(alts) => {
             let mut combined = Coverage::Empty;
             for alt in alts {
-                let sub = pattern_coverage(
-                    &alt.kind, scrutinee_ty, scrutinee_resolved, ctx,
-                );
+                let sub = pattern_coverage(&alt.kind, scrutinee_ty, scrutinee_resolved, ctx);
                 combined.merge(&sub);
             }
             combined
@@ -332,7 +365,8 @@ fn check_enum_exhaustiveness(
     };
 
     let Coverage::EnumVariants(covered) = coverage else {
-        let names: Vec<_> = variants.iter()
+        let names: Vec<_> = variants
+            .iter()
             .map(|(name, _)| name.as_str().to_string())
             .collect();
         diagnostics.push(
@@ -343,7 +377,8 @@ fn check_enum_exhaustiveness(
         return;
     };
 
-    let missing: Vec<_> = variants.iter()
+    let missing: Vec<_> = variants
+        .iter()
         .filter(|(_, vid)| !covered.contains(vid))
         .map(|(name, _)| name.as_str().to_string())
         .collect();
@@ -367,7 +402,8 @@ fn check_union_exhaustiveness(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     let Coverage::UnionMembers(covered) = coverage else {
-        let names: Vec<_> = members.iter()
+        let names: Vec<_> = members
+            .iter()
             .map(|m| type_name(*m, table, definitions))
             .collect();
         diagnostics.push(
@@ -378,7 +414,8 @@ fn check_union_exhaustiveness(
         return;
     };
 
-    let missing: Vec<_> = members.iter()
+    let missing: Vec<_> = members
+        .iter()
         .filter(|m| !covered.contains(m))
         .map(|m| type_name(*m, table, definitions))
         .collect();
@@ -440,10 +477,18 @@ fn check_bool_exhaustiveness(
     match_span: Span,
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
-    if let Coverage::BoolValues { has_true, has_false } = coverage {
+    if let Coverage::BoolValues {
+        has_true,
+        has_false,
+    } = coverage
+    {
         let mut missing = Vec::new();
-        if !has_true { missing.push("true"); }
-        if !has_false { missing.push("false"); }
+        if !has_true {
+            missing.push("true");
+        }
+        if !has_false {
+            missing.push("false");
+        }
 
         if !missing.is_empty() {
             diagnostics.push(
@@ -487,16 +532,16 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![make_arm(Pattern::wildcard(Span::DUMMY))];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
-        assert!(!ctx.diagnostics.has_errors(), "Wildcard should be exhaustive: {:?}",
-            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !ctx.diagnostics.has_errors(),
+            "Wildcard should be exhaustive: {:?}",
+            ctx.diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -507,13 +552,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![make_arm(Pattern::ident(Ident::dummy(sym("x"))))];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -529,13 +568,7 @@ mod tests {
             PatternKind::Literal(Literal::int(42, Span::DUMMY)),
             Span::DUMMY,
         ))];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         assert!(ctx.diagnostics.has_errors());
     }
@@ -557,16 +590,16 @@ mod tests {
                 Span::DUMMY,
             )),
         ];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.bool_ty, &arms, Span::DUMMY, &mut ctx);
-        assert!(!ctx.diagnostics.has_errors(), "Both bools should be exhaustive: {:?}",
-            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !ctx.diagnostics.has_errors(),
+            "Both bools should be exhaustive: {:?}",
+            ctx.diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -580,13 +613,7 @@ mod tests {
             PatternKind::Literal(Literal::bool(true, Span::DUMMY)),
             Span::DUMMY,
         ))];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.bool_ty, &arms, Span::DUMMY, &mut ctx);
         assert!(ctx.diagnostics.has_errors());
     }
@@ -605,18 +632,14 @@ mod tests {
                 Span::DUMMY,
             )),
         ];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         // Should warn about unreachable arm but no errors
         assert!(!ctx.diagnostics.has_errors());
         assert!(
-            ctx.diagnostics.iter().any(|d| d.message.contains("unreachable")),
+            ctx.diagnostics
+                .iter()
+                .any(|d| d.message.contains("unreachable")),
             "Should have unreachable warning",
         );
     }
@@ -629,13 +652,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         assert!(ctx.diagnostics.has_errors());
     }
@@ -648,13 +665,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(TypeId::ERROR, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -667,13 +678,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![make_arm(Pattern::new(PatternKind::Error, Span::DUMMY))];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -692,15 +697,12 @@ mod tests {
             },
             Span::DUMMY,
         ))];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.int, &arms, Span::DUMMY, &mut ctx);
-        assert!(ctx.diagnostics.has_errors(), "Guard should not count toward exhaustiveness");
+        assert!(
+            ctx.diagnostics.has_errors(),
+            "Guard should not count toward exhaustiveness"
+        );
     }
 
     #[test]
@@ -711,13 +713,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let arms = vec![];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.never, &arms, Span::DUMMY, &mut ctx);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -743,16 +739,16 @@ mod tests {
             ]),
             Span::DUMMY,
         ))];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(builtins.bool_ty, &arms, Span::DUMMY, &mut ctx);
-        assert!(!ctx.diagnostics.has_errors(), "Or-pattern `true | false` should be exhaustive: {:?}",
-            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !ctx.diagnostics.has_errors(),
+            "Or-pattern `true | false` should be exhaustive: {:?}",
+            ctx.diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -790,16 +786,16 @@ mod tests {
         ));
 
         let arms = vec![value_arm, null_arm];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(optional_ty, &arms, Span::DUMMY, &mut ctx);
-        assert!(!ctx.diagnostics.has_errors(), "Optional with value + Null should be exhaustive: {:?}",
-            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !ctx.diagnostics.has_errors(),
+            "Optional with value + Null should be exhaustive: {:?}",
+            ctx.diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -845,16 +841,16 @@ mod tests {
         ));
 
         let arms = vec![int_arm, str_arm];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_exhaustiveness(union_ty, &arms, Span::DUMMY, &mut ctx);
-        assert!(!ctx.diagnostics.has_errors(), "Union with all members covered should be exhaustive: {:?}",
-            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !ctx.diagnostics.has_errors(),
+            "Union with all members covered should be exhaustive: {:?}",
+            ctx.diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -872,10 +868,7 @@ mod tests {
         let variant_a = DefId::new(101);
         let variant_b = DefId::new(102);
         let enum_ty = table.intern(Ty::Enum(enum_def));
-        table.set_enum_variants(enum_def, vec![
-            (sym("A"), variant_a),
-            (sym("B"), variant_b),
-        ]);
+        table.set_enum_variants(enum_def, vec![(sym("A"), variant_a), (sym("B"), variant_b)]);
 
         // Create a ResolutionMap that maps each variant pattern's span to its DefId
         let mut res = ResolutionMap::new();
@@ -887,10 +880,10 @@ mod tests {
         // Arm 1: Enum.A
         let arm_a = make_arm(Pattern::new(
             PatternKind::Variant {
-                path: spark_ast::Path::new(vec![
-                    Ident::new(sym("E"), span_a),
-                    Ident::new(sym("A"), span_a),
-                ], span_a),
+                path: spark_ast::Path::new(
+                    vec![Ident::new(sym("E"), span_a), Ident::new(sym("A"), span_a)],
+                    span_a,
+                ),
                 fields: vec![],
             },
             Span::DUMMY,
@@ -899,26 +892,26 @@ mod tests {
         // Arm 2: Enum.B
         let arm_b = make_arm(Pattern::new(
             PatternKind::Variant {
-                path: spark_ast::Path::new(vec![
-                    Ident::new(sym("E"), span_b),
-                    Ident::new(sym("B"), span_b),
-                ], span_b),
+                path: spark_ast::Path::new(
+                    vec![Ident::new(sym("E"), span_b), Ident::new(sym("B"), span_b)],
+                    span_b,
+                ),
                 fields: vec![],
             },
             Span::DUMMY,
         ));
 
         let arms = vec![arm_a, arm_b];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            Some(&res),
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, Some(&res), &mut diags);
         check_exhaustiveness(enum_ty, &arms, Span::DUMMY, &mut ctx);
-        assert!(!ctx.diagnostics.has_errors(), "Enum with all variants should be exhaustive: {:?}",
-            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !ctx.diagnostics.has_errors(),
+            "Enum with all variants should be exhaustive: {:?}",
+            ctx.diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -937,11 +930,14 @@ mod tests {
         let variant_b = DefId::new(202);
         let variant_c = DefId::new(203);
         let enum_ty = table.intern(Ty::Enum(enum_def));
-        table.set_enum_variants(enum_def, vec![
-            (sym("A"), variant_a),
-            (sym("B"), variant_b),
-            (sym("C"), variant_c),
-        ]);
+        table.set_enum_variants(
+            enum_def,
+            vec![
+                (sym("A"), variant_a),
+                (sym("B"), variant_b),
+                (sym("C"), variant_c),
+            ],
+        );
 
         // Only cover variant A
         let mut res = ResolutionMap::new();
@@ -950,23 +946,17 @@ mod tests {
 
         let arm_a = make_arm(Pattern::new(
             PatternKind::Variant {
-                path: spark_ast::Path::new(vec![
-                    Ident::new(sym("E"), span_a),
-                    Ident::new(sym("A"), span_a),
-                ], span_a),
+                path: spark_ast::Path::new(
+                    vec![Ident::new(sym("E"), span_a), Ident::new(sym("A"), span_a)],
+                    span_a,
+                ),
                 fields: vec![],
             },
             Span::DUMMY,
         ));
 
         let arms = vec![arm_a];
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            Some(&res),
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, Some(&res), &mut diags);
         check_exhaustiveness(enum_ty, &arms, Span::DUMMY, &mut ctx);
         assert!(ctx.diagnostics.has_errors());
         let msgs: Vec<_> = ctx.diagnostics.iter().map(|d| &d.message).collect();

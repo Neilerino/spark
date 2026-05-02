@@ -48,7 +48,12 @@ impl Block {
     /// Creates a new block.
     #[must_use]
     pub fn new(stmts: Vec<Stmt>, expr: Option<Box<Expr>>, span: Span) -> Self {
-        Self { id: ExprId::next(), stmts, expr, span }
+        Self {
+            id: ExprId::next(),
+            stmts,
+            expr,
+            span,
+        }
     }
 
     /// Creates an empty block.

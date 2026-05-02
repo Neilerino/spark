@@ -193,7 +193,9 @@ impl Parser {
 
         // Single element without trailing comma is just a grouped pattern
         if patterns.len() == 1 {
-            return patterns.into_iter().next()
+            return patterns
+                .into_iter()
+                .next()
                 .expect("ICE: len() == 1 guarantees at least one element");
         }
 
@@ -260,7 +262,10 @@ impl Parser {
 
         // Check for type annotation: identifier : Type
         if path.is_simple() && self.check(TokenKind::Colon) {
-            let name = path.segments.into_iter().next()
+            let name = path
+                .segments
+                .into_iter()
+                .next()
                 .expect("ICE: is_simple() guarantees at least one segment");
             self.advance(); // consume ':'
 
@@ -276,7 +281,10 @@ impl Parser {
 
         // Simple path - could be variant or just identifier
         if path.is_simple() {
-            let ident = path.segments.into_iter().next()
+            let ident = path
+                .segments
+                .into_iter()
+                .next()
                 .expect("ICE: is_simple() guarantees at least one segment");
             return Pattern::ident(ident);
         }

@@ -182,9 +182,7 @@ fn check_expr_inner(
         }
 
         // === Index access ===
-        ExprKind::Index { base, index } => {
-            check_index_access(base, index, ctx, current_fn_ret)
-        }
+        ExprKind::Index { base, index } => check_index_access(base, index, ctx, current_fn_ret),
 
         // === Struct initialization ===
         ExprKind::StructInit {
@@ -223,7 +221,13 @@ fn check_expr_inner(
             condition,
             then_branch,
             else_branch,
-        } => check_if_expr(condition, then_branch, else_branch.as_deref(), ctx, current_fn_ret),
+        } => check_if_expr(
+            condition,
+            then_branch,
+            else_branch.as_deref(),
+            ctx,
+            current_fn_ret,
+        ),
 
         // === Loop ===
         ExprKind::Loop { body } => {
@@ -271,9 +275,7 @@ fn check_expr_inner(
         } => check_lambda(params, ret_type.as_ref(), body, ctx),
 
         // === Coalesce (??) ===
-        ExprKind::Coalesce { lhs, rhs } => {
-            check_coalesce(lhs, rhs, ctx, current_fn_ret)
-        }
+        ExprKind::Coalesce { lhs, rhs } => check_coalesce(lhs, rhs, ctx, current_fn_ret),
 
         // === Propagate (!) ===
         ExprKind::Propagate(inner_expr) => {
@@ -307,13 +309,18 @@ fn check_expr_inner(
             });
 
             if elems.is_empty() {
-                ctx.table.intern(Ty::List(expected_elem.unwrap_or(TypeId::ERROR)))
+                ctx.table
+                    .intern(Ty::List(expected_elem.unwrap_or(TypeId::ERROR)))
             } else {
                 let first_ty = check_expr_expected(&elems[0], ctx, current_fn_ret, expected_elem);
                 for elem in &elems[1..] {
                     let _ = check_expr_expected(elem, ctx, current_fn_ret, expected_elem);
                 }
-                ctx.table.intern(Ty::List(resolve_with_expected(first_ty, expected_elem, ctx.table)))
+                ctx.table.intern(Ty::List(resolve_with_expected(
+                    first_ty,
+                    expected_elem,
+                    ctx.table,
+                )))
             }
         }
 
@@ -330,8 +337,10 @@ fn check_expr_inner(
                 let val_ty = expected_val.unwrap_or(TypeId::ERROR);
                 ctx.table.intern(Ty::Map(key_ty, val_ty))
             } else {
-                let key_ty = check_expr_expected(&entries[0].key, ctx, current_fn_ret, expected_key);
-                let val_ty = check_expr_expected(&entries[0].value, ctx, current_fn_ret, expected_val);
+                let key_ty =
+                    check_expr_expected(&entries[0].key, ctx, current_fn_ret, expected_key);
+                let val_ty =
+                    check_expr_expected(&entries[0].value, ctx, current_fn_ret, expected_val);
                 for entry in &entries[1..] {
                     let _ = check_expr_expected(&entry.key, ctx, current_fn_ret, expected_key);
                     let _ = check_expr_expected(&entry.value, ctx, current_fn_ret, expected_val);
@@ -349,13 +358,18 @@ fn check_expr_inner(
             });
 
             if elems.is_empty() {
-                ctx.table.intern(Ty::Set(expected_elem.unwrap_or(TypeId::ERROR)))
+                ctx.table
+                    .intern(Ty::Set(expected_elem.unwrap_or(TypeId::ERROR)))
             } else {
                 let first_ty = check_expr_expected(&elems[0], ctx, current_fn_ret, expected_elem);
                 for elem in &elems[1..] {
                     let _ = check_expr_expected(elem, ctx, current_fn_ret, expected_elem);
                 }
-                ctx.table.intern(Ty::Set(resolve_with_expected(first_ty, expected_elem, ctx.table)))
+                ctx.table.intern(Ty::Set(resolve_with_expected(
+                    first_ty,
+                    expected_elem,
+                    ctx.table,
+                )))
             }
         }
 
@@ -458,9 +472,7 @@ fn check_expr_inner(
             start, end, step, ..
         } => check_list_range(start, end, step.as_deref(), ctx, current_fn_ret),
 
-        ExprKind::Partial { callee, args } => {
-            check_partial(callee, args, ctx, current_fn_ret)
-        }
+        ExprKind::Partial { callee, args } => check_partial(callee, args, ctx, current_fn_ret),
 
         ExprKind::Error => TypeId::ERROR,
     }
@@ -706,11 +718,7 @@ fn check_index_access(
     let base_ty = check_expr(base, ctx, current_fn_ret);
     let index_ty = check_expr(index, ctx, current_fn_ret);
 
-    match ctx
-        .table
-        .resolve(strip_mutable(base_ty, ctx.table))
-        .clone()
-    {
+    match ctx.table.resolve(strip_mutable(base_ty, ctx.table)).clone() {
         Ty::List(elem) => {
             let resolved_idx = ctx.table.resolve(strip_mutable(index_ty, ctx.table));
             if !resolved_idx.is_integer() && index_ty != TypeId::ERROR {
@@ -1084,20 +1092,18 @@ fn check_call(
 
             // Check if the callee is print — Displayable structs are accepted
             let is_print_callee = callee_def_id.is_some_and(|did| {
-                ctx.definitions
-                    .get(did)
-                    .is_some_and(|info| {
-                        info.name == spark_intern::kw::PRINT
-                            && matches!(info.kind, DefinitionKind::BuiltinFunction)
-                    })
+                ctx.definitions.get(did).is_some_and(|info| {
+                    info.name == spark_intern::kw::PRINT
+                        && matches!(info.kind, DefinitionKind::BuiltinFunction)
+                })
             });
 
             for (i, (arg, &arg_ty)) in args.iter().zip(arg_tys.iter()).enumerate() {
                 if let Some(&expected) = params.get(i) {
                     if !is_compatible(arg_ty, expected, ctx.table) {
                         // Allow Displayable structs as print arguments
-                        let is_displayable_struct = is_print_callee
-                            && is_displayable_type(arg_ty, ctx.table);
+                        let is_displayable_struct =
+                            is_print_callee && is_displayable_type(arg_ty, ctx.table);
                         if !is_displayable_struct {
                             let expected_name = type_name(expected, ctx.table, ctx.definitions);
                             let found_name = type_name(arg_ty, ctx.table, ctx.definitions);
@@ -1709,10 +1715,8 @@ fn validate_partial_each_callback(
     let func_ty = ctx.table.resolve(callee_ty).clone();
     let Ty::Function { params, ret, .. } = func_ty else {
         ctx.diagnostics.push(
-            Diagnostic::error(format!(
-                "`{label}` partial callback must be a function",
-            ))
-            .with_label(Label::primary(callee.span, "not a function")),
+            Diagnostic::error(format!("`{label}` partial callback must be a function",))
+                .with_label(Label::primary(callee.span, "not a function")),
         );
         ctx.table.set_expr_type(callback_expr.id, TypeId::ERROR);
         return TypeId::ERROR;
@@ -1801,7 +1805,12 @@ fn check_partial(
     }
 
     let callee_resolved = ctx.table.resolve(callee_ty).clone();
-    let Ty::Function { params, ret, is_async } = callee_resolved else {
+    let Ty::Function {
+        params,
+        ret,
+        is_async,
+    } = callee_resolved
+    else {
         ctx.diagnostics.push(
             Diagnostic::error("partial application requires a function")
                 .with_label(Label::primary(callee.span, "not a function")),
@@ -1843,11 +1852,8 @@ fn check_partial(
         // Check for duplicate binding
         if bound[pos] {
             ctx.diagnostics.push(
-                Diagnostic::error(format!(
-                    "parameter `{}` is already bound",
-                    name.as_str(),
-                ))
-                .with_label(Label::primary(arg.name.span, "duplicate binding")),
+                Diagnostic::error(format!("parameter `{}` is already bound", name.as_str(),))
+                    .with_label(Label::primary(arg.name.span, "duplicate binding")),
             );
             continue;
         }
@@ -1860,8 +1866,11 @@ fn check_partial(
         if !actual_ty.is_error() && !is_compatible(actual_ty, param_ty, ctx.table) {
             let expected = type_name(param_ty, ctx.table, ctx.definitions);
             let found = type_name(actual_ty, ctx.table, ctx.definitions);
-            ctx.diagnostics
-                .push(diagnostics::arg_type_mismatch(&expected, &found, arg.value.span));
+            ctx.diagnostics.push(diagnostics::arg_type_mismatch(
+                &expected,
+                &found,
+                arg.value.span,
+            ));
         }
     }
 
@@ -2011,7 +2020,11 @@ fn subtract_type(original: TypeId, to_remove: TypeId, table: &mut TypeTable) -> 
         Action::ReturnNull => table.intern(Ty::Null),
         Action::ReturnInner(inner) => {
             let null_id = table.intern(Ty::Null);
-            if to_remove == null_id { inner } else { original }
+            if to_remove == null_id {
+                inner
+            } else {
+                original
+            }
         }
         Action::RebuildUnion(remaining) => match remaining.len() {
             0 => original,
@@ -2027,10 +2040,7 @@ fn subtract_type(original: TypeId, to_remove: TypeId, table: &mut TypeTable) -> 
 /// If the condition is `<ident> is <Type>`, returns the ident's `DefId`
 /// and the tested `TypeId`. Returns `None` for non-ident expressions
 /// or non-`is` conditions.
-fn extract_is_narrowing(
-    condition: &Expr,
-    ctx: &mut TypeCheckCtx<'_>,
-) -> Option<(DefId, TypeId)> {
+fn extract_is_narrowing(condition: &Expr, ctx: &mut TypeCheckCtx<'_>) -> Option<(DefId, TypeId)> {
     if let ExprKind::Is { expr: inner, ty } = &condition.kind {
         if let ExprKind::Ident(ident) = &inner.kind {
             let def_id = ctx.resolutions?.get_ident(ident.span)?;
@@ -2290,7 +2300,12 @@ fn validate_call_args(
     call_span: Span,
     ctx: &mut TypeCheckCtx<'_>,
 ) {
-    diagnostics::expect_args(expected_params.len(), arg_tys.len(), call_span, ctx.diagnostics);
+    diagnostics::expect_args(
+        expected_params.len(),
+        arg_tys.len(),
+        call_span,
+        ctx.diagnostics,
+    );
     for (i, arg_ty) in arg_tys.iter().enumerate() {
         if let Some(&expected) = expected_params.get(i) {
             if !is_compatible(*arg_ty, expected, ctx.table) {
@@ -2358,10 +2373,12 @@ fn check_user_method_call(
     }
 
     // No method found — check if the type has a callable field with this name.
-    let field_ty_raw = ctx
-        .table
-        .get_struct_fields(type_def_id)
-        .and_then(|fields| fields.iter().find(|(name, _)| *name == method).map(|(_, ty)| *ty));
+    let field_ty_raw = ctx.table.get_struct_fields(type_def_id).and_then(|fields| {
+        fields
+            .iter()
+            .find(|(name, _)| *name == method)
+            .map(|(_, ty)| *ty)
+    });
     if let Some(raw_ty) = field_ty_raw {
         let mut field_ty = strip_mutable(raw_ty, ctx.table);
 
@@ -2547,13 +2564,24 @@ fn check_pipeline_stage(
             );
             let ret_ty = if let ExprKind::Partial { callee, args } = &callback.kind {
                 validate_partial_each_callback(
-                    callee, args, elem_ty, true, callback, ctx, current_fn_ret,
+                    callee,
+                    args,
+                    elem_ty,
+                    true,
+                    callback,
+                    ctx,
+                    current_fn_ret,
                 )
             } else {
                 let cb_ty = check_expr(callback, ctx, current_fn_ret);
                 validate_each_callback(
-                    cb_ty, elem_ty, true, callback.span,
-                    ctx.table, ctx.definitions, ctx.diagnostics,
+                    cb_ty,
+                    elem_ty,
+                    true,
+                    callback.span,
+                    ctx.table,
+                    ctx.definitions,
+                    ctx.diagnostics,
                 )
             };
             if ret_ty != TypeId::ERROR && ret_ty != ctx.builtins.bool_ty {
@@ -2578,13 +2606,24 @@ fn check_pipeline_stage(
             );
             let ret_ty = if let ExprKind::Partial { callee, args } = &callback.kind {
                 validate_partial_each_callback(
-                    callee, args, elem_ty, true, callback, ctx, current_fn_ret,
+                    callee,
+                    args,
+                    elem_ty,
+                    true,
+                    callback,
+                    ctx,
+                    current_fn_ret,
                 )
             } else {
                 let cb_ty = check_expr(callback, ctx, current_fn_ret);
                 validate_each_callback(
-                    cb_ty, elem_ty, true, callback.span,
-                    ctx.table, ctx.definitions, ctx.diagnostics,
+                    cb_ty,
+                    elem_ty,
+                    true,
+                    callback.span,
+                    ctx.table,
+                    ctx.definitions,
+                    ctx.diagnostics,
                 )
             };
             if ret_ty != TypeId::ERROR && ret_ty != ctx.builtins.bool_ty {
@@ -2636,16 +2675,20 @@ fn extract_list_elem(
             }
             let name = type_name(base_ty, table, definitions);
             diagnostics.push(
-                Diagnostic::error(format!("`{operation}` requires a List or Iterable, found `{name}`"))
-                    .with_label(Label::primary(span, "not a List or Iterable")),
+                Diagnostic::error(format!(
+                    "`{operation}` requires a List or Iterable, found `{name}`"
+                ))
+                .with_label(Label::primary(span, "not a List or Iterable")),
             );
             TypeId::ERROR
         }
         _ => {
             let name = type_name(base_ty, table, definitions);
             diagnostics.push(
-                Diagnostic::error(format!("`{operation}` requires a List or Iterable, found `{name}`"))
-                    .with_label(Label::primary(span, "not a List or Iterable")),
+                Diagnostic::error(format!(
+                    "`{operation}` requires a List or Iterable, found `{name}`"
+                ))
+                .with_label(Label::primary(span, "not a List or Iterable")),
             );
             TypeId::ERROR
         }
@@ -2820,9 +2863,7 @@ fn check_to_narrowing(
                 // Bare type name (e.g., `Int -> ...`): resolve as a union member
                 // by matching the identifier against builtin type names or
                 // user-defined type definitions.
-                if let Some(member_ty) =
-                    resolve_ident_as_union_member(name.name, &members, ctx)
-                {
+                if let Some(member_ty) = resolve_ident_as_union_member(name.name, &members, ctx) {
                     handled_types.push(member_ty);
                 }
             }
@@ -2837,7 +2878,8 @@ fn check_to_narrowing(
             .filter(|m| !handled_types.contains(m))
             .collect();
 
-        let mut result_ty = unify_type_list(&body_types, ctx.builtins.void, ctx.table, ctx.builtins);
+        let mut result_ty =
+            unify_type_list(&body_types, ctx.builtins.void, ctx.table, ctx.builtins);
 
         // Fold in unhandled member types
         for &u in &unhandled {
@@ -2868,9 +2910,10 @@ fn unify_type_list(
 ) -> TypeId {
     match types.first() {
         None => empty_fallback,
-        Some(&first) => types[1..].iter().copied().fold(first, |acc, ty| {
-            unify_branches(acc, ty, table, builtins)
-        }),
+        Some(&first) => types[1..]
+            .iter()
+            .copied()
+            .fold(first, |acc, ty| unify_branches(acc, ty, table, builtins)),
     }
 }
 

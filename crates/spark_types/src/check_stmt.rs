@@ -7,19 +7,20 @@ use spark_ast::{Stmt, StmtKind};
 use spark_diagnostics::{Diagnostic, Label};
 
 use crate::check_expr::{check_expr, check_expr_expected, is_compatible, strip_mutable, strip_ref};
-use crate::display::display_type as type_name;
 use crate::ctx::TypeCheckCtx;
+use crate::display::display_type as type_name;
 use crate::lower::lower_type_expr;
 use crate::ty::{Ty, TypeId};
 
 /// Type-checks a statement.
-pub fn check_stmt(
-    stmt: &Stmt,
-    ctx: &mut TypeCheckCtx<'_>,
-    current_fn_ret: Option<TypeId>,
-) {
+pub fn check_stmt(stmt: &Stmt, ctx: &mut TypeCheckCtx<'_>, current_fn_ret: Option<TypeId>) {
     match &stmt.kind {
-        StmtKind::Let { name, ty, mutable: _, value } => {
+        StmtKind::Let {
+            name,
+            ty,
+            mutable: _,
+            value,
+        } => {
             // Lower the declared type
             let declared_ty = lower_type_expr(ty, ctx);
 
@@ -61,8 +62,12 @@ pub fn check_stmt(
             // Target must be mutable
             if !target_ty.is_error() && !matches!(ctx.table.resolve(target_ty), Ty::Mutable(_)) {
                 ctx.diagnostics.push(
-                    Diagnostic::error("cannot assign to immutable variable")
-                        .with_label(Label::primary(target.span, "not mutable (declare with `Type!` for mutability)")),
+                    Diagnostic::error("cannot assign to immutable variable").with_label(
+                        Label::primary(
+                            target.span,
+                            "not mutable (declare with `Type!` for mutability)",
+                        ),
+                    ),
                 );
             }
 
@@ -77,8 +82,10 @@ pub fn check_stmt(
                 let expected = type_name(inner_ty, ctx.table, ctx.definitions);
                 let found = type_name(value_ty, ctx.table, ctx.definitions);
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!("assignment type mismatch: expected `{expected}`, found `{found}`"))
-                        .with_label(Label::primary(value.span, format!("expected `{expected}`"))),
+                    Diagnostic::error(format!(
+                        "assignment type mismatch: expected `{expected}`, found `{found}`"
+                    ))
+                    .with_label(Label::primary(value.span, format!("expected `{expected}`"))),
                 );
             }
         }
@@ -90,8 +97,11 @@ pub fn check_stmt(
             // Target must be mutable
             if !target_ty.is_error() && !matches!(ctx.table.resolve(target_ty), Ty::Mutable(_)) {
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!("cannot use `{}` on immutable variable", op.as_str()))
-                        .with_label(Label::primary(target.span, "not mutable")),
+                    Diagnostic::error(format!(
+                        "cannot use `{}` on immutable variable",
+                        op.as_str()
+                    ))
+                    .with_label(Label::primary(target.span, "not mutable")),
                 );
             }
 
@@ -106,8 +116,11 @@ pub fn check_stmt(
             // Both operands must be numeric
             if !inner_ty.is_error() && !ctx.table.resolve(inner_ty).is_numeric() {
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!("operator `{}` requires numeric operands", op.as_str()))
-                        .with_label(Label::primary(target.span, "not numeric")),
+                    Diagnostic::error(format!(
+                        "operator `{}` requires numeric operands",
+                        op.as_str()
+                    ))
+                    .with_label(Label::primary(target.span, "not numeric")),
                 );
             }
 
@@ -117,8 +130,11 @@ pub fn check_stmt(
                 let expected = type_name(inner_ty, ctx.table, ctx.definitions);
                 let found = type_name(value_ty, ctx.table, ctx.definitions);
                 ctx.diagnostics.push(
-                    Diagnostic::error(format!("type mismatch for `{}`: expected `{expected}`, found `{found}`", op.as_str()))
-                        .with_label(Label::primary(value.span, format!("expected `{expected}`"))),
+                    Diagnostic::error(format!(
+                        "type mismatch for `{}`: expected `{expected}`, found `{found}`",
+                        op.as_str()
+                    ))
+                    .with_label(Label::primary(value.span, format!("expected `{expected}`"))),
                 );
             }
         }
@@ -170,13 +186,7 @@ mod tests {
             Span::DUMMY,
         );
 
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_stmt(&stmt, &mut ctx, None);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -204,13 +214,7 @@ mod tests {
             Span::DUMMY,
         );
 
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_stmt(&stmt, &mut ctx, None);
         assert!(ctx.diagnostics.has_errors());
     }
@@ -223,13 +227,7 @@ mod tests {
         let mut diags = Diagnostics::new();
 
         let stmt = Stmt::expr(int_literal());
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            None,
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, None, &mut diags);
         check_stmt(&stmt, &mut ctx, None);
         assert!(!ctx.diagnostics.has_errors());
     }
@@ -242,15 +240,19 @@ mod tests {
             target_span,
         );
         Stmt::new(
-            StmtKind::CompoundAssign { target, op, value: int_literal() },
+            StmtKind::CompoundAssign {
+                target,
+                op,
+                value: int_literal(),
+            },
             Span::DUMMY,
         )
     }
 
     #[test]
     fn compound_assign_ref_int_ok() {
-        use spark_resolve::{DefId, ResolutionMap};
         use crate::ty::LifetimeId;
+        use spark_resolve::{DefId, ResolutionMap};
 
         let mut table = crate::table::TypeTable::new();
         let builtins = crate::builtins::register_builtins(&mut table);
@@ -259,7 +261,11 @@ mod tests {
 
         // Create Mutable(Ref[Int, mutable=true])
         let int_id = builtins.int;
-        let ref_ty = table.intern(Ty::Ref { inner: int_id, mutable: true, lifetime: LifetimeId::ANONYMOUS });
+        let ref_ty = table.intern(Ty::Ref {
+            inner: int_id,
+            mutable: true,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
         let mut_ref_ty = table.intern(Ty::Mutable(ref_ty));
 
         // Set up resolution: target ident at span(0,1) -> def_id 99
@@ -270,25 +276,22 @@ mod tests {
         table.set_def_type(def_id, mut_ref_ty);
 
         let stmt = compound_assign_stmt(target_span, spark_ast::CompoundOp::Add);
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            Some(&res),
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, Some(&res), &mut diags);
         check_stmt(&stmt, &mut ctx, None);
         assert!(
             !ctx.diagnostics.has_errors(),
             "Compound assign on Ref[Int] should work: {:?}",
-            ctx.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            ctx.diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
     #[test]
     fn compound_assign_immutable_ref_error() {
-        use spark_resolve::{DefId, ResolutionMap};
         use crate::ty::LifetimeId;
+        use spark_resolve::{DefId, ResolutionMap};
 
         let mut table = crate::table::TypeTable::new();
         let builtins = crate::builtins::register_builtins(&mut table);
@@ -297,7 +300,11 @@ mod tests {
 
         // Create non-mutable Ref[Int] (no Mutable wrapper)
         let int_id = builtins.int;
-        let ref_ty = table.intern(Ty::Ref { inner: int_id, mutable: true, lifetime: LifetimeId::ANONYMOUS });
+        let ref_ty = table.intern(Ty::Ref {
+            inner: int_id,
+            mutable: true,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
 
         let target_span = Span::new(spark_span::FileId::new(0), 10, 11);
         let def_id = DefId::new(100);
@@ -306,13 +313,7 @@ mod tests {
         table.set_def_type(def_id, ref_ty); // NOT Mutable(...)
 
         let stmt = compound_assign_stmt(target_span, spark_ast::CompoundOp::Add);
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            Some(&res),
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, Some(&res), &mut diags);
         check_stmt(&stmt, &mut ctx, None);
         assert!(
             ctx.diagnostics.has_errors(),
@@ -322,8 +323,8 @@ mod tests {
 
     #[test]
     fn compound_assign_ref_non_numeric_error() {
-        use spark_resolve::{DefId, ResolutionMap};
         use crate::ty::LifetimeId;
+        use spark_resolve::{DefId, ResolutionMap};
 
         let mut table = crate::table::TypeTable::new();
         let builtins = crate::builtins::register_builtins(&mut table);
@@ -332,7 +333,11 @@ mod tests {
 
         // Create Mutable(Ref[String, mutable=true]) — String is not numeric
         let string_id = builtins.string;
-        let ref_ty = table.intern(Ty::Ref { inner: string_id, mutable: true, lifetime: LifetimeId::ANONYMOUS });
+        let ref_ty = table.intern(Ty::Ref {
+            inner: string_id,
+            mutable: true,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
         let mut_ref_ty = table.intern(Ty::Mutable(ref_ty));
 
         let target_span = Span::new(spark_span::FileId::new(0), 20, 21);
@@ -342,13 +347,7 @@ mod tests {
         table.set_def_type(def_id, mut_ref_ty);
 
         let stmt = compound_assign_stmt(target_span, spark_ast::CompoundOp::Add);
-        let mut ctx = TypeCheckCtx::new(
-            &mut table,
-            &builtins,
-            &defs,
-            Some(&res),
-            &mut diags,
-        );
+        let mut ctx = TypeCheckCtx::new(&mut table, &builtins, &defs, Some(&res), &mut diags);
         check_stmt(&stmt, &mut ctx, None);
         assert!(
             ctx.diagnostics.has_errors(),

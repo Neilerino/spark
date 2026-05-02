@@ -142,9 +142,7 @@ pub fn resolve_dependencies(root: &Path) -> (Vec<DependencySource>, Vec<String>)
 /// Scans the workspace for `Spark.toml` files (at the root and in
 /// subdirectories) and resolves dependencies for each one. This supports
 /// monorepo layouts where nested projects have their own manifests.
-pub fn resolve_all_workspace_deps(
-    root: &Path,
-) -> (Vec<DependencySource>, Vec<String>) {
+pub fn resolve_all_workspace_deps(root: &Path) -> (Vec<DependencySource>, Vec<String>) {
     let mut all_deps = Vec::new();
     let mut all_errors = Vec::new();
     let mut seen_uris = std::collections::HashSet::new();
@@ -181,10 +179,7 @@ fn discover_manifests(dir: &Path, out: &mut Vec<PathBuf>) {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             // Skip hidden dirs, build output, and package caches.
-            if !name_str.starts_with('.')
-                && name_str != "target"
-                && name_str != "node_modules"
-            {
+            if !name_str.starts_with('.') && name_str != "target" && name_str != "node_modules" {
                 discover_manifests(&path, out);
             }
         }
@@ -347,8 +342,7 @@ pub fn analyze_workspace(
             found_stdlib_on_disk = true;
             stdlib_rel
         } else {
-            let effective_root =
-                effective_root_for_file(&file_path, &project_roots, root_path);
+            let effective_root = effective_root_for_file(&file_path, &project_roots, root_path);
             file_path
                 .strip_prefix(effective_root)
                 .unwrap_or(&file_path)
@@ -377,7 +371,8 @@ pub fn analyze_workspace(
             continue;
         }
 
-        let file_path = dep.uri
+        let file_path = dep
+            .uri
             .to_file_path()
             .unwrap_or_else(|()| PathBuf::from("dep.spark"));
         let file_name = file_path.to_string_lossy();
@@ -478,11 +473,7 @@ pub fn analyze_workspace(
     }
 
     // Distribute diagnostics by file
-    let diagnostics_by_uri = distribute_diagnostics(
-        &all_diagnostics,
-        &ropes,
-        &file_id_to_uri,
-    );
+    let diagnostics_by_uri = distribute_diagnostics(&all_diagnostics, &ropes, &file_id_to_uri);
 
     WorkspaceAnalysisOutput {
         file_id_to_uri,
@@ -549,8 +540,14 @@ fn diagnostic_to_lsp_cross_file(
     let range = primary_label
         .and_then(|l| document::span_to_range(primary_rope, l.span))
         .unwrap_or(lsp_types::Range {
-            start: lsp_types::Position { line: 0, character: 0 },
-            end: lsp_types::Position { line: 0, character: 0 },
+            start: lsp_types::Position {
+                line: 0,
+                character: 0,
+            },
+            end: lsp_types::Position {
+                line: 0,
+                character: 0,
+            },
         });
 
     let severity = if diag.is_error() {
@@ -585,9 +582,10 @@ fn diagnostic_to_lsp_cross_file(
     lsp_types::Diagnostic {
         range,
         severity,
-        code: diag.code.as_ref().map(|c| {
-            lsp_types::NumberOrString::String(c.as_str().to_string())
-        }),
+        code: diag
+            .code
+            .as_ref()
+            .map(|c| lsp_types::NumberOrString::String(c.as_str().to_string())),
         source: Some("spark".to_string()),
         message: diag.message.clone(),
         related_information: if related_information.is_empty() {
@@ -656,11 +654,12 @@ mod tests {
 
     #[test]
     fn single_file_analysis_works() {
-        let output = analyze_workspace_sources(&[
-            ("main.spark", "fn main(): Void { x: Int = 42\nx }"),
-        ]);
+        let output =
+            analyze_workspace_sources(&[("main.spark", "fn main(): Void { x: Int = 42\nx }")]);
         // 1 user file (stdlib files are also present but use synthetic URIs).
-        let file_count = output.file_id_to_uri.values()
+        let file_count = output
+            .file_id_to_uri
+            .values()
             .filter(|u| u.scheme() == "file")
             .count();
         assert_eq!(file_count, 1);
@@ -673,7 +672,9 @@ mod tests {
             ("main.spark", "fn main(): Void { }"),
             ("utils.spark", "fn helper(): Int { return 1 }"),
         ]);
-        let file_count = output.file_id_to_uri.values()
+        let file_count = output
+            .file_id_to_uri
+            .values()
             .filter(|u| u.scheme() == "file")
             .count();
         assert_eq!(file_count, 2);
@@ -685,14 +686,13 @@ mod tests {
     fn diagnostics_distributed_per_file() {
         let output = analyze_workspace_sources(&[
             ("good.spark", "fn main(): Void { }"),
-            ("bad.spark", "fn broken(): Int { }"),  // missing return value
+            ("bad.spark", "fn broken(): Int { }"), // missing return value
         ]);
 
         // Each user file should have its own diagnostics entry.
         let user_diag_count = count_file_uris(&output.diagnostics_by_uri);
         assert_eq!(
-            user_diag_count,
-            2,
+            user_diag_count, 2,
             "Expected diagnostics entry for each user file"
         );
     }
@@ -709,22 +709,32 @@ mod tests {
     fn cross_file_import_resolves() {
         // Mirrors the multimod test project: main.spark imports from mymod.
         let output = analyze_workspace_sources(&[
-            ("main.spark", "import mymod { hello }\nfn main(): Void { hello() }"),
-            ("mymod/mymod.spark", "module mymod\npub fn hello(): Void { }"),
+            (
+                "main.spark",
+                "import mymod { hello }\nfn main(): Void { hello() }",
+            ),
+            (
+                "mymod/mymod.spark",
+                "module mymod\npub fn hello(): Void { }",
+            ),
         ]);
 
         // Import should resolve without errors (no "module not found" or
         // "not exported" diagnostics).
         let has_import_error = output.diagnostics_by_uri.values().any(|diags| {
             diags.iter().any(|d| {
-                d.message.contains("cannot find module")
-                    || d.message.contains("not exported")
+                d.message.contains("cannot find module") || d.message.contains("not exported")
             })
         });
         assert!(
             !has_import_error,
             "Cross-file import should resolve without errors. Diagnostics: {:?}",
-            output.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics_by_uri
+                .values()
+                .flatten()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -745,20 +755,25 @@ mod tests {
     fn stdlib_import_resolves() {
         // Verifies that stdlib modules are injected and resolvable
         // when no on-disk stdlib is present.
-        let output = analyze_workspace_sources(&[
-            ("main.spark", "import spark.math { sqrt }\nfn main(): Void { sqrt(4.0) }"),
-        ]);
+        let output = analyze_workspace_sources(&[(
+            "main.spark",
+            "import spark.math { sqrt }\nfn main(): Void { sqrt(4.0) }",
+        )]);
 
         let has_module_error = output.diagnostics_by_uri.values().any(|diags| {
             diags.iter().any(|d| {
-                d.message.contains("cannot find module")
-                    || d.message.contains("not exported")
+                d.message.contains("cannot find module") || d.message.contains("not exported")
             })
         });
         assert!(
             !has_module_error,
             "stdlib import should resolve without errors. Diagnostics: {:?}",
-            output.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics_by_uri
+                .values()
+                .flatten()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -777,11 +792,13 @@ mod tests {
         fs::write(
             project_dir.join("main.spark"),
             "import mymod { greet }\nfn main(): Void { greet() }",
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(
             project_dir.join("mymod/mymod.spark"),
             "module mymod\npub fn greet(): Void { }",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Build file list with URIs and sources
         let files: Vec<(Url, String)> = vec![
@@ -800,8 +817,7 @@ mod tests {
 
         let has_import_error = output.diagnostics_by_uri.values().any(|diags| {
             diags.iter().any(|d| {
-                d.message.contains("cannot find module")
-                    || d.message.contains("not exported")
+                d.message.contains("cannot find module") || d.message.contains("not exported")
             })
         });
         assert!(
@@ -889,9 +905,18 @@ mod tests {
         fs::write(root.join("proj_b/main.spark"), "").unwrap();
 
         let files: Vec<(Url, String)> = vec![
-            (Url::from_file_path(root.join("proj_a/main.spark")).unwrap(), String::new()),
-            (Url::from_file_path(root.join("proj_b/main.spark")).unwrap(), String::new()),
-            (Url::from_file_path(root.join("proj_a/lib.spark")).unwrap(), String::new()),
+            (
+                Url::from_file_path(root.join("proj_a/main.spark")).unwrap(),
+                String::new(),
+            ),
+            (
+                Url::from_file_path(root.join("proj_b/main.spark")).unwrap(),
+                String::new(),
+            ),
+            (
+                Url::from_file_path(root.join("proj_a/lib.spark")).unwrap(),
+                String::new(),
+            ),
         ];
 
         let roots = find_project_roots(&files);
@@ -945,7 +970,11 @@ mod tests {
         assert!(dep_errors.is_empty(), "unexpected errors: {dep_errors:?}");
         assert_eq!(dep_sources.len(), 1, "expected 1 dep source file");
         assert!(
-            dep_sources[0].module_path.display().to_string().contains("mylib"),
+            dep_sources[0]
+                .module_path
+                .display()
+                .to_string()
+                .contains("mylib"),
             "expected mylib in module path, got: {}",
             dep_sources[0].module_path.display()
         );
@@ -953,23 +982,24 @@ mod tests {
         // Build workspace files.
         let main_path = root.join("main.spark");
         let main_source = fs::read_to_string(&main_path).unwrap();
-        let files = vec![(
-            Url::from_file_path(&main_path).unwrap(),
-            main_source,
-        )];
+        let files = vec![(Url::from_file_path(&main_path).unwrap(), main_source)];
 
         // Analyze with deps — import should resolve.
         let output = analyze_workspace(&files, &dep_sources, root);
         let has_import_error = output.diagnostics_by_uri.values().any(|diags| {
             diags.iter().any(|d| {
-                d.message.contains("cannot find module")
-                    || d.message.contains("not exported")
+                d.message.contains("cannot find module") || d.message.contains("not exported")
             })
         });
         assert!(
             !has_import_error,
             "Import from path dep should resolve. Diagnostics: {:?}",
-            output.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics_by_uri
+                .values()
+                .flatten()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1038,21 +1068,22 @@ mod tests {
         // Analyze.
         let main_path = root.join("main.spark");
         let main_source = fs::read_to_string(&main_path).unwrap();
-        let files = vec![(
-            Url::from_file_path(&main_path).unwrap(),
-            main_source,
-        )];
+        let files = vec![(Url::from_file_path(&main_path).unwrap(), main_source)];
         let output = analyze_workspace(&files, &dep_sources, &root);
         let has_import_error = output.diagnostics_by_uri.values().any(|diags| {
             diags.iter().any(|d| {
-                d.message.contains("cannot find module")
-                    || d.message.contains("not exported")
+                d.message.contains("cannot find module") || d.message.contains("not exported")
             })
         });
         assert!(
             !has_import_error,
             "Transitive deps should resolve. Diagnostics: {:?}",
-            output.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics_by_uri
+                .values()
+                .flatten()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1071,11 +1102,7 @@ mod tests {
             "module mylib\npub fn helper(): Int { return 1 }\n",
         )
         .unwrap();
-        fs::write(
-            root.join("main.spark"),
-            "fn main(): Void { }",
-        )
-        .unwrap();
+        fs::write(root.join("main.spark"), "fn main(): Void { }").unwrap();
 
         // Discover files (includes mylib from directory walk).
         let spark_files = discover_spark_files(root);
@@ -1147,7 +1174,9 @@ mod tests {
         // Without deps, the import fails (path is libs/mylib/mylib.spark).
         let output_no_deps = analyze_workspace(&files, &[], root);
         let has_error_without_deps = output_no_deps.diagnostics_by_uri.values().any(|diags| {
-            diags.iter().any(|d| d.message.contains("cannot find module"))
+            diags
+                .iter()
+                .any(|d| d.message.contains("cannot find module"))
         });
         assert!(
             has_error_without_deps,
@@ -1164,14 +1193,18 @@ mod tests {
         let output_with_deps = analyze_workspace(&files, &dep_sources, root);
         let has_import_error = output_with_deps.diagnostics_by_uri.values().any(|diags| {
             diags.iter().any(|d| {
-                d.message.contains("cannot find module")
-                    || d.message.contains("not exported")
+                d.message.contains("cannot find module") || d.message.contains("not exported")
             })
         });
         assert!(
             !has_import_error,
             "With dep resolution, import should resolve. Diagnostics: {:?}",
-            output_with_deps.diagnostics_by_uri.values().flatten().map(|d| &d.message).collect::<Vec<_>>()
+            output_with_deps
+                .diagnostics_by_uri
+                .values()
+                .flatten()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1191,7 +1224,8 @@ mod tests {
         fs::write(
             root.join("main.spark"),
             "import lib_b { doubled }\nfn main(): Int {\n    print(doubled())\n    return 0\n}\n",
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(
             root.join("Spark.toml"),
             "[project]\nname = \"transitive_test\"\nversion = \"0.1.0\"\n\n[dependencies]\nlib_b = { path = \"libs/lib_b\" }\n",
@@ -1207,11 +1241,13 @@ mod tests {
         fs::write(
             root.join("libs/lib_c/lib_c.spark"),
             "module lib_c\n\npub fn base_value(): Int {\n    return 10\n}\n",
-        ).unwrap();
+        )
+        .unwrap();
         fs::write(
             root.join("libs/lib_c/Spark.toml"),
             "[project]\nname = \"lib_c\"\nversion = \"0.1.0\"\n",
-        ).unwrap();
+        )
+        .unwrap();
 
         // 1. Resolve dependencies the same way the LSP backend does.
         let (dep_sources, dep_errors) = resolve_dependencies(&root);
@@ -1220,7 +1256,11 @@ mod tests {
 
         // Print for debugging.
         for ds in &dep_sources {
-            eprintln!("dep: uri={} module_path={}", ds.uri, ds.module_path.display());
+            eprintln!(
+                "dep: uri={} module_path={}",
+                ds.uri,
+                ds.module_path.display()
+            );
         }
 
         // 2. Discover files the same way the LSP backend does.

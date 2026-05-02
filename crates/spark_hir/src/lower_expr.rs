@@ -39,34 +39,17 @@ pub(crate) struct LowerCtx<'a> {
 }
 
 /// Lowers an expression from the AST to HIR.
-pub(crate) fn lower_expr(
-    expr: &Expr,
-    ctx: &mut LowerCtx<'_>,
-) -> HirExpr {
+pub(crate) fn lower_expr(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExpr {
     let ty = expr_type(expr.id, ctx.table);
-    let kind = lower_expr_kind(
-        expr,
-        ctx,
-    );
+    let kind = lower_expr_kind(expr, ctx);
     HirExpr::new(kind, ty, expr.span)
 }
 
 /// Lowers a block expression.
-pub(crate) fn lower_block(
-    block: &spark_ast::Block,
-    ctx: &mut LowerCtx<'_>,
-) -> HirExpr {
-    let stmts: Vec<HirStmt> = block
-        .stmts
-        .iter()
-        .map(|s| {
-            lower_stmt(s, ctx)
-        })
-        .collect();
+pub(crate) fn lower_block(block: &spark_ast::Block, ctx: &mut LowerCtx<'_>) -> HirExpr {
+    let stmts: Vec<HirStmt> = block.stmts.iter().map(|s| lower_stmt(s, ctx)).collect();
 
-    let trailing = block.expr.as_ref().map(|e| {
-        Box::new(lower_expr(e, ctx))
-    });
+    let trailing = block.expr.as_ref().map(|e| Box::new(lower_expr(e, ctx)));
 
     let ty = trailing
         .as_ref()
@@ -84,21 +67,15 @@ pub(crate) fn lower_block(
 
 /// Inner dispatch on `ExprKind`.
 #[allow(clippy::too_many_lines)]
-fn lower_expr_kind(
-    expr: &Expr,
-    ctx: &mut LowerCtx<'_>,
-) -> HirExprKind {
+fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
     match &expr.kind {
         // === Literals ===
-        ExprKind::Literal(lit) => lower_literal_expr(
-            &lit.kind,
-            expr,
-            ctx,
-        ),
+        ExprKind::Literal(lit) => lower_literal_expr(&lit.kind, expr, ctx),
 
         // === Identifiers -> Local(DefId) ===
         ExprKind::Ident(ident) => {
-            let def_id = ctx.resolutions
+            let def_id = ctx
+                .resolutions
                 .and_then(|res| res.get_ident(ident.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             if def_id.is_dummy() {
@@ -109,7 +86,8 @@ fn lower_expr_kind(
         }
 
         ExprKind::Path(path) => {
-            let def_id = ctx.resolutions
+            let def_id = ctx
+                .resolutions
                 .and_then(|res| res.get_path(path.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             if def_id.is_dummy() {
@@ -121,14 +99,8 @@ fn lower_expr_kind(
 
         // === Operators ===
         ExprKind::Binary { op, lhs, rhs } => {
-            let lhs_hir = auto_deref_ref(
-                lower_expr(lhs, ctx),
-                ctx.table,
-            );
-            let rhs_hir = auto_deref_ref(
-                lower_expr(rhs, ctx),
-                ctx.table,
-            );
+            let lhs_hir = auto_deref_ref(lower_expr(lhs, ctx), ctx.table);
+            let rhs_hir = auto_deref_ref(lower_expr(rhs, ctx), ctx.table);
             // Equatable: desugar `a == b` / `a != b` to method calls
             if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
                 && should_desugar_equatable(&lhs_hir, ctx.table)
@@ -151,10 +123,7 @@ fn lower_expr_kind(
         }
 
         ExprKind::Unary { op, operand } => {
-            let operand_hir = auto_deref_ref(
-                lower_expr(operand, ctx),
-                ctx.table,
-            );
+            let operand_hir = auto_deref_ref(lower_expr(operand, ctx), ctx.table);
             HirExprKind::UnaryOp {
                 op: *op,
                 operand: Box::new(operand_hir),
@@ -262,12 +231,7 @@ fn lower_expr_kind(
                 HirExprKind::MethodCall {
                     receiver: Box::new(recv_hir),
                     method: method.name,
-                    args: args
-                        .iter()
-                        .map(|a| {
-                            lower_expr(&a.value, ctx)
-                        })
-                        .collect(),
+                    args: args.iter().map(|a| lower_expr(&a.value, ctx)).collect(),
                 }
             }
         }
@@ -279,19 +243,15 @@ fn lower_expr_kind(
             fields,
             spread: _,
         } => {
-            let def_id = ctx.resolutions
+            let def_id = ctx
+                .resolutions
                 .and_then(|res| res.get_path(path.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             HirExprKind::StructInit {
                 def_id,
                 fields: fields
                     .iter()
-                    .map(|f| {
-                        (
-                            f.name.name,
-                            lower_expr(&f.value, ctx),
-                        )
-                    })
+                    .map(|f| (f.name.name, lower_expr(&f.value, ctx)))
                     .collect(),
             }
         }
@@ -301,29 +261,20 @@ fn lower_expr_kind(
             variant,
             fields,
         } => {
-            let def_id = ctx.resolutions
+            let def_id = ctx
+                .resolutions
                 .and_then(|res| res.get_path(path.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
             HirExprKind::EnumVariant {
                 def_id,
                 variant: variant.name,
-                fields: fields
-                    .iter()
-                    .map(|f| {
-                        lower_expr(f, ctx)
-                    })
-                    .collect(),
+                fields: fields.iter().map(|f| lower_expr(f, ctx)).collect(),
             }
         }
 
-        ExprKind::List(elems) => HirExprKind::ListLit(
-            elems
-                .iter()
-                .map(|e| {
-                    lower_expr(e, ctx)
-                })
-                .collect(),
-        ),
+        ExprKind::List(elems) => {
+            HirExprKind::ListLit(elems.iter().map(|e| lower_expr(e, ctx)).collect())
+        }
 
         ExprKind::Map(entries) => HirExprKind::MapLit(
             entries
@@ -336,23 +287,13 @@ fn lower_expr_kind(
                 .collect(),
         ),
 
-        ExprKind::Set(elems) => HirExprKind::SetLit(
-            elems
-                .iter()
-                .map(|e| {
-                    lower_expr(e, ctx)
-                })
-                .collect(),
-        ),
+        ExprKind::Set(elems) => {
+            HirExprKind::SetLit(elems.iter().map(|e| lower_expr(e, ctx)).collect())
+        }
 
-        ExprKind::Tuple(elems) => HirExprKind::TupleLit(
-            elems
-                .iter()
-                .map(|e| {
-                    lower_expr(e, ctx)
-                })
-                .collect(),
-        ),
+        ExprKind::Tuple(elems) => {
+            HirExprKind::TupleLit(elems.iter().map(|e| lower_expr(e, ctx)).collect())
+        }
 
         // === Control flow ===
         ExprKind::Block(block) => {
@@ -367,18 +308,16 @@ fn lower_expr_kind(
         } => HirExprKind::If {
             cond: Box::new(lower_expr(condition, ctx)),
             then_: Box::new(lower_expr(then_branch, ctx)),
-            else_: else_branch.as_ref().map(|e| {
-                Box::new(lower_expr(e, ctx))
-            }),
+            else_: else_branch.as_ref().map(|e| Box::new(lower_expr(e, ctx))),
         },
 
         ExprKind::Loop { body } => HirExprKind::Loop {
             body: Box::new(lower_expr(body, ctx)),
         },
 
-        ExprKind::Break(value) => HirExprKind::Break(value.as_ref().map(|v| {
-            Box::new(lower_expr(v, ctx))
-        })),
+        ExprKind::Break(value) => {
+            HirExprKind::Break(value.as_ref().map(|v| Box::new(lower_expr(v, ctx))))
+        }
 
         ExprKind::Continue => HirExprKind::Continue,
 
@@ -429,7 +368,8 @@ fn lower_expr_kind(
             let hir_params: Vec<HirParam> = params
                 .iter()
                 .map(|p| {
-                    let def_id = ctx.resolutions
+                    let def_id = ctx
+                        .resolutions
                         .and_then(|res| res.get_binding(p.name.span))
                         .unwrap_or(spark_resolve::DefId::DUMMY);
                     let ty = ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR);
@@ -508,9 +448,7 @@ fn lower_expr_kind(
         }
 
         // === Unified Pipeline ===
-        ExprKind::Pipeline { source, stages } => lower_pipeline(
-            source, stages, expr, ctx,
-        ),
+        ExprKind::Pipeline { source, stages } => lower_pipeline(source, stages, expr, ctx),
 
         ExprKind::To { expr: inner, arms } => {
             let inner_ty = expr_type(inner.id, ctx.table);
@@ -528,9 +466,7 @@ fn lower_expr_kind(
                     arms: arms
                         .iter()
                         .map(|arm| {
-                            let (pattern, guard) = lower_pattern_with_guard(
-                                &arm.pattern, ctx,
-                            );
+                            let (pattern, guard) = lower_pattern_with_guard(&arm.pattern, ctx);
                             HirMatchArm {
                                 pattern,
                                 guard,
@@ -552,9 +488,7 @@ fn lower_expr_kind(
             lower_pipeline_apply(inner_hir, operation, args, ctx, expr.span)
         }
 
-        ExprKind::Partial { callee, args } => lower_standalone_partial(
-            callee, args, expr, ctx,
-        ),
+        ExprKind::Partial { callee, args } => lower_standalone_partial(callee, args, expr, ctx),
 
         ExprKind::Range { start, end, .. } => {
             let _ = lower_expr(start, ctx);
@@ -570,9 +504,7 @@ fn lower_expr_kind(
         } => {
             let start_hir = lower_expr(start, ctx);
             let end_hir = lower_expr(end, ctx);
-            let step_hir = step.as_ref().map(|s| {
-                Box::new(lower_expr(s, ctx))
-            });
+            let step_hir = step.as_ref().map(|s| Box::new(lower_expr(s, ctx)));
             HirExprKind::ListRange {
                 start: Box::new(start_hir),
                 end: Box::new(end_hir),
@@ -707,9 +639,7 @@ fn lower_pipeline(
             // Intermediate stage: wrap in a let binding
             let stage_result_ty = infer_stage_output_ty(stage, current_hir.ty, ctx.table);
             let temp_id = ctx.definitions.next_synthetic_id(stage.span);
-            let stage_hir_kind = lower_single_pipeline_stage(
-                stage, current_hir, stage.span, ctx,
-            );
+            let stage_hir_kind = lower_single_pipeline_stage(stage, current_hir, stage.span, ctx);
             let stage_hir = HirExpr::new(stage_hir_kind, stage_result_ty, stage.span);
             stmts.push(HirStmt::Let {
                 def_id: temp_id,
@@ -719,9 +649,7 @@ fn lower_pipeline(
             current_hir = HirExpr::new(HirExprKind::Local(temp_id), stage_result_ty, stage.span);
         } else {
             // Last stage: produce the final expression
-            let final_kind = lower_single_pipeline_stage(
-                stage, current_hir, span, ctx,
-            );
+            let final_kind = lower_single_pipeline_stage(stage, current_hir, span, ctx);
             let result_ty = expr_type(pipeline_expr.id, ctx.table);
             let trailing = HirExpr::new(final_kind, result_ty, span);
             return HirExprKind::Block {
@@ -765,7 +693,9 @@ fn infer_stage_output_ty(
             // Output is Optional(elem_ty) — first match or Null.
             // The type checker already interned this Optional type.
             let elem_ty = extract_list_elem_ty(input_ty, table);
-            table.lookup(&Ty::Optional(elem_ty)).unwrap_or(TypeId::ERROR)
+            table
+                .lookup(&Ty::Optional(elem_ty))
+                .unwrap_or(TypeId::ERROR)
         }
     }
 }
@@ -882,7 +812,9 @@ fn lower_single_pipeline_stage(
         PipelineStageKind::Find { callback } => {
             let callback_hir = lower_partial_or_plain(callback, ctx, void_ty);
             let elem_ty = extract_list_elem_ty(source_hir.ty, table);
-            let optional_ty = table.lookup(&Ty::Optional(elem_ty)).unwrap_or(TypeId::ERROR);
+            let optional_ty = table
+                .lookup(&Ty::Optional(elem_ty))
+                .unwrap_or(TypeId::ERROR);
             desugar::desugar_find(
                 source_hir,
                 callback_hir,
@@ -986,7 +918,8 @@ fn lower_pipeline_apply(
     _span: Span,
 ) -> HirExprKind {
     // Desugar `expr to func{a: v}` → `func(expr, v)`
-    let func_def_id = ctx.resolutions
+    let func_def_id = ctx
+        .resolutions
         .and_then(|r| r.get_ident(operation.span))
         .unwrap_or(spark_resolve::DefId::DUMMY);
     let func_ty = ctx.table.get_def_type(func_def_id).unwrap_or(TypeId::ERROR);
@@ -1042,7 +975,16 @@ fn lower_to_pattern(
                 def_id,
                 fields: fields
                     .iter()
-                    .map(|f| lower_to_pattern(f, definitions, resolutions, table, builtins, union_members))
+                    .map(|f| {
+                        lower_to_pattern(
+                            f,
+                            definitions,
+                            resolutions,
+                            table,
+                            builtins,
+                            union_members,
+                        )
+                    })
                     .collect(),
             }
         }
@@ -1050,9 +992,13 @@ fn lower_to_pattern(
             // In a union `to` expression, a bare type name (e.g., `Int -> ...`)
             // should be treated as type narrowing, not a variable binding.
             if !union_members.is_empty() {
-                if let Some(member_ty) =
-                    resolve_ident_as_union_member(name.name, union_members, builtins, table, definitions)
-                {
+                if let Some(member_ty) = resolve_ident_as_union_member(
+                    name.name,
+                    union_members,
+                    builtins,
+                    table,
+                    definitions,
+                ) {
                     let def_id = definitions.next_synthetic_id(pattern.span);
                     return HirPattern::TypeNarrow {
                         def_id,
@@ -1104,11 +1050,7 @@ fn resolve_ident_as_union_member(
 
 /// Lowers a literal expression, producing either a simple `HirExprKind::Literal`
 /// or a `HirExprKind::StringInterp` for interpolated strings.
-fn lower_literal_expr(
-    kind: &LiteralKind,
-    expr: &Expr,
-    ctx: &mut LowerCtx<'_>,
-) -> HirExprKind {
+fn lower_literal_expr(kind: &LiteralKind, expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
     match kind {
         LiteralKind::String(s) if !s.is_simple() => {
             // Interpolated string: produce StringInterp with parts.
@@ -1176,18 +1118,17 @@ pub(crate) fn auto_deref_ref(expr: HirExpr, table: &TypeTable) -> HirExpr {
 /// 1-parameter lambda that calls the full function with the element as the first
 /// argument and the bound args filling the rest:
 /// `func{n: 10}` becomes `fn(elem) { func(elem, 10) }`.
-fn lower_partial_or_plain(
-    callback: &Expr,
-    ctx: &mut LowerCtx<'_>,
-    void_ty: TypeId,
-) -> HirExpr {
+fn lower_partial_or_plain(callback: &Expr, ctx: &mut LowerCtx<'_>, void_ty: TypeId) -> HirExpr {
     if let ExprKind::Partial { callee, args } = &callback.kind {
         let callee_hir = lower_expr(callee, ctx);
         let param_types = extract_param_types(callee_hir.ty, ctx.table);
         let ret_ty = extract_fn_ret_ty(callee_hir.ty, ctx.table, void_ty);
 
         // The type checker stored a reduced 1-param function type on the callback
-        let lambda_ty = ctx.table.get_expr_type(callback.id).unwrap_or(TypeId::ERROR);
+        let lambda_ty = ctx
+            .table
+            .get_expr_type(callback.id)
+            .unwrap_or(TypeId::ERROR);
         let elem_ty = if let Ty::Function { params, .. } = ctx.table.resolve(lambda_ty) {
             params.first().copied().unwrap_or(TypeId::ERROR)
         } else {
@@ -1253,7 +1194,8 @@ fn lower_standalone_partial(
     let ret_ty = extract_fn_ret_ty(callee_hir.ty, ctx.table, void_ty);
 
     // The type checker stored the reduced function type on this expression
-    let lambda_ty = ctx.table
+    let lambda_ty = ctx
+        .table
         .get_expr_type(partial_expr.id)
         .unwrap_or(TypeId::ERROR);
     if lambda_ty.is_error() {
@@ -1379,7 +1321,12 @@ fn extract_fn_ret_ty(ty: TypeId, table: &TypeTable, default: TypeId) -> TypeId {
 
 /// Inserts `Borrow` or `Deref` coercion if the argument type needs to be
 /// converted to match the parameter type.
-pub(crate) fn coerce_ref(mut arg: HirExpr, param_ty: TypeId, span: Span, table: &TypeTable) -> HirExpr {
+pub(crate) fn coerce_ref(
+    mut arg: HirExpr,
+    param_ty: TypeId,
+    span: Span,
+    table: &TypeTable,
+) -> HirExpr {
     let arg_inner = strip_mutable_ty(arg.ty, table);
     let param_inner = strip_mutable_ty(param_ty, table);
     let arg_resolved = table.resolve(arg_inner);

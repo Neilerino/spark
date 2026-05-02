@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use spark_ast::Item;
 use spark_diagnostics::Diagnostics;
-use spark_resolve::{DefId, DefinitionTable, ResolvedAst, ResolutionMap};
+use spark_resolve::{DefId, DefinitionTable, ResolutionMap, ResolvedAst};
 use spark_span::FileId;
 use spark_types::builtins::BuiltinTypes;
 use spark_types::{TypeId, TypeTable};
@@ -136,15 +136,18 @@ impl<'a> Lowerer<'a> {
         };
         let hir_body = lower_block(body, &mut ctx);
 
-        hir.functions.insert(def_id, HirFunction {
+        hir.functions.insert(
             def_id,
-            params,
-            body: hir_body,
-            ret_type,
-            is_async: func.is_async,
-            span: func.span,
-            captures: vec![],
-        });
+            HirFunction {
+                def_id,
+                params,
+                body: hir_body,
+                ret_type,
+                is_async: func.is_async,
+                span: func.span,
+                captures: vec![],
+            },
+        );
     }
 
     /// Lowers a constant definition.
@@ -174,12 +177,15 @@ impl<'a> Lowerer<'a> {
         };
         let value = lower_expr(&const_def.value, &mut ctx);
 
-        hir.statics.insert(def_id, HirStatic {
+        hir.statics.insert(
             def_id,
-            ty,
-            value,
-            span: const_def.span,
-        });
+            HirStatic {
+                def_id,
+                ty,
+                value,
+                span: const_def.span,
+            },
+        );
     }
 
     /// Lowers a binding definition's method bodies.
@@ -211,7 +217,8 @@ impl<'a> Lowerer<'a> {
                         .table
                         .get_def_type(def_id)
                         .and_then(|fn_ty| {
-                            if let spark_types::Ty::Function { ret, .. } = self.table.resolve(fn_ty) {
+                            if let spark_types::Ty::Function { ret, .. } = self.table.resolve(fn_ty)
+                            {
                                 Some(*ret)
                             } else {
                                 None
@@ -230,15 +237,18 @@ impl<'a> Lowerer<'a> {
                     };
                     let hir_body = lower_block(body, &mut ctx);
 
-                    hir.functions.insert(def_id, HirFunction {
+                    hir.functions.insert(
                         def_id,
-                        params,
-                        body: hir_body,
-                        ret_type,
-                        is_async: method.is_async,
-                        span: method.span,
-                        captures: vec![],
-                    });
+                        HirFunction {
+                            def_id,
+                            params,
+                            body: hir_body,
+                            ret_type,
+                            is_async: method.is_async,
+                            span: method.span,
+                            captures: vec![],
+                        },
+                    );
                 }
             }
         }
@@ -265,5 +275,4 @@ impl<'a> Lowerer<'a> {
             })
             .collect()
     }
-
 }

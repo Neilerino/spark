@@ -72,9 +72,9 @@ pub mod union;
 use spark_modules::ModuleGraph;
 use spark_resolve::{DefinitionTable, ResolvedAst};
 
-pub use display::{display_type, mangle_type};
 pub use checker::TypeCheckerOutput;
 pub use ctx::TypeCheckCtx;
+pub use display::{display_type, mangle_type};
 pub use table::TypeTable;
 pub use ty::{FloatWidth, IntWidth, LifetimeId, Ty, TypeId};
 
@@ -114,11 +114,7 @@ pub struct TypeCheckerInput<'a> {
 /// ```
 #[must_use]
 pub fn check(input: TypeCheckerInput<'_>) -> TypeCheckerOutput {
-    let checker = checker::TypeChecker::new(
-        input.resolved,
-        input.definitions,
-        input.graph,
-    );
+    let checker = checker::TypeChecker::new(input.resolved, input.definitions, input.graph);
     checker.check()
 }
 
@@ -199,13 +195,29 @@ mod tests {
     fn literal_types() {
         let output = check_source("fn main(): Void { x: Int = 42 }");
         // Should type-check without errors
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn function_return_type() {
         let output = check_source("fn get_num(): Int { return 42 }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -217,13 +229,29 @@ mod tests {
     #[test]
     fn binary_arithmetic() {
         let output = check_source("fn add(a: Int, b: Int): Int { return a + b }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn binary_comparison_returns_bool() {
         let output = check_source("fn cmp(a: Int, b: Int): Bool { return a > b }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -243,7 +271,15 @@ mod tests {
         let output = check_source(
             "struct User { name: String }\nfn get_name(u: User): String { return u.name }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -251,15 +287,29 @@ mod tests {
         let output = check_source(
             "struct Point { x: Int, y: Int }\nfn make(): Point { return Point { x: 1, y: 2 } }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn forward_reference() {
-        let output = check_source(
-            "fn a(): Int { return b() }\nfn b(): Int { return 42 }",
+        let output = check_source("fn a(): Int { return b() }\nfn b(): Int { return 42 }");
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
     }
 
     #[test]
@@ -272,58 +322,121 @@ mod tests {
 
     #[test]
     fn wrong_argument_type() {
-        let output = check_source(
-            "fn greet(name: String): Void { }\nfn main(): Void { greet(42) }",
-        );
+        let output =
+            check_source("fn greet(name: String): Void { }\nfn main(): Void { greet(42) }");
         assert!(output.diagnostics.has_errors());
     }
 
     #[test]
     fn bool_literal() {
         let output = check_source("fn main(): Bool { return true }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn void_function() {
         let output = check_source("fn main(): Void { }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn null_literal() {
         let output = check_source("fn main(): Void { x: Int? = Null }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn optional_type_compatible_with_value() {
         let output = check_source("fn main(): Void { x: Int? = 42 }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn logical_operators() {
         let output = check_source("fn test(a: Bool, b: Bool): Bool { return a and b }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn unary_negation() {
         let output = check_source("fn neg(x: Int): Int { return -x }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn unary_not() {
         let output = check_source("fn flip(x: Bool): Bool { return not x }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn const_definition() {
         let output = check_source("const MAX: Int = 100");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -346,13 +459,29 @@ mod tests {
     #[test]
     fn void_function_no_return_ok() {
         let output = check_source("fn f(): Void { }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn explicit_return_on_all_paths() {
         let output = check_source("fn f(x: Bool): Int { if x { return 1 } else { return 2 } }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     // === Coalesce (??) ===
@@ -360,7 +489,15 @@ mod tests {
     #[test]
     fn coalesce_optional_int() {
         let output = check_source("fn f(x: Int?): Int { return x ?? 0 }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -372,7 +509,15 @@ mod tests {
     #[test]
     fn coalesce_optional_string() {
         let output = check_source("fn f(x: String?): String { return x ?? \"default\" }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     // === Optional field (?.) ===
@@ -382,7 +527,15 @@ mod tests {
         let output = check_source(
             "struct User { name: String }\nfn f(u: User?): String? { return u?.name }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     // === Propagate (!) ===
@@ -390,7 +543,15 @@ mod tests {
     #[test]
     fn propagate_optional() {
         let output = check_source("fn f(x: Int?): Int? { return x! }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     // === Union types ===
@@ -398,20 +559,44 @@ mod tests {
     #[test]
     fn union_type_annotation() {
         let output = check_source("fn f(): Void { x: Int | String = 42 }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn union_type_with_null() {
         let output = check_source("fn f(): Void { x: Int | Null = Null }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn coalesce_union_with_null() {
         // Int | Null should work with ?? just like Int?
         let output = check_source("fn f(x: Int | Null): Int { return x ?? 0 }");
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     // === Propagation with expected type from binding ===
@@ -424,7 +609,15 @@ mod tests {
             "fn get(): Int | String { return 42 }\n\
              fn caller(): String { x: Int = get()!\n return \"done\" }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -434,7 +627,15 @@ mod tests {
             "fn get(): Int | String | Bool { return 42 }\n\
              fn caller(): Bool { x: Int | String = get()!\n return true }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     // ── To exhaustiveness (full pipeline) ────────────────────
@@ -450,7 +651,15 @@ mod tests {
                  }\n\
              }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -465,7 +674,15 @@ mod tests {
                  }\n\
              }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -496,7 +713,15 @@ mod tests {
                  }\n\
              }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -509,7 +734,15 @@ mod tests {
                  }\n\
              }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -564,7 +797,15 @@ mod tests {
                  return f.getX()\n\
              }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -582,7 +823,15 @@ mod tests {
                  return c.addTo(5)\n\
              }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -637,7 +886,15 @@ mod tests {
                  return r.area()\n\
              }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -663,7 +920,15 @@ mod tests {
             "struct Box[T] { value: T }\n\
              fn get(b: Box[Int]): Int { return b.value }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -672,7 +937,15 @@ mod tests {
             "struct Box[T] { value: T }\n\
              fn make(): Box[Int] { return Box { value: 42 } }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -681,7 +954,15 @@ mod tests {
             "struct Box[T] { value: T }\n\
              fn make(): Box[String] { return Box { value: \"hello\" } }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -690,7 +971,15 @@ mod tests {
             "struct Pair[A, B] { first: A, second: B }\n\
              fn make(): Pair[Int, String] { return Pair { first: 1, second: \"hello\" } }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -699,7 +988,15 @@ mod tests {
             "struct Box[T] { value: T }\n\
              fn make(): Box[List[Int]] { return Box { value: [1, 2, 3] } }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -736,7 +1033,15 @@ mod tests {
             "fn identity[T](x: T): T { return x }\n\
              fn main(): Int { return identity(42) }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -745,7 +1050,15 @@ mod tests {
             "fn identity[T](x: T): T { return x }\n\
              fn main(): String { return identity(\"hello\") }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -754,7 +1067,15 @@ mod tests {
             "fn make_pair[A, B](a: A, b: B): A { return a }\n\
              fn main(): Int { return make_pair(42, \"hello\") }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -776,7 +1097,15 @@ mod tests {
             "struct Box[T] { value: T }\n\
              fn get(b: Box[String]): String { return b.value }",
         );
-        assert!(!output.diagnostics.has_errors(), "Errors: {:?}", output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        assert!(
+            !output.diagnostics.has_errors(),
+            "Errors: {:?}",
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -804,7 +1133,11 @@ mod tests {
         assert!(
             !output.diagnostics.has_errors(),
             "Errors: {:?}",
-            output.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>()
+            output
+                .diagnostics
+                .iter()
+                .map(|d| &d.message)
+                .collect::<Vec<_>>()
         );
     }
 

@@ -139,7 +139,10 @@ impl<'a> TypeChecker<'a> {
 
             if info.name == kw::PRINT {
                 let param_type = self.table.intern(Ty::Union(vec![
-                    int_type, float_type, bool_type, string_type,
+                    int_type,
+                    float_type,
+                    bool_type,
+                    string_type,
                 ]));
                 let fn_type = self.table.intern(Ty::Function {
                     params: vec![param_type],
@@ -226,10 +229,7 @@ impl<'a> TypeChecker<'a> {
 }
 
 /// Checks the body of a single item.
-fn check_item_body(
-    item: &Item,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+fn check_item_body(item: &Item, ctx: &mut TypeCheckCtx<'_>) {
     match item {
         Item::Function(func) => {
             if let Some(body) = &func.body {
@@ -253,14 +253,9 @@ fn check_item_body(
                 // If the return type is non-void and the body doesn't diverge
                 // (i.e. body_ty is not Never), then a return statement is missing.
                 let body_resolved = ctx.table.resolve(body_ty);
-                if ret_type != ctx.builtins.void
-                    && !matches!(body_resolved, crate::Ty::Never)
-                {
-                    let ret_name = crate::display::display_type(
-                        ret_type,
-                        ctx.table,
-                        ctx.definitions,
-                    );
+                if ret_type != ctx.builtins.void && !matches!(body_resolved, crate::Ty::Never) {
+                    let ret_name =
+                        crate::display::display_type(ret_type, ctx.table, ctx.definitions);
                     ctx.diagnostics.push(
                         spark_diagnostics::Diagnostic::error(format!(
                             "missing `return` in function `{}` with return type `{ret_name}`",
@@ -281,7 +276,8 @@ fn check_item_body(
             let val_ty = check_expr(&const_def.value, ctx, None);
 
             if !crate::check_expr::is_compatible(val_ty, expected_ty, ctx.table) {
-                let expected = crate::display::display_type(expected_ty, ctx.table, ctx.definitions);
+                let expected =
+                    crate::display::display_type(expected_ty, ctx.table, ctx.definitions);
                 let found = crate::display::display_type(val_ty, ctx.table, ctx.definitions);
                 ctx.diagnostics.push(
                     spark_diagnostics::Diagnostic::error(format!(
@@ -304,10 +300,7 @@ fn check_item_body(
 }
 
 /// Type-checks all method bodies in a binding.
-fn check_binding_bodies(
-    binding: &spark_ast::BindingDef,
-    ctx: &mut TypeCheckCtx<'_>,
-) {
+fn check_binding_bodies(binding: &spark_ast::BindingDef, ctx: &mut TypeCheckCtx<'_>) {
     for target in &binding.bindings {
         for method in &target.methods {
             if let Some(body) = &method.body {
@@ -329,14 +322,9 @@ fn check_binding_bodies(
 
                 // Validate return completeness
                 let body_resolved = ctx.table.resolve(body_ty);
-                if ret_type != ctx.builtins.void
-                    && !matches!(body_resolved, crate::Ty::Never)
-                {
-                    let ret_name = crate::display::display_type(
-                        ret_type,
-                        ctx.table,
-                        ctx.definitions,
-                    );
+                if ret_type != ctx.builtins.void && !matches!(body_resolved, crate::Ty::Never) {
+                    let ret_name =
+                        crate::display::display_type(ret_type, ctx.table, ctx.definitions);
                     ctx.diagnostics.push(
                         spark_diagnostics::Diagnostic::error(format!(
                             "missing `return` in method `{}` with return type `{ret_name}`",

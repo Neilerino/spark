@@ -43,10 +43,7 @@ pub struct ResolvedDeps {
 ///
 /// Returns an error string if a dependency cannot be resolved (missing path,
 /// git fetch failure, cycle detected).
-pub fn resolve_all_deps(
-    manifest: &Manifest,
-    project_root: &Path,
-) -> Result<ResolvedDeps, String> {
+pub fn resolve_all_deps(manifest: &Manifest, project_root: &Path) -> Result<ResolvedDeps, String> {
     let existing_lock = load_lock_file(project_root).transpose()?;
 
     let mut ctx = ResolveContext {
@@ -175,8 +172,11 @@ fn resolve_deps_recursive(
                 };
 
                 // Collect source files from the fetched package.
-                let dep_sources =
-                    resolve_path_dep(dep_name, &fetched.path.display().to_string(), &PathBuf::new())?;
+                let dep_sources = resolve_path_dep(
+                    dep_name,
+                    &fetched.path.display().to_string(),
+                    &PathBuf::new(),
+                )?;
                 ctx.sources.extend(dep_sources);
 
                 // Record in lock file.
@@ -217,9 +217,9 @@ fn resolve_deps_recursive(
 
                     if cached_dir.exists() {
                         // Find the matching version entry for lock recording.
-                        let version: semver::Version = ver_str.parse().map_err(|e| {
-                            format!("invalid locked version for `{dep_name}`: {e}")
-                        })?;
+                        let version: semver::Version = ver_str
+                            .parse()
+                            .map_err(|e| format!("invalid locked version for `{dep_name}`: {e}"))?;
                         registry::FetchedRegistryDep {
                             path: cached_dir,
                             version,
@@ -294,9 +294,8 @@ mod tests {
     use super::*;
 
     fn write_manifest(dir: &Path, name: &str, deps: &str, build: &str) {
-        let content = format!(
-            "[project]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n{deps}\n{build}"
-        );
+        let content =
+            format!("[project]\nname = \"{name}\"\nversion = \"0.1.0\"\n\n{deps}\n{build}");
         std::fs::write(dir.join("Spark.toml"), content).unwrap();
     }
 
@@ -474,10 +473,7 @@ mod tests {
         write_manifest(
             &root,
             "root",
-            &format!(
-                "[dependencies]\nmylib = {{ path = \"{}\" }}",
-                lib.display()
-            ),
+            &format!("[dependencies]\nmylib = {{ path = \"{}\" }}", lib.display()),
             "",
         );
         write_manifest(
@@ -513,10 +509,7 @@ mod tests {
         write_manifest(
             &root,
             "root",
-            &format!(
-                "[dependencies]\nmylib = {{ path = \"{}\" }}",
-                lib.display()
-            ),
+            &format!("[dependencies]\nmylib = {{ path = \"{}\" }}", lib.display()),
             "",
         );
         write_manifest(

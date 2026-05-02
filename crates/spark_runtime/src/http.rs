@@ -24,10 +24,12 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::{__spark_string_from_literal, tokio_runtime, SparkString};
+use crate::error as runtime_error;
+use crate::handles::HandleTable;
+use crate::string::{read_spark_str, rust_str_to_spark};
+use crate::tokio_runtime;
 
 // =============================================================================
 // Handle tables
@@ -49,19 +51,12 @@ struct HttpServer {
 }
 
 /// Global handle table for HTTP servers.
-static SERVER_TABLE: std::sync::LazyLock<Mutex<HashMap<i64, HttpServer>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+static SERVER_TABLE: std::sync::LazyLock<HandleTable<HttpServer>> =
+    std::sync::LazyLock::new(HandleTable::new);
 
 /// Global handle table for pending HTTP requests.
-static REQUEST_TABLE: std::sync::LazyLock<Mutex<HashMap<i64, HttpRequest>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Next handle ID for HTTP resources.
-static NEXT_HTTP_HANDLE: AtomicI64 = AtomicI64::new(1);
-
-fn next_handle() -> i64 {
-    NEXT_HTTP_HANDLE.fetch_add(1, Ordering::Relaxed)
-}
+static REQUEST_TABLE: std::sync::LazyLock<HandleTable<HttpRequest>> =
+    std::sync::LazyLock::new(HandleTable::new);
 
 // =============================================================================
 // Error handling
@@ -71,41 +66,12 @@ thread_local! {
     static LAST_HTTP_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-fn set_error(msg: String) {
-    LAST_HTTP_ERROR.with(|e| {
-        *e.borrow_mut() = msg;
-    });
+fn set_error(msg: impl Into<String>) {
+    runtime_error::set(&LAST_HTTP_ERROR, msg);
 }
 
 fn clear_error() {
-    LAST_HTTP_ERROR.with(|e| {
-        e.borrow_mut().clear();
-    });
-}
-
-// =============================================================================
-// String helpers
-// =============================================================================
-
-#[allow(clippy::cast_ptr_alignment)]
-unsafe fn read_spark_str(ptr: *mut u8) -> String {
-    if ptr.is_null() {
-        return String::new();
-    }
-    let s = unsafe { &*(ptr.cast::<SparkString>()) };
-    if s.len == 0 {
-        return String::new();
-    }
-    let slice = unsafe { std::slice::from_raw_parts(s.data, s.len) };
-    std::str::from_utf8(slice)
-        .unwrap_or("<invalid utf-8>")
-        .to_owned()
-}
-
-#[allow(clippy::cast_possible_wrap)]
-fn rust_str_to_spark(s: &str) -> *mut u8 {
-    let bytes = s.as_bytes();
-    unsafe { __spark_string_from_literal(bytes.as_ptr(), bytes.len() as i64) }
+    runtime_error::clear(&LAST_HTTP_ERROR);
 }
 
 // =============================================================================
@@ -185,11 +151,19 @@ fn execute_request(
             match rt.block_on(response.text()) {
                 Ok(body_text) => {
                     clear_error();
-                    (status, rust_str_to_spark(&body_text), rust_str_to_spark(&resp_headers))
+                    (
+                        status,
+                        rust_str_to_spark(&body_text),
+                        rust_str_to_spark(&resp_headers),
+                    )
                 }
                 Err(e) => {
                     set_error(format!("{e}"));
-                    (status, rust_str_to_spark(""), rust_str_to_spark(&resp_headers))
+                    (
+                        status,
+                        rust_str_to_spark(""),
+                        rust_str_to_spark(&resp_headers),
+                    )
                 }
             }
         }
@@ -214,10 +188,7 @@ fn execute_request(
 ///
 /// `url` must be a valid `SparkString` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn __spark_http_get(
-    url: *mut u8,
-    headers: *mut u8,
-) -> i64 {
+pub unsafe extern "C" fn __spark_http_get(url: *mut u8, headers: *mut u8) -> i64 {
     let url_str = unsafe { read_spark_str(url) };
     let headers_str = unsafe { read_spark_str(headers) };
     let (status, body_ptr, headers_ptr) =
@@ -233,16 +204,16 @@ pub unsafe extern "C" fn __spark_http_get(
 ///
 /// `url`, `body`, and `headers` must be valid `SparkString` pointers.
 #[no_mangle]
-pub unsafe extern "C" fn __spark_http_post(
-    url: *mut u8,
-    body: *mut u8,
-    headers: *mut u8,
-) -> i64 {
+pub unsafe extern "C" fn __spark_http_post(url: *mut u8, body: *mut u8, headers: *mut u8) -> i64 {
     let url_str = unsafe { read_spark_str(url) };
     let body_str = unsafe { read_spark_str(body) };
     let headers_str = unsafe { read_spark_str(headers) };
-    let (status, body_ptr, headers_ptr) =
-        execute_request(reqwest::Method::POST, &url_str, &headers_str, Some(&body_str));
+    let (status, body_ptr, headers_ptr) = execute_request(
+        reqwest::Method::POST,
+        &url_str,
+        &headers_str,
+        Some(&body_str),
+    );
     LAST_RESPONSE_BODY.with(|b| b.set(body_ptr));
     LAST_RESPONSE_HEADERS.with(|h| h.set(headers_ptr));
     status
@@ -254,16 +225,16 @@ pub unsafe extern "C" fn __spark_http_post(
 ///
 /// `url`, `body`, and `headers` must be valid `SparkString` pointers.
 #[no_mangle]
-pub unsafe extern "C" fn __spark_http_put(
-    url: *mut u8,
-    body: *mut u8,
-    headers: *mut u8,
-) -> i64 {
+pub unsafe extern "C" fn __spark_http_put(url: *mut u8, body: *mut u8, headers: *mut u8) -> i64 {
     let url_str = unsafe { read_spark_str(url) };
     let body_str = unsafe { read_spark_str(body) };
     let headers_str = unsafe { read_spark_str(headers) };
-    let (status, body_ptr, headers_ptr) =
-        execute_request(reqwest::Method::PUT, &url_str, &headers_str, Some(&body_str));
+    let (status, body_ptr, headers_ptr) = execute_request(
+        reqwest::Method::PUT,
+        &url_str,
+        &headers_str,
+        Some(&body_str),
+    );
     LAST_RESPONSE_BODY.with(|b| b.set(body_ptr));
     LAST_RESPONSE_HEADERS.with(|h| h.set(headers_ptr));
     status
@@ -275,10 +246,7 @@ pub unsafe extern "C" fn __spark_http_put(
 ///
 /// `url` and `headers` must be valid `SparkString` pointers.
 #[no_mangle]
-pub unsafe extern "C" fn __spark_http_delete(
-    url: *mut u8,
-    headers: *mut u8,
-) -> i64 {
+pub unsafe extern "C" fn __spark_http_delete(url: *mut u8, headers: *mut u8) -> i64 {
     let url_str = unsafe { read_spark_str(url) };
     let headers_str = unsafe { read_spark_str(headers) };
     let (status, body_ptr, headers_ptr) =
@@ -327,10 +295,7 @@ pub extern "C" fn __spark_http_response_headers() -> *mut u8 {
 /// Returns the last HTTP error message.
 #[no_mangle]
 pub extern "C" fn __spark_http_error() -> *mut u8 {
-    LAST_HTTP_ERROR.with(|e| {
-        let msg = e.borrow();
-        rust_str_to_spark(&msg)
-    })
+    runtime_error::to_spark(&LAST_HTTP_ERROR)
 }
 
 // =============================================================================
@@ -353,13 +318,10 @@ pub unsafe extern "C" fn __spark_http_serve(addr: *mut u8, port: i64) -> i64 {
     match rt.block_on(tokio::net::TcpListener::bind(&bind_addr)) {
         Ok(listener) => {
             clear_error();
-            let id = next_handle();
             let server = HttpServer {
                 listener: Arc::new(listener),
             };
-            let mut table = SERVER_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            table.insert(id, server);
-            id
+            SERVER_TABLE.insert(server)
         }
         Err(e) => {
             set_error(format!("{e}"));
@@ -371,14 +333,9 @@ pub unsafe extern "C" fn __spark_http_serve(addr: *mut u8, port: i64) -> i64 {
 /// Returns the local address of an HTTP server as a `SparkString`.
 #[no_mangle]
 pub extern "C" fn __spark_http_server_addr(server_handle: i64) -> *mut u8 {
-    let addr_result = {
-        let table = SERVER_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(server) = table.get(&server_handle) else {
-            return rust_str_to_spark("<error>");
-        };
-        let result = server.listener.local_addr();
-        drop(table);
-        result
+    let Some(addr_result) = SERVER_TABLE.with(server_handle, |server| server.listener.local_addr())
+    else {
+        return rust_str_to_spark("<error>");
     };
     match addr_result {
         Ok(addr) => rust_str_to_spark(&addr.to_string()),
@@ -397,25 +354,17 @@ pub extern "C" fn __spark_http_server_addr(server_handle: i64) -> *mut u8 {
 /// Returns a request handle (> 0) on success, or -1 on error.
 #[no_mangle]
 pub extern "C" fn __spark_http_recv(server_handle: i64) -> i64 {
-    let listener = {
-        let table = SERVER_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(server) = table.get(&server_handle) else {
-            set_error("invalid server handle".to_string());
-            return -1;
-        };
-        let l = Arc::clone(&server.listener);
-        drop(table);
-        l
+    let Some(listener) = SERVER_TABLE.with(server_handle, |server| Arc::clone(&server.listener))
+    else {
+        set_error("invalid server handle");
+        return -1;
     };
 
     let rt = tokio_runtime();
     match rt.block_on(async { accept_and_parse_request(&listener).await }) {
         Ok(request) => {
             clear_error();
-            let id = next_handle();
-            let mut table = REQUEST_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            table.insert(id, request);
-            id
+            REQUEST_TABLE.insert(request)
         }
         Err(e) => {
             set_error(e);
@@ -522,35 +471,31 @@ async fn accept_and_parse_request(
 
 /// Finds the position of `\r\n\r\n` in a byte slice.
 fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4)
-        .position(|w| w == b"\r\n\r\n")
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
 /// Returns the HTTP method of a request.
 #[no_mangle]
 pub extern "C" fn __spark_http_request_method(req_handle: i64) -> *mut u8 {
-    let table = REQUEST_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    table
-        .get(&req_handle)
-        .map_or_else(|| rust_str_to_spark(""), |req| rust_str_to_spark(&req.method))
+    REQUEST_TABLE
+        .with(req_handle, |req| rust_str_to_spark(&req.method))
+        .unwrap_or_else(|| rust_str_to_spark(""))
 }
 
 /// Returns the URL path of a request.
 #[no_mangle]
 pub extern "C" fn __spark_http_request_url(req_handle: i64) -> *mut u8 {
-    let table = REQUEST_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    table
-        .get(&req_handle)
-        .map_or_else(|| rust_str_to_spark(""), |req| rust_str_to_spark(&req.url))
+    REQUEST_TABLE
+        .with(req_handle, |req| rust_str_to_spark(&req.url))
+        .unwrap_or_else(|| rust_str_to_spark(""))
 }
 
 /// Returns the body of a request.
 #[no_mangle]
 pub extern "C" fn __spark_http_request_body(req_handle: i64) -> *mut u8 {
-    let table = REQUEST_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    table
-        .get(&req_handle)
-        .map_or_else(|| rust_str_to_spark(""), |req| rust_str_to_spark(&req.body))
+    REQUEST_TABLE
+        .with(req_handle, |req| rust_str_to_spark(&req.body))
+        .unwrap_or_else(|| rust_str_to_spark(""))
 }
 
 /// Returns a specific header value from a request.
@@ -561,15 +506,13 @@ pub extern "C" fn __spark_http_request_body(req_handle: i64) -> *mut u8 {
 #[no_mangle]
 pub unsafe extern "C" fn __spark_http_request_header(req_handle: i64, name: *mut u8) -> *mut u8 {
     let name_str = unsafe { read_spark_str(name) }.to_lowercase();
-    let table = REQUEST_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    table.get(&req_handle).map_or_else(
-        || rust_str_to_spark(""),
-        |req| {
+    REQUEST_TABLE
+        .with(req_handle, |req| {
             req.headers
                 .get(&name_str)
                 .map_or_else(|| rust_str_to_spark(""), |val| rust_str_to_spark(val))
-        },
-    )
+        })
+        .unwrap_or_else(|| rust_str_to_spark(""))
 }
 
 /// Sends an HTTP response for a pending request.
@@ -592,13 +535,10 @@ pub unsafe extern "C" fn __spark_http_respond(
     let headers_str = unsafe { read_spark_str(headers) };
 
     // Remove the request from the table (we consume it).
-    let request = {
-        let mut table = REQUEST_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        table.remove(&req_handle)
-    };
+    let request = REQUEST_TABLE.remove(req_handle);
 
     let Some(request) = request else {
-        set_error("invalid request handle".to_string());
+        set_error("invalid request handle");
         return 1;
     };
 
@@ -657,15 +597,13 @@ pub unsafe extern "C" fn __spark_http_respond(
 /// Closes an HTTP server.
 #[no_mangle]
 pub extern "C" fn __spark_http_close_server(server_handle: i64) {
-    let mut table = SERVER_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    table.remove(&server_handle);
+    SERVER_TABLE.remove(server_handle);
 }
 
 /// Closes a pending HTTP request (without responding).
 #[no_mangle]
 pub extern "C" fn __spark_http_close_request(req_handle: i64) {
-    let mut table = REQUEST_TABLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    table.remove(&req_handle);
+    REQUEST_TABLE.remove(req_handle);
 }
 
 // =============================================================================
@@ -675,6 +613,7 @@ pub extern "C" fn __spark_http_close_request(req_handle: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SparkString;
 
     #[allow(clippy::cast_ptr_alignment)] // SparkString pointers are properly aligned
     unsafe fn read_result_string(ptr: *mut u8) -> String {
@@ -696,8 +635,7 @@ mod tests {
         let server = unsafe { __spark_http_serve(addr, 0) };
         assert!(server > 0, "server should start");
 
-        let server_addr =
-            unsafe { read_result_string(__spark_http_server_addr(server)) };
+        let server_addr = unsafe { read_result_string(__spark_http_server_addr(server)) };
         assert!(server_addr.starts_with("127.0.0.1:"));
 
         // Client thread sends a request.
@@ -742,8 +680,7 @@ mod tests {
         let server = unsafe { __spark_http_serve(addr, 0) };
         assert!(server > 0);
 
-        let server_addr =
-            unsafe { read_result_string(__spark_http_server_addr(server)) };
+        let server_addr = unsafe { read_result_string(__spark_http_server_addr(server)) };
 
         let url = format!("http://{server_addr}/submit");
         let client_thread = std::thread::spawn(move || {
@@ -787,8 +724,7 @@ mod tests {
         let server = unsafe { __spark_http_serve(addr, 0) };
         assert!(server > 0);
 
-        let server_addr =
-            unsafe { read_result_string(__spark_http_server_addr(server)) };
+        let server_addr = unsafe { read_result_string(__spark_http_server_addr(server)) };
 
         let url = format!("http://{server_addr}/headers");
         let client_thread = std::thread::spawn(move || {
@@ -811,9 +747,8 @@ mod tests {
         assert!(req > 0);
 
         let header_name = make_spark_str("x-test-header");
-        let header_val = unsafe {
-            read_result_string(__spark_http_request_header(req, header_name))
-        };
+        let header_val =
+            unsafe { read_result_string(__spark_http_request_header(req, header_name)) };
         assert_eq!(header_val, "test-value-123");
 
         let body = make_spark_str("ok");

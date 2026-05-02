@@ -155,8 +155,12 @@ fn collect_used_in_rvalue(rvalue: &spark_mir::Rvalue, used: &mut FxHashSet<Local
                 collect_used_in_operand(op, used);
             }
         }
-        spark_mir::Rvalue::ListRange { start, end, step, .. }
-        | spark_mir::Rvalue::RangeLen { start, end, step, .. } => {
+        spark_mir::Rvalue::ListRange {
+            start, end, step, ..
+        }
+        | spark_mir::Rvalue::RangeLen {
+            start, end, step, ..
+        } => {
             collect_used_in_operand(start, used);
             collect_used_in_operand(end, used);
             collect_used_in_operand(step, used);
@@ -294,10 +298,7 @@ mod tests {
 
         assert!(eliminate_dead_code(&mut func));
         assert!(func.blocks[1].statements.is_empty());
-        assert!(matches!(
-            func.blocks[1].terminator,
-            Terminator::Unreachable
-        ));
+        assert!(matches!(func.blocks[1].terminator, Terminator::Unreachable));
     }
 
     #[test]
@@ -308,9 +309,7 @@ mod tests {
             vec![
                 BasicBlock {
                     statements: vec![],
-                    terminator: Terminator::Goto {
-                        target: BlockId(1),
-                    },
+                    terminator: Terminator::Goto { target: BlockId(1) },
                     is_cleanup: false,
                 },
                 BasicBlock {

@@ -395,8 +395,7 @@ impl<'a> Lexer<'a> {
             match self.cursor.peek() {
                 '"' => {
                     // End of string. Emit text if any, then StringEnd.
-                    let restored_mode = self.mode_stack.pop()
-                        .unwrap_or(LexerMode::Normal);
+                    let restored_mode = self.mode_stack.pop().unwrap_or(LexerMode::Normal);
                     if !value.is_empty() {
                         let symbol = sym(&value);
                         let text_token = Token::with_value(
@@ -406,10 +405,8 @@ impl<'a> Lexer<'a> {
                         );
                         let end_start = self.cursor.pos();
                         self.cursor.bump(); // consume "
-                        self.pending.push_back(Token::new(
-                            TokenKind::StringEnd,
-                            self.span(end_start),
-                        ));
+                        self.pending
+                            .push_back(Token::new(TokenKind::StringEnd, self.span(end_start)));
                         self.mode = restored_mode;
                         return text_token;
                     }
@@ -429,10 +426,8 @@ impl<'a> Lexer<'a> {
                         );
                         let interp_start = self.cursor.pos();
                         self.cursor.bump(); // consume {
-                        self.pending.push_back(Token::new(
-                            TokenKind::InterpStart,
-                            self.span(interp_start),
-                        ));
+                        self.pending
+                            .push_back(Token::new(TokenKind::InterpStart, self.span(interp_start)));
                         self.mode = LexerMode::InInterpolation(0);
                         return text_token;
                     }
@@ -1002,7 +997,9 @@ mod tests {
         let tokens = lex("3.14 1.0 1e10 1.5e-3");
         #[allow(clippy::approx_constant)]
         {
-            assert!(matches!(tokens[0].value, Some(TokenValue::Float(f)) if (f - 3.14).abs() < 0.001));
+            assert!(
+                matches!(tokens[0].value, Some(TokenValue::Float(f)) if (f - 3.14).abs() < 0.001)
+            );
         }
         assert!(matches!(tokens[1].value, Some(TokenValue::Float(f)) if (f - 1.0).abs() < 0.001));
         assert!(matches!(tokens[2].value, Some(TokenValue::Float(f)) if (f - 1e10).abs() < 1e5));
@@ -1233,13 +1230,13 @@ mod tests {
             kinds,
             vec![
                 TokenKind::StringStart,
-                TokenKind::StringText,   // "val: "
-                TokenKind::InterpStart,  // {
-                TokenKind::LBrace,       // { (inner, depth goes to 1)
-                TokenKind::IntLiteral,   // 1
-                TokenKind::RBrace,       // } (inner, depth back to 0)
-                TokenKind::RBrace,       // } (closes interpolation)
-                TokenKind::StringEnd,    // "
+                TokenKind::StringText,  // "val: "
+                TokenKind::InterpStart, // {
+                TokenKind::LBrace,      // { (inner, depth goes to 1)
+                TokenKind::IntLiteral,  // 1
+                TokenKind::RBrace,      // } (inner, depth back to 0)
+                TokenKind::RBrace,      // } (closes interpolation)
+                TokenKind::StringEnd,   // "
                 TokenKind::Eof,
             ]
         );
@@ -1290,14 +1287,14 @@ mod tests {
         assert_eq!(
             kinds,
             vec![
-                TokenKind::Identifier,    // x
-                TokenKind::Eq,            // =
-                TokenKind::StringStart,   // "
-                TokenKind::StringText,    // "val: "
-                TokenKind::InterpStart,   // {
-                TokenKind::Identifier,    // y
-                TokenKind::RBrace,        // }
-                TokenKind::StringEnd,     // "
+                TokenKind::Identifier,  // x
+                TokenKind::Eq,          // =
+                TokenKind::StringStart, // "
+                TokenKind::StringText,  // "val: "
+                TokenKind::InterpStart, // {
+                TokenKind::Identifier,  // y
+                TokenKind::RBrace,      // }
+                TokenKind::StringEnd,   // "
                 TokenKind::Eof,
             ]
         );

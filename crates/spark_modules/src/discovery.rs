@@ -148,12 +148,10 @@ impl<'a> ModuleDiscovery<'a> {
 
                 // For nested modules like user/auth/auth.spark,
                 // if the file name matches the parent dir, don't duplicate
-                let file_stem = file_path
-                    .file_stem()
-                    .and_then(|s| s.to_str());
+                let file_stem = file_path.file_stem().and_then(|s| s.to_str());
 
-                let is_main_file = file_stem == Some(module_name.as_str())
-                    || file_stem == Some("mod");
+                let is_main_file =
+                    file_stem == Some(module_name.as_str()) || file_stem == Some("mod");
 
                 if is_main_file {
                     // This is the "main" file of the module (either name.spark or mod.spark)

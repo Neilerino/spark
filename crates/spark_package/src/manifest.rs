@@ -280,7 +280,12 @@ json = { git = "https://github.com/spark-pkg/json", tag = "v1.0.0" }
 "#;
         let manifest = parse_manifest(toml).unwrap();
         match &manifest.dependencies["json"] {
-            Dependency::Git { git, tag, branch, rev } => {
+            Dependency::Git {
+                git,
+                tag,
+                branch,
+                rev,
+            } => {
                 assert_eq!(git, "https://github.com/spark-pkg/json");
                 assert_eq!(tag.as_deref(), Some("v1.0.0"));
                 assert!(branch.is_none());
@@ -302,7 +307,9 @@ json = { git = "https://github.com/spark-pkg/json", branch = "develop" }
 "#;
         let manifest = parse_manifest(toml).unwrap();
         match &manifest.dependencies["json"] {
-            Dependency::Git { branch, tag, rev, .. } => {
+            Dependency::Git {
+                branch, tag, rev, ..
+            } => {
                 assert_eq!(branch.as_deref(), Some("develop"));
                 assert!(tag.is_none());
                 assert!(rev.is_none());
@@ -323,7 +330,9 @@ json = { git = "https://github.com/spark-pkg/json", rev = "abc123def456" }
 "#;
         let manifest = parse_manifest(toml).unwrap();
         match &manifest.dependencies["json"] {
-            Dependency::Git { rev, tag, branch, .. } => {
+            Dependency::Git {
+                rev, tag, branch, ..
+            } => {
                 assert_eq!(rev.as_deref(), Some("abc123def456"));
                 assert!(tag.is_none());
                 assert!(branch.is_none());
@@ -344,7 +353,12 @@ json = { git = "https://github.com/spark-pkg/json" }
 "#;
         let manifest = parse_manifest(toml).unwrap();
         match &manifest.dependencies["json"] {
-            Dependency::Git { git, tag, branch, rev } => {
+            Dependency::Git {
+                git,
+                tag,
+                branch,
+                rev,
+            } => {
                 assert_eq!(git, "https://github.com/spark-pkg/json");
                 assert!(tag.is_none());
                 assert!(branch.is_none());
@@ -367,8 +381,14 @@ remote = { git = "https://example.com/remote", tag = "v2.0" }
 "#;
         let manifest = parse_manifest(toml).unwrap();
         assert_eq!(manifest.dependencies.len(), 2);
-        assert!(matches!(&manifest.dependencies["local"], Dependency::Path { .. }));
-        assert!(matches!(&manifest.dependencies["remote"], Dependency::Git { .. }));
+        assert!(matches!(
+            &manifest.dependencies["local"],
+            Dependency::Path { .. }
+        ));
+        assert!(matches!(
+            &manifest.dependencies["remote"],
+            Dependency::Git { .. }
+        ));
     }
 
     #[test]
@@ -402,16 +422,28 @@ json = "1.0.0"
 "#;
         let manifest = parse_manifest(toml).unwrap();
         assert_eq!(manifest.dependencies.len(), 3);
-        assert!(matches!(&manifest.dependencies["local"], Dependency::Path { .. }));
-        assert!(matches!(&manifest.dependencies["remote"], Dependency::Git { .. }));
-        assert!(matches!(&manifest.dependencies["json"], Dependency::Registry(..)));
+        assert!(matches!(
+            &manifest.dependencies["local"],
+            Dependency::Path { .. }
+        ));
+        assert!(matches!(
+            &manifest.dependencies["remote"],
+            Dependency::Git { .. }
+        ));
+        assert!(matches!(
+            &manifest.dependencies["json"],
+            Dependency::Registry(..)
+        ));
     }
 
     #[test]
     fn registry_dep_round_trip() {
         // Serialize within a HashMap (as it appears in Spark.toml).
         let mut deps = HashMap::new();
-        deps.insert("json".to_string(), Dependency::Registry("1.2.3".to_string()));
+        deps.insert(
+            "json".to_string(),
+            Dependency::Registry("1.2.3".to_string()),
+        );
         let serialized = toml::to_string(&deps).unwrap();
         let deserialized: HashMap<String, Dependency> = toml::from_str(&serialized).unwrap();
         match &deserialized["json"] {

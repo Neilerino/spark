@@ -57,7 +57,11 @@ impl Expr {
     /// Creates a new expression.
     #[must_use]
     pub fn new(kind: ExprKind, span: Span) -> Self {
-        Self { id: ExprId::next(), kind, span }
+        Self {
+            id: ExprId::next(),
+            kind,
+            span,
+        }
     }
 
     /// Creates an error expression for recovery.

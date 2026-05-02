@@ -14,7 +14,9 @@ use spark_resolve::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visi
 use spark_types::{Ty, TypeId, TypeTable};
 
 use crate::hir::{Hir, HirExpr, HirExprKind, HirFunction, HirParam, HirPattern, HirStmt};
-use crate::visitor::{walk_expr, walk_expr_mut, walk_pattern, walk_stmt, HirMutVisitor, HirVisitor};
+use crate::visitor::{
+    walk_expr, walk_expr_mut, walk_pattern, walk_stmt, HirMutVisitor, HirVisitor,
+};
 
 /// Lifts all lambda expressions in the HIR into top-level functions.
 ///
@@ -251,7 +253,11 @@ impl HirVisitor for CaptureCollector<'_> {
 /// Capturing a `Ref[T]` in a `parallel each` or `parallel each via` callback
 /// is unsafe because the reference points to shared memory — multiple threads
 /// would read/write through the same pointer, causing a data race.
-fn check_parallel_ref_captures(callback: &HirExpr, table: &TypeTable, diagnostics: &mut Diagnostics) {
+fn check_parallel_ref_captures(
+    callback: &HirExpr,
+    table: &TypeTable,
+    diagnostics: &mut Diagnostics,
+) {
     if let HirExprKind::MakeClosure { captures, .. } = &callback.kind {
         for &(_, ty_id) in captures {
             if type_contains_ref(ty_id, table) {
@@ -525,7 +531,12 @@ mod tests {
             statics: HashMap::new(),
         };
 
-        lift_lambdas(&mut hir, &mut definitions, &mut table, &mut Diagnostics::new());
+        lift_lambdas(
+            &mut hir,
+            &mut definitions,
+            &mut table,
+            &mut Diagnostics::new(),
+        );
 
         // The lambda should be replaced with a Local reference.
         let main = hir.functions.get(&main_def).unwrap();
@@ -565,7 +576,11 @@ mod tests {
         let main_fn = HirFunction {
             def_id: main_def,
             params: vec![],
-            body: HirExpr::new(HirExprKind::Literal(HirLiteral::Int(42)), int_ty, dummy_span()),
+            body: HirExpr::new(
+                HirExprKind::Literal(HirLiteral::Int(42)),
+                int_ty,
+                dummy_span(),
+            ),
             ret_type: int_ty,
             is_async: false,
             span: dummy_span(),
@@ -577,12 +592,18 @@ mod tests {
             statics: HashMap::new(),
         };
 
-        lift_lambdas(&mut hir, &mut definitions, &mut table, &mut Diagnostics::new());
+        lift_lambdas(
+            &mut hir,
+            &mut definitions,
+            &mut table,
+            &mut Diagnostics::new(),
+        );
 
         assert_eq!(hir.functions.len(), 1, "No new functions should be created");
-        assert!(
-            matches!(hir.functions[&main_def].body.kind, HirExprKind::Literal(HirLiteral::Int(42))),
-        );
+        assert!(matches!(
+            hir.functions[&main_def].body.kind,
+            HirExprKind::Literal(HirLiteral::Int(42))
+        ),);
     }
 
     #[test]
@@ -619,10 +640,7 @@ mod tests {
 
         let body = HirExpr::new(
             HirExprKind::Block {
-                stmts: vec![
-                    HirStmt::Expr(lambda1),
-                    HirStmt::Expr(lambda2),
-                ],
+                stmts: vec![HirStmt::Expr(lambda1), HirStmt::Expr(lambda2)],
                 expr: None,
             },
             int_ty,
@@ -644,7 +662,12 @@ mod tests {
             statics: HashMap::new(),
         };
 
-        lift_lambdas(&mut hir, &mut definitions, &mut table, &mut Diagnostics::new());
+        lift_lambdas(
+            &mut hir,
+            &mut definitions,
+            &mut table,
+            &mut Diagnostics::new(),
+        );
 
         // Should have main + 2 lifted lambdas.
         assert_eq!(hir.functions.len(), 3);
@@ -717,12 +740,20 @@ mod tests {
             statics: HashMap::new(),
         };
 
-        lift_lambdas(&mut hir, &mut definitions, &mut table, &mut Diagnostics::new());
+        lift_lambdas(
+            &mut hir,
+            &mut definitions,
+            &mut table,
+            &mut Diagnostics::new(),
+        );
 
         // main + inner lambda + outer lambda = 3 functions total.
         assert_eq!(hir.functions.len(), 3);
 
         // main's body should be Local (outer lambda ref).
-        assert!(matches!(&hir.functions[&main_def].body.kind, HirExprKind::Local(_)));
+        assert!(matches!(
+            &hir.functions[&main_def].body.kind,
+            HirExprKind::Local(_)
+        ));
     }
 }

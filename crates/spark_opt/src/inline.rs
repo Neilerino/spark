@@ -203,9 +203,7 @@ struct InlineSite {
 /// `Closure` aggregate, returning `(func_def_id, capture_operands)`.
 fn resolve_closure_local(func_op: &Operand, caller: &MirFunction) -> Option<(DefId, Vec<Operand>)> {
     let local = match func_op {
-        Operand::Copy(place) | Operand::Move(place) if place.projections.is_empty() => {
-            place.local
-        }
+        Operand::Copy(place) | Operand::Move(place) if place.projections.is_empty() => place.local,
         _ => return None,
     };
 
@@ -213,10 +211,8 @@ fn resolve_closure_local(func_op: &Operand, caller: &MirFunction) -> Option<(Def
         for stmt in &block.statements {
             if let Statement::Assign { place, rvalue, .. } = stmt {
                 if place.local == local && place.projections.is_empty() {
-                    if let Rvalue::Aggregate(
-                        AggregateKind::Closure { func_def_id },
-                        operands,
-                    ) = rvalue
+                    if let Rvalue::Aggregate(AggregateKind::Closure { func_def_id }, operands) =
+                        rvalue
                     {
                         return Some((*func_def_id, operands.clone()));
                     }
@@ -299,8 +295,7 @@ fn apply_inline(caller: &mut MirFunction, site: &InlineSite, callee: &MirFunctio
     // Step 4: Prepend parameter + capture initialization to the inlined entry block.
     // Callee params are Local(1)..=Local(param_count), remapped to
     // Local(local_offset + 1)..=Local(local_offset + param_count).
-    let mut init_stmts =
-        Vec::with_capacity(callee.param_count as usize + site.captures.len());
+    let mut init_stmts = Vec::with_capacity(callee.param_count as usize + site.captures.len());
 
     // Initialize parameters from call arguments.
     for (i, arg) in site.args.iter().enumerate() {
@@ -493,11 +488,7 @@ fn remap_rvalue(rvalue: &Rvalue, local_off: u32, block_off: u32) -> Rvalue {
             inclusive: *inclusive,
             step: remap_operand(step, local_off, block_off),
         },
-        Rvalue::MapGetOptional {
-            map,
-            key,
-            value_ty,
-        } => Rvalue::MapGetOptional {
+        Rvalue::MapGetOptional { map, key, value_ty } => Rvalue::MapGetOptional {
             map: remap_operand(map, local_off, block_off),
             key: remap_operand(key, local_off, block_off),
             value_ty: *value_ty,
@@ -539,7 +530,12 @@ mod tests {
         }
     }
 
-    fn make_func(def_id: DefId, param_count: u32, locals: Vec<LocalDecl>, blocks: Vec<BasicBlock>) -> MirFunction {
+    fn make_func(
+        def_id: DefId,
+        param_count: u32,
+        locals: Vec<LocalDecl>,
+        blocks: Vec<BasicBlock>,
+    ) -> MirFunction {
         MirFunction {
             def_id,
             param_count,

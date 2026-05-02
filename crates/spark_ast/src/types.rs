@@ -32,7 +32,11 @@ impl TypeExpr {
     /// Creates a new type expression.
     #[must_use]
     pub fn new(kind: TypeExprKind, span: Span) -> Self {
-        Self { id: ExprId::next(), kind, span }
+        Self {
+            id: ExprId::next(),
+            kind,
+            span,
+        }
     }
 
     /// Creates an error type for recovery.
