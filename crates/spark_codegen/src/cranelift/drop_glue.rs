@@ -5,9 +5,8 @@
 //! previously in both `emit_stmt.rs::emit_drop` and
 //! `mod.rs::generate_env_destructors`.
 //!
-//! It also provides [`DropGlueGenerator`] for generating per-type element-drop
-//! functions that are stored in collection headers, enabling recursive cleanup
-//! of nested collections (e.g. `List[List[String]]`).
+//! It also provides [`DropGlueGenerator`] for generating per-type collection
+//! element behavior functions.
 
 use cranelift_codegen::ir::{InstBuilder, MemFlags, Type as ClifType, Value};
 use cranelift_frontend::FunctionBuilder;
@@ -86,19 +85,45 @@ pub fn emit_typed_drop<M: Module>(
     }
 }
 
-/// Generates per-type element-drop functions and caches them by [`TypeId`].
+/// Emits retain code for a copied value of the given type.
+pub fn emit_typed_retain<M: Module>(
+    builder: &mut FunctionBuilder<'_>,
+    ptr_val: Value,
+    ty_id: TypeId,
+    table: &TypeTable,
+    stubs: &RuntimeStubs,
+    module: &mut M,
+    ptr_type: ClifType,
+) {
+    let (_, ty) = clif_types::unwrap_mutable(ty_id, table);
+
+    if spark_drop::needs_rc(ty_id, table) {
+        let func_ref = module.declare_func_in_func(stubs.rc_inc, builder.func);
+        builder.ins().call(func_ref, &[ptr_val]);
+    } else if matches!(ty, Ty::Function { .. }) {
+        let env_ptr =
+            builder
+                .ins()
+                .load(ptr_type, MemFlags::new(), ptr_val, ptr_type.bytes() as i32);
+        let func_ref = module.declare_func_in_func(stubs.rc_inc, builder.func);
+        builder.ins().call(func_ref, &[env_ptr]);
+    }
+}
+
+/// Generates per-type element-drop/retain functions and caches them by [`TypeId`].
 ///
 /// An element-drop function has signature `fn(elem_ptr: *mut u8) -> void`.
 /// It loads the pointer from `elem_ptr` (since elements in collection data
 /// buffers are stored by value — for RC types that means the slot contains
 /// a pointer) and calls the appropriate `_rc_dec` for that type.
 ///
-/// These functions are stored in collection headers so the runtime can call
-/// them recursively when freeing nested collections.
+/// These functions are stored in collection descriptors so the runtime can call
+/// them when freeing or copying nested collections.
 #[derive(Default)]
 pub struct DropGlueGenerator {
     /// Cache: [`TypeId`] to generated [`FuncId`] for element destructors.
     cache: FxHashMap<TypeId, FuncId>,
+    retain_cache: FxHashMap<TypeId, FuncId>,
 }
 
 impl DropGlueGenerator {
@@ -135,6 +160,27 @@ impl DropGlueGenerator {
 
         let func_id = self.generate_elem_dtor(elem_ty, table, stubs, module);
         self.cache.insert(elem_ty, func_id);
+        Some(func_id)
+    }
+
+    /// Returns the element retain function for a collection element type.
+    pub fn get_or_generate_elem_retain<M: Module>(
+        &mut self,
+        elem_ty: TypeId,
+        table: &TypeTable,
+        stubs: &RuntimeStubs,
+        module: &mut M,
+    ) -> Option<FuncId> {
+        if !spark_drop::needs_drop(elem_ty, table) {
+            return None;
+        }
+
+        if let Some(&func_id) = self.retain_cache.get(&elem_ty) {
+            return Some(func_id);
+        }
+
+        let func_id = self.generate_elem_retain(elem_ty, table, stubs, module);
+        self.retain_cache.insert(elem_ty, func_id);
         Some(func_id)
     }
 
@@ -227,5 +273,82 @@ impl DropGlueGenerator {
             .unwrap_or_else(|e| panic!("ICE: failed to define elem dtor '{dtor_name}': {e}"));
 
         dtor_func_id
+    }
+
+    #[allow(clippy::unused_self)]
+    fn generate_elem_retain<M: Module>(
+        &self,
+        elem_ty: TypeId,
+        table: &TypeTable,
+        stubs: &RuntimeStubs,
+        module: &mut M,
+    ) -> FuncId {
+        let ptr_type = module.target_config().pointer_type();
+        let call_conv = module.isa().default_call_conv();
+
+        let retain_name = format!("__spark_elem_retain_{}", elem_ty.as_u32());
+
+        let mut retain_sig = cranelift_codegen::ir::Signature::new(call_conv);
+        retain_sig
+            .params
+            .push(cranelift_codegen::ir::AbiParam::new(ptr_type));
+
+        let retain_func_id = module
+            .declare_function(&retain_name, cranelift_module::Linkage::Local, &retain_sig)
+            .unwrap_or_else(|e| panic!("ICE: failed to declare elem retain '{retain_name}': {e}"));
+
+        let mut func = cranelift_codegen::ir::Function::with_name_signature(
+            cranelift_codegen::ir::UserFuncName::user(0, retain_func_id.as_u32()),
+            retain_sig,
+        );
+
+        let mut fbc = cranelift_frontend::FunctionBuilderContext::new();
+        {
+            let mut builder = cranelift_frontend::FunctionBuilder::new(&mut func, &mut fbc);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+
+            let elem_ptr = builder.block_params(block)[0];
+            let (_, unwrapped_ty) = clif_types::unwrap_mutable(elem_ty, table);
+
+            if matches!(unwrapped_ty, Ty::Function { .. }) {
+                emit_typed_retain(
+                    &mut builder,
+                    elem_ptr,
+                    elem_ty,
+                    table,
+                    stubs,
+                    module,
+                    ptr_type,
+                );
+            } else {
+                let inner_ptr = builder.ins().load(ptr_type, MemFlags::new(), elem_ptr, 0);
+                emit_typed_retain(
+                    &mut builder,
+                    inner_ptr,
+                    elem_ty,
+                    table,
+                    stubs,
+                    module,
+                    ptr_type,
+                );
+            }
+
+            builder.ins().return_(&[]);
+            builder.seal_all_blocks();
+            builder.finalize();
+        }
+
+        let mut clif_ctx = cranelift_codegen::Context::for_function(func);
+        #[allow(clippy::default_trait_access)]
+        clif_ctx
+            .compile(module.isa(), &mut Default::default())
+            .unwrap_or_else(|e| panic!("ICE: codegen error in elem retain '{retain_name}': {e:?}"));
+        module
+            .define_function(retain_func_id, &mut clif_ctx)
+            .unwrap_or_else(|e| panic!("ICE: failed to define elem retain '{retain_name}': {e}"));
+
+        retain_func_id
     }
 }

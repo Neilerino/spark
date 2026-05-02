@@ -1148,13 +1148,14 @@ fn emit_value_desc<M: Module>(
         .ins()
         .iconst(types::I64, i64::from(layout.align));
     let drop = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
+    let retain = elem_retain_func_addr(ctx, elem_ty, ecx.elem_retain_ids, module);
     let hash = elem_hash_func_addr(ctx, elem_ty, ecx.table, module);
     let eq = elem_eq_func_addr(ctx, elem_ty, ecx.table, module);
     let func_ref = module.declare_func_in_func(ctx.stubs.value_desc_new, ctx.builder.func);
     let call = ctx
         .builder
         .ins()
-        .call(func_ref, &[size, align, drop, hash, eq]);
+        .call(func_ref, &[size, align, drop, retain, hash, eq]);
     ctx.builder.inst_results(call)[0]
 }
 
@@ -1170,6 +1171,20 @@ fn elem_dtor_func_addr<M: Module>(
 ) -> Value {
     if let Some(&dtor_fid) = elem_dtor_ids.get(&elem_ty) {
         let func_ref = module.declare_func_in_func(dtor_fid, ctx.builder.func);
+        ctx.builder.ins().func_addr(ctx.ptr_type, func_ref)
+    } else {
+        ctx.builder.ins().iconst(ctx.ptr_type, 0)
+    }
+}
+
+fn elem_retain_func_addr<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    elem_ty: TypeId,
+    elem_retain_ids: &FxHashMap<TypeId, FuncId>,
+    module: &mut M,
+) -> Value {
+    if let Some(&retain_fid) = elem_retain_ids.get(&elem_ty) {
+        let func_ref = module.declare_func_in_func(retain_fid, ctx.builder.func);
         ctx.builder.ins().func_addr(ctx.ptr_type, func_ref)
     } else {
         ctx.builder.ins().iconst(ctx.ptr_type, 0)

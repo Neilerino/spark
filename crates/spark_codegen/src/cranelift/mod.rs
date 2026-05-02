@@ -450,7 +450,7 @@ impl CraneliftBackend {
     /// Pre-generates element destructor functions for all collection types
     /// that appear in the MIR. Returns a map from element `TypeId` to the
     /// generated `FuncId` so codegen can store the function pointer in
-    /// collection headers at construction time.
+    /// collection descriptors at construction time.
     fn generate_collection_dtors(
         &mut self,
         mir: &Mir,
@@ -463,6 +463,24 @@ impl CraneliftBackend {
         for mir_func in mir.functions.values() {
             for local_decl in &mir_func.locals {
                 self.collect_elem_dtors(local_decl.ty, table, stubs, &mut gen, &mut result);
+            }
+        }
+
+        result
+    }
+
+    fn generate_collection_retains(
+        &mut self,
+        mir: &Mir,
+        table: &TypeTable,
+        stubs: &runtime::RuntimeStubs,
+    ) -> FxHashMap<TypeId, FuncId> {
+        let mut gen = drop_glue::DropGlueGenerator::new();
+        let mut result = FxHashMap::default();
+
+        for mir_func in mir.functions.values() {
+            for local_decl in &mir_func.locals {
+                self.collect_elem_retains(local_decl.ty, table, stubs, &mut gen, &mut result);
             }
         }
 
@@ -507,6 +525,45 @@ impl CraneliftBackend {
         }
     }
 
+    fn collect_elem_retains(
+        &mut self,
+        ty_id: TypeId,
+        table: &TypeTable,
+        stubs: &runtime::RuntimeStubs,
+        gen: &mut drop_glue::DropGlueGenerator,
+        result: &mut FxHashMap<TypeId, FuncId>,
+    ) {
+        let (_, ty) = clif_types::unwrap_mutable(ty_id, table);
+        match ty {
+            Ty::List(elem) | Ty::Set(elem) => {
+                let elem = *elem;
+                if let Some(fid) =
+                    gen.get_or_generate_elem_retain(elem, table, stubs, &mut self.module)
+                {
+                    result.insert(elem, fid);
+                }
+                self.collect_elem_retains(elem, table, stubs, gen, result);
+            }
+            Ty::Map(k, v) => {
+                let k = *k;
+                let v = *v;
+                if let Some(fid) =
+                    gen.get_or_generate_elem_retain(k, table, stubs, &mut self.module)
+                {
+                    result.insert(k, fid);
+                }
+                if let Some(fid) =
+                    gen.get_or_generate_elem_retain(v, table, stubs, &mut self.module)
+                {
+                    result.insert(v, fid);
+                }
+                self.collect_elem_retains(k, table, stubs, gen, result);
+                self.collect_elem_retains(v, table, stubs, gen, result);
+            }
+            _ => {}
+        }
+    }
+
     /// Compiles a single MIR function.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn compile_function(
@@ -519,6 +576,7 @@ impl CraneliftBackend {
         thunk_ids: &FxHashMap<DefId, FuncId>,
         dtor_ids: &FxHashMap<DefId, FuncId>,
         elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
+        elem_retain_ids: &FxHashMap<TypeId, FuncId>,
         stubs: &runtime::RuntimeStubs,
         poll_fn_map: &FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
         lambda_to_async: &FxHashMap<DefId, DefId>,
@@ -692,6 +750,7 @@ impl CraneliftBackend {
                 thunk_ids,
                 dtor_ids,
                 elem_dtor_ids,
+                elem_retain_ids,
                 poll_fn_map,
                 lambda_to_async,
             };
@@ -752,6 +811,7 @@ impl CodegenBackend for CraneliftBackend {
 
         // Phase 2b: Generate element destructor functions for collections.
         let elem_dtor_ids = self.generate_collection_dtors(mir, table, &stubs);
+        let elem_retain_ids = self.generate_collection_retains(mir, table, &stubs);
 
         // Phase 2c: Precompute lambda → async function mapping for spawn_coop.
         // For each lambda that calls an async function with a poll entry,
@@ -785,6 +845,7 @@ impl CodegenBackend for CraneliftBackend {
                     &thunk_ids,
                     &dtor_ids,
                     &elem_dtor_ids,
+                    &elem_retain_ids,
                     &stubs,
                     poll_fn_map,
                     &lambda_to_async,

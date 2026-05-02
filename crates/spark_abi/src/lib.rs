@@ -195,10 +195,10 @@ pub const PRINT_FLOAT: RuntimeFn = RuntimeFn {
 
 // ── Runtime value descriptors ───────────────────────────────────────────
 
-/// `__spark_value_desc_new(size: i64, align: i64, drop: ptr, hash: ptr, eq: ptr) -> ptr`
+/// `__spark_value_desc_new(size: i64, align: i64, drop: ptr, retain: ptr, hash: ptr, eq: ptr) -> ptr`
 pub const VALUE_DESC_NEW: RuntimeFn = RuntimeFn {
     name: "__spark_value_desc_new",
-    params: &[I64, I64, Ptr, Ptr, Ptr],
+    params: &[I64, I64, Ptr, Ptr, Ptr, Ptr],
     ret: Some(Ptr),
 };
 
