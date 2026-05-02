@@ -20,13 +20,8 @@
 | -------------------------------------------------------------- | ---------------------------------------------------- |
 | [Linear project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c) | Open tasks, priorities, status (source of truth) |
 | [tasks/research/](tasks/research/)                             | Research & planning deliverables (SPARK-NNN.md)      |
-| [HANDOFF.md](HANDOFF.md)                                       | Status, completed crates, next tasks                 |
 | [docs/lang-spec.md](docs/lang-spec.md)                         | Grammar, syntax, all language features with examples |
 | [docs/compiler-architecture.md](docs/compiler-architecture.md) | Pipeline phases, schemas, design decisions           |
-| [docs/roadmap.md](docs/roadmap.md)                             | Feature roadmap, work streams, priority order        |
-| [docs/known-issues.md](docs/known-issues.md)                   | Active bugs with reproducers and workarounds         |
-| [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md)                   | Architectural loose ends (closures, codegen, refs)   |
-| [docs/design-notes/](docs/design-notes/)                       | Concurrency, stdlib, lambda/closure design plans     |
 | `crates/*/README.md`                                           | Per-crate purpose, design rationale, examples        |
 | `crates/*/src/lib.rs`                                          | Crate-level docs, type tables, API examples          |
 
@@ -102,10 +97,6 @@ Every issue title includes its `[SPARK-NNN]` ID for cross-referencing with code 
 ### Adding a task
 
 1. Create a new issue in the [Linear Spark project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c)
-   with a `[SPARK-NNN]` prefix in the title (increment from the highest existing ID).
-2. Set the appropriate label, priority, and description.
-3. Add `// TAG [SPARK-NNN]` comments in every affected source file.
-4. For research/planning tasks, create `tasks/research/SPARK-NNN.md` with deliverables.
 
 ### VS Code integration
 
@@ -118,12 +109,10 @@ comments, grouped by tag type and filterable by crate.
 ## Critical Rules (Non-Negotiable)
 
 1. **NO UNSAFE CODE** - `#![forbid(unsafe_code)]` in every crate (except `spark_runtime` which uses `extern "C"` FFI)
-2. **NO PANICS ON INVALID INPUT** - Use error nodes (`ExprKind::Error`), continue parsing
-3. **COMPREHENSIVE TESTS** - Every feature, every error path, edge cases
-4. **ALL PUBLIC ITEMS DOCUMENTED** - Doc comments required
-5. **SINGLE RESPONSIBILITY** - Each crate has exactly one job
-6. **NO TEMPORARY WORKAROUNDS** - If we're refactoring, and need to make a change that would break old unit tests get confirmation how to proceed. We will either create a task to clean up later, or if it makes sense resolve in current task.
-7. **LOW COUPLING, HIGH COHESION** - Crates should work together seamlessly. Without depending too heavily on one another. So that we can make a change in one crate independant of the rest of the codebase.
+2. **COMPREHENSIVE TESTS** - Every feature, every error path, edge cases, Prioritize integration tests (spark_driver folder)
+3. **SINGLE RESPONSIBILITY** - Each crate has exactly one job
+4. **NO TEMPORARY WORKAROUNDS** - If we're refactoring, and need to make a change that would break old unit tests get confirmation how to proceed. We will either create a task to clean up later, or if it makes sense resolve in current task.
+5. **LOW COUPLING, HIGH COHESION** - Crates should work together seamlessly. Without depending too heavily on one another. So that we can make a change in one crate independant of the rest of the codebase.
 
 ---
 
@@ -328,31 +317,5 @@ cargo run -p spark_driver -- run hello.spark   # Compile + run a .spark file
 cargo run -p spark_driver -- build f.spark -o f # Compile to executable
 ```
 
----
-
-## Anti-Patterns (Don't Do This)
-
-❌ Using unsafe code  
-❌ Panicking on invalid input  
-❌ Re-interning pre-interned keywords  
-❌ Missing spans on AST nodes  
-❌ Silent error handling (returning None without diagnostic)  
-❌ Non-exhaustive pattern matching
-❌ Missing tests
-❌ Hacky fallbacks
-
-**For examples**, see any completed crate - they demonstrate correct patterns throughout.
-
----
-
-## Getting Unstuck
-
-1. **Read the spec** - [lang-spec.md](docs/lang-spec.md) has examples of every feature
-2. **Check architecture doc** - [compiler-architecture.md](docs/compiler-architecture.md) has schemas and design rationale
-3. **Check the task tracker** - [Linear project](https://linear.app/neilwaddenpersonal/project/spark-f367ea1ad80c) has all open work with affected files
-4. **Look at tests** - They show expected usage patterns
-5. **READMEs explain "why"** - Every crate README has "Design Decisions" section
-
----
 
 **Remember**: This is a carefully architected codebase. Follow established patterns, read existing code, and maintain the high quality bar.
