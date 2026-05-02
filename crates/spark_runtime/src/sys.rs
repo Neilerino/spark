@@ -97,7 +97,7 @@ mod tests {
         let list = unsafe { &*(ptr.cast::<crate::SparkList>()) };
         let mut result = Vec::new();
         for i in 0..list.len {
-            let elem_ptr = unsafe { list.data.add(i * list.elem_size) };
+            let elem_ptr = unsafe { list.data.add(i * list.elem_size()) };
             let str_ptr = unsafe { *(elem_ptr.cast::<*mut u8>()) };
             result.push(unsafe { read_result_string(str_ptr) });
         }

@@ -33,6 +33,10 @@ pub struct RuntimeStubs {
     /// `__spark_eq_string_elem`
     pub eq_string_elem: FuncId,
 
+    // ── Runtime value descriptors ───────────────────────────────────────
+    /// `__spark_value_desc_new`
+    pub value_desc_new: FuncId,
+
     // ── Conversion ──────────────────────────────────────────────────
     /// `__spark_int_to_string`
     pub int_to_string: FuncId,
@@ -195,6 +199,9 @@ impl RuntimeStubs {
             string_eq: declare_abi(module, &abi::STRING_EQ, ptr_type, call_conv),
             hash_string_elem: declare_abi(module, &abi::HASH_STRING_ELEM, ptr_type, call_conv),
             eq_string_elem: declare_abi(module, &abi::EQ_STRING_ELEM, ptr_type, call_conv),
+
+            // Runtime value descriptors
+            value_desc_new: declare_abi(module, &abi::VALUE_DESC_NEW, ptr_type, call_conv),
 
             // Conversion
             int_to_string: declare_abi(module, &abi::INT_TO_STRING, ptr_type, call_conv),

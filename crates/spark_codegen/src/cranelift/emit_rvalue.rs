@@ -1026,8 +1026,6 @@ fn emit_aggregate<M: Module>(
 }
 
 /// Emits list construction: `[e1, e2, ...]`.
-///
-/// Calls `__spark_list_new(elem_size, elem_drop, elem_eq)`, then `__spark_list_push` for each element.
 #[allow(clippy::unnecessary_wraps)]
 fn emit_list_construction<M: Module>(
     ctx: &mut FunctionContext<'_>,
@@ -1045,23 +1043,9 @@ fn emit_list_construction<M: Module>(
         _ => return Some(ctx.builder.ins().iconst(ctx.ptr_type, 0)),
     };
 
-    let elem_layout = ctx.layouts.layout_of(elem_ty, table);
-    let elem_size_val = ctx
-        .builder
-        .ins()
-        .iconst(types::I64, i64::from(elem_layout.size));
-
-    // Get the element destructor function address (or null).
-    let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
-    // Get the element equality callback address (or null for byte-level behavior).
-    let elem_eq_val = elem_eq_func_addr(ctx, elem_ty, table, module);
-
-    // Call __spark_list_new(elem_size, elem_drop, elem_eq).
+    let elem_desc = emit_value_desc(ctx, elem_ty, ecx, module);
     let new_ref = module.declare_func_in_func(ctx.stubs.list_new, ctx.builder.func);
-    let call = ctx
-        .builder
-        .ins()
-        .call(new_ref, &[elem_size_val, elem_drop_val, elem_eq_val]);
+    let call = ctx.builder.ins().call(new_ref, &[elem_desc]);
     let list_ptr = ctx.builder.inst_results(call)[0];
 
     // Push each element.
@@ -1076,10 +1060,6 @@ fn emit_list_construction<M: Module>(
 }
 
 /// Emits map construction: `{"k1": v1, "k2": v2, ...}`.
-///
-/// Calls `__spark_map_new(key_size, value_size, key_drop, val_drop, key_hash, key_eq)`,
-/// then `__spark_map_insert`
-/// for each key-value pair. Operands alternate: key, value, key, value, ...
 #[allow(clippy::unnecessary_wraps)]
 fn emit_map_construction<M: Module>(
     ctx: &mut FunctionContext<'_>,
@@ -1097,38 +1077,10 @@ fn emit_map_construction<M: Module>(
         _ => return Some(ctx.builder.ins().iconst(ctx.ptr_type, 0)),
     };
 
-    let key_layout = ctx.layouts.layout_of(key_ty, table);
-    let val_layout = ctx.layouts.layout_of(value_ty, table);
-    let key_size_val = ctx
-        .builder
-        .ins()
-        .iconst(types::I64, i64::from(key_layout.size));
-    let val_size_val = ctx
-        .builder
-        .ins()
-        .iconst(types::I64, i64::from(val_layout.size));
-
-    // Get key/value destructor function addresses (or null).
-    let key_drop_val = elem_dtor_func_addr(ctx, key_ty, ecx.elem_dtor_ids, module);
-    let val_drop_val = elem_dtor_func_addr(ctx, value_ty, ecx.elem_dtor_ids, module);
-
-    // Get key hash/equality callback addresses (or null for byte-level behavior).
-    let key_hash_val = elem_hash_func_addr(ctx, key_ty, table, module);
-    let key_eq_val = elem_eq_func_addr(ctx, key_ty, table, module);
-
-    // Call __spark_map_new(key_size, value_size, key_drop, val_drop, key_hash, key_eq).
+    let key_desc = emit_value_desc(ctx, key_ty, ecx, module);
+    let value_desc = emit_value_desc(ctx, value_ty, ecx, module);
     let new_ref = module.declare_func_in_func(ctx.stubs.map_new, ctx.builder.func);
-    let call = ctx.builder.ins().call(
-        new_ref,
-        &[
-            key_size_val,
-            val_size_val,
-            key_drop_val,
-            val_drop_val,
-            key_hash_val,
-            key_eq_val,
-        ],
-    );
+    let call = ctx.builder.ins().call(new_ref, &[key_desc, value_desc]);
     let map_ptr = ctx.builder.inst_results(call)[0];
 
     // Insert each key-value pair. Operands come in pairs: [k0, v0, k1, v1, ...].
@@ -1147,9 +1099,6 @@ fn emit_map_construction<M: Module>(
 }
 
 /// Emits set construction.
-///
-/// Calls `__spark_set_new(elem_size, elem_drop, elem_hash, elem_eq)`, then
-/// `__spark_set_insert` for each element.
 #[allow(clippy::unnecessary_wraps)]
 fn emit_set_construction<M: Module>(
     ctx: &mut FunctionContext<'_>,
@@ -1170,25 +1119,9 @@ fn emit_set_construction<M: Module>(
         return Some(ctx.builder.ins().iconst(ctx.ptr_type, 0));
     };
 
-    let elem_layout = ctx.layouts.layout_of(elem_ty, table);
-    let elem_size_val = ctx
-        .builder
-        .ins()
-        .iconst(types::I64, i64::from(elem_layout.size));
-
-    // Get the element destructor function address (or null).
-    let elem_drop_val = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
-
-    // Get element hash/equality callback addresses (or null for byte-level behavior).
-    let elem_hash_val = elem_hash_func_addr(ctx, elem_ty, table, module);
-    let elem_eq_val = elem_eq_func_addr(ctx, elem_ty, table, module);
-
-    // Call __spark_set_new(elem_size, elem_drop, elem_hash, elem_eq).
+    let elem_desc = emit_value_desc(ctx, elem_ty, ecx, module);
     let new_ref = module.declare_func_in_func(ctx.stubs.set_new, ctx.builder.func);
-    let call = ctx.builder.ins().call(
-        new_ref,
-        &[elem_size_val, elem_drop_val, elem_hash_val, elem_eq_val],
-    );
+    let call = ctx.builder.ins().call(new_ref, &[elem_desc]);
     let set_ptr = ctx.builder.inst_results(call)[0];
 
     // Insert each element.
@@ -1200,6 +1133,29 @@ fn emit_set_construction<M: Module>(
     }
 
     Some(set_ptr)
+}
+
+fn emit_value_desc<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    elem_ty: TypeId,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+) -> Value {
+    let layout = ctx.layouts.layout_of(elem_ty, ecx.table);
+    let size = ctx.builder.ins().iconst(types::I64, i64::from(layout.size));
+    let align = ctx
+        .builder
+        .ins()
+        .iconst(types::I64, i64::from(layout.align));
+    let drop = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
+    let hash = elem_hash_func_addr(ctx, elem_ty, ecx.table, module);
+    let eq = elem_eq_func_addr(ctx, elem_ty, ecx.table, module);
+    let func_ref = module.declare_func_in_func(ctx.stubs.value_desc_new, ctx.builder.func);
+    let call = ctx
+        .builder
+        .ins()
+        .call(func_ref, &[size, align, drop, hash, eq]);
+    ctx.builder.inst_results(call)[0]
 }
 
 /// Returns the Cranelift `Value` for an element destructor function address.

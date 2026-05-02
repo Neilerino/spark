@@ -193,12 +193,21 @@ pub const PRINT_FLOAT: RuntimeFn = RuntimeFn {
     ret: None,
 };
 
+// ── Runtime value descriptors ───────────────────────────────────────────
+
+/// `__spark_value_desc_new(size: i64, align: i64, drop: ptr, hash: ptr, eq: ptr) -> ptr`
+pub const VALUE_DESC_NEW: RuntimeFn = RuntimeFn {
+    name: "__spark_value_desc_new",
+    params: &[I64, I64, Ptr, Ptr, Ptr],
+    ret: Some(Ptr),
+};
+
 // ── List ────────────────────────────────────────────────────────────────
 
-/// `__spark_list_new(elem_size: i64, elem_drop: ptr, elem_eq: ptr) -> ptr`
+/// `__spark_list_new(elem_desc: ptr) -> ptr`
 pub const LIST_NEW: RuntimeFn = RuntimeFn {
     name: "__spark_list_new",
-    params: &[I64, Ptr, Ptr],
+    params: &[Ptr],
     ret: Some(Ptr),
 };
 
@@ -281,10 +290,10 @@ pub const LIST_FROM_RANGE: RuntimeFn = RuntimeFn {
 
 // ── Map ─────────────────────────────────────────────────────────────────
 
-/// `__spark_map_new(key_size: i64, value_size: i64, key_drop: ptr, val_drop: ptr, key_hash: ptr, key_eq: ptr) -> ptr`
+/// `__spark_map_new(key_desc: ptr, value_desc: ptr) -> ptr`
 pub const MAP_NEW: RuntimeFn = RuntimeFn {
     name: "__spark_map_new",
-    params: &[I64, I64, Ptr, Ptr, Ptr, Ptr],
+    params: &[Ptr, Ptr],
     ret: Some(Ptr),
 };
 
@@ -339,10 +348,10 @@ pub const MAP_REMOVE: RuntimeFn = RuntimeFn {
 
 // ── Set ─────────────────────────────────────────────────────────────────
 
-/// `__spark_set_new(elem_size: i64, elem_drop: ptr, elem_hash: ptr, elem_eq: ptr) -> ptr`
+/// `__spark_set_new(elem_desc: ptr) -> ptr`
 pub const SET_NEW: RuntimeFn = RuntimeFn {
     name: "__spark_set_new",
-    params: &[I64, Ptr, Ptr, Ptr],
+    params: &[Ptr],
     ret: Some(Ptr),
 };
 
@@ -584,6 +593,7 @@ pub const ALL_RUNTIME_FUNCTIONS: &[&RuntimeFn] = &[
     &PRINT_STRING,
     &PRINT_BOOL,
     &PRINT_FLOAT,
+    &VALUE_DESC_NEW,
     // List
     &LIST_NEW,
     &LIST_PUSH,

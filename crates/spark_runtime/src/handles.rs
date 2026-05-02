@@ -4,20 +4,20 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
-pub(crate) struct HandleTable<T> {
+pub struct HandleTable<T> {
     next: AtomicI64,
     resources: Mutex<HashMap<i64, T>>,
 }
 
 impl<T> HandleTable<T> {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             next: AtomicI64::new(1),
             resources: Mutex::new(HashMap::new()),
         }
     }
 
-    pub(crate) fn insert(&self, resource: T) -> i64 {
+    pub fn insert(&self, resource: T) -> i64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let mut resources = self
             .resources
@@ -27,7 +27,7 @@ impl<T> HandleTable<T> {
         id
     }
 
-    pub(crate) fn remove(&self, id: i64) -> Option<T> {
+    pub fn remove(&self, id: i64) -> Option<T> {
         let mut resources = self
             .resources
             .lock()
@@ -35,7 +35,7 @@ impl<T> HandleTable<T> {
         resources.remove(&id)
     }
 
-    pub(crate) fn with<R>(&self, id: i64, f: impl FnOnce(&T) -> R) -> Option<R> {
+    pub fn with<R>(&self, id: i64, f: impl FnOnce(&T) -> R) -> Option<R> {
         let resources = self
             .resources
             .lock()
