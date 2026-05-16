@@ -1,8 +1,7 @@
 //! List runtime storage and operations.
 
 use crate::value::{
-    buffer_align, eq_elem, retain_elem_if_needed, value_desc_clone, value_desc_free,
-    value_desc_new, SparkValueDesc,
+    buffer_align, value_desc_clone, value_desc_free, value_desc_new, SparkValueDesc,
 };
 use crate::SparkString;
 
@@ -41,21 +40,6 @@ impl SparkList {
     #[must_use]
     pub fn elem_align(&self) -> usize {
         self.elem().align
-    }
-
-    #[must_use]
-    pub fn elem_drop(&self) -> usize {
-        self.elem().drop_fn
-    }
-
-    #[must_use]
-    pub fn elem_retain(&self) -> usize {
-        self.elem().retain_fn
-    }
-
-    #[must_use]
-    pub fn elem_eq(&self) -> usize {
-        self.elem().eq_fn
     }
 }
 
@@ -173,7 +157,7 @@ pub unsafe extern "C" fn __spark_list_contains(ptr: *mut u8, elem_ptr: *const u8
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
     for i in 0..list.len {
         let existing = unsafe { list.data.add(i * list.elem_size()) };
-        if unsafe { eq_elem(existing, elem_ptr, list.elem_size(), list.elem_eq()) } {
+        if unsafe { list.elem().eq_elem(existing, elem_ptr) } {
             return 1;
         }
     }
@@ -205,12 +189,7 @@ pub unsafe extern "C" fn __spark_list_remove(ptr: *mut u8, index: i64) {
 
     let elem_addr = unsafe { list.data.add(idx * list.elem_size()) };
 
-    // Call the element destructor if one is registered.
-    if list.elem_drop() != 0 {
-        let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
-            unsafe { std::mem::transmute(list.elem_drop()) };
-        unsafe { elem_drop_fn(elem_addr) };
-    }
+    unsafe { list.elem().drop_elem(elem_addr) };
 
     // Shift remaining elements left.
     let remaining = list.len - idx - 1;
@@ -387,10 +366,9 @@ pub unsafe extern "C" fn __spark_list_sort(ptr: *mut u8, type_tag: i64) -> *mut 
         }
     }
 
-    // Push sorted elements into the new list.
     for &idx in &indices {
         let elem = unsafe { list.data.add(idx * list.elem_size()) };
-        unsafe { retain_elem_if_needed(list.elem_retain(), elem) };
+        unsafe { list.elem().retain_elem(elem) };
         unsafe { __spark_list_push(new_list, elem) };
     }
 
@@ -418,7 +396,7 @@ pub unsafe extern "C" fn __spark_list_take(ptr: *mut u8, count: i64) -> *mut u8 
     let n = (count as usize).min(list.len);
     for i in 0..n {
         let elem = unsafe { list.data.add(i * list.elem_size()) };
-        unsafe { retain_elem_if_needed(list.elem_retain(), elem) };
+        unsafe { list.elem().retain_elem(elem) };
         unsafe { __spark_list_push(new_list, elem) };
     }
 
@@ -438,7 +416,7 @@ pub unsafe extern "C" fn __spark_list_reverse(ptr: *mut u8) -> *mut u8 {
 
     for i in (0..list.len).rev() {
         let elem = unsafe { list.data.add(i * list.elem_size()) };
-        unsafe { retain_elem_if_needed(list.elem_retain(), elem) };
+        unsafe { list.elem().retain_elem(elem) };
         unsafe { __spark_list_push(new_list, elem) };
     }
 
@@ -461,16 +439,12 @@ pub unsafe extern "C" fn __spark_list_rc_dec(ptr: *mut u8) {
     let list = unsafe { &mut *(ptr.cast::<SparkList>()) };
     list.rc -= 1;
     if list.rc == 0 {
-        // Call element destructor on each element for recursive cleanup.
-        if list.elem_drop() != 0 && !list.data.is_null() {
-            let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
-                unsafe { std::mem::transmute(list.elem_drop()) };
+        if list.elem().has_drop() && !list.data.is_null() {
             for i in 0..list.len {
                 let elem_ptr = unsafe { list.data.add(i * list.elem_size()) };
-                unsafe { elem_drop_fn(elem_ptr) };
+                unsafe { list.elem().drop_elem(elem_ptr) };
             }
         }
-        // Free the data buffer.
         if !list.data.is_null() && list.cap > 0 {
             let align = buffer_align(list.elem_align());
             let buf_size = byte_size(list.cap, list.elem_size());
@@ -509,10 +483,10 @@ pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8) -> *mut u8 {
             "spark: out of memory in list COW copy",
         )
     };
-    if !new_data.is_null() && list.elem_retain() != 0 {
+    if !new_data.is_null() && list.elem().has_retain() {
         for i in 0..list.len {
             let elem_loc = unsafe { new_data.add(i * list.elem_size()) };
-            unsafe { retain_elem_if_needed(list.elem_retain(), elem_loc) };
+            unsafe { list.elem().retain_elem(elem_loc) };
         }
     }
     let new = Box::new(SparkList {

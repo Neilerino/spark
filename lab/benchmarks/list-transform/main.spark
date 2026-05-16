@@ -4,15 +4,7 @@ fn main(): Int {
     squared: List[Int] = nums map (x: Int): Int { x * x }
     modded: List[Int] = squared map (x: Int): Int { x % 1000 }
 
-    total: Int! = 0
-    j: Int! = 0
-    loop {
-        if j >= modded.len() {
-            break
-        }
-        total = total + modded[j]
-        j = j + 1
-    }
+    total: Int = modded reduce 0 (acc: Int, x: Int): Int { acc + x }
 
     print(total)
     return 0

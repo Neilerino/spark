@@ -11,6 +11,34 @@ pub struct SparkValueDesc {
     pub eq_fn: usize,
 }
 
+impl SparkValueDesc {
+    #[must_use]
+    pub fn has_drop(&self) -> bool {
+        self.drop_fn != 0
+    }
+
+    #[must_use]
+    pub fn has_retain(&self) -> bool {
+        self.retain_fn != 0
+    }
+
+    pub unsafe fn hash_elem(&self, elem_ptr: *const u8) -> u64 {
+        unsafe { hash_elem(elem_ptr, self.size, self.hash_fn) }
+    }
+
+    pub unsafe fn eq_elem(&self, a: *const u8, b: *const u8) -> bool {
+        unsafe { eq_elem(a, b, self.size, self.eq_fn) }
+    }
+
+    pub unsafe fn drop_elem(&self, elem_ptr: *mut u8) {
+        unsafe { drop_elem_if_needed(self.drop_fn, elem_ptr) };
+    }
+
+    pub unsafe fn retain_elem(&self, elem_ptr: *mut u8) {
+        unsafe { retain_elem_if_needed(self.retain_fn, elem_ptr) };
+    }
+}
+
 #[no_mangle]
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub extern "C" fn __spark_value_desc_new(
@@ -102,7 +130,7 @@ pub unsafe fn fnv1a_hash(data: *const u8, len: usize) -> u64 {
     hash
 }
 
-pub unsafe fn hash_elem(elem_ptr: *const u8, elem_size: usize, hash_fn: usize) -> u64 {
+unsafe fn hash_elem(elem_ptr: *const u8, elem_size: usize, hash_fn: usize) -> u64 {
     if hash_fn == 0 {
         fix_hash(unsafe { fnv1a_hash(elem_ptr, elem_size) })
     } else {
@@ -111,7 +139,7 @@ pub unsafe fn hash_elem(elem_ptr: *const u8, elem_size: usize, hash_fn: usize) -
     }
 }
 
-pub unsafe fn eq_elem(a: *const u8, b: *const u8, elem_size: usize, eq_fn: usize) -> bool {
+unsafe fn eq_elem(a: *const u8, b: *const u8, elem_size: usize, eq_fn: usize) -> bool {
     if eq_fn == 0 {
         unsafe { libc_memcmp(a, b, elem_size) }
     } else {
@@ -120,14 +148,14 @@ pub unsafe fn eq_elem(a: *const u8, b: *const u8, elem_size: usize, eq_fn: usize
     }
 }
 
-pub unsafe fn drop_elem_if_needed(drop_fn: usize, elem_ptr: *mut u8) {
+unsafe fn drop_elem_if_needed(drop_fn: usize, elem_ptr: *mut u8) {
     if drop_fn != 0 {
         let f: unsafe extern "C" fn(*mut u8) = unsafe { std::mem::transmute(drop_fn) };
         unsafe { f(elem_ptr) };
     }
 }
 
-pub unsafe fn retain_elem_if_needed(retain_fn: usize, elem_ptr: *mut u8) {
+unsafe fn retain_elem_if_needed(retain_fn: usize, elem_ptr: *mut u8) {
     if retain_fn != 0 {
         let f: unsafe extern "C" fn(*mut u8) = unsafe { std::mem::transmute(retain_fn) };
         unsafe { f(elem_ptr) };

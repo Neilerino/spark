@@ -2,13 +2,10 @@
 
 use std::mem::size_of;
 
-use crate::value::{
-    buffer_align, drop_elem_if_needed, eq_elem, hash_elem, retain_elem_if_needed, value_desc_clone,
-    value_desc_free, SparkValueDesc,
-};
+use crate::value::{buffer_align, value_desc_clone, value_desc_free, SparkValueDesc};
 
 use super::hash::{
-    alloc_hashes, dealloc_hashes, for_occupied_slots, insertion_slot, is_occupied, lookup_slot,
+    alloc_hashes, dealloc_hashes, for_occupied_slots, insertion_slot, lookup_slot,
     rehash_occupied_slots, InsertionSlot, LookupSlot, HASH_TOMBSTONE, MIN_HASH_CAP,
 };
 use super::storage::{alloc_buffer, byte_size, clone_buffer, dealloc_buffer};
@@ -50,22 +47,6 @@ impl SparkSet {
     fn elem_align(&self) -> usize {
         self.elem().align
     }
-
-    fn elem_drop(&self) -> usize {
-        self.elem().drop_fn
-    }
-
-    fn elem_retain(&self) -> usize {
-        self.elem().retain_fn
-    }
-
-    fn elem_hash(&self) -> usize {
-        self.elem().hash_fn
-    }
-
-    fn elem_eq(&self) -> usize {
-        self.elem().eq_fn
-    }
 }
 
 /// Creates a new empty set (rc = 1).
@@ -106,11 +87,11 @@ pub unsafe extern "C" fn __spark_set_insert(set: *mut u8, elem_ptr: *const u8) {
         set_hash_grow(set);
     }
 
-    let h = unsafe { hash_elem(elem_ptr, set.elem_size(), set.elem_hash()) };
+    let h = unsafe { set.elem().hash_elem(elem_ptr) };
     let slot = unsafe {
         insertion_slot(set.hashes, set.cap, h, |idx| {
             let existing = set.data.add(idx * set.elem_size());
-            eq_elem(existing, elem_ptr, set.elem_size(), set.elem_eq())
+            set.elem().eq_elem(existing, elem_ptr)
         })
     };
 
@@ -128,7 +109,7 @@ pub unsafe extern "C" fn __spark_set_insert(set: *mut u8, elem_ptr: *const u8) {
             set.len += 1;
         }
         InsertionSlot::Occupied(_) => {
-            unsafe { drop_elem_if_needed(set.elem_drop(), elem_ptr.cast_mut()) };
+            unsafe { set.elem().drop_elem(elem_ptr.cast_mut()) };
         }
     }
 }
@@ -225,11 +206,11 @@ pub unsafe extern "C" fn __spark_set_contains(ptr: *mut u8, elem_ptr: *const u8)
         return 0;
     }
 
-    let h = unsafe { hash_elem(elem_ptr, set.elem_size(), set.elem_hash()) };
+    let h = unsafe { set.elem().hash_elem(elem_ptr) };
     let slot = unsafe {
         lookup_slot(set.hashes, set.cap, h, |idx| {
             let existing = set.data.add(idx * set.elem_size());
-            eq_elem(existing, elem_ptr, set.elem_size(), set.elem_eq())
+            set.elem().eq_elem(existing, elem_ptr)
         })
     };
     match slot {
@@ -253,11 +234,11 @@ pub unsafe extern "C" fn __spark_set_remove(ptr: *mut u8, elem_ptr: *const u8) {
         return;
     }
 
-    let h = unsafe { hash_elem(elem_ptr, set.elem_size(), set.elem_hash()) };
+    let h = unsafe { set.elem().hash_elem(elem_ptr) };
     let slot = unsafe {
         lookup_slot(set.hashes, set.cap, h, |idx| {
             let existing = set.data.add(idx * set.elem_size());
-            eq_elem(existing, elem_ptr, set.elem_size(), set.elem_eq())
+            set.elem().eq_elem(existing, elem_ptr)
         })
     };
 
@@ -266,11 +247,7 @@ pub unsafe extern "C" fn __spark_set_remove(ptr: *mut u8, elem_ptr: *const u8) {
     };
 
     let existing = unsafe { set.data.add(idx * set.elem_size()) };
-    if set.elem_drop() != 0 {
-        let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
-            unsafe { std::mem::transmute(set.elem_drop()) };
-        unsafe { elem_drop_fn(existing) };
-    }
+    unsafe { set.elem().drop_elem(existing) };
     unsafe { *set.hashes.add(idx) = HASH_TOMBSTONE };
     set.len -= 1;
     set.tombstones += 1;
@@ -292,17 +269,13 @@ pub unsafe extern "C" fn __spark_set_rc_dec(ptr: *mut u8) {
     let set = unsafe { &mut *(ptr.cast::<SparkSet>()) };
     set.rc -= 1;
     if set.rc == 0 {
-        // Call element destructor on each occupied slot.
-        if set.elem_drop() != 0 && set.cap > 0 && !set.hashes.is_null() {
-            let elem_drop_fn: unsafe extern "C" fn(*mut u8) =
-                unsafe { std::mem::transmute(set.elem_drop()) };
-            for i in 0..set.cap {
-                if is_occupied(unsafe { *set.hashes.add(i) }) {
-                    unsafe { elem_drop_fn(set.data.add(i * set.elem_size())) };
-                }
+        if set.elem().has_drop() && set.cap > 0 && !set.hashes.is_null() {
+            unsafe {
+                for_occupied_slots(set.hashes, set.cap, |i| {
+                    set.elem().drop_elem(set.data.add(i * set.elem_size()));
+                });
             }
         }
-        // Free all buffers.
         unsafe {
             dealloc_hashes(set.hashes, set.cap);
             dealloc_buffer(
@@ -356,11 +329,11 @@ pub unsafe extern "C" fn __spark_set_cow(ptr: *mut u8) -> *mut u8 {
             "spark: out of memory",
         )
     };
-    if set.elem_retain() != 0 && !new_data.is_null() {
+    if set.elem().has_retain() && !new_data.is_null() {
         unsafe {
             for_occupied_slots(set.hashes, set.cap, |i| {
                 let elem_slot = new_data.add(i * set.elem_size());
-                retain_elem_if_needed(set.elem_retain(), elem_slot);
+                set.elem().retain_elem(elem_slot);
             });
         }
     }
