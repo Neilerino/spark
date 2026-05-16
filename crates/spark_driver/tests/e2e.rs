@@ -642,6 +642,11 @@ fn parallel_each_single() {
     assert_output("run-pass/parallel/parallel_each_single.spark", "42");
 }
 
+#[test]
+fn parallel_range_each_single() {
+    assert_output("run-pass/parallel/parallel_range_each_single.spark", "42");
+}
+
 // ============================================================================
 // To (pipeline operator)
 // ============================================================================

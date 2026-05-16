@@ -1,0 +1,6 @@
+fn main(): Int {
+    [42..43] parallel each (n: Int): Void {
+        print(n)
+    }
+    return 0
+}
