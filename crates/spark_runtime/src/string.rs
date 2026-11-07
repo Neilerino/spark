@@ -16,11 +16,7 @@ use crate::{
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_text_parse_int(text: *const u8, value: *mut i64) -> i64 {
     let text = unsafe { &*text.cast::<SparkString>() };
-    let bytes = if text.len == 0 {
-        &[]
-    } else {
-        unsafe { std::slice::from_raw_parts(text.data, text.len) }
-    };
+    let bytes = unsafe { spark_str_bytes(text) };
     let Ok(text) = std::str::from_utf8(bytes) else {
         return 2;
     };
@@ -37,6 +33,27 @@ pub unsafe extern "C" fn __spark_text_parse_int(text: *const u8, value: *mut i64
     }
 }
 
+/// Splits UTF-8 text into an owned list of lines.
+///
+/// # Safety
+/// `text` must point to a live `SparkString` containing valid UTF-8.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_lines(text: *const u8) -> *mut u8 {
+    let text = unsafe { &*text.cast::<SparkString>() };
+    let bytes = unsafe { spark_str_bytes(text) };
+    let text = unsafe { std::str::from_utf8_unchecked(bytes) };
+    string_list_from_iter(text.lines())
+}
+
+unsafe fn spark_str_bytes(text: &SparkString) -> &[u8] {
+    if text.len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(text.data, text.len) }
+    }
+}
+
 /// Reads a `SparkString` pointer into an owned Rust `String`.
 ///
 /// # Safety
@@ -48,10 +65,7 @@ pub unsafe fn read_spark_str(ptr: *mut u8) -> String {
         return String::new();
     }
     let s = unsafe { &*(ptr.cast::<SparkString>()) };
-    if s.len == 0 {
-        return String::new();
-    }
-    let slice = unsafe { std::slice::from_raw_parts(s.data, s.len) };
+    let slice = unsafe { spark_str_bytes(s) };
     std::str::from_utf8(slice)
         .unwrap_or("<invalid utf-8>")
         .to_owned()
@@ -64,7 +78,7 @@ pub fn rust_str_to_spark(s: &str) -> *mut u8 {
 }
 
 #[allow(clippy::cast_possible_wrap)]
-pub fn string_list_from_iter(iter: impl Iterator<Item = String>) -> *mut u8 {
+pub fn string_list_from_iter<S: AsRef<str>>(iter: impl Iterator<Item = S>) -> *mut u8 {
     let elem_size = std::mem::size_of::<*mut u8>() as i64;
     let elem_align = std::mem::align_of::<*mut u8>() as i64;
     let elem_drop = __spark_string_rc_dec as *const () as usize;
@@ -74,7 +88,7 @@ pub fn string_list_from_iter(iter: impl Iterator<Item = String>) -> *mut u8 {
         __spark_value_desc_new(elem_size, elem_align, elem_drop, elem_retain, 0, elem_eq);
     let list = __spark_list_new(elem_desc);
     for s in iter {
-        let spark_str = rust_str_to_spark(&s);
+        let spark_str = rust_str_to_spark(s.as_ref());
         unsafe { __spark_list_push(list, std::ptr::addr_of!(spark_str).cast::<u8>()) };
     }
     list

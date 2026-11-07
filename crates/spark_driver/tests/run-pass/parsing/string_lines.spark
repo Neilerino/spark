@@ -1,0 +1,13 @@
+fn main(): Int {
+    empty: List[String] = "".lines()
+    print(empty.len())
+
+    newline: List[String] = "\r\n".lines()
+    print(newline.len())
+    newline each (line: String) { print("[{line}]") }
+
+    lines: List[String] = "café\r\n\r\nλ\nlast\r".lines()
+    print(lines.len())
+    lines each (line: String) { print("[{line}]") }
+    return 0
+}

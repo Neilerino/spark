@@ -308,12 +308,18 @@ s.endsWith("suf")     // Bool
 s.toUpper()           // String
 s.toLower()           // String
 s.trim()              // String
+s.lines()             // List[String]
 s.split(",")          // List[String]
 s.replace("a", "b")   // String
 s.substring(0, 5)     // String | RangeError
 s.indexOf("x")        // Int?
 s.chars()             // List[Char]
 ```
+
+`lines()` recognizes LF and CRLF as line endings. It excludes the terminators
+and preserves blank lines. A final terminator adds no extra line. An empty
+string produces an empty list, and a lone carriage return remains in the text.
+The returned list owns its strings.
 
 ### Collection Types
 

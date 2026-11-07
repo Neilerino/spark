@@ -112,6 +112,13 @@ pub const STRING_LEN: RuntimeFn = RuntimeFn {
     ret: Some(I64),
 };
 
+/// `__spark_string_lines(ptr) -> ptr`
+pub const STRING_LINES: RuntimeFn = RuntimeFn {
+    name: "__spark_string_lines",
+    params: &[Ptr],
+    ret: Some(Ptr),
+};
+
 /// `__spark_string_concat(ptr, ptr) -> ptr`
 pub const STRING_CONCAT: RuntimeFn = RuntimeFn {
     name: "__spark_string_concat",
@@ -580,6 +587,7 @@ pub const ALL_RUNTIME_FUNCTIONS: &[&RuntimeFn] = &[
     &STRING_RC_DEC,
     &STRING_COW,
     &STRING_LEN,
+    &STRING_LINES,
     &STRING_CONCAT,
     &STRING_EQ,
     &HASH_STRING_ELEM,

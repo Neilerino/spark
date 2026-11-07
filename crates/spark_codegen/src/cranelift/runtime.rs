@@ -24,6 +24,8 @@ pub struct RuntimeStubs {
     pub string_cow: FuncId,
     /// `__spark_string_len`
     pub string_len: FuncId,
+    /// `__spark_string_lines`
+    pub string_lines: FuncId,
     /// `__spark_string_concat`
     pub string_concat: FuncId,
     /// `__spark_string_eq`
@@ -195,6 +197,7 @@ impl RuntimeStubs {
             string_rc_dec: declare_abi(module, &abi::STRING_RC_DEC, ptr_type, call_conv),
             string_cow: declare_abi(module, &abi::STRING_COW, ptr_type, call_conv),
             string_len: declare_abi(module, &abi::STRING_LEN, ptr_type, call_conv),
+            string_lines: declare_abi(module, &abi::STRING_LINES, ptr_type, call_conv),
             string_concat: declare_abi(module, &abi::STRING_CONCAT, ptr_type, call_conv),
             string_eq: declare_abi(module, &abi::STRING_EQ, ptr_type, call_conv),
             hash_string_elem: declare_abi(module, &abi::HASH_STRING_ELEM, ptr_type, call_conv),
