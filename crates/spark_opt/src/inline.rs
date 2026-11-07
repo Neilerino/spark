@@ -258,7 +258,7 @@ fn apply_inline(caller: &mut MirFunction, site: &InlineSite, callee: &MirFunctio
 
         let remapped_term = match &callee_block.terminator {
             Terminator::Return => {
-                // Copy the callee's return value to the caller's destination,
+                // Transfer the callee's return value to the caller's destination,
                 // then jump to the continuation block.
                 // We handle this specially below.
                 Terminator::Return // placeholder, replaced below
@@ -278,11 +278,10 @@ fn apply_inline(caller: &mut MirFunction, site: &InlineSite, callee: &MirFunctio
     let callee_return_local = Local(local_offset); // callee's Local(0) remapped
     for block in &mut inlined_blocks {
         if matches!(block.terminator, Terminator::Return) {
-            // Add assignment: destination = Copy(callee_return)
             if site.destination.projections.is_empty() {
                 block.statements.push(Statement::Assign {
                     place: site.destination.clone(),
-                    rvalue: Rvalue::Use(Operand::Copy(Place::from_local(callee_return_local))),
+                    rvalue: Rvalue::Use(Operand::Move(Place::from_local(callee_return_local))),
                     span: site.span,
                 });
             }

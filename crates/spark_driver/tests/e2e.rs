@@ -1095,6 +1095,64 @@ fn string_chars_returns_unicode_scalars() {
 }
 
 #[test]
+fn tagged_union_retains_and_releases_list_payloads() {
+    let dir = tempfile::tempdir().expect("create ownership probe directory");
+    let probe = dir.path().join("probe.c");
+    std::fs::write(
+        &probe,
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_list_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+    )
+    .expect("write reference count probe");
+    for (tool, args) in [
+        ("cc", &["-c", "probe.c", "-o", "probe.o"][..]),
+        ("ar", &["rcs", "libunion_probe.a", "probe.o"][..]),
+    ] {
+        let result = Command::new(tool)
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .expect("build reference count probe");
+        assert!(
+            result.status.success(),
+            "{tool}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    let source = dir.path().join("owned_union.spark");
+    let fixture = include_str!("run-pass/parsing/owned_union.spark");
+    std::fs::write(
+        &source,
+        format!(
+            "link \"union_probe\" from \"{}\"\n{fixture}",
+            dir.path().display()
+        ),
+    )
+    .expect("write ownership fixture");
+
+    let spark = Path::new(env!("CARGO_BIN_EXE_spark"));
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = Command::new(spark)
+            .args(["run", "--single-file"])
+            .args(args)
+            .arg(&source)
+            .env(
+                "SPARK_RUNTIME_DIR",
+                spark.parent().expect("driver directory"),
+            )
+            .output()
+            .expect("run ownership fixture");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(result.status.success(), "{stderr}");
+        assert_eq!(
+            String::from_utf8_lossy(&result.stdout).trim(),
+            "1\n1\n3\n1\n1\n1\n1\n0\n1\n1\n1\n2\n2\n1"
+        );
+    }
+}
+
+#[test]
 fn text_lines_parses_a_file_to_an_answer() {
     let dir = tempfile::tempdir().expect("create input directory");
     let input = dir.path().join("input.txt");

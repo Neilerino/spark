@@ -11,23 +11,24 @@
 
 use rustc_hash::FxHashMap;
 use spark_mir::{Local, MirFunction, Operand, Place, Projection, Statement, Terminator};
+use spark_types::TypeTable;
 
 /// Propagates copies within each block of `func`.
 ///
 /// Returns `true` if any replacements were made.
-pub fn propagate_copies(func: &mut MirFunction) -> bool {
+pub fn propagate_copies(func: &mut MirFunction, table: &TypeTable) -> bool {
     let mut changed = false;
 
-    // Build a set of user-variable locals for quick lookup.
-    let user_vars: rustc_hash::FxHashSet<Local> = func
+    // A droppable copy owns a separate reference.
+    let preserved: rustc_hash::FxHashSet<Local> = func
         .locals
         .iter()
-        .filter(|d| d.is_user_variable)
+        .filter(|d| d.is_user_variable || spark_drop::needs_drop(d.ty, table))
         .map(|d| d.local)
         .collect();
 
     for block in &mut func.blocks {
-        changed |= propagate_in_block(&mut block.statements, &mut block.terminator, &user_vars);
+        changed |= propagate_in_block(&mut block.statements, &mut block.terminator, &preserved);
     }
 
     changed
@@ -37,11 +38,11 @@ pub fn propagate_copies(func: &mut MirFunction) -> bool {
 fn propagate_in_block(
     statements: &mut [Statement],
     terminator: &mut Terminator,
-    user_vars: &rustc_hash::FxHashSet<Local>,
+    preserved: &rustc_hash::FxHashSet<Local>,
 ) -> bool {
     // Phase 1: Find candidate copy assignments: temp = Copy(src)
     // where temp is not a user variable and has no projections.
-    let candidates = find_candidates(statements, user_vars);
+    let candidates = find_candidates(statements, preserved);
 
     if candidates.is_empty() {
         return false;
@@ -66,7 +67,7 @@ fn propagate_in_block(
 /// Returns `(temp, src_local, statement_index)`.
 fn find_candidates(
     statements: &[Statement],
-    user_vars: &rustc_hash::FxHashSet<Local>,
+    preserved: &rustc_hash::FxHashSet<Local>,
 ) -> Vec<(Local, Local, usize)> {
     let mut candidates = Vec::new();
     // Count assignments per local in this block.
@@ -91,7 +92,7 @@ fn find_candidates(
             // and assigned exactly once in this block.
             if place.projections.is_empty()
                 && src.projections.is_empty()
-                && !user_vars.contains(&place.local)
+                && !preserved.contains(&place.local)
                 && assign_counts.get(&place.local) == Some(&1)
             {
                 candidates.push((place.local, src.local, i));
@@ -422,7 +423,7 @@ mod tests {
             ],
         );
 
-        assert!(propagate_copies(&mut func));
+        assert!(propagate_copies(&mut func, &TypeTable::new()));
 
         // _0 should now read from _1
         match &func.blocks[0].statements[2] {
@@ -452,7 +453,7 @@ mod tests {
             ],
         );
 
-        assert!(!propagate_copies(&mut func));
+        assert!(!propagate_copies(&mut func, &TypeTable::new()));
     }
 
     #[test]
@@ -474,7 +475,7 @@ mod tests {
             ],
         );
 
-        assert!(!propagate_copies(&mut func));
+        assert!(!propagate_copies(&mut func, &TypeTable::new()));
     }
 
     #[test]
@@ -495,7 +496,7 @@ mod tests {
             ],
         );
 
-        assert!(!propagate_copies(&mut func));
+        assert!(!propagate_copies(&mut func, &TypeTable::new()));
     }
 
     #[test]
@@ -509,7 +510,7 @@ mod tests {
             vec![local_decl(0, false)],
         );
 
-        assert!(!propagate_copies(&mut func));
+        assert!(!propagate_copies(&mut func, &TypeTable::new()));
     }
 
     #[test]
@@ -534,7 +535,7 @@ mod tests {
             ],
         );
 
-        assert!(propagate_copies(&mut func));
+        assert!(propagate_copies(&mut func, &TypeTable::new()));
 
         match &func.blocks[0].terminator {
             Terminator::SwitchInt { discriminant, .. } => match discriminant {

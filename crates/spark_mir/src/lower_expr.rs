@@ -13,7 +13,9 @@ use spark_types::{Ty, TypeId, TypeTable};
 use crate::builder::{FunctionBuilder, LoopContext, MirBuilder};
 use crate::lower_pattern::lower_match;
 use crate::lower_stmt::lower_stmt;
-use crate::mir::{AggregateKind, Constant, Local, Operand, Place, Projection, Rvalue, Terminator};
+use crate::mir::{
+    AggregateKind, Constant, Local, Operand, Place, Projection, Rvalue, Statement, Terminator,
+};
 
 /// Lowers an HIR expression, returning the [`Local`] holding the result.
 ///
@@ -283,8 +285,8 @@ pub fn lower_expr(
             for (key, val) in entries {
                 let k = lower_expr(key, fb, mir, type_table, defs);
                 let v = lower_expr(val, fb, mir, type_table, defs);
-                operands.push(Operand::Copy(Place::from_local(k)));
-                operands.push(Operand::Copy(Place::from_local(v)));
+                operands.push(owned_union_operand(k, fb, type_table));
+                operands.push(owned_union_operand(v, fb, type_table));
             }
             let temp = fb.fresh_temp(expr.ty, expr.span);
             fb.push_assign(
@@ -315,8 +317,19 @@ pub fn lower_expr(
                 );
                 temp
             };
+            let scoped_result = fb.current_scope_owns(result);
             fb.pop_scope_drops(Some(result), expr.span);
-            result
+            if scoped_result {
+                let temp = fb.fresh_temp(fb.local_type(result), expr.span);
+                fb.push_assign(
+                    Place::from_local(temp),
+                    Rvalue::Use(Operand::Move(Place::from_local(result))),
+                    expr.span,
+                );
+                temp
+            } else {
+                result
+            }
         }
 
         HirExprKind::If { cond, then_, else_ } => lower_if(
@@ -644,7 +657,7 @@ fn lower_call(
         .iter()
         .map(|a| {
             let local = lower_expr(a, fb, mir, type_table, defs);
-            Operand::Copy(Place::from_local(local))
+            owned_union_operand(local, fb, type_table)
         })
         .collect();
 
@@ -731,7 +744,11 @@ fn lower_collection(
         .iter()
         .map(|e| {
             let local = lower_expr(e, fb, mir, type_table, defs);
-            Operand::Copy(Place::from_local(local))
+            if matches!(kind, AggregateKind::List | AggregateKind::Set) {
+                owned_union_operand(local, fb, type_table)
+            } else {
+                Operand::Copy(Place::from_local(local))
+            }
         })
         .collect();
     let temp = fb.fresh_temp(expr.ty, expr.span);
@@ -741,6 +758,22 @@ fn lower_collection(
         expr.span,
     );
     temp
+}
+
+fn owned_union_operand(local: Local, fb: &FunctionBuilder, type_table: &TypeTable) -> Operand {
+    let place = Place::from_local(local);
+    let ty = fb.local_type(local);
+    if !fb.is_def_local(local)
+        && matches!(
+            type_table.resolve(unwrap_type_wrappers(ty, type_table)),
+            Ty::Union(_)
+        )
+        && spark_drop::needs_drop(ty, type_table)
+    {
+        Operand::Move(place)
+    } else {
+        Operand::Copy(place)
+    }
 }
 
 /// Lowers an if-else expression.
@@ -968,6 +1001,12 @@ fn lower_is_expr(
         }
     }
 
+    if !fb.is_def_local(inner_local) && spark_drop::needs_drop(inner.ty, type_table) {
+        fb.push_stmt(Statement::Drop {
+            place: Place::from_local(inner_local),
+            span: expr.span,
+        });
+    }
     result
 }
 
@@ -1191,21 +1230,17 @@ pub fn emit_assign_with_union_wrap(
     let dest_ty = fb.local_type(dest);
     let src_ty = fb.local_type(src);
     let dest_resolved = type_table.resolve(dest_ty);
+    let source = Place::from_local(src);
+    let operand = if !fb.is_def_local(src) || (dest == Local::RETURN_PLACE && fb.owns_local(src)) {
+        Operand::Move(source)
+    } else {
+        Operand::Copy(source)
+    };
 
     // Optional wrapping: inner_ty → Optional(inner_ty)
     if let Ty::Optional(inner) = dest_resolved {
-        let src_resolved = type_table.resolve(src_ty);
-        // Same Optional type — plain copy.
-        if matches!(src_resolved, Ty::Optional(_)) && src_ty == dest_ty {
-            fb.push_assign(
-                Place::from_local(dest),
-                Rvalue::Use(Operand::Copy(Place::from_local(src))),
-                span,
-            );
-            return;
-        }
         // Inner type or Null → wrap into Optional via Union aggregate.
-        if src_ty == *inner || matches!(src_resolved, Ty::Null) {
+        if src_ty == *inner || matches!(type_table.resolve(src_ty), Ty::Null) {
             fb.push_assign(
                 Place::from_local(dest),
                 Rvalue::Aggregate(
@@ -1213,7 +1248,7 @@ pub fn emit_assign_with_union_wrap(
                         union_ty: dest_ty,
                         member_ty: src_ty,
                     },
-                    vec![Operand::Copy(Place::from_local(src))],
+                    vec![operand],
                 ),
                 span,
             );
@@ -1222,16 +1257,6 @@ pub fn emit_assign_with_union_wrap(
     }
 
     if let Ty::Union(members) = dest_resolved {
-        // If source is already the same union type, plain copy.
-        let src_resolved = type_table.resolve(src_ty);
-        if matches!(src_resolved, Ty::Union(_)) && src_ty == dest_ty {
-            fb.push_assign(
-                Place::from_local(dest),
-                Rvalue::Use(Operand::Copy(Place::from_local(src))),
-                span,
-            );
-            return;
-        }
         // Source is a member type — wrap into the union.
         if members.contains(&src_ty) {
             fb.push_assign(
@@ -1241,7 +1266,7 @@ pub fn emit_assign_with_union_wrap(
                         union_ty: dest_ty,
                         member_ty: src_ty,
                     },
-                    vec![Operand::Copy(Place::from_local(src))],
+                    vec![operand],
                 ),
                 span,
             );
@@ -1262,7 +1287,7 @@ pub fn emit_assign_with_union_wrap(
                         union_ty: dest_ty,
                         member_ty,
                     },
-                    vec![Operand::Copy(Place::from_local(src))],
+                    vec![operand],
                 ),
                 span,
             );
@@ -1270,12 +1295,7 @@ pub fn emit_assign_with_union_wrap(
         }
     }
 
-    // Default: plain copy.
-    fb.push_assign(
-        Place::from_local(dest),
-        Rvalue::Use(Operand::Copy(Place::from_local(src))),
-        span,
-    );
+    fb.push_assign(Place::from_local(dest), Rvalue::Use(operand), span);
 }
 
 /// Returns a void-valued temp (for error/deferred nodes).

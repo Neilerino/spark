@@ -8,8 +8,8 @@ use spark_resolve::DefinitionTable;
 use spark_types::TypeTable;
 
 use crate::builder::{FunctionBuilder, MirBuilder};
-use crate::lower_expr::lower_expr;
-use crate::mir::{Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator};
+use crate::lower_expr::{emit_assign_with_union_wrap, lower_expr};
+use crate::mir::{Local, MirFunction, Terminator};
 
 /// Lowers a single HIR function into a MIR function.
 pub fn lower_function(
@@ -53,13 +53,15 @@ pub fn lower_function(
     // return place. This handles implicit returns from trailing expressions
     // (e.g., `fn(x: Int): Int { x * 2 }` where `x * 2` is the return value).
     if !fb.is_terminated() {
-        fb.push_stmt(Statement::Assign {
-            place: Place::from_local(Local::RETURN_PLACE),
-            rvalue: Rvalue::Use(Operand::Copy(Place::from_local(body_local))),
-            span: hir_fn.body.span,
-        });
+        emit_assign_with_union_wrap(
+            &mut fb,
+            Local::RETURN_PLACE,
+            body_local,
+            type_table,
+            hir_fn.body.span,
+        );
         // Drop all remaining locals before the fallthrough return.
-        fb.drops_for_return(None, hir_fn.body.span);
+        fb.drops_for_return(Some(body_local), hir_fn.body.span);
         fb.terminate(Terminator::Return);
     }
 

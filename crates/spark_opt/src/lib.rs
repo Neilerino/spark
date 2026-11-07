@@ -113,7 +113,7 @@ pub fn optimize(input: OptInput) -> OptOutput {
 
         // Per-function optimization passes.
         for func in mir.functions.values_mut() {
-            optimize_function(func);
+            optimize_function(func, &table);
         }
     }
 
@@ -125,22 +125,22 @@ pub fn optimize(input: OptInput) -> OptOutput {
 }
 
 /// Runs all passes on a single function, with two fixed iterations.
-fn optimize_function(func: &mut MirFunction) {
-    let changed = run_passes(func);
+fn optimize_function(func: &mut MirFunction, table: &TypeTable) {
+    let changed = run_passes(func, table);
     if changed {
-        run_passes(func);
+        run_passes(func, table);
     }
 }
 
 /// Runs all five optimization passes in order. Returns `true` if any
 /// pass modified the function.
-fn run_passes(func: &mut MirFunction) -> bool {
+fn run_passes(func: &mut MirFunction, table: &TypeTable) -> bool {
     let mut changed = false;
     changed |= nop_elim::eliminate_nops(func);
     changed |= const_fold::fold_constants(func);
     changed |= simplify_cfg::simplify_cfg(func);
     changed |= dce::eliminate_dead_code(func);
-    changed |= copy_prop::propagate_copies(func);
+    changed |= copy_prop::propagate_copies(func, table);
     changed
 }
 

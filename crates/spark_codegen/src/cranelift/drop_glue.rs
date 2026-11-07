@@ -9,10 +9,12 @@
 //! element behavior functions.
 
 use cranelift_codegen::ir::{InstBuilder, MemFlags, Type as ClifType, Value};
-use cranelift_frontend::FunctionBuilder;
+use cranelift_frontend::{FunctionBuilder, Switch};
 use cranelift_module::{FuncId, Module};
 use rustc_hash::FxHashMap;
 use spark_types::{Ty, TypeId, TypeTable};
+
+use crate::{abi, layout::LayoutCache};
 
 use super::runtime::RuntimeStubs;
 use super::types as clif_types;
@@ -41,7 +43,7 @@ pub fn emit_typed_drop<M: Module>(
     module: &mut M,
     ptr_type: ClifType,
 ) {
-    let (_, ty) = clif_types::unwrap_mutable(ty_id, table);
+    let (ty_id, ty) = clif_types::unwrap_mutable(ty_id, table);
 
     match ty {
         Ty::String => {
@@ -78,6 +80,17 @@ pub fn emit_typed_drop<M: Module>(
             let func_ref = module.declare_func_in_func(stubs.channel_rc_dec, builder.func);
             builder.ins().call(func_ref, &[ptr_val]);
         }
+        Ty::Union(members) => emit_union_rc(
+            builder,
+            ptr_val,
+            ty_id,
+            members,
+            table,
+            stubs,
+            module,
+            ptr_type,
+            emit_typed_drop,
+        ),
         _ => {
             // Non-droppable type — no-op (shouldn't reach here if the caller
             // checked `needs_drop` first).
@@ -95,7 +108,7 @@ pub fn emit_typed_retain<M: Module>(
     module: &mut M,
     ptr_type: ClifType,
 ) {
-    let (_, ty) = clif_types::unwrap_mutable(ty_id, table);
+    let (ty_id, ty) = clif_types::unwrap_mutable(ty_id, table);
 
     if spark_drop::needs_rc(ty_id, table) {
         let func_ref = module.declare_func_in_func(stubs.rc_inc, builder.func);
@@ -107,7 +120,89 @@ pub fn emit_typed_retain<M: Module>(
                 .load(ptr_type, MemFlags::new(), ptr_val, ptr_type.bytes() as i32);
         let func_ref = module.declare_func_in_func(stubs.rc_inc, builder.func);
         builder.ins().call(func_ref, &[env_ptr]);
+    } else if let Ty::Union(members) = ty {
+        emit_union_rc(
+            builder,
+            ptr_val,
+            ty_id,
+            members,
+            table,
+            stubs,
+            module,
+            ptr_type,
+            emit_typed_retain,
+        );
     }
+}
+
+pub(super) fn rc_value_at(
+    builder: &mut FunctionBuilder<'_>,
+    slot: Value,
+    ty: TypeId,
+    table: &TypeTable,
+    ptr_type: ClifType,
+) -> Value {
+    if abi::is_scalar(ty, table) {
+        builder.ins().load(ptr_type, MemFlags::new(), slot, 0)
+    } else {
+        slot
+    }
+}
+
+type EmitRc<M> =
+    fn(&mut FunctionBuilder<'_>, Value, TypeId, &TypeTable, &RuntimeStubs, &mut M, ClifType);
+
+#[allow(clippy::too_many_arguments)]
+fn emit_union_rc<M: Module>(
+    builder: &mut FunctionBuilder<'_>,
+    slot: Value,
+    ty: TypeId,
+    members: &[TypeId],
+    table: &TypeTable,
+    stubs: &RuntimeStubs,
+    module: &mut M,
+    ptr_type: ClifType,
+    emit_member: EmitRc<M>,
+) {
+    let droppable = members
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|&(_, member)| spark_drop::needs_drop(member, table));
+    let layout = LayoutCache::new(ptr_type.bytes()).union_layout_of(ty, table);
+    let payload = builder
+        .ins()
+        .iadd_imm(slot, i64::from(layout.payload_offset));
+    if layout.tag_size == 0 {
+        for (_, member) in droppable {
+            let value = rc_value_at(builder, payload, member, table, ptr_type);
+            emit_member(builder, value, member, table, stubs, module, ptr_type);
+        }
+        return;
+    }
+
+    let mut switch = Switch::new();
+    let branches: Vec<_> = droppable
+        .map(|(tag, member)| {
+            let block = builder.create_block();
+            switch.set_entry(tag as u128, block);
+            (block, member)
+        })
+        .collect();
+    if branches.is_empty() {
+        return;
+    }
+    let done = builder.create_block();
+    let tag_type = clif_types::int_type_for_bytes(layout.tag_size);
+    let tag = builder.ins().load(tag_type, MemFlags::new(), slot, 0);
+    switch.emit(builder, tag, done);
+    for (block, member) in branches {
+        builder.switch_to_block(block);
+        let value = rc_value_at(builder, payload, member, table, ptr_type);
+        emit_member(builder, value, member, table, stubs, module, ptr_type);
+        builder.ins().jump(done, &[]);
+    }
+    builder.switch_to_block(done);
 }
 
 /// Generates per-type element-drop/retain functions and caches them by [`TypeId`].
@@ -228,35 +323,8 @@ impl DropGlueGenerator {
 
             let elem_ptr = builder.block_params(block)[0];
 
-            let (_, unwrapped_ty) = clif_types::unwrap_mutable(elem_ty, table);
-
-            if matches!(unwrapped_ty, Ty::Function { .. }) {
-                // Function fat pointers are aggregates stored inline.
-                // emit_typed_drop expects the ADDRESS of the fat pointer
-                // so it can load the env_ptr from the second slot.
-                emit_typed_drop(
-                    &mut builder,
-                    elem_ptr,
-                    elem_ty,
-                    table,
-                    stubs,
-                    module,
-                    ptr_type,
-                );
-            } else {
-                // Scalar RC types: the element slot contains a pointer to
-                // the RC object. Load it and pass to emit_typed_drop.
-                let inner_ptr = builder.ins().load(ptr_type, MemFlags::new(), elem_ptr, 0);
-                emit_typed_drop(
-                    &mut builder,
-                    inner_ptr,
-                    elem_ty,
-                    table,
-                    stubs,
-                    module,
-                    ptr_type,
-                );
-            }
+            let value = rc_value_at(&mut builder, elem_ptr, elem_ty, table, ptr_type);
+            emit_typed_drop(&mut builder, value, elem_ty, table, stubs, module, ptr_type);
 
             builder.ins().return_(&[]);
             builder.seal_all_blocks();
@@ -310,30 +378,8 @@ impl DropGlueGenerator {
             builder.switch_to_block(block);
 
             let elem_ptr = builder.block_params(block)[0];
-            let (_, unwrapped_ty) = clif_types::unwrap_mutable(elem_ty, table);
-
-            if matches!(unwrapped_ty, Ty::Function { .. }) {
-                emit_typed_retain(
-                    &mut builder,
-                    elem_ptr,
-                    elem_ty,
-                    table,
-                    stubs,
-                    module,
-                    ptr_type,
-                );
-            } else {
-                let inner_ptr = builder.ins().load(ptr_type, MemFlags::new(), elem_ptr, 0);
-                emit_typed_retain(
-                    &mut builder,
-                    inner_ptr,
-                    elem_ty,
-                    table,
-                    stubs,
-                    module,
-                    ptr_type,
-                );
-            }
+            let value = rc_value_at(&mut builder, elem_ptr, elem_ty, table, ptr_type);
+            emit_typed_retain(&mut builder, value, elem_ty, table, stubs, module, ptr_type);
 
             builder.ins().return_(&[]);
             builder.seal_all_blocks();
