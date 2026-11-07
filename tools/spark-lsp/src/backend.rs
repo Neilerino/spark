@@ -513,6 +513,7 @@ fn format_hover(analysis: &AnalysisResult, def_id: spark_resolve::DefId) -> Opti
         }
         DefinitionKind::TypeAlias => format!("alias {name}"),
         DefinitionKind::TypeDef => format!("type {name}"),
+        DefinitionKind::BuiltinType => name.to_string(),
         DefinitionKind::Interface => format!("interface {name}"),
         DefinitionKind::GenericParam => {
             // Show "T: Comparable" if constrained, else just "T"
@@ -795,7 +796,9 @@ const fn def_kind_to_completion_kind(kind: &spark_resolve::DefinitionKind) -> Co
         DefinitionKind::Enum => CompletionItemKind::ENUM,
         DefinitionKind::EnumVariant(_) => CompletionItemKind::ENUM_MEMBER,
         DefinitionKind::Interface => CompletionItemKind::INTERFACE,
-        DefinitionKind::TypeAlias | DefinitionKind::TypeDef => CompletionItemKind::CLASS,
+        DefinitionKind::TypeAlias | DefinitionKind::TypeDef | DefinitionKind::BuiltinType => {
+            CompletionItemKind::CLASS
+        }
         DefinitionKind::Const => CompletionItemKind::CONSTANT,
         DefinitionKind::Local | DefinitionKind::Parameter => CompletionItemKind::VARIABLE,
         DefinitionKind::GenericParam | DefinitionKind::LifetimeParam => {

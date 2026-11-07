@@ -1,0 +1,37 @@
+import spark.text { parse, Parseable, ParseError }
+
+struct Point {
+    x: Int
+    y: Int
+}
+
+fn readCoordinate(text: String): Int | ParseError {
+    coordinate: Int = parse(text)!
+    return coordinate
+}
+
+Point binds Parseable {
+    fn parse(text: String): Point | ParseError {
+        x: Int = readCoordinate(text)!
+        return Point { x: x, y: 0 }
+    }
+}
+
+fn readPoint(text: String): Point | ParseError {
+    point: Point = parse(text)!
+    return point
+}
+
+fn show(result: Point | ParseError): Void {
+    result to {
+        point: Point -> print("{point.x},{point.y}"),
+        ParseError -> print("parse error")
+    }
+}
+
+fn main(): Int {
+    show(readPoint("3"))
+    show(readPoint("-8"))
+    show(readPoint("3x"))
+    return 0
+}

@@ -50,6 +50,7 @@ impl<'a> TypeChecker<'a> {
     ) -> Self {
         let mut table = TypeTable::new();
         let builtins = register_builtins(&mut table);
+        table.text_parsing = crate::parsing::TextParsing::from_definitions(definitions);
 
         Self {
             table,

@@ -89,7 +89,9 @@ const fn definition_kind_to_token_type(kind: &DefinitionKind) -> (u32, u32) {
         DefinitionKind::Enum => (ENUM, 0),
         DefinitionKind::EnumVariant(_) => (ENUM_MEMBER, 0),
         DefinitionKind::Interface => (INTERFACE, 0),
-        DefinitionKind::TypeAlias | DefinitionKind::TypeDef => (TYPE, 0),
+        DefinitionKind::TypeAlias | DefinitionKind::TypeDef | DefinitionKind::BuiltinType => {
+            (TYPE, 0)
+        }
         DefinitionKind::Parameter => (PARAMETER, 0),
         DefinitionKind::StructField(_) => (PROPERTY, 0),
         DefinitionKind::Const => (VARIABLE, MOD_READONLY),

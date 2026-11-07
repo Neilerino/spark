@@ -1382,13 +1382,35 @@ i: Int = 42
 f: Float = i.toFloat()
 s: String = i.toString()
 
-s: String = "123"
-i: Int = s.toInt()!  // returns Int | ParseError
-
 c: Char = 'A'
 code: Int = c.toInt()
 back: Char = code.toChar()
 ```
+
+### Text Parsing
+
+`spark.text` provides `parse[T: Parseable](text: String): T | ParseError`.
+The declared type of a binding selects the parser at compile time. Use `!` to
+propagate `ParseError` from a function whose return type includes it.
+
+```spark
+import spark.text { parse, ParseError }
+
+fn readCount(text: String): Int | ParseError {
+    count: Int = parse(text)!
+    return count
+}
+```
+
+The `Int` parser consumes the whole string. It accepts an optional ASCII sign
+and decimal digits in the signed 64-bit range. Empty input, whitespace,
+trailing junk, and overflow return `ParseError`.
+
+A struct can bind `Parseable` in its defining module with an associated
+`fn parse(text: String): StructType | ParseError`. This function has no instance
+receiver. One canonical parser is allowed per type; use named functions for
+alternate formats. For a complete example, see the
+[bound Point fixture](../crates/spark_driver/tests/run-pass/parsing/parse_bound_point.spark).
 
 ---
 

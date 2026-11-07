@@ -153,7 +153,15 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
 
         // === Calls ===
         ExprKind::Call { callee, args } => {
-            let callee_hir = lower_expr(callee, ctx);
+            let callee_hir = if let Some(def_id) = ctx.table.get_method_resolution(expr.span) {
+                HirExpr::new(
+                    HirExprKind::Local(def_id),
+                    ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR),
+                    callee.span,
+                )
+            } else {
+                lower_expr(callee, ctx)
+            };
             let param_types = extract_param_types(callee_hir.ty, ctx.table);
             let is_print = is_print_call(callee, ctx.resolutions, ctx.definitions);
             let lowered_args: Vec<HirExpr> = args

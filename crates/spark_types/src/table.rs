@@ -109,6 +109,8 @@ pub struct TypeTable {
     /// Maps an interface `DefId` to its method signatures.
     /// Populated during `collect_interface()`, consumed during `validate_interface_methods()`.
     pub(crate) interface_methods: FxHashMap<DefId, Vec<InterfaceMethodInfo>>,
+    pub(crate) text_parsing: Option<crate::parsing::TextParsing>,
+    pub(crate) text_parsers: FxHashMap<TypeId, DefId>,
     /// Standard protocol interface `DefId`s from `spark.core`.
     /// Populated after declaration collection via `resolve_well_known_interfaces()`.
     pub well_known: WellKnownInterfaces,
@@ -149,6 +151,8 @@ impl TypeTable {
             type_interface_bindings: FxHashMap::default(),
             fn_param_names: FxHashMap::default(),
             interface_methods: FxHashMap::default(),
+            text_parsing: None,
+            text_parsers: FxHashMap::default(),
             well_known: WellKnownInterfaces::default(),
         }
     }

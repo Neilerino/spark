@@ -6,6 +6,37 @@ use crate::{
     __spark_string_from_literal, __spark_string_rc_dec,
 };
 
+/// Parses one signed decimal integer without copying the source string.
+/// Returns zero on success, or a nonzero parse error code.
+///
+/// # Safety
+/// `text` must point to a live `SparkString`; `value` must be writable as an
+/// `i64` and must not alias the source.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_text_parse_int(text: *const u8, value: *mut i64) -> i64 {
+    let text = unsafe { &*text.cast::<SparkString>() };
+    let bytes = if text.len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(text.data, text.len) }
+    };
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return 2;
+    };
+    match text.parse::<i64>() {
+        Ok(parsed) => {
+            unsafe { *value = parsed };
+            0
+        }
+        Err(error) => match error.kind() {
+            std::num::IntErrorKind::Empty => 1,
+            std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => 3,
+            _ => 2,
+        },
+    }
+}
+
 /// Reads a `SparkString` pointer into an owned Rust `String`.
 ///
 /// # Safety

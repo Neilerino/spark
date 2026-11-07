@@ -63,6 +63,10 @@ pub fn stdlib_sources() -> Vec<StdlibSource> {
             path: "spark/sys.spark",
             source: include_str!("../spark/sys.spark"),
         },
+        StdlibSource {
+            path: "spark/text.spark",
+            source: include_str!("../spark/text.spark"),
+        },
     ]
 }
 
@@ -70,11 +74,17 @@ pub fn stdlib_sources() -> Vec<StdlibSource> {
 mod tests {
     use super::*;
 
+    fn source(path: &str) -> &'static str {
+        stdlib_sources()
+            .into_iter()
+            .find(|source| source.path == path)
+            .unwrap_or_else(|| panic!("missing stdlib source {path}"))
+            .source
+    }
+
     #[test]
     fn has_core_source() {
-        let sources = stdlib_sources();
-        assert_eq!(sources.len(), 7);
-        assert_eq!(sources[0].path, "spark/core.spark");
+        assert!(!source("spark/core.spark").is_empty());
     }
 
     #[test]
@@ -109,9 +119,7 @@ mod tests {
 
     #[test]
     fn has_math_source() {
-        let sources = stdlib_sources();
-        assert_eq!(sources.len(), 7);
-        assert_eq!(sources[0].path, "spark/math.spark");
+        assert!(!source("spark/math.spark").is_empty());
     }
 
     #[test]
@@ -304,49 +312,41 @@ mod tests {
 
     #[test]
     fn has_sys_source() {
-        let sources = stdlib_sources();
-        assert_eq!(sources[6].path, "spark/sys.spark");
+        assert!(!source("spark/sys.spark").is_empty());
     }
 
     #[test]
     fn sys_source_contains_module_decl() {
-        let sources = stdlib_sources();
-        assert!(sources[6].source.contains("module sys"));
+        assert!(source("spark/sys.spark").contains("module sys"));
     }
 
     #[test]
     fn sys_source_contains_args() {
-        let sources = stdlib_sources();
-        assert!(sources[6].source.contains("pub fn args"));
+        assert!(source("spark/sys.spark").contains("pub fn args"));
     }
 
     #[test]
     fn sys_source_contains_get_env() {
-        let sources = stdlib_sources();
-        assert!(sources[6].source.contains("pub fn getEnv"));
+        assert!(source("spark/sys.spark").contains("pub fn getEnv"));
     }
 
     #[test]
     fn sys_source_contains_extern_fns() {
-        let sources = stdlib_sources();
-        assert!(sources[6].source.contains("extern fn __spark_sys_args"));
+        assert!(source("spark/sys.spark").contains("extern fn __spark_sys_args"));
     }
 
     #[test]
     fn sys_source_contains_has_env() {
-        let sources = stdlib_sources();
-        assert!(sources[6].source.contains("pub fn hasEnv"));
+        assert!(source("spark/sys.spark").contains("pub fn hasEnv"));
     }
 
     #[test]
     fn sys_source_contains_set_env() {
-        let sources = stdlib_sources();
-        assert!(sources[6].source.contains("pub fn setEnv"));
+        assert!(source("spark/sys.spark").contains("pub fn setEnv"));
     }
 
     #[test]
     fn sys_source_contains_env_keys() {
-        let sources = stdlib_sources();
-        assert!(sources[6].source.contains("pub fn envKeys"));
+        assert!(source("spark/sys.spark").contains("pub fn envKeys"));
     }
 }

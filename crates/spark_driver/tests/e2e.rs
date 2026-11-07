@@ -25,6 +25,7 @@
 //! │   ├── channels/   # channel_*
 //! │   ├── type_narrowing/ # to_*, propagate_*
 //! │   ├── protocols/  # displayable, equatable, comparable, iterable
+//! │   ├── parsing/    # target-directed text parsing
 //! │   ├── io/         # io_stderr
 //! │   └── multifile/  # multi-file project dirs
 //! ├── compile-fail/   # Programs that should fail compilation
@@ -163,10 +164,14 @@ fn run_spark_with_stdin(fixture: &str, stdin_input: &str) -> SparkOutput {
     );
 
     let spark_bin = env!("CARGO_BIN_EXE_spark");
+    let runtime_dir = Path::new(spark_bin)
+        .parent()
+        .expect("spark binary has no parent dir");
 
     let mut child = Command::new(spark_bin)
         .arg("run")
         .arg(&fixture_path)
+        .env("SPARK_RUNTIME_DIR", runtime_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1016,6 +1021,26 @@ fn stdlib_sys_env() {
         result.stdout.trim(),
         "test_value_123\ntrue\ndynamic_value\nfalse",
         "stdout mismatch for stdlib_sys_env"
+    );
+}
+
+// ============================================================================
+// Target-directed text parsing
+// ============================================================================
+
+#[test]
+fn target_directed_parse_infers_int_and_propagates_parse_errors() {
+    assert_output(
+        "run-pass/parsing/parse_inferred_int.spark",
+        "42\n-9223372036854775808\nparse error\nparse error\n17\nparse error\n23",
+    );
+}
+
+#[test]
+fn target_directed_parse_dispatches_to_custom_point_binding() {
+    assert_output(
+        "run-pass/parsing/parse_bound_point.spark",
+        "3,0\n-8,0\nparse error",
     );
 }
 
