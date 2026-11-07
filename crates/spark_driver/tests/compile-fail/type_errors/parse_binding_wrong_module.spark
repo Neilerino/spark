@@ -1,0 +1,5 @@
+import spark.text { Parseable, ParseError }
+Int binds Parseable {
+    fn parse(text: String): Int | ParseError { return 0 }
+}
+fn main(): Int { return 0 }

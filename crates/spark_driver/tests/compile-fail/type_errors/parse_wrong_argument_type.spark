@@ -1,0 +1,6 @@
+import spark.text { parse, ParseError }
+fn read(): Int | ParseError {
+    count: Int = parse(1)!
+    return count
+}
+fn main(): Int { return 0 }

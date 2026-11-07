@@ -156,13 +156,17 @@ impl TextParsing {
         }
 
         let error = ctx.table.intern(Ty::Struct(self.error));
-        let success = expected.and_then(|expected| match ctx.table.resolve(expected) {
-            Ty::Union(members) if members.len() == 2 && members.contains(&error) => {
-                members.iter().copied().find(|member| *member != error)
-            }
-            _ => None,
-        });
-        let Some(success) = success else {
+        let expected_members = expected
+            .and_then(|expected| match ctx.table.resolve(expected) {
+                Ty::Union(members) if members.contains(&error) => Some(members.as_slice()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let mut candidates = expected_members
+            .iter()
+            .copied()
+            .filter(|member| *member != error);
+        let Some(success) = candidates.next() else {
             ctx.diagnostics.push(
                 Diagnostic::error("cannot infer target type for `parse`").with_label(
                     Label::primary(span, "bind the result with a type annotation"),
@@ -170,6 +174,13 @@ impl TextParsing {
             );
             return TypeId::ERROR;
         };
+        if candidates.next().is_some() || matches!(ctx.table.resolve(success), Ty::Union(_)) {
+            ctx.diagnostics.push(
+                Diagnostic::error("ambiguous target type for `parse`")
+                    .with_label(Label::primary(span, "choose one parser target type")),
+            );
+            return TypeId::ERROR;
+        }
         if success.is_error() {
             return TypeId::ERROR;
         }

@@ -1,0 +1,5 @@
+import spark.text { parse }
+fn main(): Int {
+    parse("1")
+    return 0
+}

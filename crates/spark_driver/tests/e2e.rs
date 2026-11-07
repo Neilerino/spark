@@ -1050,6 +1050,50 @@ fn target_directed_parse_dispatches_to_custom_point_binding() {
 }
 
 #[test]
+fn target_directed_parse_rejects_ambiguous_target() {
+    for fixture in ["parse_ambiguous_target", "parse_ambiguous_result"] {
+        assert_compile_error(
+            &format!("compile-fail/type_errors/{fixture}.spark"),
+            "ambiguous target type for `parse`",
+        );
+    }
+}
+
+#[test]
+fn target_directed_parse_reports_invalid_calls_and_bindings() {
+    for (fixture, expected) in [
+        (
+            "parse_missing_target",
+            "cannot infer target type for `parse`",
+        ),
+        (
+            "parse_unbound_type",
+            "type `Point` does not bind `Parseable`",
+        ),
+        (
+            "parse_binding_missing_parser",
+            "missing required function `parse` from `Parseable`",
+        ),
+        ("parse_binding_duplicate", "duplicate `Parseable` binding"),
+        (
+            "parse_binding_wrong_module",
+            "a parser must be bound in the type's defining module",
+        ),
+        (
+            "parse_binding_invalid_signature",
+            "invalid parser signature",
+        ),
+        ("parse_wrong_arity", "expected 1 argument, found 0"),
+        ("parse_wrong_argument_type", "expected `String`"),
+    ] {
+        assert_compile_error(
+            &format!("compile-fail/type_errors/{fixture}.spark"),
+            expected,
+        );
+    }
+}
+
+#[test]
 fn string_lines_preserves_blank_lines_and_utf8() {
     assert_output(
         "run-pass/parsing/string_lines.spark",
