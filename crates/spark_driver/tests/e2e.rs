@@ -1176,14 +1176,37 @@ fn bulk_integer_parsing_owns_values_and_reports_byte_spans() {
 
 #[test]
 fn tagged_union_retains_and_releases_list_payloads() {
-    let dir = tempfile::tempdir().expect("create ownership probe directory");
-    let probe = dir.path().join("probe.c");
-    std::fs::write(
-        &probe,
+    assert_native_parsing_fixture(
         "#include <stddef.h>\n#include <stdint.h>\n\
          int64_t probe_list_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
-    )
-    .expect("write reference count probe");
+        include_str!("run-pass/parsing/owned_union.spark"),
+        "1\n1\n3\n1\n1\n1\n1\n0\n1\n1\n1\n2\n2\n1",
+    );
+}
+
+#[test]
+fn parsing_coerces_nested_reference_arguments() {
+    assert_native_parsing_fixture(
+        include_str!("run-pass/parsing/nested_parse_ref.c"),
+        include_str!("run-pass/parsing/nested_parse_ref.spark"),
+        "2\nb\n7\n1",
+    );
+}
+
+#[test]
+fn target_directed_parse_supports_mutable_bindings() {
+    let fixture = "run-pass/parsing/parse_mutable_target.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{}", result.stderr);
+        assert_eq!(result.stdout.trim(), "42\nparse error\n43");
+    }
+}
+
+fn assert_native_parsing_fixture(native: &str, fixture: &str, expected: &str) {
+    let dir = tempfile::tempdir().expect("create ownership probe directory");
+    let probe = dir.path().join("probe.c");
+    std::fs::write(&probe, native).expect("write native parsing probe");
     for (tool, args) in [
         ("cc", &["-c", "probe.c", "-o", "probe.o"][..]),
         ("ar", &["rcs", "libunion_probe.a", "probe.o"][..]),
@@ -1200,13 +1223,12 @@ fn tagged_union_retains_and_releases_list_payloads() {
         );
     }
 
-    let source = dir.path().join("owned_union.spark");
-    let fixture = include_str!("run-pass/parsing/owned_union.spark");
+    let source = dir.path().join("probe.spark");
     std::fs::write(
         &source,
-        format!(
-            "link \"union_probe\" from \"{}\"\n{fixture}",
-            dir.path().display()
+        fixture.replace(
+            "link \"union_probe\"",
+            &format!("link \"union_probe\" from \"{}\"", dir.path().display()),
         ),
     )
     .expect("write ownership fixture");
@@ -1225,10 +1247,7 @@ fn tagged_union_retains_and_releases_list_payloads() {
             .expect("run ownership fixture");
         let stderr = String::from_utf8_lossy(&result.stderr);
         assert!(result.status.success(), "{stderr}");
-        assert_eq!(
-            String::from_utf8_lossy(&result.stdout).trim(),
-            "1\n1\n3\n1\n1\n1\n1\n0\n1\n1\n1\n2\n2\n1"
-        );
+        assert_eq!(String::from_utf8_lossy(&result.stdout).trim(), expected);
     }
 }
 

@@ -1,3 +1,5 @@
+link "union_probe"
+
 extern fn probe_list_rc(values: Ref[List[Int]]): Int
 
 alias MaybeValues = List[Int] | Bool

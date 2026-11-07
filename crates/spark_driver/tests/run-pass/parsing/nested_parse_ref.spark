@@ -1,0 +1,25 @@
+import spark.text { parse, parseInts, ParseError, RangeError }
+link "union_probe"
+
+extern fn nested_start(): Ref[Ref[Int]]
+extern fn nested_text(): Ref[Ref[String]]
+
+fn main(): Int {
+    text: Ref[Ref[String]] = nested_text()
+    fields: List[String] = "a7b".split(text)
+    print(fields.len())
+    "abc".substring(nested_start(), 2) to {
+        slice: String -> print(slice),
+        RangeError -> print("bad range")
+    }
+    parsed: Int | ParseError = parse(text)
+    parsed to {
+        value: Int -> print(value),
+        ParseError -> print("parse error")
+    }
+    parseInts(text) to {
+        values: List[Int] -> print(values.len()),
+        ParseError -> print("bulk parse error")
+    }
+    return 0
+}
