@@ -340,6 +340,12 @@ CRLF endings and excludes the final line ending.
 `chars()` returns an owned list of Unicode scalar values in source order.
 A combining mark is a separate `Char`, and empty input produces an empty list.
 
+`substring(startByte, endByte)` copies the half-open UTF-8 byte range into
+an owned string. Both offsets must be within `0..=s.len()` and fall on
+Unicode scalar boundaries. Equal offsets return an empty string. Negative,
+reversed, out-of-bounds, and mid-scalar offsets return a `RangeError` with the
+requested offsets. Import `RangeError` from `spark.text`.
+
 ### Collection Types
 
 #### List[T]

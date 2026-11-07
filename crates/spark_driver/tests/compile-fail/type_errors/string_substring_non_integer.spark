@@ -1,0 +1,4 @@
+fn main(): Int {
+    "input".substring("0", 1)
+    return 0
+}

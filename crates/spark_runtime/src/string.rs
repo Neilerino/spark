@@ -129,6 +129,28 @@ unsafe fn spark_str(text: &SparkString) -> &str {
     unsafe { std::str::from_utf8_unchecked(spark_str_bytes(text)) }
 }
 
+/// Copies a checked UTF-8 byte range and writes whether the range was valid.
+///
+/// # Safety
+/// `text` must point to a slot holding a live UTF-8 `SparkString` pointer.
+/// `valid` must point to a writable `i64` that does not alias the input.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_text_substring(
+    text: *const *const u8,
+    start: i64,
+    end: i64,
+    valid: *mut i64,
+) -> *mut u8 {
+    let text = unsafe { spark_str(&*(*text).cast::<SparkString>()) };
+    let slice = usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .and_then(|(start, end)| text.get(start..end));
+    unsafe { *valid = i64::from(slice.is_some()) };
+    rust_str_to_spark(slice.unwrap_or_default())
+}
+
 unsafe fn spark_str_bytes(text: &SparkString) -> &[u8] {
     if text.len == 0 {
         &[]

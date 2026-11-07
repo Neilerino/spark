@@ -4,6 +4,11 @@ pub struct ParseError {
     code: Int
 }
 
+pub struct RangeError {
+    startByte: Int
+    endByte: Int
+}
+
 pub interface Parseable {
     fn parse(text: String): Self | ParseError
 }
@@ -12,6 +17,16 @@ pub interface Parseable {
 pub fn parse[T: Parseable](text: String): T | ParseError
 
 extern fn __spark_text_parse_int(text: String, value: Ref[Int]!): Int
+extern fn __spark_text_substring(text: Ref[String], startByte: Int, endByte: Int, valid: Ref[Int]!): String
+
+fn substring(text: String, startByte: Int, endByte: Int): String | RangeError {
+    valid: Ref[Int]! = 0
+    slice: String = __spark_text_substring(text, startByte, endByte, valid)
+    if valid == 0 {
+        return RangeError { startByte: startByte, endByte: endByte }
+    }
+    return slice
+}
 
 Int binds Parseable {
     fn parse(text: String): Int | ParseError {

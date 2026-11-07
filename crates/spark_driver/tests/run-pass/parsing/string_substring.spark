@@ -1,0 +1,26 @@
+import spark.text { RangeError }
+
+fn take(input: String, startByte: Int, endByte: Int): String | RangeError {
+    slice: String = input.substring(startByte, endByte)!
+    return slice
+}
+
+fn show(result: String | RangeError): Void {
+    result to {
+        slice: String -> print("[{slice}]"),
+        error: RangeError -> print("[{error.startByte},{error.endByte}]")
+    }
+}
+
+fn main(): Int {
+    show(take("aé🙂", 1, 3))
+    show(take("aé🙂", 3, 7))
+    show(take("aé🙂", 7, 7))
+    show(take("", 0, 0))
+    show(take("aé🙂", -1, 1))
+    show(take("aé🙂", 3, 1))
+    show(take("aé🙂", 0, 8))
+    show(take("aé🙂", 2, 3))
+    show(take("aé🙂", 1, 2))
+    return 0
+}

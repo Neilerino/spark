@@ -1095,6 +1095,25 @@ fn string_chars_returns_unicode_scalars() {
 }
 
 #[test]
+fn string_substring_checks_utf8_byte_ranges() {
+    let fixture = "run-pass/parsing/string_substring.spark";
+    let expected = "[é]\n[🙂]\n[]\n[]\n[-1,1]\n[3,1]\n[0,8]\n[2,3]\n[1,2]";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{}", result.stderr);
+        assert_eq!(result.stdout.trim_end(), expected);
+    }
+}
+
+#[test]
+fn string_substring_requires_integer_byte_offsets() {
+    assert_compile_error(
+        "compile-fail/type_errors/string_substring_non_integer.spark",
+        "argument type mismatch",
+    );
+}
+
+#[test]
 fn tagged_union_retains_and_releases_list_payloads() {
     let dir = tempfile::tempdir().expect("create ownership probe directory");
     let probe = dir.path().join("probe.c");

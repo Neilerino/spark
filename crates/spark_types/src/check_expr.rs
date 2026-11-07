@@ -2234,6 +2234,28 @@ fn check_string_method(
     call_span: Span,
     ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
+    if method == kw::SUBSTRING {
+        let substring = ctx
+            .definitions
+            .iter()
+            .find(|(_, info)| {
+                info.name == kw::SUBSTRING
+                    && info.kind == DefinitionKind::Function
+                    && info.module.segments() == [kw::SPARK, kw::TEXT]
+            })
+            .and_then(|(id, _)| {
+                let ty = ctx.table.get_def_type(id)?;
+                let Ty::Function { params, ret, .. } = ctx.table.resolve(ty) else {
+                    return None;
+                };
+                Some((id, params.get(1..).unwrap_or_default().to_vec(), *ret))
+            });
+        if let Some((def_id, params, ret)) = substring {
+            validate_call_args(&params, arg_tys, call_span, ctx);
+            ctx.table.set_method_resolution(call_span, def_id);
+            return ret;
+        }
+    }
     let result = match method {
         kw::LEN => ctx.builtins.int,
         kw::LINES | kw::SPLIT | kw::SPLIT_WHITESPACE | kw::SECTIONS => {
@@ -2247,15 +2269,13 @@ fn check_string_method(
             return TypeId::ERROR;
         }
     };
-    let expected_args = usize::from(method == kw::SPLIT);
-    diagnostics::expect_args(expected_args, arg_tys.len(), call_span, ctx.diagnostics);
-    if let (kw::SPLIT, [delimiter]) = (method, arg_tys) {
-        if !is_compatible(*delimiter, ctx.builtins.string, ctx.table) {
-            let found = type_name(*delimiter, ctx.table, ctx.definitions);
-            ctx.diagnostics
-                .push(diagnostics::arg_type_mismatch("String", &found, call_span));
-        }
-    }
+    let string_param = [ctx.builtins.string];
+    let params = if method == kw::SPLIT {
+        &string_param[..]
+    } else {
+        &[]
+    };
+    validate_call_args(params, arg_tys, call_span, ctx);
     result
 }
 
