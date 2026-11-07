@@ -871,22 +871,14 @@ mod tests {
     #[test]
     fn list_contains_string_value_semantics_with_callback() {
         unsafe {
-            let list = test_list_new(
-                std::mem::size_of::<*mut u8>(),
-                __spark_string_rc_dec as *const () as usize,
-                __spark_eq_string_elem as *const () as usize,
-            );
-            let s1 = __spark_string_from_literal("hello".as_ptr(), 5);
+            let list = string::string_list_from_iter(std::iter::once("hello"));
             let s2 = __spark_string_from_literal("hello".as_ptr(), 5);
-
-            __spark_list_push(list, std::ptr::addr_of!(s1).cast::<u8>());
 
             assert_eq!(
                 __spark_list_contains(list, std::ptr::addr_of!(s2).cast::<u8>()),
                 1
             );
 
-            __spark_string_rc_dec(s1);
             __spark_string_rc_dec(s2);
             __spark_list_rc_dec(list);
         }
