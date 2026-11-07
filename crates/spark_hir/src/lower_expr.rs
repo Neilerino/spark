@@ -465,7 +465,7 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
         ExprKind::Propagate(inner) => {
             let inner_hir = lower_expr(inner, ctx);
             let ty = expr_type(expr.id, ctx.table);
-            let inner_ty = inner_hir.ty;
+            let inner_ty = strip_mutable_ty(inner_hir.ty, ctx.table);
             desugar_propagate_expr(
                 inner_hir,
                 inner_ty,
@@ -481,7 +481,7 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
         ExprKind::Pipeline { source, stages } => lower_pipeline(source, stages, expr, ctx),
 
         ExprKind::To { expr: inner, arms } => {
-            let inner_ty = expr_type(inner.id, ctx.table);
+            let inner_ty = strip_mutable_ty(expr_type(inner.id, ctx.table), ctx.table);
             let is_union = matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_));
             let inner_hir = lower_expr(inner, ctx);
 

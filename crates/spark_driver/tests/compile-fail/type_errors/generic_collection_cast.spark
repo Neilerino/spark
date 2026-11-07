@@ -1,0 +1,10 @@
+fn convert[A, B](value: A, witness: B): B {
+    return value as B
+}
+
+fn main(): Int {
+    witness: List[Int] = [9]
+    forged: List[Int] = convert(1, witness)
+    print(forged[0] ?? 0)
+    return 0
+}

@@ -673,6 +673,8 @@ name: String = user!.name    // if user is Null, propagates
 | `is`     | Type check  | `x is Type` |
 | `as`     | Type cast   | `x as Type` |
 
+Casts involving lists, maps, or sets must preserve their storage layout.
+
 ```
 if value is String {
     print(value.length)  // compiler knows value is String

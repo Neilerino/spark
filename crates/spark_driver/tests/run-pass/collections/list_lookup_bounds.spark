@@ -29,7 +29,7 @@ fn main(): Int {
     mutableSlots: List[MutableInt] = [1]
     plainSlots: List[Int] = mutableSlots
     print(plainSlots[0] ?? fallback())
-    sameLayout: List[MutableInt] = plainSlots
+    sameLayout: List[MutableInt] = plainSlots as List[MutableInt]
     if sameLayout[0] is Null {
         return 1
     }

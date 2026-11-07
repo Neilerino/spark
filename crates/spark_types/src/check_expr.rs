@@ -300,8 +300,9 @@ fn check_expr_inner(
             expr: inner_expr,
             ty,
         } => {
-            let _ = check_expr(inner_expr, ctx, current_fn_ret);
-            lower_type_expr(ty, ctx)
+            let actual = check_expr(inner_expr, ctx, current_fn_ret);
+            let target = lower_type_expr(ty, ctx);
+            check_cast(actual, target, expr.span, ctx)
         }
 
         // === Collections ===
@@ -643,6 +644,7 @@ fn check_propagate(
         None
     };
     let inner_ty = check_expr_expected(inner_expr, ctx, current_fn_ret, expected_result);
+    let inner_ty = strip_mutable(inner_ty, ctx.table);
 
     // For Optional(T) → success type is T
     if let Ty::Optional(success) = ctx.table.resolve(inner_ty) {
@@ -1551,13 +1553,8 @@ pub fn is_compatible(actual: TypeId, expected: TypeId, table: &TypeTable) -> boo
         }
     }
 
-    // A collection keeps its original runtime descriptor across a conversion.
-    if let (Ty::List(a), Ty::List(b)) | (Ty::Set(a), Ty::Set(b)) = (actual_ty, expected_ty) {
-        return collection_slot_matches(*a, *b, table);
-    }
-    if let (Ty::Map(ak, av), Ty::Map(bk, bv)) = (actual_ty, expected_ty) {
-        return collection_slot_matches(*ak, *bk, table)
-            && collection_slot_matches(*av, *bv, table);
+    if let Some(matches) = collection_layout_matches(actual_ty, expected_ty, table) {
+        return matches;
     }
 
     // Mutable T is compatible with T
@@ -1637,6 +1634,62 @@ pub(crate) fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
         *inner
     } else {
         ty
+    }
+}
+
+fn check_cast(actual: TypeId, target: TypeId, span: Span, ctx: &mut TypeCheckCtx<'_>) -> TypeId {
+    if actual.is_error() || target.is_error() {
+        return TypeId::ERROR;
+    }
+    if !collection_cast_preserves_layout(actual, target, ctx.table) {
+        let actual = type_name(actual, ctx.table, ctx.definitions);
+        let target = type_name(target, ctx.table, ctx.definitions);
+        ctx.diagnostics.push(
+            Diagnostic::error("cast would change collection storage type").with_label(
+                Label::primary(span, format!("cannot cast `{actual}` to `{target}`")),
+            ),
+        );
+        TypeId::ERROR
+    } else {
+        target
+    }
+}
+
+/// Checks that a cast preserves collection storage through mutable and reference wrappers.
+#[must_use]
+pub fn collection_cast_preserves_layout(actual: TypeId, target: TypeId, table: &TypeTable) -> bool {
+    let referent = |mut ty| {
+        let mut depth = 0;
+        loop {
+            match table.resolve(strip_mutable(ty, table)) {
+                Ty::Ref { inner, .. } => {
+                    depth += 1;
+                    ty = *inner;
+                }
+                resolved => return (resolved, depth),
+            }
+        }
+    };
+    let (actual_ty, actual_depth) = referent(actual);
+    let (target_ty, target_depth) = referent(target);
+    let involves_collection = [actual_ty, target_ty]
+        .iter()
+        .any(|ty| matches!(ty, Ty::List(_) | Ty::Map(_, _) | Ty::Set(_)));
+    !involves_collection
+        || (actual_depth == target_depth
+            && collection_layout_matches(actual_ty, target_ty, table).unwrap_or(false))
+}
+
+fn collection_layout_matches(actual: &Ty, expected: &Ty, table: &TypeTable) -> Option<bool> {
+    // A collection keeps its original runtime descriptor across a conversion.
+    match (actual, expected) {
+        (Ty::List(a), Ty::List(b)) | (Ty::Set(a), Ty::Set(b)) => {
+            Some(collection_slot_matches(*a, *b, table))
+        }
+        (Ty::Map(ak, av), Ty::Map(bk, bv)) => Some(
+            collection_slot_matches(*ak, *bk, table) && collection_slot_matches(*av, *bv, table),
+        ),
+        _ => None,
     }
 }
 

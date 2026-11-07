@@ -492,6 +492,30 @@ fn collection_storage_rejects_incompatible_slot_layouts() {
         ("map_retype_key_storage", "argument type mismatch"),
         ("map_retype_value_storage", "return type mismatch"),
         ("set_retype_element_storage", "return type mismatch"),
+        (
+            "map_cast_key_storage",
+            "cast would change collection storage type",
+        ),
+        (
+            "list_cast_element_storage",
+            "cast would change collection storage type",
+        ),
+        (
+            "list_cast_noncollection",
+            "cast would change collection storage type",
+        ),
+        (
+            "set_cast_element_storage",
+            "cast would change collection storage type",
+        ),
+        (
+            "generic_collection_cast",
+            "cast would change collection storage type",
+        ),
+        (
+            "ref_collection_cast",
+            "cast would change collection storage type",
+        ),
     ] {
         let fixture = format!("compile-fail/type_errors/{name}.spark");
         for args in [&[][..], &["--no-opt"][..]] {
@@ -535,6 +559,16 @@ fn list_lookup_checks_signed_and_unsigned_index_bounds() {
         let result = run_spark_with_args(fixture, args);
         assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
         assert_eq!(result.stdout, expected);
+    }
+}
+
+#[test]
+fn list_lookup_supports_narrowing_and_propagating_mutable_optionals() {
+    let fixture = "run-pass/collections/list_lookup_mutable_optional.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "7\n9\ncontinued\n1\n99");
     }
 }
 

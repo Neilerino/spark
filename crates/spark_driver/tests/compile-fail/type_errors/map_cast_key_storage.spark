@@ -1,0 +1,6 @@
+fn main(): Int {
+    source: Map[String, Int] = {"a": 1}
+    other: Map[Int, Int] = source as Map[Int, Int]
+    print(other[123] ?? 99)
+    return 0
+}

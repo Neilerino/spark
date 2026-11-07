@@ -1,0 +1,5 @@
+fn main(): Int {
+    forged: List[Int] = 1 as List[Int]
+    print(forged[0] ?? 0)
+    return 0
+}

@@ -1,0 +1,7 @@
+fn convert(value: Ref[List[Int]]): Ref[List[Bool]] {
+    return value as Ref[List[Bool]]
+}
+
+fn main(): Int {
+    return 0
+}
