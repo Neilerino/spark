@@ -1,0 +1,31 @@
+fn sampleChars(): List[Char] {
+    input: String = "aé\u{0301}🙂"
+    print(input.len())
+    return input.chars()
+}
+
+fn main(): Int {
+    empty: List[Char] = "".chars()
+    print(empty.len())
+    chars: List[Char] = sampleChars()
+    count: Int = chars.len()
+    print(count)
+    expected: List[Char] = ['a', 'é', '́', '🙂']
+    row: Int! = 0
+    loop {
+        if row >= count {
+            break
+        }
+        actual: Char? = chars[row]
+        want: Char? = expected[row]
+        if actual is Null {
+            return 1
+        }
+        if want is Null {
+            return 1
+        }
+        print(actual == want)
+        row = row + 1
+    }
+    return 0
+}

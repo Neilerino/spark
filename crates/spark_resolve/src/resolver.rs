@@ -148,6 +148,7 @@ impl Resolver {
             kw::SPLIT_WHITESPACE,
             kw::TRIM,
             kw::SECTIONS,
+            kw::CHARS,
             kw::APPEND,
             kw::CONTAINS,
             kw::REMOVE,

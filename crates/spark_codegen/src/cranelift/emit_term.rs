@@ -1401,6 +1401,7 @@ fn emit_builtin_method<M: Module>(
         (kw::SPLIT_WHITESPACE, Ty::String) => Some(ctx.stubs.string_split_whitespace),
         (kw::TRIM, Ty::String) => Some(ctx.stubs.string_trim),
         (kw::SECTIONS, Ty::String) => Some(ctx.stubs.string_sections),
+        (kw::CHARS, Ty::String) => Some(ctx.stubs.string_chars),
         _ => None,
     };
     if let Some(stub_id) = unary_stub {

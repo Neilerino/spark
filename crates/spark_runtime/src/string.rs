@@ -108,6 +108,23 @@ pub unsafe extern "C" fn __spark_string_sections(text: *const u8) -> *mut u8 {
     }))
 }
 
+/// Returns the Unicode scalar values in a UTF-8 string.
+///
+/// # Safety
+/// `text` must point to a live UTF-8 `SparkString`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_chars(text: *const u8) -> *mut u8 {
+    let text = unsafe { spark_str(&*text.cast::<SparkString>()) };
+    let desc = value_desc_new(size_of::<u32>(), align_of::<u32>(), 0, 0, 0, 0);
+    let list = __spark_list_new(desc.cast());
+    for ch in text.chars() {
+        let scalar = u32::from(ch);
+        unsafe { __spark_list_push(list, std::ptr::addr_of!(scalar).cast()) };
+    }
+    list
+}
+
 unsafe fn spark_str(text: &SparkString) -> &str {
     unsafe { std::str::from_utf8_unchecked(spark_str_bytes(text)) }
 }

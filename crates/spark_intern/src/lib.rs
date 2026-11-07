@@ -416,6 +416,7 @@ impl Interner {
             "splitWhitespace",
             "trim",
             "sections",
+            "chars",
         ];
 
         for kw in keywords {
@@ -818,6 +819,8 @@ pub mod kw {
     pub const TRIM: Symbol = Symbol(134);
     /// `sections`
     pub const SECTIONS: Symbol = Symbol(135);
+    /// `chars`
+    pub const CHARS: Symbol = Symbol(136);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
@@ -832,7 +835,7 @@ pub mod kw {
         // 99-102: send, recv, tryRecv, close
         (sym.0 >= 70 && sym.0 <= 74)
             || (sym.0 >= 99 && sym.0 <= 102)
-            || (sym.0 >= LINES.0 && sym.0 <= SECTIONS.0)
+            || (sym.0 >= LINES.0 && sym.0 <= CHARS.0)
     }
 
     /// Returns true if the given symbol is a keyword.
