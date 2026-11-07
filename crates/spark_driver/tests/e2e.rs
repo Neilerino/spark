@@ -28,6 +28,7 @@
 //! │   ├── io/         # io_stderr
 //! │   └── multifile/  # multi-file project dirs
 //! ├── compile-fail/   # Programs that should fail compilation
+//! │   ├── syntax_errors/
 //! │   ├── type_errors/
 //! │   └── borrow_errors/
 //! └── ui/             # Error message snapshots (future use)
@@ -738,6 +739,58 @@ fn to_union_bare_type() {
         "run-pass/to/to_union_bare_type.spark",
         "got int\ngot string",
     );
+}
+
+#[test]
+fn to_malformed_arms_report_errors_without_hanging() {
+    let cases = [
+        (
+            include_str!("compile-fail/syntax_errors/to_fat_arrow.spark"),
+            "expected ->, found =>",
+        ),
+        (
+            "fn main(): Int { return 1 to { _ -> = 0 } }",
+            "expected expression, found =",
+        ),
+        (
+            "fn main(): Int { return 1 to { _ =>",
+            "expected ->, found =>",
+        ),
+    ];
+    let dir = tempfile::tempdir().expect("failed to create test directory");
+    let source = dir.path().join("malformed.spark");
+    let binary = dir.path().join("malformed");
+
+    for (input, expected) in cases {
+        std::fs::write(&source, input).expect("failed to write test source");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_spark"))
+            .args(["build", "--single-file"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn spark");
+        let start = std::time::Instant::now();
+        while child.try_wait().expect("failed to poll spark").is_none() {
+            if start.elapsed() >= Duration::from_secs(1) {
+                let _ = child.kill();
+                child.wait().expect("failed to reap spark");
+                panic!("spark did not finish parsing malformed input: {input}");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let output = child
+            .wait_with_output()
+            .expect("failed to read spark output");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(
+            stderr.contains(expected),
+            "expected {expected:?}, got:\n{stderr}"
+        );
+    }
 }
 
 // ============================================================================

@@ -1399,15 +1399,22 @@ impl Parser {
         self.expect(TokenKind::LBrace);
 
         while !self.check(TokenKind::RBrace) && !self.at_end() {
+            let arm_pos = self.pos;
             let arm_start = self.current_span();
             let pattern = self.parse_pattern();
-            self.expect(TokenKind::Arrow);
+            if self.expect(TokenKind::Arrow).is_none() {
+                self.eat(TokenKind::FatArrow);
+            }
             let body = self.parse_expr();
             let arm_span = self.span_from(arm_start);
             arms.push(MatchArm::new(pattern, body, arm_span));
 
             // Comma is optional between arms
             self.eat(TokenKind::Comma);
+
+            if self.pos == arm_pos {
+                self.advance();
+            }
         }
 
         self.expect(TokenKind::RBrace);
