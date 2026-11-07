@@ -2,6 +2,8 @@ module text
 
 pub struct ParseError {
     code: Int
+    startByte: Int
+    endByte: Int
 }
 
 pub struct RangeError {
@@ -16,7 +18,8 @@ pub interface Parseable {
 /// Parses the whole input with the parser bound to the expected result type.
 pub fn parse[T: Parseable](text: String): T | ParseError
 
-extern fn __spark_text_parse_int(text: String, value: Ref[Int]!): Int
+extern fn __spark_text_parse_int(text: Ref[String], value: Ref[Int]!): Int
+extern fn __spark_text_parse_ints(text: Ref[String], code: Ref[Int]!, startByte: Ref[Int]!, endByte: Ref[Int]!): List[Int]
 extern fn __spark_text_substring(text: Ref[String], startByte: Int, endByte: Int, valid: Ref[Int]!): String
 
 fn substring(text: String, startByte: Int, endByte: Int): String | RangeError {
@@ -28,12 +31,27 @@ fn substring(text: String, startByte: Int, endByte: Int): String | RangeError {
     return slice
 }
 
+/// Parses Unicode whitespace-delimited signed decimal integers.
+pub fn parseInts(text: String): List[Int] | ParseError {
+    code: Ref[Int]! = 0
+    startByte: Ref[Int]! = 0
+    endByte: Ref[Int]! = 0
+    values: List[Int] = __spark_text_parse_ints(text, code, startByte, endByte)
+    if code != 0 {
+        reason: Int = code
+        tokenStart: Int = startByte
+        tokenEnd: Int = endByte
+        return ParseError { code: reason, startByte: tokenStart, endByte: tokenEnd }
+    }
+    return values
+}
+
 Int binds Parseable {
     fn parse(text: String): Int | ParseError {
         value: Ref[Int]! = 0
         code: Int = __spark_text_parse_int(text, value)
         if code != 0 {
-            return ParseError { code: code }
+            return ParseError { code: code, startByte: 0, endByte: text.len() }
         }
         parsed: Int = value
         return parsed

@@ -1437,6 +1437,17 @@ The `Int` parser consumes the whole string. It accepts an optional ASCII sign
 and decimal digits in the signed 64-bit range. Empty input, whitespace,
 trailing junk, and overflow return `ParseError`.
 
+`parseInts(text: String): List[Int] | ParseError` parses signed decimal
+integers separated by the same Unicode whitespace as `splitWhitespace()`.
+Empty or whitespace-only input returns an empty list. The first invalid token
+returns a `ParseError` in place of the list.
+
+`ParseError.startByte` and `endByte` delimit the entire failing token as a
+half-open byte range in the original input. The built-in `Int` parser uses
+the whole input as its token. Error codes are `1` for empty input, `2` for
+invalid syntax, and `3` for overflow. Invalid syntax takes precedence when a
+token contains both an overflowing prefix and invalid characters.
+
 A struct can bind `Parseable` in its defining module with an associated
 `fn parse(text: String): StructType | ParseError`. This function has no instance
 receiver. One canonical parser is allowed per type; use named functions for
