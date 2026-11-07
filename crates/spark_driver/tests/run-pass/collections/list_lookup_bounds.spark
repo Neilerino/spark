@@ -1,0 +1,28 @@
+fn fallback(): Int {
+    print("fallback")
+    return 99
+}
+
+fn main(): Int {
+    values: List[Int] = [0, 7]
+    empty: List[Int] = []
+    flags: List[Bool] = [false]
+    signedMinimum: Int = -9223372036854775807 - 1
+    unsignedMaximum: UInt64 = (-1) as UInt64
+    narrowNegative: Int8 = (-1) as Int8
+    narrowIndex: UInt8 = 1 as UInt8
+    highBitIndex: UInt8 = 255 as UInt8
+    wide: List[Int] = [0..256]
+    print(values[0] ?? fallback())
+    print(values[narrowIndex] ?? fallback())
+    print(flags[0] ?? true)
+    print(wide[highBitIndex] ?? fallback())
+    print(values[-1] ?? fallback())
+    print(values[2] ?? fallback())
+    print(values[1000] ?? fallback())
+    print(values[signedMinimum] ?? fallback())
+    print(values[unsignedMaximum] ?? fallback())
+    print(values[narrowNegative] ?? fallback())
+    print(empty[0] ?? fallback())
+    return 0
+}

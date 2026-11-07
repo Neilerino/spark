@@ -1533,19 +1533,13 @@ pub fn is_compatible(actual: TypeId, expected: TypeId, table: &TypeTable) -> boo
         }
     }
 
-    // List[A] is compatible with List[B] if A is compatible with B
-    if let (Ty::List(a_elem), Ty::List(b_elem)) = (actual_ty, expected_ty) {
-        return is_compatible(*a_elem, *b_elem, table);
+    // A collection keeps its original runtime descriptor across a conversion.
+    if let (Ty::List(a), Ty::List(b)) | (Ty::Set(a), Ty::Set(b)) = (actual_ty, expected_ty) {
+        return collection_slot_matches(*a, *b, table);
     }
-
-    // Map[AK, AV] is compatible with Map[BK, BV] if keys and values are compatible
     if let (Ty::Map(ak, av), Ty::Map(bk, bv)) = (actual_ty, expected_ty) {
-        return is_compatible(*ak, *bk, table) && is_compatible(*av, *bv, table);
-    }
-
-    // Set[A] is compatible with Set[B] if A is compatible with B
-    if let (Ty::Set(a_elem), Ty::Set(b_elem)) = (actual_ty, expected_ty) {
-        return is_compatible(*a_elem, *b_elem, table);
+        return collection_slot_matches(*ak, *bk, table)
+            && collection_slot_matches(*av, *bv, table);
     }
 
     // Mutable T is compatible with T
@@ -1626,6 +1620,12 @@ pub(crate) fn strip_mutable(ty: TypeId, table: &TypeTable) -> TypeId {
     } else {
         ty
     }
+}
+
+fn collection_slot_matches(actual: TypeId, expected: TypeId, table: &TypeTable) -> bool {
+    actual.is_error()
+        || expected.is_error()
+        || strip_mutable(actual, table) == strip_mutable(expected, table)
 }
 
 /// If `expected` is `Some` and compatible with `inferred`, use `expected`; otherwise use `inferred`.
@@ -2219,9 +2219,7 @@ fn check_collection_argument(
     if actual.is_error() {
         return false;
     }
-    // The runtime reads key and element bytes using the collection's storage type.
-    if expected.is_error() || strip_mutable(actual, ctx.table) == strip_mutable(expected, ctx.table)
-    {
+    if collection_slot_matches(actual, expected, ctx.table) {
         return true;
     }
 

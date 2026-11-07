@@ -376,9 +376,11 @@ fn add_rvalue_uses(rvalue: &Rvalue, gen: &mut FxHashSet<Local>) {
             add_operand_uses(end, gen);
             add_operand_uses(step, gen);
         }
-        Rvalue::MapGetOptional { map, key, .. } => {
-            add_place_uses(map, gen);
-            add_place_uses(key, gen);
+        Rvalue::CollectionGetOptional {
+            collection, index, ..
+        } => {
+            add_place_uses(collection, gen);
+            add_place_uses(index, gen);
         }
     }
 }
@@ -1186,9 +1188,9 @@ fn remap_rvalue(rvalue: &Rvalue, local_remap: &FxHashMap<Local, Local>) -> Rvalu
             step: remap_operand(step, local_remap),
             inclusive: *inclusive,
         },
-        Rvalue::MapGetOptional { map, key } => Rvalue::MapGetOptional {
-            map: remap_place(map, local_remap),
-            key: remap_place(key, local_remap),
+        Rvalue::CollectionGetOptional { collection, index } => Rvalue::CollectionGetOptional {
+            collection: remap_place(collection, local_remap),
+            index: remap_place(index, local_remap),
         },
     }
 }

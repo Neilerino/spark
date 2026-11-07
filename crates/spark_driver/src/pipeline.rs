@@ -244,7 +244,7 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
 
     // -- Phase 10.75: MIR validation (debug builds) ---------------------------
     if cfg!(debug_assertions) {
-        let mir_errors = spark_mir::validate::validate(&opt_output.mir);
+        let mir_errors = spark_mir::validate::validate(&opt_output.mir, &opt_output.table);
         if !mir_errors.is_empty() {
             for err in &mir_errors {
                 eprintln!("MIR validation error: {err}");

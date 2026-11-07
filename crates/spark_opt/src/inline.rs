@@ -487,9 +487,9 @@ fn remap_rvalue(rvalue: &Rvalue, local_off: u32, block_off: u32) -> Rvalue {
             inclusive: *inclusive,
             step: remap_operand(step, local_off, block_off),
         },
-        Rvalue::MapGetOptional { map, key } => Rvalue::MapGetOptional {
-            map: remap_place(map, local_off),
-            key: remap_place(key, local_off),
+        Rvalue::CollectionGetOptional { collection, index } => Rvalue::CollectionGetOptional {
+            collection: remap_place(collection, local_off),
+            index: remap_place(index, local_off),
         },
     }
 }

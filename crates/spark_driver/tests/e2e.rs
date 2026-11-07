@@ -486,6 +486,58 @@ fn collection_argument_types_accept_mutable_values() {
 }
 
 #[test]
+fn collection_storage_rejects_incompatible_slot_layouts() {
+    for (name, diagnostic) in [
+        ("list_retype_element_storage", "type mismatch in `widened`"),
+        ("map_retype_key_storage", "argument type mismatch"),
+        ("map_retype_value_storage", "return type mismatch"),
+        ("set_retype_element_storage", "return type mismatch"),
+    ] {
+        let fixture = format!("compile-fail/type_errors/{name}.spark");
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(&fixture, args);
+            assert_ne!(result.exit_code, 0, "{fixture} {args:?}");
+            assert!(
+                result.stderr.contains(diagnostic),
+                "{fixture} {args:?} expected {diagnostic:?}, got:\n{}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn list_lookup_checks_signed_and_unsigned_index_bounds() {
+    let fixture = "run-pass/collections/list_lookup_bounds.spark";
+    let expected = "0\n7\nfalse\n255\n".to_owned() + &"fallback\n99\n".repeat(7);
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, expected);
+    }
+}
+
+#[test]
+fn list_lookup_owns_results_from_temporary_collections() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_list_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/collections/list_lookup_ownership.spark"),
+        "list\nindex\ncontinued\n1\n1\n0\nlist\nindex\nmissing\n0",
+    );
+}
+
+#[test]
+fn list_lookup_distinguishes_present_null_payloads_from_misses() {
+    let fixture = "run-pass/collections/list_lookup_nested_optional.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "7\n10\nmissing");
+    }
+}
+
+#[test]
 fn map_lookup_default_is_lazy_and_owns_payload() {
     let fixture = "run-pass/collections/map_lookup_default.spark";
     for args in [&[][..], &["--no-opt"][..]] {

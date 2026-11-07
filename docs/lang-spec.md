@@ -357,8 +357,9 @@ numbers: List[Int] = [1, 2, 3, 4, 5]
 empty: List[String] = []
 ranged: List[Int] = [0..10]
 
-// Access (returns optional)
+// Access returns Null for negative or out-of-range indices, including empty lists.
 first: Int? = numbers[0]
+missing: Int? = numbers[-1]
 
 // Mutation (requires mutable list)
 numbers: List[Int]! = [1, 2, 3]
@@ -368,7 +369,8 @@ numbers.append(4)
 
 #### Map[K, V]
 
-Key-value pairs.
+Key-value pairs. Bracket keys and arguments to `contains` and `remove` must
+match the declared key type.
 
 ```
 ages: Map[String, Int] = {
@@ -376,8 +378,9 @@ ages: Map[String, Int] = {
     "bob": 25
 }
 
-// Access (returns optional)
+// Access returns Null for a missing key.
 age: Int? = ages["alice"]
+missingAge: Int = ages["charlie"] ?? 0
 
 // Mutation (requires mutable map)
 ages: Map[String, Int]! = {"alice": 30}
@@ -386,7 +389,8 @@ ages["charlie"] = 35
 
 #### Set[T]
 
-Unique values, unordered.
+Unique values, unordered. Arguments to `contains`, `add`, and `remove`
+must match the declared element type.
 
 ```
 tags: Set[String] = {"rust", "python", "go"}
@@ -639,6 +643,8 @@ if not user.isVerified or user.isBanned {
 Assignment operators only work on mutable variables (`Type!`).
 
 ### Null/Optional Operators
+
+`a ?? default` evaluates `a` once and evaluates `default` only when `a` is `Null`.
 
 | Operator | Description       | Example        |
 | -------- | ----------------- | -------------- |

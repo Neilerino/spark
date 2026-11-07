@@ -131,7 +131,7 @@ pub fn walk_expr<V: HirVisitor>(v: &mut V, expr: &HirExpr) {
         HirExprKind::FieldAccess { base, .. } => {
             v.visit_expr(base);
         }
-        HirExprKind::Index { base, index } => {
+        HirExprKind::Index { base, index } | HirExprKind::CollectionLookup { base, index } => {
             v.visit_expr(base);
             v.visit_expr(index);
         }
@@ -398,7 +398,7 @@ pub fn walk_expr_mut<V: HirMutVisitor>(v: &mut V, expr: &mut HirExpr) {
         HirExprKind::FieldAccess { base, .. } => {
             v.visit_expr_mut(base);
         }
-        HirExprKind::Index { base, index } => {
+        HirExprKind::Index { base, index } | HirExprKind::CollectionLookup { base, index } => {
             v.visit_expr_mut(base);
             v.visit_expr_mut(index);
         }

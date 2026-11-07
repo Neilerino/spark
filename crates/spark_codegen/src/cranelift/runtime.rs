@@ -74,6 +74,8 @@ pub struct RuntimeStubs {
     pub list_push: FuncId,
     /// `__spark_list_get`
     pub list_get: FuncId,
+    /// `__spark_list_try_get`
+    pub list_try_get: FuncId,
     /// `__spark_list_rc_dec`
     pub list_rc_dec: FuncId,
     /// `__spark_list_cow`
@@ -241,6 +243,7 @@ impl RuntimeStubs {
             list_new: declare_abi(module, &abi::LIST_NEW, ptr_type, call_conv),
             list_push: declare_abi(module, &abi::LIST_PUSH, ptr_type, call_conv),
             list_get: declare_abi(module, &abi::LIST_GET, ptr_type, call_conv),
+            list_try_get: declare_abi(module, &abi::LIST_TRY_GET, ptr_type, call_conv),
             list_rc_dec: declare_abi(module, &abi::LIST_RC_DEC, ptr_type, call_conv),
             list_cow: declare_abi(module, &abi::LIST_COW, ptr_type, call_conv),
             list_len: declare_abi(module, &abi::LIST_LEN, ptr_type, call_conv),

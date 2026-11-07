@@ -146,10 +146,15 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
             }
         }
 
-        ExprKind::Index { base, index } => HirExprKind::Index {
-            base: Box::new(lower_expr(base, ctx)),
-            index: Box::new(lower_expr(index, ctx)),
-        },
+        ExprKind::Index { base, index } => {
+            let base = Box::new(lower_expr(base, ctx));
+            let index = Box::new(lower_expr(index, ctx));
+            let base_ty = strip_mutable_ty(base.ty, ctx.table);
+            match ctx.table.resolve(base_ty) {
+                Ty::List(_) | Ty::Map(_, _) => HirExprKind::CollectionLookup { base, index },
+                _ => HirExprKind::Index { base, index },
+            }
+        }
 
         // === Calls ===
         ExprKind::Call { callee, args } => {

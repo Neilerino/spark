@@ -1,0 +1,10 @@
+fn contains(data: Map[String?, Int], key: String?): Bool {
+    return data.contains(key)
+}
+
+fn main(): Int {
+    data: Map[String, Int] = {"a": 1}
+    key: String? = "a"
+    print(contains(data, key))
+    return 0
+}

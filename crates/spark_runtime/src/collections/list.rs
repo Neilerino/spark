@@ -103,6 +103,25 @@ pub unsafe extern "C" fn __spark_list_get(list: *mut u8, index: i64) -> *mut u8 
     unsafe { list.data.add(idx * list.elem_size()) }
 }
 
+/// Returns a borrowed element pointer, or null when the index is out of bounds.
+///
+/// # Safety
+///
+/// `list` must be a valid pointer from `__spark_list_new`. The result remains
+/// valid only while the backing buffer is alive and unchanged.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_list_try_get(list: *const u8, index: u64) -> *const u8 {
+    let list = unsafe { &*(list.cast::<SparkList>()) };
+    let Ok(index) = usize::try_from(index) else {
+        return std::ptr::null();
+    };
+    if index >= list.len {
+        return std::ptr::null();
+    }
+    unsafe { list.data.add(index * list.elem_size()) }
+}
+
 /// Grows the list's backing buffer, doubling capacity (minimum [`MIN_CAP`]).
 fn list_grow(list: &mut SparkList) {
     let new_cap = if list.cap == 0 { MIN_CAP } else { list.cap * 2 };

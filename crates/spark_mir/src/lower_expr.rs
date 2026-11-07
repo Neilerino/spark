@@ -108,45 +108,9 @@ pub fn lower_expr(
         }
 
         HirExprKind::Index { base, index } => {
-            let base_ty = type_table.resolve(base.ty);
-            let base_ty = match base_ty {
-                Ty::Mutable(inner) => type_table.resolve(*inner),
-                other => other,
-            };
-            if let Ty::Map(_, value_ty) = base_ty {
-                if matches!(type_table.resolve(expr.ty), Ty::Optional(inner) if inner == value_ty) {
-                    fb.push_scope();
-                    let map = lower_expr(base, fb, mir, type_table, defs);
-                    if !fb.is_def_local(map) {
-                        fb.register_drop(map);
-                    }
-                    let key = lower_expr(index, fb, mir, type_table, defs);
-                    if !fb.is_def_local(key)
-                        && spark_drop::needs_drop(fb.local_type(key), type_table)
-                    {
-                        fb.register_drop(key);
-                    }
-                    let result = fb.fresh_temp(expr.ty, expr.span);
-                    fb.push_assign(
-                        Place::from_local(result),
-                        Rvalue::MapGetOptional {
-                            map: Place::from_local(map),
-                            key: Place::from_local(key),
-                        },
-                        expr.span,
-                    );
-                    fb.pop_scope_drops(None, expr.span);
-                    return result;
-                }
-            }
-
             let base_local = lower_expr(base, fb, mir, type_table, defs);
             let index_local = lower_expr(index, fb, mir, type_table, defs);
-            let elem_ty = match base_ty {
-                Ty::List(elem) | Ty::Map(_, elem) => *elem,
-                _ => expr.ty,
-            };
-            let temp = fb.fresh_temp(elem_ty, expr.span);
+            let temp = fb.fresh_temp(expr.ty, expr.span);
             let mut place = Place::from_local(base_local);
             place.projections.push(Projection::Index(index_local));
             fb.push_assign(
@@ -154,14 +118,30 @@ pub fn lower_expr(
                 Rvalue::Use(Operand::Copy(place)),
                 expr.span,
             );
+            temp
+        }
 
-            if expr.ty != elem_ty && matches!(type_table.resolve(expr.ty), Ty::Optional(_)) {
-                let opt_temp = fb.fresh_temp(expr.ty, expr.span);
-                emit_assign_with_union_wrap(fb, opt_temp, temp, type_table, expr.span);
-                opt_temp
-            } else {
-                temp
+        HirExprKind::CollectionLookup { base, index } => {
+            fb.push_scope();
+            let collection = lower_expr(base, fb, mir, type_table, defs);
+            if !fb.is_def_local(collection) {
+                fb.register_drop(collection);
             }
+            let index = lower_expr(index, fb, mir, type_table, defs);
+            if !fb.is_def_local(index) && spark_drop::needs_drop(fb.local_type(index), type_table) {
+                fb.register_drop(index);
+            }
+            let result = fb.fresh_temp(expr.ty, expr.span);
+            fb.push_assign(
+                Place::from_local(result),
+                Rvalue::CollectionGetOptional {
+                    collection: Place::from_local(collection),
+                    index: Place::from_local(index),
+                },
+                expr.span,
+            );
+            fb.pop_scope_drops(None, expr.span);
+            result
         }
 
         // ── Calls ────────────────────────────────────────────────
@@ -564,7 +544,7 @@ pub fn lower_place(
             place
         }
 
-        HirExprKind::Index { base, index } => {
+        HirExprKind::Index { base, index } | HirExprKind::CollectionLookup { base, index } => {
             let mut place = lower_place(base, fb, mir, type_table, defs);
             let index_local = lower_expr(index, fb, mir, type_table, defs);
             place.projections.push(Projection::Index(index_local));
@@ -1401,6 +1381,7 @@ fn lower_await(
             | HirExprKind::Spawn(_)
             | HirExprKind::FieldAccess { .. }
             | HirExprKind::Index { .. }
+            | HirExprKind::CollectionLookup { .. }
     );
 
     if !is_spawned_future {

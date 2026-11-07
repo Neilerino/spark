@@ -267,6 +267,13 @@ pub const LIST_GET: RuntimeFn = RuntimeFn {
     ret: Some(Ptr),
 };
 
+/// `__spark_list_try_get(list: ptr, index: u64) -> ptr`
+pub const LIST_TRY_GET: RuntimeFn = RuntimeFn {
+    name: "__spark_list_try_get",
+    params: &[Ptr, I64],
+    ret: Some(Ptr),
+};
+
 /// `__spark_list_rc_dec(ptr) -> void`
 pub const LIST_RC_DEC: RuntimeFn = RuntimeFn {
     name: "__spark_list_rc_dec",
@@ -646,6 +653,7 @@ pub const ALL_RUNTIME_FUNCTIONS: &[&RuntimeFn] = &[
     &LIST_NEW,
     &LIST_PUSH,
     &LIST_GET,
+    &LIST_TRY_GET,
     &LIST_RC_DEC,
     &LIST_COW,
     &LIST_LEN,

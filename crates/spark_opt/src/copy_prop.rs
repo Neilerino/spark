@@ -189,11 +189,13 @@ fn rvalue_reads_local(rvalue: &spark_mir::Rvalue, local: Local) -> bool {
                 || operand_reads_local(end, local)
                 || operand_reads_local(step, local)
         }
-        spark_mir::Rvalue::MapGetOptional { map, key, .. } => {
-            map.local == local
-                || key.local == local
-                || place_projections_read_local(map, local)
-                || place_projections_read_local(key, local)
+        spark_mir::Rvalue::CollectionGetOptional {
+            collection, index, ..
+        } => {
+            collection.local == local
+                || index.local == local
+                || place_projections_read_local(collection, local)
+                || place_projections_read_local(index, local)
         }
         spark_mir::Rvalue::Cast { operand, .. } => operand_reads_local(operand, local),
     }
@@ -301,9 +303,11 @@ fn replace_local_in_rvalue(rvalue: &mut spark_mir::Rvalue, from: Local, to: Loca
             changed |= replace_local_in_operand(step, from, to);
             changed
         }
-        spark_mir::Rvalue::MapGetOptional { map, key, .. } => {
-            let changed = replace_local_in_place(map, from, to);
-            changed | replace_local_in_place(key, from, to)
+        spark_mir::Rvalue::CollectionGetOptional {
+            collection, index, ..
+        } => {
+            let changed = replace_local_in_place(collection, from, to);
+            changed | replace_local_in_place(index, from, to)
         }
         spark_mir::Rvalue::Cast { operand, .. } => replace_local_in_operand(operand, from, to),
     }

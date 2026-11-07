@@ -36,11 +36,11 @@ pub use collections::{
     SparkList, SparkMap, SparkSet, __spark_list_contains, __spark_list_cow,
     __spark_list_from_range, __spark_list_get, __spark_list_len, __spark_list_new,
     __spark_list_push, __spark_list_rc_dec, __spark_list_remove, __spark_list_reverse,
-    __spark_list_sort, __spark_list_take, __spark_map_contains, __spark_map_cow, __spark_map_get,
-    __spark_map_insert, __spark_map_len, __spark_map_new, __spark_map_rc_dec, __spark_map_remove,
-    __spark_set_contains, __spark_set_cow, __spark_set_insert, __spark_set_len, __spark_set_new,
-    __spark_set_rc_dec, __spark_set_remove, SORT_TAG_BOOL, SORT_TAG_FLOAT, SORT_TAG_INT,
-    SORT_TAG_STRING,
+    __spark_list_sort, __spark_list_take, __spark_list_try_get, __spark_map_contains,
+    __spark_map_cow, __spark_map_get, __spark_map_insert, __spark_map_len, __spark_map_new,
+    __spark_map_rc_dec, __spark_map_remove, __spark_set_contains, __spark_set_cow,
+    __spark_set_insert, __spark_set_len, __spark_set_new, __spark_set_rc_dec, __spark_set_remove,
+    SORT_TAG_BOOL, SORT_TAG_FLOAT, SORT_TAG_INT, SORT_TAG_STRING,
 };
 pub(crate) use future::tokio_runtime;
 pub use future::{
@@ -674,6 +674,21 @@ mod tests {
             result.push(unsafe { *elem });
         }
         result
+    }
+
+    #[test]
+    fn checked_list_get_returns_a_slot_or_null() {
+        unsafe {
+            let list = test_list_new(std::mem::size_of::<i64>(), 0, 0);
+            assert!(__spark_list_try_get(list, 0).is_null());
+
+            let value = 42_i64;
+            __spark_list_push(list, std::ptr::from_ref(&value).cast());
+            assert_eq!(__spark_list_try_get(list, 0), __spark_list_get(list, 0));
+            assert!(__spark_list_try_get(list, 1).is_null());
+            assert!(__spark_list_try_get(list, u64::MAX).is_null());
+            __spark_list_rc_dec(list);
+        }
     }
 
     #[test]

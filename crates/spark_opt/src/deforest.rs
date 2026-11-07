@@ -267,7 +267,7 @@ fn analyze_consumers(
                     }
 
                     // Check if place projections read an alias.
-                    if place_reads_alias(place, aliases) {
+                    if projection_reads_alias(place, aliases) {
                         consumers.push(Consumer::Escapes);
                     }
                 }
@@ -361,11 +361,7 @@ fn rvalue_reads_any_alias(rvalue: &Rvalue, aliases: &[Local]) -> bool {
             operand_reads_alias(a, aliases) || operand_reads_alias(b, aliases)
         }
         Rvalue::Ref { place, .. } | Rvalue::Discriminant(place) => {
-            is_alias(aliases, place.local)
-                || place
-                    .projections
-                    .iter()
-                    .any(|p| matches!(p, Projection::Index(l) if is_alias(aliases, *l)))
+            place_reads_alias(place, aliases)
         }
         Rvalue::Aggregate(_, ops) | Rvalue::StringInterp(ops) => {
             ops.iter().any(|op| operand_reads_alias(op, aliases))
@@ -380,14 +376,17 @@ fn rvalue_reads_any_alias(rvalue: &Rvalue, aliases: &[Local]) -> bool {
                 || operand_reads_alias(end, aliases)
                 || operand_reads_alias(step, aliases)
         }
-        Rvalue::MapGetOptional { map, key, .. } => {
-            place_reads_alias(map, aliases) || place_reads_alias(key, aliases)
-        }
+        Rvalue::CollectionGetOptional {
+            collection, index, ..
+        } => place_reads_alias(collection, aliases) || place_reads_alias(index, aliases),
     }
 }
 
-/// Returns true if a place reads from any alias local (via projections).
 fn place_reads_alias(place: &Place, aliases: &[Local]) -> bool {
+    is_alias(aliases, place.local) || projection_reads_alias(place, aliases)
+}
+
+fn projection_reads_alias(place: &Place, aliases: &[Local]) -> bool {
     place
         .projections
         .iter()
