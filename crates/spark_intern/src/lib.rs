@@ -417,6 +417,7 @@ impl Interner {
             "trim",
             "sections",
             "chars",
+            "substring",
         ];
 
         for kw in keywords {
@@ -821,6 +822,8 @@ pub mod kw {
     pub const SECTIONS: Symbol = Symbol(135);
     /// `chars`
     pub const CHARS: Symbol = Symbol(136);
+    /// `substring`
+    pub const SUBSTRING: Symbol = Symbol(137);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]

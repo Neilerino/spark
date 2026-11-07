@@ -236,7 +236,7 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
                     args: lowered_args,
                 }
             } else {
-                let is_string_split = method.name == kw::SPLIT
+                let deref_string_args = matches!(method.name, kw::SPLIT | kw::SUBSTRING)
                     && matches!(
                         ctx.table.resolve(strip_mutable_ty(recv_hir.ty, ctx.table)),
                         Ty::String
@@ -245,7 +245,7 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
                     .iter()
                     .map(|a| {
                         let arg = lower_expr(&a.value, ctx);
-                        if is_string_split {
+                        if deref_string_args {
                             auto_deref_ref(arg, ctx.table)
                         } else {
                             arg
