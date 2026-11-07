@@ -300,7 +300,7 @@ greeting: String = "Hello, {name}!"
 ##### String Methods
 
 ```
-s.length              // Int
+s.len()               // Int, in UTF-8 bytes
 s.isEmpty()           // Bool
 s.contains("sub")     // Bool
 s.startsWith("pre")   // Bool
@@ -336,6 +336,9 @@ fields. `trim()` removes the same whitespace at both ends.
 separate sections, and consecutive separators produce no empty sections.
 Whitespace-only lines are content. Each section keeps its internal LF or
 CRLF endings and excludes the final line ending.
+
+`chars()` returns an owned list of Unicode scalar values in source order.
+A combining mark is a separate `Char`, and empty input produces an empty list.
 
 ### Collection Types
 

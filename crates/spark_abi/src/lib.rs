@@ -147,6 +147,13 @@ pub const STRING_SECTIONS: RuntimeFn = RuntimeFn {
     ret: Some(Ptr),
 };
 
+/// `__spark_string_chars(ptr) -> ptr`
+pub const STRING_CHARS: RuntimeFn = RuntimeFn {
+    name: "__spark_string_chars",
+    params: &[Ptr],
+    ret: Some(Ptr),
+};
+
 /// `__spark_string_concat(ptr, ptr) -> ptr`
 pub const STRING_CONCAT: RuntimeFn = RuntimeFn {
     name: "__spark_string_concat",
@@ -620,6 +627,7 @@ pub const ALL_RUNTIME_FUNCTIONS: &[&RuntimeFn] = &[
     &STRING_SPLIT_WHITESPACE,
     &STRING_TRIM,
     &STRING_SECTIONS,
+    &STRING_CHARS,
     &STRING_CONCAT,
     &STRING_EQ,
     &HASH_STRING_ELEM,

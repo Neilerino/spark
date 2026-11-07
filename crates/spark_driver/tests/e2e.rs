@@ -1085,6 +1085,16 @@ fn string_split_requires_a_string_delimiter() {
 }
 
 #[test]
+fn string_chars_returns_unicode_scalars() {
+    let fixture = "run-pass/parsing/string_chars.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{}", result.stderr);
+        assert_eq!(result.stdout.trim_end(), "0\n9\n4\ntrue\ntrue\ntrue\ntrue");
+    }
+}
+
+#[test]
 fn text_lines_parses_a_file_to_an_answer() {
     let dir = tempfile::tempdir().expect("create input directory");
     let input = dir.path().join("input.txt");

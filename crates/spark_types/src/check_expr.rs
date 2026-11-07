@@ -2240,6 +2240,7 @@ fn check_string_method(
             ctx.table.intern(Ty::List(ctx.builtins.string))
         }
         kw::TRIM => ctx.builtins.string,
+        kw::CHARS => ctx.table.intern(Ty::List(ctx.builtins.char_ty)),
         _ => {
             ctx.diagnostics
                 .push(crate::diagnostics::no_method("String", method, call_span));
