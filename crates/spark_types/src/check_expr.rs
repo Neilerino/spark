@@ -1641,18 +1641,19 @@ fn check_cast(actual: TypeId, target: TypeId, span: Span, ctx: &mut TypeCheckCtx
     if actual.is_error() || target.is_error() {
         return TypeId::ERROR;
     }
-    if !collection_cast_preserves_layout(actual, target, ctx.table) {
-        let actual = type_name(actual, ctx.table, ctx.definitions);
-        let target = type_name(target, ctx.table, ctx.definitions);
-        ctx.diagnostics.push(
-            Diagnostic::error("cast would change collection storage type").with_label(
-                Label::primary(span, format!("cannot cast `{actual}` to `{target}`")),
-            ),
-        );
-        TypeId::ERROR
-    } else {
-        target
+    if collection_cast_preserves_layout(actual, target, ctx.table) {
+        return target;
     }
+
+    let actual = type_name(actual, ctx.table, ctx.definitions);
+    let target = type_name(target, ctx.table, ctx.definitions);
+    ctx.diagnostics.push(
+        Diagnostic::error("cast would change collection storage type").with_label(Label::primary(
+            span,
+            format!("cannot cast `{actual}` to `{target}`"),
+        )),
+    );
+    TypeId::ERROR
 }
 
 /// Checks that a cast preserves collection storage through mutable and reference wrappers.
@@ -2905,12 +2906,12 @@ fn validate_reduce_callback(
 
 /// Registers the narrowed type for a `TypeNarrowing` pattern binding.
 ///
-/// Returns `Some(narrowed_ty)` if the arm has a `TypeNarrowing` pattern, `None` otherwise.
+/// Returns the type of a `TypeNarrowing` binding.
 fn register_narrowing_binding(
-    arm: &spark_ast::MatchArm,
+    pattern: &spark_ast::Pattern,
     ctx: &mut TypeCheckCtx<'_>,
 ) -> Option<TypeId> {
-    if let spark_ast::PatternKind::TypeNarrowing { name, ty: pat_ty } = &arm.pattern.kind {
+    if let spark_ast::PatternKind::TypeNarrowing { name, ty: pat_ty } = &pattern.kind {
         let narrowed_ty = crate::lower::lower_type_expr(pat_ty, ctx);
         if let Some(def_id) = ctx.resolutions.and_then(|res| res.get_binding(name.span)) {
             ctx.table.set_def_type(def_id, narrowed_ty);
@@ -2980,29 +2981,48 @@ fn check_to_narrowing(
         let mut has_wildcard = false;
 
         for arm in arms {
-            if matches!(arm.pattern.kind, spark_ast::PatternKind::Wildcard) {
-                has_wildcard = true;
-            } else if let spark_ast::PatternKind::Literal(literal) = &arm.pattern.kind {
-                if matches!(literal.kind, LiteralKind::Null) {
-                    handled_types.push(ctx.builtins.null);
+            let (pattern, guard) = match &arm.pattern.kind {
+                spark_ast::PatternKind::Guard { pattern, guard } => {
+                    (pattern.as_ref(), Some(guard.as_ref()))
                 }
-            } else if let Some(narrowed_ty) = register_narrowing_binding(arm, ctx) {
+                _ => (&arm.pattern, None),
+            };
+            let binding = register_narrowing_binding(pattern, ctx);
+            if let Some(guard) = guard {
+                let guard_ty = check_expr(guard, ctx, current_fn_ret);
+                if !is_compatible(guard_ty, ctx.builtins.bool_ty, ctx.table) {
+                    ctx.diagnostics.push(
+                        Diagnostic::error("pattern guard must be Bool")
+                            .with_label(Label::primary(guard.span, "expected Bool")),
+                    );
+                }
+            } else if let Some(narrowed_ty) = binding {
                 handled_types.push(narrowed_ty);
-            } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
-                let variant_ty = ctx
-                    .resolutions
-                    .and_then(|res| res.get_path(path.span))
-                    .and_then(|def_id| ctx.table.get_def_type(def_id))
-                    .unwrap_or(TypeId::ERROR);
-                if !variant_ty.is_error() {
-                    handled_types.push(variant_ty);
-                }
-            } else if let spark_ast::PatternKind::Ident { name, .. } = &arm.pattern.kind {
-                // Bare type name (e.g., `Int -> ...`): resolve as a union member
-                // by matching the identifier against builtin type names or
-                // user-defined type definitions.
-                if let Some(member_ty) = resolve_ident_as_union_member(name.name, &members, ctx) {
-                    handled_types.push(member_ty);
+            } else {
+                match &pattern.kind {
+                    spark_ast::PatternKind::Wildcard => has_wildcard = true,
+                    spark_ast::PatternKind::Literal(literal)
+                        if matches!(literal.kind, LiteralKind::Null) =>
+                    {
+                        handled_types.push(ctx.builtins.null);
+                    }
+                    spark_ast::PatternKind::Variant { path, .. } => {
+                        if let Some(variant_ty) = ctx
+                            .resolutions
+                            .and_then(|res| res.get_path(path.span))
+                            .and_then(|def_id| ctx.table.get_def_type(def_id))
+                        {
+                            handled_types.push(variant_ty);
+                        }
+                    }
+                    spark_ast::PatternKind::Ident { name, .. } => {
+                        if let Some(member_ty) =
+                            resolve_ident_as_union_member(name.name, &members, ctx)
+                        {
+                            handled_types.push(member_ty);
+                        }
+                    }
+                    _ => {}
                 }
             }
 
@@ -3028,7 +3048,7 @@ fn check_to_narrowing(
         // === Non-union exhaustive mode ===
         let mut arm_types = Vec::with_capacity(arms.len());
         for arm in arms {
-            register_narrowing_binding(arm, ctx);
+            register_narrowing_binding(&arm.pattern, ctx);
             let body_ty = check_expr(&arm.body, ctx, current_fn_ret);
             arm_types.push(body_ty);
         }

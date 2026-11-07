@@ -568,8 +568,16 @@ fn list_lookup_supports_narrowing_and_propagating_mutable_optionals() {
     for args in [&[][..], &["--no-opt"][..]] {
         let result = run_spark_with_args(fixture, args);
         assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
-        assert_eq!(result.stdout.trim(), "7\n9\ncontinued\n1\n99");
+        assert_eq!(result.stdout.trim(), "7\n9\ncontinued\n1\n99\n9\n2\n9");
     }
+}
+
+#[test]
+fn optional_narrowing_rejects_non_bool_guards() {
+    assert_compile_error(
+        "compile-fail/type_errors/optional_non_bool_guard.spark",
+        "pattern guard must be Bool",
+    );
 }
 
 #[test]
