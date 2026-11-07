@@ -507,18 +507,23 @@ fn collection_storage_rejects_incompatible_slot_layouts() {
 }
 
 #[test]
-fn list_lookup_reports_untyped_empty_literals() {
-    let fixture = "compile-fail/type_errors/list_untyped_empty_lookup.spark";
-    for args in [&[][..], &["--no-opt"][..]] {
-        let result = run_spark_with_args(fixture, args);
-        assert_ne!(result.exit_code, 0, "{fixture} {args:?}");
-        assert!(
-            result
-                .stderr
-                .contains("cannot infer element type of empty list lookup"),
-            "{fixture} {args:?}: {}",
-            result.stderr
-        );
+fn list_lookup_reports_untyped_empty_lists() {
+    for name in [
+        "list_untyped_empty_lookup",
+        "list_untyped_empty_block_lookup",
+    ] {
+        let fixture = format!("compile-fail/type_errors/{name}.spark");
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(&fixture, args);
+            assert_ne!(result.exit_code, 0, "{fixture} {args:?}");
+            assert!(
+                result
+                    .stderr
+                    .contains("cannot infer element type for list lookup"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
     }
 }
 

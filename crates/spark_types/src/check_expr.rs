@@ -727,21 +727,27 @@ fn check_index_access(
     ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
+    let diagnostics_before = ctx.diagnostics.len();
     let base_ty = check_expr(base, ctx, current_fn_ret);
     let index_ty = check_expr(index, ctx, current_fn_ret);
 
     match ctx.table.resolve(strip_mutable(base_ty, ctx.table)).clone() {
         Ty::List(elem) => {
-            if elem.is_error()
-                && matches!(&ungroup(base).kind, ExprKind::List(elems) if elems.is_empty())
-            {
-                ctx.diagnostics.push(
-                    Diagnostic::error("cannot infer element type of empty list lookup")
-                        .with_label(Label::primary(base.span, "element type is unknown"))
-                        .with_help(
-                            "Bind the empty list to an explicit `List[T]` type before indexing.",
-                        ),
-                );
+            if elem.is_error() {
+                if !ctx
+                    .diagnostics
+                    .iter()
+                    .skip(diagnostics_before)
+                    .any(Diagnostic::is_error)
+                {
+                    ctx.diagnostics.push(
+                        Diagnostic::error("cannot infer element type for list lookup")
+                            .with_label(Label::primary(base.span, "element type is unknown"))
+                            .with_help(
+                                "Bind the list to an explicit `List[T]` type before indexing.",
+                            ),
+                    );
+                }
                 return TypeId::ERROR;
             }
             let resolved_idx = ctx.table.resolve(strip_mutable(index_ty, ctx.table));
