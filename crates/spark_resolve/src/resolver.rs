@@ -144,6 +144,10 @@ impl Resolver {
         for &method_name in &[
             kw::LEN,
             kw::LINES,
+            kw::SPLIT,
+            kw::SPLIT_WHITESPACE,
+            kw::TRIM,
+            kw::SECTIONS,
             kw::APPEND,
             kw::CONTAINS,
             kw::REMOVE,

@@ -2236,14 +2236,25 @@ fn check_string_method(
 ) -> TypeId {
     let result = match method {
         kw::LEN => ctx.builtins.int,
-        kw::LINES => ctx.table.intern(Ty::List(ctx.builtins.string)),
+        kw::LINES | kw::SPLIT | kw::SPLIT_WHITESPACE | kw::SECTIONS => {
+            ctx.table.intern(Ty::List(ctx.builtins.string))
+        }
+        kw::TRIM => ctx.builtins.string,
         _ => {
             ctx.diagnostics
                 .push(crate::diagnostics::no_method("String", method, call_span));
             return TypeId::ERROR;
         }
     };
-    crate::diagnostics::expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
+    let expected_args = usize::from(method == kw::SPLIT);
+    diagnostics::expect_args(expected_args, arg_tys.len(), call_span, ctx.diagnostics);
+    if let (kw::SPLIT, [delimiter]) = (method, arg_tys) {
+        if !is_compatible(*delimiter, ctx.builtins.string, ctx.table) {
+            let found = type_name(*delimiter, ctx.table, ctx.definitions);
+            ctx.diagnostics
+                .push(diagnostics::arg_type_mismatch("String", &found, call_span));
+        }
+    }
     result
 }
 

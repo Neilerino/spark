@@ -310,6 +310,8 @@ s.toLower()           // String
 s.trim()              // String
 s.lines()             // List[String]
 s.split(",")          // List[String]
+s.splitWhitespace()   // List[String]
+s.sections()          // List[String]
 s.replace("a", "b")   // String
 s.substring(0, 5)     // String | RangeError
 s.indexOf("x")        // Int?
@@ -320,6 +322,20 @@ s.chars()             // List[Char]
 and preserves blank lines. A final terminator adds no extra line. An empty
 string produces an empty list, and a lone carriage return remains in the text.
 The returned list owns its strings.
+
+`split(delimiter)` matches the literal delimiter. It preserves empty fields at
+the start, between adjacent delimiters, and at the end. Empty input with a
+nonempty delimiter produces one empty field. An empty delimiter splits into
+Unicode scalars without extra empty fields.
+
+`splitWhitespace()` separates fields on Unicode whitespace. Runs of whitespace
+act as a single separator, and leading and trailing whitespace produce no
+fields. `trim()` removes the same whitespace at both ends.
+
+`sections()` groups consecutive nonempty lines into strings. Empty lines
+separate sections, and consecutive separators produce no empty sections.
+Whitespace-only lines are content. Each section keeps its internal LF or
+CRLF endings and excludes the final line ending.
 
 ### Collection Types
 

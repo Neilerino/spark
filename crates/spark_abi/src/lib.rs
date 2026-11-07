@@ -119,6 +119,34 @@ pub const STRING_LINES: RuntimeFn = RuntimeFn {
     ret: Some(Ptr),
 };
 
+/// `__spark_string_split(ptr, ptr) -> ptr`
+pub const STRING_SPLIT: RuntimeFn = RuntimeFn {
+    name: "__spark_string_split",
+    params: &[Ptr, Ptr],
+    ret: Some(Ptr),
+};
+
+/// `__spark_string_split_whitespace(ptr) -> ptr`
+pub const STRING_SPLIT_WHITESPACE: RuntimeFn = RuntimeFn {
+    name: "__spark_string_split_whitespace",
+    params: &[Ptr],
+    ret: Some(Ptr),
+};
+
+/// `__spark_string_trim(ptr) -> ptr`
+pub const STRING_TRIM: RuntimeFn = RuntimeFn {
+    name: "__spark_string_trim",
+    params: &[Ptr],
+    ret: Some(Ptr),
+};
+
+/// `__spark_string_sections(ptr) -> ptr`
+pub const STRING_SECTIONS: RuntimeFn = RuntimeFn {
+    name: "__spark_string_sections",
+    params: &[Ptr],
+    ret: Some(Ptr),
+};
+
 /// `__spark_string_concat(ptr, ptr) -> ptr`
 pub const STRING_CONCAT: RuntimeFn = RuntimeFn {
     name: "__spark_string_concat",
@@ -588,6 +616,10 @@ pub const ALL_RUNTIME_FUNCTIONS: &[&RuntimeFn] = &[
     &STRING_COW,
     &STRING_LEN,
     &STRING_LINES,
+    &STRING_SPLIT,
+    &STRING_SPLIT_WHITESPACE,
+    &STRING_TRIM,
+    &STRING_SECTIONS,
     &STRING_CONCAT,
     &STRING_EQ,
     &HASH_STRING_ELEM,

@@ -26,6 +26,14 @@ pub struct RuntimeStubs {
     pub string_len: FuncId,
     /// `__spark_string_lines`
     pub string_lines: FuncId,
+    /// `__spark_string_split`
+    pub string_split: FuncId,
+    /// `__spark_string_split_whitespace`
+    pub string_split_whitespace: FuncId,
+    /// `__spark_string_trim`
+    pub string_trim: FuncId,
+    /// `__spark_string_sections`
+    pub string_sections: FuncId,
     /// `__spark_string_concat`
     pub string_concat: FuncId,
     /// `__spark_string_eq`
@@ -198,6 +206,15 @@ impl RuntimeStubs {
             string_cow: declare_abi(module, &abi::STRING_COW, ptr_type, call_conv),
             string_len: declare_abi(module, &abi::STRING_LEN, ptr_type, call_conv),
             string_lines: declare_abi(module, &abi::STRING_LINES, ptr_type, call_conv),
+            string_split: declare_abi(module, &abi::STRING_SPLIT, ptr_type, call_conv),
+            string_split_whitespace: declare_abi(
+                module,
+                &abi::STRING_SPLIT_WHITESPACE,
+                ptr_type,
+                call_conv,
+            ),
+            string_trim: declare_abi(module, &abi::STRING_TRIM, ptr_type, call_conv),
+            string_sections: declare_abi(module, &abi::STRING_SECTIONS, ptr_type, call_conv),
             string_concat: declare_abi(module, &abi::STRING_CONCAT, ptr_type, call_conv),
             string_eq: declare_abi(module, &abi::STRING_EQ, ptr_type, call_conv),
             hash_string_elem: declare_abi(module, &abi::HASH_STRING_ELEM, ptr_type, call_conv),
