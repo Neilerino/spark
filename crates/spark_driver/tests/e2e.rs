@@ -1114,6 +1114,23 @@ fn string_substring_requires_integer_byte_offsets() {
 }
 
 #[test]
+fn bulk_integer_parsing_owns_values_and_reports_byte_spans() {
+    let fixture = "run-pass/parsing/parse_bulk_ints.spark";
+    let expected = concat!(
+        "4\n42\n-8\n3\n0\n0\n0\n",
+        "2\n-9223372036854775808\n9223372036854775807\n",
+        "error 2 [3,5)\nerror 3 [2,21)\nerror 2 [2,22)\n",
+        "error 3 [2,22)\nerror 2 [2,3)\n",
+        "error 1 [0,0)\nerror 2 [0,1)\nerror 2 [0,3)\n",
+    );
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{}", result.stderr);
+        assert_eq!(result.stdout, expected);
+    }
+}
+
+#[test]
 fn tagged_union_retains_and_releases_list_payloads() {
     let dir = tempfile::tempdir().expect("create ownership probe directory");
     let probe = dir.path().join("probe.c");

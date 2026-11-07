@@ -1,0 +1,47 @@
+import spark.text { parse, parseInts, ParseError }
+
+fn readNumbers(text: String): List[Int] | ParseError {
+    values: List[Int] = parseInts(text)!
+    return values
+}
+
+fn showError(error: ParseError): Void {
+    print("error {error.code} [{error.startByte},{error.endByte})")
+}
+
+fn show(result: List[Int] | ParseError): Void {
+    result to {
+        values: List[Int] -> {
+            print(values.len())
+            values each (value: Int) { print(value) }
+        },
+        error: ParseError -> showError(error)
+    }
+}
+
+fn showSingle(result: Int | ParseError): Void {
+    result to {
+        value: Int -> print(value),
+        error: ParseError -> showError(error)
+    }
+}
+
+fn main(): Int {
+    show(readNumbers("\u{2003}+42\r\n-8\u{000B}0003\t-0"))
+    show(readNumbers(" \u{00A0}\r\n"))
+    show(readNumbers(""))
+    show(readNumbers("-9223372036854775808 9223372036854775807"))
+    show(readNumbers("7\u{00A0}3x 99z"))
+    show(readNumbers("1 9223372036854775808"))
+    show(readNumbers("1 9223372036854775808x 3"))
+    show(readNumbers("1 -9223372036854775809"))
+    show(readNumbers("1 + 2"))
+
+    empty: Int | ParseError = parse("")
+    sign: Int | ParseError = parse("+")
+    whitespace: Int | ParseError = parse(" 42")
+    showSingle(empty)
+    showSingle(sign)
+    showSingle(whitespace)
+    return 0
+}

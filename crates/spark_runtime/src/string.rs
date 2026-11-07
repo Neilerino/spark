@@ -2,7 +2,7 @@
 
 use crate::{
     value::{retain_rc_elem, value_desc_new},
-    SparkString, __spark_eq_string_elem, __spark_list_new, __spark_list_push,
+    SparkString, __spark_eq_string_elem, __spark_list_new, __spark_list_push, __spark_list_rc_dec,
     __spark_string_from_literal, __spark_string_rc_dec,
 };
 
@@ -10,27 +10,78 @@ use crate::{
 /// Returns zero on success, or a nonzero parse error code.
 ///
 /// # Safety
-/// `text` must point to a live `SparkString`; `value` must be writable as an
-/// `i64` and must not alias the source.
+/// `text` must point to a slot holding a live UTF-8 `SparkString` pointer.
+/// `value` must point to a writable `i64` that does not alias the input.
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
-pub unsafe extern "C" fn __spark_text_parse_int(text: *const u8, value: *mut i64) -> i64 {
-    let text = unsafe { &*text.cast::<SparkString>() };
-    let bytes = unsafe { spark_str_bytes(text) };
-    let Ok(text) = std::str::from_utf8(bytes) else {
-        return 2;
-    };
-    match text.parse::<i64>() {
+pub unsafe extern "C" fn __spark_text_parse_int(text: *const *const u8, value: *mut i64) -> i64 {
+    let text = unsafe { spark_str(&*(*text).cast::<SparkString>()) };
+    match parse_int(text) {
         Ok(parsed) => {
             unsafe { *value = parsed };
             0
         }
-        Err(error) => match error.kind() {
-            std::num::IntErrorKind::Empty => 1,
-            std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => 3,
-            _ => 2,
-        },
+        Err(code) => code,
     }
+}
+
+fn parse_int(text: &str) -> Result<i64, i64> {
+    use std::num::IntErrorKind::{Empty, NegOverflow, PosOverflow};
+
+    text.parse::<i64>().map_err(|error| match error.kind() {
+        Empty => 1,
+        PosOverflow | NegOverflow => {
+            let digits = text.strip_prefix(['+', '-']).unwrap_or(text);
+            if digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                3
+            } else {
+                2
+            }
+        }
+        _ => 2,
+    })
+}
+
+/// Parses whitespace-delimited signed integers directly into an owned list.
+/// On failure, releases the partial list, reports the token span, and returns
+/// an empty list for the Spark wrapper to release.
+///
+/// # Safety
+/// `text` must point to a slot holding a live UTF-8 `SparkString` pointer.
+/// The output pointers must point to distinct writable `i64` slots that do
+/// not alias the input.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_wrap)]
+pub unsafe extern "C" fn __spark_text_parse_ints(
+    text: *const *const u8,
+    code: *mut i64,
+    start: *mut i64,
+    end: *mut i64,
+) -> *mut u8 {
+    let text = unsafe { spark_str(&*(*text).cast::<SparkString>()) };
+    let new_list = || {
+        let desc = value_desc_new(size_of::<i64>(), align_of::<i64>(), 0, 0, 0, 0);
+        __spark_list_new(desc.cast())
+    };
+    let list = new_list();
+    for token in text.split_whitespace() {
+        let value = match parse_int(token) {
+            Ok(value) => value,
+            Err(reason) => {
+                let offset = token.as_ptr().addr() - text.as_ptr().addr();
+                unsafe {
+                    *code = reason;
+                    *start = offset as i64;
+                    *end = (offset + token.len()) as i64;
+                    __spark_list_rc_dec(list);
+                }
+                return new_list();
+            }
+        };
+        unsafe { __spark_list_push(list, std::ptr::addr_of!(value).cast()) };
+    }
+    unsafe { *code = 0 };
+    list
 }
 
 /// Splits UTF-8 text into an owned list of lines.
@@ -206,7 +257,23 @@ pub fn string_list_from_iter<S: AsRef<str>>(iter: impl Iterator<Item = S>) -> *m
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{__spark_list_get, __spark_list_rc_dec, __spark_list_remove, __spark_rc_inc};
+    use crate::{__spark_list_get, __spark_list_remove, __spark_rc_inc};
+
+    #[test]
+    fn bulk_integer_error_after_many_tokens_exposes_no_partial_list() {
+        let mut text = "1 ".repeat(16_384);
+        text.push_str("bad 7");
+        let source = rust_str_to_spark(&text).cast_const();
+        let (mut code, mut start, mut end) = (0, 0, 0);
+        unsafe {
+            let result = __spark_text_parse_ints(&source, &mut code, &mut start, &mut end);
+            let len = crate::__spark_list_len(result);
+            __spark_list_rc_dec(result);
+            __spark_string_rc_dec(source.cast_mut());
+            assert_eq!(len, 0);
+        }
+        assert_eq!((code, start, end), (2, 32_768, 32_771));
+    }
 
     #[test]
     #[allow(clippy::cast_ptr_alignment)]
