@@ -412,6 +412,10 @@ impl Interner {
             "Parseable",
             "ParseError",
             "lines",
+            "split",
+            "splitWhitespace",
+            "trim",
+            "sections",
         ];
 
         for kw in keywords {
@@ -806,6 +810,14 @@ pub mod kw {
     pub const PARSE_ERROR: Symbol = Symbol(130);
     /// `lines`
     pub const LINES: Symbol = Symbol(131);
+    /// `split`
+    pub const SPLIT: Symbol = Symbol(132);
+    /// `splitWhitespace`
+    pub const SPLIT_WHITESPACE: Symbol = Symbol(133);
+    /// `trim`
+    pub const TRIM: Symbol = Symbol(134);
+    /// `sections`
+    pub const SECTIONS: Symbol = Symbol(135);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]
@@ -818,7 +830,9 @@ pub mod kw {
     pub const fn is_builtin_method(sym: Symbol) -> bool {
         // 70-74: len, append, contains, remove, add
         // 99-102: send, recv, tryRecv, close
-        (sym.0 >= 70 && sym.0 <= 74) || (sym.0 >= 99 && sym.0 <= 102) || sym.0 == LINES.0
+        (sym.0 >= 70 && sym.0 <= 74)
+            || (sym.0 >= 99 && sym.0 <= 102)
+            || (sym.0 >= LINES.0 && sym.0 <= SECTIONS.0)
     }
 
     /// Returns true if the given symbol is a keyword.

@@ -1392,21 +1392,35 @@ fn emit_builtin_method<M: Module>(
     let is_mutating =
         method_name == kw::APPEND || method_name == kw::REMOVE || method_name == kw::ADD;
 
-    if method_name == kw::LEN || method_name == kw::LINES {
-        let stub_id = match (method_name, stripped_ty) {
-            (kw::LEN, Ty::List(_)) => ctx.stubs.list_len,
-            (kw::LEN, Ty::Map(_, _)) => ctx.stubs.map_len,
-            (kw::LEN, Ty::Set(_)) => ctx.stubs.set_len,
-            (kw::LEN, Ty::String) => ctx.stubs.string_len,
-            (kw::LINES, Ty::String) => ctx.stubs.string_lines,
-            _ => {
-                let target_block = ctx.clif_block(target);
-                ctx.builder.ins().jump(target_block, &[]);
-                return;
-            }
-        };
+    let unary_stub = match (method_name, stripped_ty) {
+        (kw::LEN, Ty::List(_)) => Some(ctx.stubs.list_len),
+        (kw::LEN, Ty::Map(_, _)) => Some(ctx.stubs.map_len),
+        (kw::LEN, Ty::Set(_)) => Some(ctx.stubs.set_len),
+        (kw::LEN, Ty::String) => Some(ctx.stubs.string_len),
+        (kw::LINES, Ty::String) => Some(ctx.stubs.string_lines),
+        (kw::SPLIT_WHITESPACE, Ty::String) => Some(ctx.stubs.string_split_whitespace),
+        (kw::TRIM, Ty::String) => Some(ctx.stubs.string_trim),
+        (kw::SECTIONS, Ty::String) => Some(ctx.stubs.string_sections),
+        _ => None,
+    };
+    if let Some(stub_id) = unary_stub {
         let func_ref = module.declare_func_in_func(stub_id, ctx.builder.func);
         let call = ctx.builder.ins().call(func_ref, &[recv_ptr]);
+        let result = ctx.builder.inst_results(call)[0];
+        if destination.projections.is_empty() {
+            ctx.write_local(destination.local, result);
+        }
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    }
+
+    if let (kw::SPLIT, Ty::String, [_, Operand::Copy(delimiter) | Operand::Move(delimiter)]) =
+        (method_name, stripped_ty, args)
+    {
+        let delimiter = emit_rvalue::emit_place_read(ctx, delimiter, table, module);
+        let stub = module.declare_func_in_func(ctx.stubs.string_split, ctx.builder.func);
+        let call = ctx.builder.ins().call(stub, &[recv_ptr, delimiter]);
         let result = ctx.builder.inst_results(call)[0];
         if destination.projections.is_empty() {
             ctx.write_local(destination.local, result);

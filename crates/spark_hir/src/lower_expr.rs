@@ -236,10 +236,26 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
                     args: lowered_args,
                 }
             } else {
+                let is_string_split = method.name == kw::SPLIT
+                    && matches!(
+                        ctx.table.resolve(strip_mutable_ty(recv_hir.ty, ctx.table)),
+                        Ty::String
+                    );
+                let args = args
+                    .iter()
+                    .map(|a| {
+                        let arg = lower_expr(&a.value, ctx);
+                        if is_string_split {
+                            auto_deref_ref(arg, ctx.table)
+                        } else {
+                            arg
+                        }
+                    })
+                    .collect();
                 HirExprKind::MethodCall {
                     receiver: Box::new(recv_hir),
                     method: method.name,
-                    args: args.iter().map(|a| lower_expr(&a.value, ctx)).collect(),
+                    args,
                 }
             }
         }

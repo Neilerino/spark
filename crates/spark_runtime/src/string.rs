@@ -40,10 +40,76 @@ pub unsafe extern "C" fn __spark_text_parse_int(text: *const u8, value: *mut i64
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_string_lines(text: *const u8) -> *mut u8 {
-    let text = unsafe { &*text.cast::<SparkString>() };
-    let bytes = unsafe { spark_str_bytes(text) };
-    let text = unsafe { std::str::from_utf8_unchecked(bytes) };
+    let text = unsafe { spark_str(&*text.cast::<SparkString>()) };
     string_list_from_iter(text.lines())
+}
+
+/// Splits UTF-8 text at literal delimiters.
+///
+/// # Safety
+/// Both pointers must refer to live UTF-8 `SparkString` values.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_split(text: *const u8, delimiter: *const u8) -> *mut u8 {
+    let text = unsafe { spark_str(&*text.cast::<SparkString>()) };
+    let delimiter = unsafe { spark_str(&*delimiter.cast::<SparkString>()) };
+    if delimiter.is_empty() {
+        string_list_from_iter(
+            text.char_indices()
+                .map(|(start, ch)| &text[start..start + ch.len_utf8()]),
+        )
+    } else {
+        string_list_from_iter(text.split(delimiter))
+    }
+}
+
+/// Splits UTF-8 text into nonempty Unicode whitespace-delimited fields.
+///
+/// # Safety
+/// `text` must point to a live UTF-8 `SparkString`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_split_whitespace(text: *const u8) -> *mut u8 {
+    let text = unsafe { spark_str(&*text.cast::<SparkString>()) };
+    string_list_from_iter(text.split_whitespace())
+}
+
+/// Removes leading and trailing Unicode whitespace.
+///
+/// # Safety
+/// `text` must point to a live UTF-8 `SparkString`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_trim(text: *const u8) -> *mut u8 {
+    let text = unsafe { spark_str(&*text.cast::<SparkString>()) };
+    rust_str_to_spark(text.trim())
+}
+
+/// Splits UTF-8 text into nonempty sections separated by blank lines.
+///
+/// # Safety
+/// `text` must point to a live UTF-8 `SparkString`.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_sections(text: *const u8) -> *mut u8 {
+    let text = unsafe { spark_str(&*text.cast::<SparkString>()) };
+    let base = text.as_ptr().addr();
+    let mut lines = text.lines();
+    string_list_from_iter(std::iter::from_fn(|| {
+        let first = lines.find(|line| !line.is_empty())?;
+        let last = lines
+            .by_ref()
+            .take_while(|line| !line.is_empty())
+            .last()
+            .unwrap_or(first);
+        let start = first.as_ptr().addr() - base;
+        let end = last.as_ptr().addr() - base + last.len();
+        Some(&text[start..end])
+    }))
+}
+
+unsafe fn spark_str(text: &SparkString) -> &str {
+    unsafe { std::str::from_utf8_unchecked(spark_str_bytes(text)) }
 }
 
 unsafe fn spark_str_bytes(text: &SparkString) -> &[u8] {

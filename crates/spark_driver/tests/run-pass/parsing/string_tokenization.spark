@@ -1,0 +1,26 @@
+fn show(parts: List[String]): Void {
+    parts each (part: String) { print("[{part}]") }
+}
+
+fn splitBy(text: String, delimiter: Ref[String]): List[String] {
+    return text.split(delimiter)
+}
+
+fn main(): Int {
+    show("a::b:".split(":"))
+    show("".split(","))
+    show("éλ".split(""))
+    show("".split(""))
+    show(" \u{000B}a\t\u{00A0}b\r\nc ".splitWhitespace())
+    show(" \r\n\u{2003}".splitWhitespace())
+    show("x∷∷y".split("∷"))
+    show(splitBy("λ::é", "::"))
+    trimmed: String = "\u{2003}café\u{000B}".trim()
+    print("[{trimmed}]")
+    empty: String = "\t\u{00A0}".trim()
+    print("[{empty}]")
+    show("\r\n\r\none\r\ntwo\r\n\r\n\n three \n\n".sections())
+    show("".sections())
+    show("\n\r\n".sections())
+    return 0
+}

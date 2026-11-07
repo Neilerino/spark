@@ -1066,6 +1066,25 @@ fn string_lines_rejects_arguments() {
 }
 
 #[test]
+fn string_tokenization_preserves_text_boundaries() {
+    let fixture = "run-pass/parsing/string_tokenization.spark";
+    let expected = "[a]\n[]\n[b]\n[]\n[]\n[é]\n[λ]\n[a]\n[b]\n[c]\n[x]\n[]\n[y]\n[λ]\n[é]\n[café]\n[]\n[one\r\ntwo]\n[ three ]";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{}", result.stderr);
+        assert_eq!(result.stdout.trim_end(), expected);
+    }
+}
+
+#[test]
+fn string_split_requires_a_string_delimiter() {
+    assert_compile_error(
+        "compile-fail/type_errors/string_split_non_string_delimiter.spark",
+        "expected `String`",
+    );
+}
+
+#[test]
 fn text_lines_parses_a_file_to_an_answer() {
     let dir = tempfile::tempdir().expect("create input directory");
     let input = dir.path().join("input.txt");
