@@ -368,8 +368,7 @@ mod tests {
     #[test]
     fn lower_null_coalesce_structure() {
         // `x ?? 0` should desugar into:
-        //   match x { Null -> 0, v -> v }
-        // where the non-null arm uses Binding+Local (not Wildcard/Error)
+        //   match x { Null -> 0, v: Int -> v }
         let output = lower_source("fn f(x: Int?): Int { return x ?? 0 }");
         let func = get_function(&output);
         let arms = find_match(&func.body).expect("Expected a Match from ?? desugaring");
@@ -389,10 +388,13 @@ mod tests {
             arms[0].body.kind
         );
 
-        // Second arm: Binding pattern (not Wildcard)
         let binding_def = match &arms[1].pattern {
-            HirPattern::Binding { def_id } => *def_id,
-            other => panic!("Non-null arm should be Binding, got: {other:?}"),
+            HirPattern::TypeNarrow { def_id, ty } => {
+                assert_eq!(*ty, func.ret_type);
+                assert_eq!(*ty, arms[1].body.ty);
+                *def_id
+            }
+            other => panic!("Non-null arm should bind the payload type, got: {other:?}"),
         };
         // Binding arm body should reference the same DefId via Local
         match &arms[1].body.kind {

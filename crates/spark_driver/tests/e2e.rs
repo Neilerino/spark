@@ -486,6 +486,53 @@ fn collection_argument_types_accept_mutable_values() {
 }
 
 #[test]
+fn map_lookup_default_is_lazy_and_owns_payload() {
+    let fixture = "run-pass/collections/map_lookup_default.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout.trim(),
+            "map\nkey\nfound\nmap\nkey\nfallback\ndefault"
+        );
+    }
+}
+
+#[test]
+fn map_lookup_balances_payload_and_input_ownership() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         static int64_t count(const void *const *slot) { return *(const size_t *)*slot; }\n\
+         int64_t probe_list_rc(const void *const *slot) { return count(slot); }\n\
+         int64_t probe_string_rc(const void *const *slot) { return count(slot); }\n\
+         int64_t probe_map_rc(const void *const *slot) { return count(slot); }\n",
+        include_str!("run-pass/collections/map_lookup_ownership.spark"),
+        "1\n0\n0\n1\n1\n1\n0",
+    );
+}
+
+#[test]
+fn map_lookup_works_with_optional_consumers() {
+    let fixture = "run-pass/collections/map_lookup_consumers.spark";
+    let expected = "continued\npresent\nmissing\npresent\n7\n3\ntagged\n99\nfalse\ntrue\n0";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), expected);
+    }
+}
+
+#[test]
+fn map_lookup_retags_nested_coalesced_payloads() {
+    let fixture = "run-pass/collections/map_lookup_nested_union.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "nested\nfalse");
+    }
+}
+
+#[test]
 fn map_get_optional() {
     assert_output("run-pass/collections/map_get_optional.spark", "found");
 }
@@ -1228,7 +1275,7 @@ fn bulk_integer_parsing_owns_values_and_reports_byte_spans() {
 
 #[test]
 fn tagged_union_retains_and_releases_list_payloads() {
-    assert_native_parsing_fixture(
+    assert_native_ownership_fixture(
         "#include <stddef.h>\n#include <stdint.h>\n\
          int64_t probe_list_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
         include_str!("run-pass/parsing/owned_union.spark"),
@@ -1238,7 +1285,7 @@ fn tagged_union_retains_and_releases_list_payloads() {
 
 #[test]
 fn parsing_coerces_nested_reference_arguments() {
-    assert_native_parsing_fixture(
+    assert_native_ownership_fixture(
         include_str!("run-pass/parsing/nested_parse_ref.c"),
         include_str!("run-pass/parsing/nested_parse_ref.spark"),
         "2\nb\n7\n1",
@@ -1255,10 +1302,10 @@ fn target_directed_parse_supports_mutable_bindings() {
     }
 }
 
-fn assert_native_parsing_fixture(native: &str, fixture: &str, expected: &str) {
+fn assert_native_ownership_fixture(native: &str, fixture: &str, expected: &str) {
     let dir = tempfile::tempdir().expect("create ownership probe directory");
     let probe = dir.path().join("probe.c");
-    std::fs::write(&probe, native).expect("write native parsing probe");
+    std::fs::write(&probe, native).expect("write native ownership probe");
     for (tool, args) in [
         ("cc", &["-c", "probe.c", "-o", "probe.o"][..]),
         ("ar", &["rcs", "libunion_probe.a", "probe.o"][..]),

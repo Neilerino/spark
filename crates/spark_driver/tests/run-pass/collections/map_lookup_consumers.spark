@@ -1,0 +1,65 @@
+alias Choice = Int | String
+alias MaybeChoice = Int | Null | String
+
+fn propagate(data: Map[String, String], key: String): String? {
+    value: String = data[key]!
+    print("continued")
+    return value
+}
+
+fn widen(data: Map[String, String], key: String): String | Int {
+    return data[key] ?? 7
+}
+
+fn choice(which: Int): MaybeChoice {
+    if which == 1 {
+        return 3
+    }
+    if which == 2 {
+        return "tagged"
+    }
+    return Null
+}
+
+fn normalize(value: MaybeChoice): Choice {
+    return value ?? 99
+}
+
+fn show(value: Choice): Void {
+    value to {
+        number: Int -> print(number),
+        text: String -> print(text)
+    }
+}
+
+fn main(): Int {
+    data: Map[String, String] = {"hit": "present"}
+    propagate(data, "hit") to {
+        text: String -> print(text),
+        Null -> print("missing")
+    }
+    propagate(data, "miss") to {
+        text: String -> print(text),
+        Null -> print("missing")
+    }
+    widen(data, "hit") to {
+        text: String -> print(text),
+        number: Int -> print(number)
+    }
+    widen(data, "miss") to {
+        text: String -> print(text),
+        number: Int -> print(number)
+    }
+
+    show(normalize(choice(1)))
+    show(normalize(choice(2)))
+    show(normalize(choice(3)))
+
+    flags: Map[String, Bool]! = {"no": false}
+    print(flags["no"] ?? true)
+    flags.remove("no")
+    print(flags["no"] ?? true)
+    counts: Map[String, Int] = {"zero": 0}
+    print(counts["zero"] ?? 7)
+    return 0
+}

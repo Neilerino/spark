@@ -488,8 +488,8 @@ fn remap_rvalue(rvalue: &Rvalue, local_off: u32, block_off: u32) -> Rvalue {
             step: remap_operand(step, local_off, block_off),
         },
         Rvalue::MapGetOptional { map, key, value_ty } => Rvalue::MapGetOptional {
-            map: remap_operand(map, local_off, block_off),
-            key: remap_operand(key, local_off, block_off),
+            map: remap_place(map, local_off),
+            key: remap_place(key, local_off),
             value_ty: *value_ty,
         },
     }

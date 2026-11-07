@@ -1,0 +1,22 @@
+alias Choice = Int | String
+alias Result = Int | String | Bool
+
+fn pick(data: Map[String, Choice], key: String): Result {
+    return data[key] ?? false
+}
+
+fn show(value: Result): Void {
+    value to {
+        n: Int -> print(n),
+        s: String -> print(s),
+        b: Bool -> print(b)
+    }
+}
+
+fn main(): Int {
+    text: Choice = "nested"
+    data: Map[String, Choice] = {"yes": text}
+    show(pick(data, "yes"))
+    show(pick(data, "no"))
+    return 0
+}

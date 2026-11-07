@@ -236,7 +236,7 @@ fn check_rvalue(
             );
         }
         Rvalue::MapGetOptional { map, key, .. } => {
-            check_operand(
+            check_place(
                 map,
                 num_locals,
                 func_id,
@@ -245,7 +245,7 @@ fn check_rvalue(
                 "map_get.map",
                 errors,
             );
-            check_operand(
+            check_place(
                 key,
                 num_locals,
                 func_id,

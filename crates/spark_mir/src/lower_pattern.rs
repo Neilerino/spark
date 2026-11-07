@@ -6,7 +6,7 @@
 
 use spark_hir::{HirExpr, HirLiteral, HirMatchArm, HirPattern};
 use spark_resolve::DefinitionTable;
-use spark_types::TypeTable;
+use spark_types::{Ty, TypeTable};
 
 use crate::builder::{FunctionBuilder, MirBuilder};
 use crate::lower_expr::{emit_assign_with_union_wrap, lower_expr};
@@ -201,7 +201,13 @@ fn compile_pattern(
                     });
                 }
                 Constant::Null => {
-                    // For Optional types, null means discriminant tag == 0.
+                    let scrut_ty = scrutinee_type(scrut, fb, type_table);
+                    let null_tag = type_table
+                        .lookup(&Ty::Null)
+                        .and_then(|null| {
+                            spark_types::union::find_member_index(scrut_ty, null, type_table)
+                        })
+                        .unwrap_or(0);
                     let disc_temp =
                         fb.fresh_temp(discriminant_type(type_table), spark_span::Span::DUMMY);
                     fb.push_assign(
@@ -211,7 +217,7 @@ fn compile_pattern(
                     );
                     fb.terminate(Terminator::SwitchInt {
                         discriminant: Operand::Copy(Place::from_local(disc_temp)),
-                        targets: vec![(0, match_bb)],
+                        targets: vec![(null_tag as i128, match_bb)],
                         otherwise: fail_bb,
                     });
                 }
@@ -387,7 +393,7 @@ fn compile_pattern(
 
         HirPattern::TypeNarrow { def_id, ty } => {
             // Type narrowing: check if scrutinee's union/optional tag matches the target type.
-            let scrut_ty = fb.local_type(scrut);
+            let scrut_ty = scrutinee_type(scrut, fb, type_table);
 
             if let Some(idx) = spark_types::union::find_member_index(scrut_ty, *ty, type_table) {
                 // Read discriminant from the scrutinee.
@@ -451,6 +457,14 @@ fn compile_pattern(
         HirPattern::Error => {
             fb.terminate(Terminator::Goto { target: match_bb });
         }
+    }
+}
+
+fn scrutinee_type(scrut: Local, fb: &FunctionBuilder, table: &TypeTable) -> spark_types::TypeId {
+    let ty = fb.local_type(scrut);
+    match table.resolve(ty) {
+        Ty::Mutable(inner) => *inner,
+        _ => ty,
     }
 }
 

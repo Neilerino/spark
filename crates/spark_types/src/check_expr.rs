@@ -603,6 +603,7 @@ fn check_coalesce(
     let lhs_ty = check_expr(lhs, ctx, current_fn_ret);
     let rhs_ty = check_expr(rhs, ctx, current_fn_ret);
 
+    let lhs_ty = strip_mutable(lhs_ty, ctx.table);
     let inner = unwrap_optional(lhs_ty, ctx.table);
     if inner == lhs_ty && !lhs_ty.is_error() {
         ctx.diagnostics.push(
@@ -1927,7 +1928,7 @@ pub(crate) fn strip_ref(ty: TypeId, table: &TypeTable) -> TypeId {
 
 /// Unwraps `Optional(T)` → `T`, or `Union([..., Null, ...])` → the non-null type.
 /// Returns the input unchanged if not optional/nullable.
-fn unwrap_optional(ty: TypeId, table: &TypeTable) -> TypeId {
+fn unwrap_optional(ty: TypeId, table: &mut TypeTable) -> TypeId {
     match table.resolve(ty) {
         Ty::Optional(inner) => *inner,
         Ty::Union(members) => {
@@ -1940,11 +1941,7 @@ fn unwrap_optional(ty: TypeId, table: &TypeTable) -> TypeId {
             match non_null.len() {
                 0 => ty,
                 1 => non_null[0],
-                _ => {
-                    // Check if the non-null union is already interned
-                    let candidate = Ty::Union(non_null);
-                    table.lookup(&candidate).unwrap_or(ty)
-                }
+                _ => table.intern(Ty::Union(non_null)),
             }
         }
         _ => ty,
@@ -2902,6 +2899,7 @@ fn check_to_narrowing(
     ctx: &mut TypeCheckCtx<'_>,
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
+    let inner_ty = strip_mutable(inner_ty, ctx.table);
     let is_union = matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_));
 
     if is_union {
@@ -2910,9 +2908,16 @@ fn check_to_narrowing(
 
         let mut body_types = Vec::with_capacity(arms.len());
         let mut handled_types = Vec::new();
+        let mut has_wildcard = false;
 
         for arm in arms {
-            if let Some(narrowed_ty) = register_narrowing_binding(arm, ctx) {
+            if matches!(arm.pattern.kind, spark_ast::PatternKind::Wildcard) {
+                has_wildcard = true;
+            } else if let spark_ast::PatternKind::Literal(literal) = &arm.pattern.kind {
+                if matches!(literal.kind, LiteralKind::Null) {
+                    handled_types.push(ctx.builtins.null);
+                }
+            } else if let Some(narrowed_ty) = register_narrowing_binding(arm, ctx) {
                 handled_types.push(narrowed_ty);
             } else if let spark_ast::PatternKind::Variant { path, .. } = &arm.pattern.kind {
                 let variant_ty = ctx
@@ -2939,7 +2944,7 @@ fn check_to_narrowing(
         let unhandled: Vec<TypeId> = members
             .iter()
             .copied()
-            .filter(|m| !handled_types.contains(m))
+            .filter(|m| !has_wildcard && !handled_types.contains(m))
             .collect();
 
         let mut result_ty =

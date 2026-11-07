@@ -108,64 +108,60 @@ pub fn lower_expr(
         }
 
         HirExprKind::Index { base, index } => {
-            let base_local = lower_expr(base, fb, mir, type_table, defs);
-            let index_local = lower_expr(index, fb, mir, type_table, defs);
-            // Use the element type from the base collection, not expr.ty
-            // (which is Optional(elem_ty) from the type checker).
-            // This ensures the MIR temp matches resolve_place_type in codegen.
-            let base_resolved = type_table.resolve(base.ty);
-            let unwrapped_base = match base_resolved {
+            let base_ty = type_table.resolve(base.ty);
+            let base_ty = match base_ty {
                 Ty::Mutable(inner) => type_table.resolve(*inner),
                 other => other,
             };
-            let is_map = matches!(unwrapped_base, Ty::Map(_, _));
-            let elem_ty = match unwrapped_base {
-                Ty::List(elem) => *elem,
-                Ty::Map(_, val) => *val,
+            if let Ty::Map(_, value_ty) = base_ty {
+                if matches!(type_table.resolve(expr.ty), Ty::Optional(inner) if inner == value_ty) {
+                    fb.push_scope();
+                    let map = lower_expr(base, fb, mir, type_table, defs);
+                    if !fb.is_def_local(map) {
+                        fb.register_drop(map);
+                    }
+                    let key = lower_expr(index, fb, mir, type_table, defs);
+                    if !fb.is_def_local(key)
+                        && spark_drop::needs_drop(fb.local_type(key), type_table)
+                    {
+                        fb.register_drop(key);
+                    }
+                    let result = fb.fresh_temp(expr.ty, expr.span);
+                    fb.push_assign(
+                        Place::from_local(result),
+                        Rvalue::MapGetOptional {
+                            map: Place::from_local(map),
+                            key: Place::from_local(key),
+                            value_ty: *value_ty,
+                        },
+                        expr.span,
+                    );
+                    fb.pop_scope_drops(None, expr.span);
+                    return result;
+                }
+            }
+
+            let base_local = lower_expr(base, fb, mir, type_table, defs);
+            let index_local = lower_expr(index, fb, mir, type_table, defs);
+            let elem_ty = match base_ty {
+                Ty::List(elem) | Ty::Map(_, elem) => *elem,
                 _ => expr.ty,
             };
+            let temp = fb.fresh_temp(elem_ty, expr.span);
+            let mut place = Place::from_local(base_local);
+            place.projections.push(Projection::Index(index_local));
+            fb.push_assign(
+                Place::from_local(temp),
+                Rvalue::Use(Operand::Copy(place)),
+                expr.span,
+            );
 
-            // Map index needs special handling: map_get returns null for
-            // missing keys. The Place + Index projection in codegen calls
-            // map_get and loads from the returned pointer — crashing on null.
-            // For user-written map index (expr.ty is Optional), we use the
-            // MapGetOptional rvalue which handles null safely and produces
-            // Optional(V) directly.
-            if is_map
-                && expr.ty != elem_ty
-                && matches!(type_table.resolve(expr.ty), Ty::Optional(_))
-            {
+            if expr.ty != elem_ty && matches!(type_table.resolve(expr.ty), Ty::Optional(_)) {
                 let opt_temp = fb.fresh_temp(expr.ty, expr.span);
-                fb.push_assign(
-                    Place::from_local(opt_temp),
-                    Rvalue::MapGetOptional {
-                        map: Operand::Copy(Place::from_local(base_local)),
-                        key: Operand::Copy(Place::from_local(index_local)),
-                        value_ty: elem_ty,
-                    },
-                    expr.span,
-                );
+                emit_assign_with_union_wrap(fb, opt_temp, temp, type_table, expr.span);
                 opt_temp
             } else {
-                let temp = fb.fresh_temp(elem_ty, expr.span);
-                let mut place = Place::from_local(base_local);
-                place.projections.push(Projection::Index(index_local));
-                fb.push_assign(
-                    Place::from_local(temp),
-                    Rvalue::Use(Operand::Copy(place)),
-                    expr.span,
-                );
-
-                // List index: type checker assigns Optional(V) but the
-                // desugared `each` loop uses raw elem_ty. Only wrap when
-                // the expression type differs (user-written index).
-                if expr.ty != elem_ty && matches!(type_table.resolve(expr.ty), Ty::Optional(_)) {
-                    let opt_temp = fb.fresh_temp(expr.ty, expr.span);
-                    emit_assign_with_union_wrap(fb, opt_temp, temp, type_table, expr.span);
-                    opt_temp
-                } else {
-                    temp
-                }
+                temp
             }
         }
 
@@ -766,7 +762,7 @@ fn owned_union_operand(local: Local, fb: &FunctionBuilder, type_table: &TypeTabl
     if !fb.is_def_local(local)
         && matches!(
             type_table.resolve(unwrap_type_wrappers(ty, type_table)),
-            Ty::Union(_)
+            Ty::Union(_) | Ty::Optional(_)
         )
         && spark_drop::needs_drop(ty, type_table)
     {

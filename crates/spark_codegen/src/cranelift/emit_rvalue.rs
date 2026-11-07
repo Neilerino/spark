@@ -16,14 +16,14 @@ use cranelift_module::FuncId;
 use rustc_hash::FxHashMap;
 
 use super::context::{EmitCtx, FunctionContext, LocalStorage};
-use super::drop_glue::emit_typed_retain;
+use super::drop_glue::{emit_typed_retain, rc_value_at};
 use super::types as clif_types;
 use crate::abi;
 
 /// Emits an rvalue and returns the resulting Cranelift value.
 ///
-/// For aggregate rvalues, writes directly to the destination and returns
-/// the destination address.
+/// Returns `None` when no further store is needed, including lookups
+/// that write the complete result directly into the destination.
 pub fn emit_rvalue<M: Module>(
     ctx: &mut FunctionContext<'_>,
     rvalue: &Rvalue,
@@ -108,7 +108,8 @@ pub fn emit_rvalue<M: Module>(
         }
 
         Rvalue::MapGetOptional { map, key, value_ty } => {
-            emit_map_get_optional(ctx, map, key, *value_ty, dest_local, ecx, module)
+            emit_map_get_optional(ctx, map, key, *value_ty, dest_local, ecx, module);
+            None
         }
 
         Rvalue::RangeLen {
@@ -1335,33 +1336,32 @@ fn emit_closure_construction<M: Module>(
 /// Returns the destination stack slot address.
 fn emit_map_get_optional<M: Module>(
     ctx: &mut FunctionContext<'_>,
-    map_operand: &Operand,
-    key_operand: &Operand,
+    map: &Place,
+    key: &Place,
     value_ty: TypeId,
     dest_local: Local,
     ecx: &EmitCtx<'_>,
     module: &mut M,
-) -> Option<Value> {
+) {
     let table = ecx.table;
-    let dest_addr = ctx.local_stack_addr(dest_local)?;
-
-    // Get the map pointer and key address.
-    let map_val = emit_operand(ctx, map_operand, ecx, module)?;
-    let key_val = emit_operand(ctx, key_operand, ecx, module)?;
-    let key_ty = operand_type(key_operand, ctx, table);
-    let key_addr = store_scalar_to_temp(ctx, key_val, key_ty, table);
-
-    // Load the map pointer (map_val is the address of the local holding the pointer).
-    let map_ptr = if abi::is_scalar(operand_type(map_operand, ctx, table), table) {
-        map_val
+    let map_ty = resolve_place_type(ctx, map, table);
+    let (_, Ty::Map(key_ty, _)) = clif_types::unwrap_mutable(map_ty, table) else {
+        unreachable!("map lookup requires a map");
+    };
+    let map_ptr = emit_place_read(ctx, map, table, module);
+    let key_value = emit_place_read(ctx, key, table, module);
+    let key_addr = if abi::is_scalar(*key_ty, table) {
+        store_scalar_to_temp(ctx, key_value, *key_ty, table)
     } else {
-        ctx.load(ctx.ptr_type, map_val, 0)
+        key_value
     };
 
-    // Call __spark_map_get(map_ptr, key_addr) → ptr or null.
     let func_ref = module.declare_func_in_func(ctx.stubs.map_get, ctx.builder.func);
     let call = ctx.builder.ins().call(func_ref, &[map_ptr, key_addr]);
     let raw_ptr = ctx.builder.inst_results(call)[0];
+    let dest_addr = ctx
+        .local_stack_addr(dest_local)
+        .expect("map lookup requires an Optional destination");
 
     // Compute the Optional layout.
     let opt_ty = ctx.local_type_id(dest_local);
@@ -1425,12 +1425,26 @@ fn emit_map_get_optional<M: Module>(
             MemFlags::new(),
         );
     }
+    if spark_drop::needs_drop(value_ty, table) {
+        let value = rc_value_at(
+            &mut ctx.builder,
+            payload_addr,
+            value_ty,
+            table,
+            ctx.ptr_type,
+        );
+        emit_typed_retain(
+            &mut ctx.builder,
+            value,
+            value_ty,
+            table,
+            ctx.stubs,
+            module,
+            ctx.ptr_type,
+        );
+    }
     ctx.builder.ins().jump(join_block, &[]);
-
-    // Join block: Optional is fully written.
     ctx.builder.switch_to_block(join_block);
-
-    Some(dest_addr)
 }
 
 /// Emits union construction: writes tag + payload into a stack slot.

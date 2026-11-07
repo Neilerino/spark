@@ -166,8 +166,10 @@ fn collect_used_in_rvalue(rvalue: &spark_mir::Rvalue, used: &mut FxHashSet<Local
             collect_used_in_operand(step, used);
         }
         spark_mir::Rvalue::MapGetOptional { map, key, .. } => {
-            collect_used_in_operand(map, used);
-            collect_used_in_operand(key, used);
+            for place in [map, key] {
+                used.insert(place.local);
+                collect_used_in_place_projections(place, used);
+            }
         }
         spark_mir::Rvalue::Cast { operand, .. } => collect_used_in_operand(operand, used),
     }
