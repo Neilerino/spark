@@ -1392,13 +1392,13 @@ fn emit_builtin_method<M: Module>(
     let is_mutating =
         method_name == kw::APPEND || method_name == kw::REMOVE || method_name == kw::ADD;
 
-    // --- LEN ---
-    if method_name == kw::LEN {
-        let stub_id = match stripped_ty {
-            Ty::List(_) => ctx.stubs.list_len,
-            Ty::Map(_, _) => ctx.stubs.map_len,
-            Ty::Set(_) => ctx.stubs.set_len,
-            Ty::String => ctx.stubs.string_len,
+    if method_name == kw::LEN || method_name == kw::LINES {
+        let stub_id = match (method_name, stripped_ty) {
+            (kw::LEN, Ty::List(_)) => ctx.stubs.list_len,
+            (kw::LEN, Ty::Map(_, _)) => ctx.stubs.map_len,
+            (kw::LEN, Ty::Set(_)) => ctx.stubs.set_len,
+            (kw::LEN, Ty::String) => ctx.stubs.string_len,
+            (kw::LINES, Ty::String) => ctx.stubs.string_lines,
             _ => {
                 let target_block = ctx.clif_block(target);
                 ctx.builder.ins().jump(target_block, &[]);

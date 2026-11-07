@@ -1,0 +1,4 @@
+fn main(): Int {
+    lines: List[String] = "hello".lines(",")
+    return 0
+}

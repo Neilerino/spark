@@ -51,6 +51,10 @@ struct SparkOutput {
 /// For single-file tests, pass a relative path like `"run-pass/basics/hello.spark"`.
 /// For multi-file project tests, use [`run_spark_project`] instead.
 fn run_spark(fixture: &str) -> SparkOutput {
+    run_spark_with_args(fixture, &[])
+}
+
+fn run_spark_with_args(fixture: &str, args: &[&str]) -> SparkOutput {
     let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join(fixture);
@@ -72,6 +76,7 @@ fn run_spark(fixture: &str) -> SparkOutput {
     let output = Command::new(spark_bin)
         .arg("run")
         .arg(&fixture_path)
+        .args(args)
         .env("SPARK_RUNTIME_DIR", runtime_dir)
         .output()
         .expect("failed to run spark binary");
@@ -1042,6 +1047,40 @@ fn target_directed_parse_dispatches_to_custom_point_binding() {
         "run-pass/parsing/parse_bound_point.spark",
         "3,0\n-8,0\nparse error",
     );
+}
+
+#[test]
+fn string_lines_preserves_blank_lines_and_utf8() {
+    assert_output(
+        "run-pass/parsing/string_lines.spark",
+        "0\n1\n[]\n4\n[café]\n[]\n[λ]\n[last\r]",
+    );
+}
+
+#[test]
+fn string_lines_rejects_arguments() {
+    assert_compile_error(
+        "compile-fail/type_errors/string_lines_with_argument.spark",
+        "expected 0 arguments, found 1",
+    );
+}
+
+#[test]
+fn text_lines_parses_a_file_to_an_answer() {
+    let dir = tempfile::tempdir().expect("create input directory");
+    let input = dir.path().join("input.txt");
+    let path = input.to_str().expect("UTF-8 input path");
+    for (text, expected, exit_code) in [
+        ("+42\r\n-8\n3\r\n", "37", 0),
+        ("+42\r\n-8x\n3\r\n", "line 2: parse error", 1),
+    ] {
+        std::fs::write(&input, text).expect("write puzzle input");
+        for args in [&["--", path][..], &["--no-opt", "--", path][..]] {
+            let result = run_spark_with_args("run-pass/parsing/sum_file_lines.spark", args);
+            assert_eq!(result.exit_code, exit_code, "{}", result.stderr);
+            assert_eq!(result.stdout.trim(), expected, "{}", result.stderr);
+        }
+    }
 }
 
 // ============================================================================

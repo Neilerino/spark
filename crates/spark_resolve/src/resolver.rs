@@ -138,11 +138,12 @@ impl Resolver {
                 .push((fn_name, fn_def_id, DefinitionKind::BuiltinFunction));
         }
 
-        // Register built-in methods (len, append, contains, remove, add, send, recv, tryRecv, close).
+        // Register built-in methods.
         // These are NOT added to ribs (can't be called as free functions),
         // but need DefIds so MIR and codegen can reference them.
         for &method_name in &[
             kw::LEN,
+            kw::LINES,
             kw::APPEND,
             kw::CONTAINS,
             kw::REMOVE,

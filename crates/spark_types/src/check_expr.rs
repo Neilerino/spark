@@ -2101,9 +2101,7 @@ fn check_method_call(
         }
         Ty::Map(_k, _v) => check_map_method(method, is_mutable, arg_tys, call_span, recv_span, ctx),
         Ty::Set(_elem) => check_set_method(method, is_mutable, arg_tys, call_span, recv_span, ctx),
-        Ty::String => {
-            check_string_method(method, arg_tys, call_span, ctx.builtins, ctx.diagnostics)
-        }
+        Ty::String => check_string_method(method, arg_tys, call_span, ctx),
         Ty::Channel { inner } => check_channel_method(
             method,
             inner,
@@ -2234,16 +2232,19 @@ fn check_string_method(
     method: Symbol,
     arg_tys: &[TypeId],
     call_span: Span,
-    builtins: &BuiltinTypes,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> TypeId {
-    if method == kw::LEN {
-        crate::diagnostics::expect_args(0, arg_tys.len(), call_span, diagnostics);
-        builtins.int
-    } else {
-        diagnostics.push(crate::diagnostics::no_method("String", method, call_span));
-        TypeId::ERROR
-    }
+    let result = match method {
+        kw::LEN => ctx.builtins.int,
+        kw::LINES => ctx.table.intern(Ty::List(ctx.builtins.string)),
+        _ => {
+            ctx.diagnostics
+                .push(crate::diagnostics::no_method("String", method, call_span));
+            return TypeId::ERROR;
+        }
+    };
+    crate::diagnostics::expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
+    result
 }
 
 /// Type-checks a `Channel[T]()` constructor expression.
