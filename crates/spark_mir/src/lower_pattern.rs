@@ -25,6 +25,10 @@ pub fn lower_match(
     defs: &DefinitionTable,
 ) -> Local {
     let scrut_local = lower_expr(scrutinee, fb, mir, type_table, defs);
+    fb.push_scope();
+    if !fb.is_def_local(scrut_local) && spark_drop::needs_drop(scrutinee.ty, type_table) {
+        fb.register_drop(scrut_local);
+    }
     let result = fb.fresh_temp(expr.ty, expr.span);
     let join_bb = fb.new_block();
 
@@ -40,6 +44,7 @@ pub fn lower_match(
         // Empty match — should not happen after type checking
         fb.terminate(Terminator::Unreachable);
         fb.switch_to(join_bb);
+        fb.pop_scope_drops(None, expr.span);
         return result;
     }
 
@@ -64,22 +69,50 @@ pub fn lower_match(
 
         // Body block
         fb.switch_to(body_bb);
+        fb.push_scope();
+        let binding = match arm.pattern {
+            HirPattern::Binding { def_id } | HirPattern::TypeNarrow { def_id, .. } => {
+                fb.lookup_def(def_id)
+            }
+            _ => None,
+        }
+        .filter(|&local| spark_drop::needs_drop(fb.local_type(local), type_table));
+        if let Some(local) = binding {
+            fb.register_drop(local);
+        }
 
         // Optional guard
         if let Some(guard) = &arm.guard {
             let guard_local = lower_expr(guard, fb, mir, type_table, defs);
             let guarded_body_bb = fb.new_block();
+            let guard_fail = if binding.is_some() {
+                fb.new_block()
+            } else {
+                next_bb
+            };
             fb.terminate(Terminator::SwitchInt {
                 discriminant: Operand::Copy(Place::from_local(guard_local)),
                 targets: vec![(1, guarded_body_bb)],
-                otherwise: next_bb,
+                otherwise: guard_fail,
             });
+            if let Some(local) = binding {
+                fb.switch_to(guard_fail);
+                fb.push_stmt(Statement::Drop {
+                    place: Place::from_local(local),
+                    span: arm.span,
+                });
+                fb.terminate(Terminator::Goto { target: next_bb });
+            }
             fb.switch_to(guarded_body_bb);
         }
 
         let arm_val = lower_expr(&arm.body, fb, mir, type_table, defs);
-        if !fb.is_terminated() {
+        let falls_through = !fb.is_terminated();
+        if falls_through {
             emit_assign_with_union_wrap(fb, result, arm_val, type_table, arm.span);
+        }
+        fb.pop_scope_drops(None, arm.span);
+        if falls_through {
             fb.terminate(Terminator::Goto { target: join_bb });
         }
     }
@@ -89,6 +122,7 @@ pub fn lower_match(
     fb.terminate(Terminator::Unreachable);
 
     fb.switch_to(join_bb);
+    fb.pop_scope_drops(None, expr.span);
     result
 }
 

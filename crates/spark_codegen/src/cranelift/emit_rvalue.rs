@@ -16,6 +16,7 @@ use cranelift_module::FuncId;
 use rustc_hash::FxHashMap;
 
 use super::context::{EmitCtx, FunctionContext, LocalStorage};
+use super::drop_glue::emit_typed_retain;
 use super::types as clif_types;
 use crate::abi;
 
@@ -151,20 +152,16 @@ pub fn emit_operand<M: Module>(
             } else {
                 resolve_place_type(ctx, place, ecx.table)
             };
-            if spark_drop::needs_rc(ty_id, ecx.table) {
-                let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
-                ctx.builder.ins().call(func_ref, &[val]);
-            } else if matches!(ecx.table.resolve(ty_id), Ty::Function { .. }) {
-                // Function copy: RC inc the env_ptr (second slot of the fat pointer).
-                // val is the address of the fat pointer (fn_ptr, env_ptr).
-                let env_ptr = ctx.builder.ins().load(
-                    ctx.ptr_type,
-                    MemFlags::new(),
+            if spark_drop::needs_drop(ty_id, ecx.table) {
+                emit_typed_retain(
+                    &mut ctx.builder,
                     val,
-                    ctx.ptr_type.bytes() as i32,
+                    ty_id,
+                    ecx.table,
+                    ctx.stubs,
+                    module,
+                    ctx.ptr_type,
                 );
-                let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
-                ctx.builder.ins().call(func_ref, &[env_ptr]);
             }
             Some(val)
         }
@@ -1279,29 +1276,7 @@ fn emit_closure_construction<M: Module>(
             Operand::Copy(place) | Operand::Move(place) => ctx.local_type_id(place.local),
             Operand::Constant(_) => continue,
         };
-        let val = match operand {
-            Operand::Copy(place) | Operand::Move(place) => {
-                emit_place_read(ctx, place, table, module)
-            }
-            Operand::Constant(_) => continue,
-        };
-        // RC inc for Copy captures: the closure env keeps its own reference.
-        if matches!(operand, Operand::Copy(_)) {
-            if spark_drop::needs_rc(cap_ty, table) {
-                let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
-                ctx.builder.ins().call(func_ref, &[val]);
-            } else if matches!(table.resolve(cap_ty), Ty::Function { .. }) {
-                // Function capture: RC inc the env_ptr (second slot of the fat pointer).
-                let inner_env = ctx.builder.ins().load(
-                    ctx.ptr_type,
-                    MemFlags::new(),
-                    val,
-                    ctx.ptr_type.bytes() as i32,
-                );
-                let func_ref = module.declare_func_in_func(ctx.stubs.rc_inc, ctx.builder.func);
-                ctx.builder.ins().call(func_ref, &[inner_env]);
-            }
-        }
+        let val = emit_operand(ctx, operand, ecx, module)?;
         // Skip past the env header prepended by __spark_env_alloc.
         let offset = capture_offsets[i] + spark_abi::ENV_CAPTURES_OFFSET;
         if abi::is_scalar(cap_ty, table) {

@@ -1,0 +1,67 @@
+extern fn probe_list_rc(values: Ref[List[Int]]): Int
+
+alias MaybeValues = List[Int] | Bool
+
+fn wrap(values: List[Int]): List[Int] | Bool {
+    return values
+}
+
+fn failure(): List[Int] | Bool {
+    return false
+}
+
+fn ignore(result: List[Int] | Bool): Int {
+    return 0
+}
+
+fn copyAndConsume(result: List[Int] | Bool, source: Ref[List[Int]]): Int {
+    copy: List[Int] | Bool = result
+    count: Int = probe_list_rc(source)
+    ignore(copy)
+    return count
+}
+
+fn propagate(result: List[Int] | Bool): List[Int] | Bool {
+    values: List[Int] = result!
+    return values
+}
+
+fn size(result: List[Int] | Bool): Int {
+    return result to {
+        values: List[Int] -> values.len(),
+        Bool -> 0
+    }
+}
+
+fn hold(values: List[Int]): Int {
+    results: List[MaybeValues] = [wrap(values)]
+    return results.len()
+}
+
+fn main(): Int {
+    values: List[Int] = [9]
+    print(probe_list_rc(values))
+    ignore(wrap(values))
+    print(probe_list_rc(values))
+    print(copyAndConsume(wrap(values), values))
+    print(probe_list_rc(values))
+    propagate(wrap(values))
+    print(probe_list_rc(values))
+    print(size(wrap(values)))
+    print(probe_list_rc(values))
+    print(size(propagate(failure())))
+    if wrap(values) is Bool {
+        return 1
+    }
+    print(probe_list_rc(values))
+    print(hold(values))
+    print(probe_list_rc(values))
+
+    mutable: MaybeValues! = values
+    print(probe_list_rc(values))
+    mutable = mutable
+    print(probe_list_rc(values))
+    mutable = false
+    print(probe_list_rc(values))
+    return 0
+}

@@ -103,14 +103,6 @@ pub fn lower_stmt(
             let val_local = lower_expr(value, fb, mir, type_table, defs);
             let place = lower_place(target, fb, mir, type_table, defs);
 
-            // If reassigning a mutable RC variable, drop the old value first.
-            if place.projections.is_empty() && spark_drop::needs_drop(value.ty, type_table) {
-                fb.push_stmt(Statement::Drop {
-                    place: place.clone(),
-                    span: value.span,
-                });
-            }
-
             // Check if the destination needs union/optional wrapping.
             // For simple local targets, compare the local's type with the
             // value's type — if they differ (e.g. assigning `Int` to `Int?!`),
@@ -120,6 +112,17 @@ pub fn lower_stmt(
             } else {
                 None
             };
+            if let Some(dest_ty) = dest_ty {
+                if place.local == val_local {
+                    return;
+                }
+                if spark_drop::needs_drop(dest_ty, type_table) {
+                    fb.push_stmt(Statement::Drop {
+                        place: place.clone(),
+                        span: value.span,
+                    });
+                }
+            }
             let needs_wrap = dest_ty.is_some_and(|dt| {
                 let dt_stripped = strip_mutable(dt, type_table);
                 let val_ty = value.ty;
@@ -150,7 +153,7 @@ pub fn lower_stmt(
             // Evaluate for side effects; discard result.
             let result = lower_expr(expr, fb, mir, type_table, defs);
             // If the discarded result is RC'd, drop it immediately.
-            if spark_drop::needs_drop(expr.ty, type_table) {
+            if !fb.is_def_local(result) && spark_drop::needs_drop(expr.ty, type_table) {
                 fb.push_stmt(Statement::Drop {
                     place: Place::from_local(result),
                     span: expr.span,

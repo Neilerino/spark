@@ -1,7 +1,7 @@
 //! Drop elaboration and RC type queries for the Spark compiler.
 //!
 //! Provides helpers to determine which types require reference-counting
-//! operations (heap-allocated types like String, List, Map, Set).
+//! operations (heap-allocated values and tagged unions that own them).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -12,7 +12,8 @@ use spark_types::{Ty, TypeId, TypeTable};
 ///
 /// This is a superset of [`needs_rc`]: it includes all RC types (String, List,
 /// Map, Set) **plus** `Function` types (whose closure environments are
-/// reference-counted separately via `__spark_env_rc_dec`).
+/// reference-counted separately via `__spark_env_rc_dec`) and unions with a
+/// droppable member.
 ///
 /// Use this for deciding whether to register a local for drop. Use [`needs_rc`]
 /// when you need to know if the value itself is an RC pointer (for `rc_inc`).
@@ -26,6 +27,7 @@ pub fn needs_drop(ty_id: TypeId, table: &TypeTable) -> bool {
     }
     match table.resolve(ty_id) {
         Ty::Function { .. } | Ty::Future { .. } | Ty::Channel { .. } => true,
+        Ty::Union(members) => members.iter().any(|&member| needs_drop(member, table)),
         Ty::Mutable(inner) => needs_drop(*inner, table),
         _ => false,
     }

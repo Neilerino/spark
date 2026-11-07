@@ -255,6 +255,18 @@ impl FunctionBuilder {
         }
     }
 
+    pub(crate) fn owns_local(&self, local: Local) -> bool {
+        self.scope_stack
+            .iter()
+            .any(|scope| scope.locals_to_drop.contains(&local))
+    }
+
+    pub(crate) fn current_scope_owns(&self, local: Local) -> bool {
+        self.scope_stack
+            .last()
+            .is_some_and(|scope| scope.locals_to_drop.contains(&local))
+    }
+
     /// Pops the current scope and emits `Drop` statements for all locals
     /// registered in that scope (in reverse / LIFO order).
     ///

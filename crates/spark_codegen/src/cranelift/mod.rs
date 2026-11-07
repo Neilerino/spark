@@ -381,43 +381,19 @@ impl CraneliftBackend {
                     let cap_layout = layouts.layout_of(*cap_ty, table);
                     offset = align_to_u32(offset, cap_layout.align);
 
-                    let (_, unwrapped_ty) = clif_types::unwrap_mutable(*cap_ty, table);
-
-                    if spark_drop::needs_drop(*cap_ty, table)
-                        || matches!(unwrapped_ty, spark_types::Ty::Function { .. })
-                    {
-                        // Function fat pointers are aggregates: emit_typed_drop
-                        // expects the ADDRESS of the fat pointer so it can load
-                        // the env_ptr from the second slot. For all other types,
-                        // we load the value (the RC pointer) and pass it directly.
-                        if matches!(unwrapped_ty, spark_types::Ty::Function { .. }) {
-                            let addr = builder.ins().iadd_imm(env_ptr, i64::from(offset));
-                            drop_glue::emit_typed_drop(
-                                &mut builder,
-                                addr,
-                                *cap_ty,
-                                table,
-                                stubs,
-                                &mut self.module,
-                                ptr_type,
-                            );
-                        } else {
-                            let val = builder.ins().load(
-                                ptr_type,
-                                MemFlags::new(),
-                                env_ptr,
-                                i32::try_from(offset).unwrap_or(0),
-                            );
-                            drop_glue::emit_typed_drop(
-                                &mut builder,
-                                val,
-                                *cap_ty,
-                                table,
-                                stubs,
-                                &mut self.module,
-                                ptr_type,
-                            );
-                        }
+                    if spark_drop::needs_drop(*cap_ty, table) {
+                        let addr = builder.ins().iadd_imm(env_ptr, i64::from(offset));
+                        let value =
+                            drop_glue::rc_value_at(&mut builder, addr, *cap_ty, table, ptr_type);
+                        drop_glue::emit_typed_drop(
+                            &mut builder,
+                            value,
+                            *cap_ty,
+                            table,
+                            stubs,
+                            &mut self.module,
+                            ptr_type,
+                        );
                     }
 
                     offset += cap_layout.size;
