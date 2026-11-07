@@ -2133,12 +2133,14 @@ fn check_method_call(
             if mutates {
                 diagnostics::require_mutable(collection, is_mutable, recv_span, ctx.diagnostics);
             }
-            if let [arg] = arg_tys {
-                if check_collection_argument(*arg, key, arg_span, diagnostic, ctx) {
-                    return result;
-                }
+            let [arg] = arg_tys else {
+                return TypeId::ERROR;
+            };
+            if check_collection_argument(*arg, key, arg_span, diagnostic, ctx) {
+                result
+            } else {
+                TypeId::ERROR
             }
-            TypeId::ERROR
         }
         Ty::String => check_string_method(method, arg_tys, call_span, ctx),
         Ty::Channel { inner } => check_channel_method(

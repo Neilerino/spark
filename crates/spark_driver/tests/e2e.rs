@@ -435,54 +435,24 @@ fn map_multiple_sizes() {
 
 #[test]
 fn collection_argument_types() {
-    for (name, diagnostic, types) in [
-        (
-            "map_index_key",
-            "map key type mismatch",
-            Some(("String", "Int64")),
-        ),
-        (
-            "map_assign_key",
-            "map key type mismatch",
-            Some(("String", "Int64")),
-        ),
-        (
-            "map_compound_assign_key",
-            "map key type mismatch",
-            Some(("String", "Int64")),
-        ),
-        (
-            "map_contains_key",
-            "map key type mismatch",
-            Some(("String", "Int64")),
-        ),
-        (
-            "map_remove_key",
-            "map key type mismatch",
-            Some(("String", "Int64")),
-        ),
-        (
-            "map_key_width",
-            "map key type mismatch",
-            Some(("Int8", "Int64")),
-        ),
-        (
-            "set_contains_element",
-            "set element type mismatch",
-            Some(("String", "Int64")),
-        ),
-        (
-            "set_add_element",
-            "set element type mismatch",
-            Some(("String", "Int64")),
-        ),
-        (
-            "set_remove_element",
-            "set element type mismatch",
-            Some(("String", "Int64")),
-        ),
-        ("set_index", "type is not indexable", None),
-        ("set_index_assign", "type is not indexable", None),
+    let map_key = "map key type mismatch";
+    let set_element = "set element type mismatch";
+    let string_key = (map_key, Some(("String", "Int64")));
+    let string_element = (set_element, Some(("String", "Int64")));
+    let non_indexable = ("type is not indexable", None);
+
+    for (name, (diagnostic, types)) in [
+        ("map_index_key", string_key),
+        ("map_assign_key", string_key),
+        ("map_compound_assign_key", string_key),
+        ("map_contains_key", string_key),
+        ("map_remove_key", string_key),
+        ("map_key_width", (map_key, Some(("Int8", "Int64")))),
+        ("set_contains_element", string_element),
+        ("set_add_element", string_element),
+        ("set_remove_element", string_element),
+        ("set_index", non_indexable),
+        ("set_index_assign", non_indexable),
     ] {
         let fixture = format!("compile-fail/type_errors/{name}.spark");
         for args in [&[][..], &["--no-opt"][..]] {
