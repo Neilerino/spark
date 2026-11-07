@@ -1124,16 +1124,13 @@ fn expr_type(id: spark_ast::ExprId, table: &TypeTable) -> TypeId {
     table.get_expr_type(id).unwrap_or(TypeId::ERROR)
 }
 
-/// If the expression has type `Ref[T]`, wraps it in a `Deref` to produce `T`.
-pub(crate) fn auto_deref_ref(expr: HirExpr, table: &TypeTable) -> HirExpr {
-    let stripped = strip_mutable_ty(expr.ty, table);
-    if let Ty::Ref { inner, .. } = table.resolve(stripped) {
-        let inner_ty = *inner;
+/// Dereferences an expression until it has a value type.
+pub(crate) fn auto_deref_ref(mut expr: HirExpr, table: &TypeTable) -> HirExpr {
+    while let Ty::Ref { inner, .. } = table.resolve(strip_mutable_ty(expr.ty, table)) {
         let span = expr.span;
-        HirExpr::new(HirExprKind::Deref(Box::new(expr)), inner_ty, span)
-    } else {
-        expr
+        expr = HirExpr::new(HirExprKind::Deref(Box::new(expr)), *inner, span);
     }
+    expr
 }
 
 /// Lowers a pipeline callback that may be a `Partial` (e.g. `func{b: 3}`).
@@ -1345,42 +1342,23 @@ fn extract_fn_ret_ty(ty: TypeId, table: &TypeTable, default: TypeId) -> TypeId {
 
 /// Inserts `Borrow` or `Deref` coercion if the argument type needs to be
 /// converted to match the parameter type.
-pub(crate) fn coerce_ref(
-    mut arg: HirExpr,
-    param_ty: TypeId,
-    span: Span,
-    table: &TypeTable,
-) -> HirExpr {
-    let arg_inner = strip_mutable_ty(arg.ty, table);
+pub(crate) fn coerce_ref(arg: HirExpr, param_ty: TypeId, span: Span, table: &TypeTable) -> HirExpr {
     let param_inner = strip_mutable_ty(param_ty, table);
-    let arg_resolved = table.resolve(arg_inner);
-    let param_resolved = table.resolve(param_inner);
-
-    // Auto-borrow: param is Ref[T], arg is T
-    if let Ty::Ref { mutable, .. } = param_resolved {
-        if !matches!(arg_resolved, Ty::Ref { .. }) && !arg.ty.is_error() {
-            let mutable = *mutable;
-            arg = HirExpr::new(
-                HirExprKind::Borrow {
-                    operand: Box::new(arg),
-                    mutable,
-                },
-                param_ty,
-                span,
-            );
-        }
+    let Ty::Ref { mutable, .. } = table.resolve(param_inner) else {
+        return auto_deref_ref(arg, table);
+    };
+    let arg_inner = strip_mutable_ty(arg.ty, table);
+    if matches!(table.resolve(arg_inner), Ty::Ref { .. }) || arg.ty.is_error() {
+        return arg;
     }
-
-    // Auto-deref: param is T (not Ref), arg is Ref[T]
-    let arg_inner2 = strip_mutable_ty(arg.ty, table);
-    if !matches!(param_resolved, Ty::Ref { .. }) {
-        if let Ty::Ref { inner, .. } = table.resolve(arg_inner2) {
-            let inner_ty = *inner;
-            arg = HirExpr::new(HirExprKind::Deref(Box::new(arg)), inner_ty, span);
-        }
-    }
-
-    arg
+    HirExpr::new(
+        HirExprKind::Borrow {
+            operand: Box::new(arg),
+            mutable: *mutable,
+        },
+        param_ty,
+        span,
+    )
 }
 
 // ============================================================================

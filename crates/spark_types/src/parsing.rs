@@ -157,6 +157,7 @@ impl TextParsing {
 
         let error = ctx.table.intern(Ty::Struct(self.error));
         let expected_members = expected
+            .map(|expected| strip_mutable(expected, ctx.table))
             .and_then(|expected| match ctx.table.resolve(expected) {
                 Ty::Union(members) if members.contains(&error) => Some(members.as_slice()),
                 _ => None,

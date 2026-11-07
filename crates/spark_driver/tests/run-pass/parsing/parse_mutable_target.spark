@@ -1,0 +1,25 @@
+import spark.text { parse, ParseError }
+
+alias ParsedInt = Int | ParseError
+
+fn read(text: String): ParsedInt {
+    value: Int! = parse(text)!
+    value = value + 1
+    return value
+}
+
+fn show(result: ParsedInt): Void {
+    result to {
+        value: Int -> print(value),
+        ParseError -> print("parse error")
+    }
+}
+
+fn main(): Int {
+    show(read("41"))
+    show(read("bad"))
+    result: ParsedInt! = parse("42")
+    result = 43
+    show(result)
+    return 0
+}

@@ -4,6 +4,7 @@
 //! classify union members as success vs error types. Used by HIR lowering
 //! to desugar `??`, `?.`, `!`, and `to` expressions.
 
+use crate::check_expr::strip_mutable;
 use crate::table::TypeTable;
 use crate::ty::{Ty, TypeId};
 
@@ -87,7 +88,7 @@ pub fn split_union(
     };
 
     // Strategy 1: expected_ty specifies the success type
-    if let Some(expected) = expected_ty {
+    if let Some(expected) = expected_ty.map(|expected| strip_mutable(expected, table)) {
         if !expected.is_error() {
             // Expand expected into its members (handles both single types and unions)
             let expected_members = match table.resolve(expected) {
