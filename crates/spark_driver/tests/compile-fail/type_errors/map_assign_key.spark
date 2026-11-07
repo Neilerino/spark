@@ -1,0 +1,5 @@
+fn main(): Int {
+    m: Map[String, Int]! = {"a": 1}
+    m[123] = 2
+    return 0
+}

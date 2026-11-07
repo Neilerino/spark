@@ -1,0 +1,7 @@
+fn invalid(s: Set[String]): Void {
+    value: String? = s["a"]
+}
+
+fn main(): Int {
+    return 0
+}

@@ -434,6 +434,88 @@ fn map_multiple_sizes() {
 }
 
 #[test]
+fn collection_argument_types() {
+    for (name, diagnostic, types) in [
+        (
+            "map_index_key",
+            "map key type mismatch",
+            Some(("String", "Int64")),
+        ),
+        (
+            "map_assign_key",
+            "map key type mismatch",
+            Some(("String", "Int64")),
+        ),
+        (
+            "map_compound_assign_key",
+            "map key type mismatch",
+            Some(("String", "Int64")),
+        ),
+        (
+            "map_contains_key",
+            "map key type mismatch",
+            Some(("String", "Int64")),
+        ),
+        (
+            "map_remove_key",
+            "map key type mismatch",
+            Some(("String", "Int64")),
+        ),
+        (
+            "map_key_width",
+            "map key type mismatch",
+            Some(("Int8", "Int64")),
+        ),
+        (
+            "set_contains_element",
+            "set element type mismatch",
+            Some(("String", "Int64")),
+        ),
+        (
+            "set_add_element",
+            "set element type mismatch",
+            Some(("String", "Int64")),
+        ),
+        (
+            "set_remove_element",
+            "set element type mismatch",
+            Some(("String", "Int64")),
+        ),
+        ("set_index", "type is not indexable", None),
+        ("set_index_assign", "type is not indexable", None),
+    ] {
+        let fixture = format!("compile-fail/type_errors/{name}.spark");
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(&fixture, args);
+            assert_ne!(result.exit_code, 0, "{fixture} {args:?}");
+            assert!(
+                result.stderr.contains(diagnostic),
+                "{fixture} {args:?} expected {diagnostic:?}, got:\n{}",
+                result.stderr
+            );
+            if let Some((expected, found)) = types {
+                let label = format!("expected `{expected}`, found `{found}`");
+                assert!(
+                    result.stderr.contains(&label),
+                    "{fixture} {args:?} expected {label:?}, got:\n{}",
+                    result.stderr
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn collection_argument_types_accept_mutable_values() {
+    let fixture = "run-pass/collections/keyed_collection_methods.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "true\nfalse");
+    }
+}
+
+#[test]
 fn map_get_optional() {
     assert_output("run-pass/collections/map_get_optional.spark", "found");
 }

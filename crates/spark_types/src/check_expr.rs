@@ -435,6 +435,7 @@ fn check_expr_inner(
                 recv_ty,
                 method.name,
                 &arg_tys,
+                args.first().map_or(expr.span, |arg| arg.value.span),
                 receiver.span,
                 expr.span,
                 ctx,
@@ -745,7 +746,13 @@ fn check_index_access(
             }
             ctx.table.intern(Ty::Optional(elem))
         }
-        Ty::Map(_, value) => ctx.table.intern(Ty::Optional(value)),
+        Ty::Map(key, value) => {
+            if check_collection_argument(index_ty, key, index.span, "map key type mismatch", ctx) {
+                ctx.table.intern(Ty::Optional(value))
+            } else {
+                TypeId::ERROR
+            }
+        }
         Ty::Tuple(elems) => {
             if let ExprKind::Literal(spark_ast::Literal {
                 kind: LiteralKind::Int(val),
@@ -2076,6 +2083,7 @@ fn check_method_call(
     recv_ty: TypeId,
     method: Symbol,
     arg_tys: &[TypeId],
+    arg_span: Span,
     recv_span: Span,
     call_span: Span,
     ctx: &mut TypeCheckCtx<'_>,
@@ -2099,8 +2107,39 @@ fn check_method_call(
         Ty::List(elem) => {
             check_list_method(method, elem, is_mutable, arg_tys, call_span, recv_span, ctx)
         }
-        Ty::Map(_k, _v) => check_map_method(method, is_mutable, arg_tys, call_span, recv_span, ctx),
-        Ty::Set(_elem) => check_set_method(method, is_mutable, arg_tys, call_span, recv_span, ctx),
+        Ty::Map(key, _) | Ty::Set(key) => {
+            let is_set = matches!(stripped, Ty::Set(_));
+            let (collection, diagnostic) = if is_set {
+                ("Set", "set element type mismatch")
+            } else {
+                ("Map", "map key type mismatch")
+            };
+            let (result, mutates) = match method {
+                kw::LEN => {
+                    diagnostics::expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
+                    return ctx.builtins.int;
+                }
+                kw::CONTAINS => (ctx.builtins.bool_ty, false),
+                kw::REMOVE => (ctx.builtins.void, true),
+                kw::ADD if is_set => (ctx.builtins.void, true),
+                _ => {
+                    ctx.diagnostics
+                        .push(diagnostics::no_method(collection, method, call_span));
+                    return TypeId::ERROR;
+                }
+            };
+
+            diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
+            if mutates {
+                diagnostics::require_mutable(collection, is_mutable, recv_span, ctx.diagnostics);
+            }
+            if let [arg] = arg_tys {
+                if check_collection_argument(*arg, key, arg_span, diagnostic, ctx) {
+                    return result;
+                }
+            }
+            TypeId::ERROR
+        }
         Ty::String => check_string_method(method, arg_tys, call_span, ctx),
         Ty::Channel { inner } => check_channel_method(
             method,
@@ -2171,60 +2210,30 @@ fn check_list_method(
     }
 }
 
-/// Checks a method call on `Map[K, V]`.
-fn check_map_method(
-    method: Symbol,
-    is_mutable: bool,
-    arg_tys: &[TypeId],
-    call_span: Span,
-    recv_span: Span,
+fn check_collection_argument(
+    actual: TypeId,
+    expected: TypeId,
+    span: Span,
+    diagnostic: &str,
     ctx: &mut TypeCheckCtx<'_>,
-) -> TypeId {
-    if method == kw::LEN {
-        diagnostics::expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
-        ctx.builtins.int
-    } else if method == kw::CONTAINS {
-        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        ctx.builtins.bool_ty
-    } else if method == kw::REMOVE {
-        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        diagnostics::require_mutable("Map", is_mutable, recv_span, ctx.diagnostics);
-        ctx.builtins.void
-    } else {
-        ctx.diagnostics
-            .push(diagnostics::no_method("Map", method, call_span));
-        TypeId::ERROR
+) -> bool {
+    if actual.is_error() {
+        return false;
     }
-}
+    // The runtime reads key and element bytes using the collection's storage type.
+    if expected.is_error() || strip_mutable(actual, ctx.table) == strip_mutable(expected, ctx.table)
+    {
+        return true;
+    }
 
-/// Checks a method call on `Set[T]`.
-fn check_set_method(
-    method: Symbol,
-    is_mutable: bool,
-    arg_tys: &[TypeId],
-    call_span: Span,
-    recv_span: Span,
-    ctx: &mut TypeCheckCtx<'_>,
-) -> TypeId {
-    if method == kw::LEN {
-        diagnostics::expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
-        ctx.builtins.int
-    } else if method == kw::ADD {
-        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        diagnostics::require_mutable("Set", is_mutable, recv_span, ctx.diagnostics);
-        ctx.builtins.void
-    } else if method == kw::CONTAINS {
-        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        ctx.builtins.bool_ty
-    } else if method == kw::REMOVE {
-        diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        diagnostics::require_mutable("Set", is_mutable, recv_span, ctx.diagnostics);
-        ctx.builtins.void
-    } else {
-        ctx.diagnostics
-            .push(diagnostics::no_method("Set", method, call_span));
-        TypeId::ERROR
-    }
+    let actual = type_name(actual, ctx.table, ctx.definitions);
+    let expected = type_name(expected, ctx.table, ctx.definitions);
+    ctx.diagnostics
+        .push(Diagnostic::error(diagnostic).with_label(Label::primary(
+            span,
+            format!("expected `{expected}`, found `{actual}`"),
+        )));
+    false
 }
 
 /// Checks a method call on `String`.
