@@ -100,6 +100,16 @@ impl Resolver {
     /// The prelude rib sits below all module ribs, so user definitions
     /// can shadow built-in names.
     fn register_builtins(&mut self) {
+        let int = self.definitions.insert(DefinitionInfo::new(
+            DefinitionKind::BuiltinType,
+            kw::INT,
+            Span::DUMMY,
+            Visibility::Public,
+            ModulePath::root(),
+        ));
+        self.builtin_defs
+            .push((kw::INT, int, DefinitionKind::BuiltinType));
+
         // Register `print` as a built-in function
         let info = DefinitionInfo::new(
             DefinitionKind::BuiltinFunction,
@@ -414,6 +424,13 @@ impl Resolver {
                         }
                     }
                 }
+                if let Some((_, def_id, _)) = self
+                    .builtin_defs
+                    .iter()
+                    .find(|(builtin, _, kind)| *builtin == name && kind.is_type())
+                {
+                    return *def_id;
+                }
             }
         }
         DefId::DUMMY
@@ -592,10 +609,13 @@ impl Resolver {
             // Push module rib and populate with collected defs
             self.rib_stack.push_rib(RibKind::Module);
 
-            // Inject built-in functions into the module rib
+            // Inject built-in definitions into the module rib
             for (name, def_id, kind) in &self.builtin_defs {
                 if kind.is_value() {
                     self.rib_stack.define_value(*name, *def_id);
+                }
+                if kind.is_type() {
+                    self.rib_stack.define_type(*name, *def_id);
                 }
             }
 
@@ -624,8 +644,12 @@ impl Resolver {
                 // Use index-based loop to avoid borrow conflict without allocating.
                 for i in 0..self.builtin_defs.len() {
                     let (name, def_id, ref kind) = self.builtin_defs[i];
+                    let is_type = kind.is_type();
                     if kind.is_value() {
                         self.scope_define_value(name, def_id);
+                    }
+                    if is_type {
+                        self.scope_define_type(name, def_id);
                     }
                 }
 
@@ -856,9 +880,19 @@ impl Resolver {
         for ext in &i.extends {
             self.resolve_type_expr(ext);
         }
+        self.rib_stack.push_type_rib(RibKind::Normal);
+        if let Some(def_id) = self
+            .resolved
+            .resolutions
+            .get(&self.current_file)
+            .and_then(|res| res.get_binding(i.name.span))
+        {
+            self.rib_stack.define_type(kw::SELF_UPPER, def_id);
+        }
         for method in &i.methods {
             self.resolve_function(method);
         }
+        self.rib_stack.pop_type_rib();
         self.pop_generics_if_needed(&i.generics);
     }
 

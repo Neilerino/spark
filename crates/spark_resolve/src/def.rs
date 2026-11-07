@@ -82,6 +82,8 @@ pub enum DefinitionKind {
     LifetimeParam,
     /// Built-in function (e.g., `print`).
     BuiltinFunction,
+    /// Built-in type with a definition for protocol bindings.
+    BuiltinType,
     /// Built-in method on a collection or string type (e.g., `list.len()`).
     BuiltinMethod,
     /// Method from an interface binding (contains the bound type's `DefId`).
@@ -104,6 +106,7 @@ impl DefinitionKind {
                 | Self::TypeAlias
                 | Self::TypeDef
                 | Self::GenericParam
+                | Self::BuiltinType
         )
     }
 

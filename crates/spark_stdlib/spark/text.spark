@@ -1,0 +1,26 @@
+module text
+
+pub struct ParseError {
+    code: Int
+}
+
+pub interface Parseable {
+    fn parse(text: String): Self | ParseError
+}
+
+/// Parses the whole input with the parser bound to the expected result type.
+pub fn parse[T: Parseable](text: String): T | ParseError
+
+extern fn __spark_text_parse_int(text: String, value: Ref[Int]!): Int
+
+Int binds Parseable {
+    fn parse(text: String): Int | ParseError {
+        value: Ref[Int]! = 0
+        code: Int = __spark_text_parse_int(text, value)
+        if code != 0 {
+            return ParseError { code: code }
+        }
+        parsed: Int = value
+        return parsed
+    }
+}

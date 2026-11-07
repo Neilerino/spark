@@ -407,6 +407,10 @@ impl Interner {
             // Pipeline filter/find keywords
             "filter",
             "find",
+            "text",
+            "parse",
+            "Parseable",
+            "ParseError",
         ];
 
         for kw in keywords {
@@ -791,6 +795,14 @@ pub mod kw {
     pub const FILTER: Symbol = Symbol(125);
     /// `find`
     pub const FIND_KW: Symbol = Symbol(126);
+    /// `text` standard library module.
+    pub const TEXT: Symbol = Symbol(127);
+    /// `parse` text parsing function.
+    pub const PARSE: Symbol = Symbol(128);
+    /// `Parseable` text parsing protocol.
+    pub const PARSEABLE: Symbol = Symbol(129);
+    /// `ParseError` text parsing error.
+    pub const PARSE_ERROR: Symbol = Symbol(130);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]

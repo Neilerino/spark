@@ -64,6 +64,7 @@ pub mod display;
 pub mod exhaustive;
 pub mod intern;
 pub mod lower;
+mod parsing;
 pub mod substitute;
 pub mod table;
 pub mod ty;

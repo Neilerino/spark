@@ -147,6 +147,9 @@ fn check_expr_inner(
         // === Function call ===
         ExprKind::Call { callee, args } => {
             let callee_ty = check_expr(callee, ctx, current_fn_ret);
+            if let Some(protocol) = crate::parsing::protocol_for_call(callee.span, ctx) {
+                return protocol.check_call(args, expr.span, expected_ty, ctx, current_fn_ret);
+            }
             check_call(callee_ty, args, expr.span, callee.span, ctx, current_fn_ret)
         }
 
@@ -630,7 +633,14 @@ fn check_propagate(
     current_fn_ret: Option<TypeId>,
     expected_ty: Option<TypeId>,
 ) -> TypeId {
-    let inner_ty = check_expr(inner_expr, ctx, current_fn_ret);
+    let expected_result = if let ExprKind::Call { callee, .. } = &inner_expr.kind {
+        crate::parsing::protocol_for_call(callee.span, ctx)
+            .zip(expected_ty)
+            .map(|(protocol, success)| protocol.result_type(success, ctx.table))
+    } else {
+        None
+    };
+    let inner_ty = check_expr_expected(inner_expr, ctx, current_fn_ret, expected_result);
 
     // For Optional(T) → success type is T
     if let Ty::Optional(success) = ctx.table.resolve(inner_ty) {

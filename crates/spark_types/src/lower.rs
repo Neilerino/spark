@@ -271,6 +271,11 @@ fn lower_named_def(
             ctx.table.get_def_type(def_id).unwrap_or(TypeId::ERROR)
         }
         DefinitionKind::Interface => {
+            if let TypeExprKind::Named { path, .. } = &type_expr.kind {
+                if path.is_simple() && path.segments[0].name == spark_intern::kw::SELF_UPPER {
+                    return ctx.table.intern(Ty::Param(def_id));
+                }
+            }
             ctx.diagnostics.push(
                 Diagnostic::error("interfaces cannot be used as types directly")
                     .with_label(Label::primary(type_expr.span, "interface used as type")),

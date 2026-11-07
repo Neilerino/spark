@@ -1,0 +1,21 @@
+import spark.text { parse, ParseError }
+
+fn readCount(text: String): Int | ParseError {
+    count: Int = parse(text)!
+    return count
+}
+
+fn show(result: Int | ParseError): Void {
+    result to {
+        count: Int -> print(count),
+        ParseError -> print("parse error")
+    }
+}
+
+fn main(): Int {
+    show(readCount("+42"))
+    show(readCount("-9223372036854775808"))
+    show(readCount("42x"))
+    show(readCount("9223372036854775808"))
+    return 0
+}

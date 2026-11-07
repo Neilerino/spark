@@ -233,15 +233,23 @@ fn collect_interface(iface: &InterfaceDef, ctx: &mut TypeCheckCtx<'_>) {
 fn collect_binding(binding: &BindingDef, ctx: &mut TypeCheckCtx<'_>) {
     // Find the bound type's DefId
     let type_def_id = find_type_def_from_binding_ty(&binding.ty, ctx.resolutions);
-    if type_def_id.is_dummy() {
-        return;
-    }
 
     let mut all_methods: Vec<(spark_intern::Symbol, DefId)> = Vec::new();
 
     for target in &binding.bindings {
         // Validate interface requirements
         let interface_def_id = find_type_def_from_binding_ty(&target.interface, ctx.resolutions);
+        if let Some(protocol) = ctx
+            .table
+            .text_parsing
+            .filter(|p| p.interface == interface_def_id)
+        {
+            protocol.collect_binding(&binding.ty, type_def_id, target, ctx);
+            continue;
+        }
+        if type_def_id.is_dummy() {
+            continue;
+        }
         if !interface_def_id.is_dummy() {
             ctx.table
                 .add_interface_binding(type_def_id, interface_def_id);
