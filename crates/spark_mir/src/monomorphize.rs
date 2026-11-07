@@ -15,7 +15,9 @@ use spark_span::Span;
 use spark_types::substitute::{substitute_mut, SubstMap};
 use spark_types::{mangle_type, TypeId, TypeTable};
 
-use crate::mir::{Constant, Mir, MirFunction, Operand, Rvalue, Statement, Terminator};
+use crate::mir::{
+    AggregateKind, Constant, Mir, MirFunction, Operand, Projection, Rvalue, Statement, Terminator,
+};
 
 /// Runs monomorphization on the MIR.
 ///
@@ -126,12 +128,31 @@ pub fn monomorphize(mir: &mut Mir, table: &mut TypeTable, definitions: &mut Defi
 fn substitute_rvalues(func: &mut MirFunction, subst: &SubstMap, table: &mut TypeTable) {
     for block in &mut func.blocks {
         for stmt in &mut block.statements {
-            if let Statement::Assign {
-                rvalue: Rvalue::Cast { target_ty, .. },
-                ..
-            } = stmt
-            {
-                *target_ty = substitute_mut(*target_ty, subst, table);
+            let Statement::Assign { rvalue, .. } = stmt else {
+                continue;
+            };
+            match rvalue {
+                Rvalue::Cast { target_ty, .. } => {
+                    *target_ty = substitute_mut(*target_ty, subst, table);
+                }
+                Rvalue::Aggregate(
+                    AggregateKind::Union {
+                        union_ty,
+                        member_ty,
+                    },
+                    _,
+                ) => {
+                    *union_ty = substitute_mut(*union_ty, subst, table);
+                    *member_ty = substitute_mut(*member_ty, subst, table);
+                }
+                Rvalue::Use(Operand::Copy(place) | Operand::Move(place)) => {
+                    for projection in &mut place.projections {
+                        if let Projection::UnionPayload(ty) = projection {
+                            *ty = substitute_mut(*ty, subst, table);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }

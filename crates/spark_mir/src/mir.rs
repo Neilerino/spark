@@ -301,8 +301,6 @@ pub enum Rvalue {
         map: Place,
         /// The key, borrowed for the lookup.
         key: Place,
-        /// The map's value type (inner type of the resulting Optional).
-        value_ty: TypeId,
     },
     /// Compute the length of a range without allocating a list.
     ///

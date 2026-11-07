@@ -132,7 +132,6 @@ pub fn lower_expr(
                         Rvalue::MapGetOptional {
                             map: Place::from_local(map),
                             key: Place::from_local(key),
-                            value_ty: *value_ty,
                         },
                         expr.span,
                     );

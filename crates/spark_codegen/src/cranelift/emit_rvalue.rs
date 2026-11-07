@@ -107,8 +107,8 @@ pub fn emit_rvalue<M: Module>(
             Some(ctx.builder.inst_results(call)[0])
         }
 
-        Rvalue::MapGetOptional { map, key, value_ty } => {
-            emit_map_get_optional(ctx, map, key, *value_ty, dest_local, ecx, module);
+        Rvalue::MapGetOptional { map, key } => {
+            emit_map_get_optional(ctx, map, key, dest_local, ecx, module);
             None
         }
 
@@ -1327,27 +1327,21 @@ fn emit_closure_construction<M: Module>(
     Some(dest_addr)
 }
 
-/// Emits a null-safe map index that produces `Optional(V)`.
-///
-/// Calls `__spark_map_get(map, key)` and checks for null:
-/// - If null (key not found): writes tag=0 (Null) to the destination
-/// - If non-null (key found): loads the value, writes tag=1 (Some) + payload
-///
-/// Returns the destination stack slot address.
+/// Writes an owned optional map value into the destination slot.
 fn emit_map_get_optional<M: Module>(
     ctx: &mut FunctionContext<'_>,
     map: &Place,
     key: &Place,
-    value_ty: TypeId,
     dest_local: Local,
     ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
     let table = ecx.table;
     let map_ty = resolve_place_type(ctx, map, table);
-    let (_, Ty::Map(key_ty, _)) = clif_types::unwrap_mutable(map_ty, table) else {
+    let (_, Ty::Map(key_ty, value_ty)) = clif_types::unwrap_mutable(map_ty, table) else {
         unreachable!("map lookup requires a map");
     };
+    let value_ty = *value_ty;
     let map_ptr = emit_place_read(ctx, map, table, module);
     let key_value = emit_place_read(ctx, key, table, module);
     let key_addr = if abi::is_scalar(*key_ty, table) {

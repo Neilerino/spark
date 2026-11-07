@@ -85,7 +85,7 @@ fn coalesce_result(
     )
 }
 
-fn match_member(
+pub(crate) fn match_member(
     member: TypeId,
     span: Span,
     table: &TypeTable,

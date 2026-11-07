@@ -22,6 +22,18 @@ fn extract(values: List[Int]): List[Int]? {
     return hit
 }
 
+fn genericLookup[V](data: Map[String, V], key: String): V? {
+    return data[key]
+}
+
+fn genericDiscard[V](data: Map[String, V], key: String): Void {
+    data[key]
+}
+
+fn genericDefault[V](data: Map[String, V], key: String, fallback: V): V {
+    return data[key] ?? fallback
+}
+
 fn main(): Int {
     values: List[Int] = [9]
     before: Int = probe_list_rc(values)
@@ -35,5 +47,25 @@ fn main(): Int {
         }
     }
     print(probe_list_rc(values) - before)
+
+    data: Map[String, List[Int]] = {"yes": values}
+    beforeGeneric: Int = probe_list_rc(values)
+    {
+        hit: List[Int]? = genericLookup(data, "yes")
+        print(probe_list_rc(values) - beforeGeneric)
+        if hit is Null {
+            print("unexpected miss")
+        }
+    }
+    print(probe_list_rc(values) - beforeGeneric)
+    genericDiscard(data, "yes")
+    print(probe_list_rc(values) - beforeGeneric)
+    {
+        fallback: List[Int] = [99, 100]
+        chosen: List[Int] = genericDefault(data, "yes", fallback)
+        print(chosen.len())
+        print(probe_list_rc(values) - beforeGeneric)
+    }
+    print(probe_list_rc(values) - beforeGeneric)
     return 0
 }

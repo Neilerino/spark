@@ -919,27 +919,12 @@ fn lower_to_narrowing(
             if handled {
                 continue;
             }
-            let (pattern, body) = if is_null {
-                (
-                    HirPattern::Literal(HirLiteral::Null),
-                    HirExprKind::Literal(HirLiteral::Null),
-                )
-            } else {
-                let def_id = ctx.definitions.next_synthetic_id(span);
-                (
-                    HirPattern::TypeNarrow {
-                        def_id,
-                        ty: member_ty,
-                    },
-                    HirExprKind::Local(def_id),
-                )
-            };
-            hir_arms.push(HirMatchArm {
-                pattern,
-                guard: None,
-                body: HirExpr::new(body, member_ty, span),
+            hir_arms.push(desugar::match_member(
+                member_ty,
                 span,
-            });
+                ctx.table,
+                ctx.definitions,
+            ));
         }
     }
 

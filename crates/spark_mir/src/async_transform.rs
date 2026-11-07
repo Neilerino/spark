@@ -377,31 +377,25 @@ fn add_rvalue_uses(rvalue: &Rvalue, gen: &mut FxHashSet<Local>) {
             add_operand_uses(step, gen);
         }
         Rvalue::MapGetOptional { map, key, .. } => {
-            gen.insert(map.local);
-            gen.insert(key.local);
-            for place in [map, key] {
-                for projection in &place.projections {
-                    if let Projection::Index(index) = projection {
-                        gen.insert(*index);
-                    }
-                }
-            }
+            add_place_uses(map, gen);
+            add_place_uses(key, gen);
         }
     }
 }
 
 /// Adds uses from an operand to the gen set.
 fn add_operand_uses(op: &Operand, gen: &mut FxHashSet<Local>) {
-    match op {
-        Operand::Copy(place) | Operand::Move(place) => {
-            gen.insert(place.local);
-            for proj in &place.projections {
-                if let Projection::Index(idx_local) = proj {
-                    gen.insert(*idx_local);
-                }
-            }
+    if let Operand::Copy(place) | Operand::Move(place) = op {
+        add_place_uses(place, gen);
+    }
+}
+
+fn add_place_uses(place: &Place, gen: &mut FxHashSet<Local>) {
+    gen.insert(place.local);
+    for projection in &place.projections {
+        if let Projection::Index(index) = projection {
+            gen.insert(*index);
         }
-        Operand::Constant(_) => {}
     }
 }
 
@@ -1192,10 +1186,9 @@ fn remap_rvalue(rvalue: &Rvalue, local_remap: &FxHashMap<Local, Local>) -> Rvalu
             step: remap_operand(step, local_remap),
             inclusive: *inclusive,
         },
-        Rvalue::MapGetOptional { map, key, value_ty } => Rvalue::MapGetOptional {
+        Rvalue::MapGetOptional { map, key } => Rvalue::MapGetOptional {
             map: remap_place(map, local_remap),
             key: remap_place(key, local_remap),
-            value_ty: *value_ty,
         },
     }
 }

@@ -507,7 +507,7 @@ fn map_lookup_balances_payload_and_input_ownership() {
          int64_t probe_string_rc(const void *const *slot) { return count(slot); }\n\
          int64_t probe_map_rc(const void *const *slot) { return count(slot); }\n",
         include_str!("run-pass/collections/map_lookup_ownership.spark"),
-        "1\n0\n0\n1\n1\n1\n0",
+        "1\n0\n0\n1\n1\n1\n0\n1\n0\n0\n1\n1\n0",
     );
 }
 
