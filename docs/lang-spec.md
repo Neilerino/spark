@@ -1423,6 +1423,7 @@ back: Char = code.toChar()
 `spark.text` provides `parse[T: Parseable](text: String): T | ParseError`.
 The declared type of a binding selects the parser at compile time. Use `!` to
 propagate `ParseError` from a function whose return type includes it.
+The annotation must select a single target type.
 
 ```spark
 import spark.text { parse, ParseError }

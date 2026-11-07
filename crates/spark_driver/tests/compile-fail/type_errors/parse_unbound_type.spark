@@ -1,0 +1,9 @@
+import spark.text { parse, ParseError }
+struct Point {
+    x: Int
+}
+fn read(): Point | ParseError {
+    point: Point = parse("1")!
+    return point
+}
+fn main(): Int { return 0 }

@@ -1,0 +1,8 @@
+import spark.text { Parseable, ParseError }
+struct Point {
+    x: Int
+}
+Point binds Parseable {
+    fn parse(text: Int): Point | ParseError { return Point { x: text } }
+}
+fn main(): Int { return 0 }

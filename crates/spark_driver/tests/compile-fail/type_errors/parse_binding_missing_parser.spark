@@ -1,0 +1,8 @@
+import spark.text { Parseable }
+struct Point {
+    x: Int
+}
+Point binds Parseable {
+    fn other(text: String): Int { return 0 }
+}
+fn main(): Int { return 0 }
