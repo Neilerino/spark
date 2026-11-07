@@ -5,6 +5,11 @@ fn readCount(text: String): Int | ParseError {
     return count
 }
 
+fn readGroupedCount(text: String): Int | ParseError {
+    count: Int = ((parse)(text))!
+    return count
+}
+
 fn show(result: Int | ParseError): Void {
     result to {
         count: Int -> print(count),
@@ -17,5 +22,9 @@ fn main(): Int {
     show(readCount("-9223372036854775808"))
     show(readCount("42x"))
     show(readCount("9223372036854775808"))
+    show(readGroupedCount("17"))
+    show(readGroupedCount("invalid"))
+    grouped: Int | ParseError = ((parse("23")))
+    show(grouped)
     return 0
 }

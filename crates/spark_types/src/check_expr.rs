@@ -147,7 +147,7 @@ fn check_expr_inner(
         // === Function call ===
         ExprKind::Call { callee, args } => {
             let callee_ty = check_expr(callee, ctx, current_fn_ret);
-            if let Some(protocol) = crate::parsing::protocol_for_call(callee.span, ctx) {
+            if let Some(protocol) = crate::parsing::protocol_for_call(callee, ctx) {
                 return protocol.check_call(args, expr.span, expected_ty, ctx, current_fn_ret);
             }
             check_call(callee_ty, args, expr.span, callee.span, ctx, current_fn_ret)
@@ -385,7 +385,7 @@ fn check_expr_inner(
         }
 
         // === Paren ===
-        ExprKind::Paren(inner) => check_expr(inner, ctx, current_fn_ret),
+        ExprKind::Paren(inner) => check_expr_expected(inner, ctx, current_fn_ret, expected_ty),
 
         // === Await ===
         ExprKind::Await(inner) | ExprKind::BlockAwait(inner) => {
@@ -633,8 +633,8 @@ fn check_propagate(
     current_fn_ret: Option<TypeId>,
     expected_ty: Option<TypeId>,
 ) -> TypeId {
-    let expected_result = if let ExprKind::Call { callee, .. } = &inner_expr.kind {
-        crate::parsing::protocol_for_call(callee.span, ctx)
+    let expected_result = if let ExprKind::Call { callee, .. } = &ungroup(inner_expr).kind {
+        crate::parsing::protocol_for_call(callee, ctx)
             .zip(expected_ty)
             .map(|(protocol, success)| protocol.result_type(success, ctx.table))
     } else {
@@ -1159,11 +1159,21 @@ fn check_call(
 }
 
 /// Tries to find the `DefId` for a callee expression (for generic function lookup).
-fn find_callee_def_id(callee_span: Span, resolutions: Option<&ResolutionMap>) -> Option<DefId> {
+pub(crate) fn find_callee_def_id(
+    callee_span: Span,
+    resolutions: Option<&ResolutionMap>,
+) -> Option<DefId> {
     let res = resolutions?;
     // Try both path and ident resolution (callee could be either)
     res.get_path(callee_span)
         .or_else(|| res.get_ident(callee_span))
+}
+
+pub(crate) fn ungroup(mut expr: &Expr) -> &Expr {
+    while let ExprKind::Paren(inner) = &expr.kind {
+        expr = inner;
+    }
+    expr
 }
 
 /// Checks struct field access.

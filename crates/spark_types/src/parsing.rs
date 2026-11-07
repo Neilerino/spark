@@ -1,12 +1,12 @@
 //! Compile-time selection and validation of the standard text parsing protocol.
 
-use spark_ast::{BindingTarget, CallArg, TypeExpr};
+use spark_ast::{BindingTarget, CallArg, Expr, TypeExpr};
 use spark_diagnostics::{Diagnostic, Label};
 use spark_intern::kw;
 use spark_resolve::{DefId, DefinitionKind, DefinitionTable};
 use spark_span::Span;
 
-use crate::check_expr::{check_expr, is_compatible, strip_mutable};
+use crate::check_expr::{check_expr, find_callee_def_id, is_compatible, strip_mutable, ungroup};
 use crate::ctx::TypeCheckCtx;
 use crate::display::display_type;
 use crate::lower::lower_type_expr;
@@ -69,30 +69,25 @@ impl TextParsing {
             );
             return;
         };
-        let Some(parser_id) = ctx
+        let allowed_module = ctx.definitions.get(owner).and_then(|info| match info.kind {
+            DefinitionKind::BuiltinType => ctx.definitions.get(self.interface).map(|i| &i.module),
+            DefinitionKind::Struct => Some(&info.module),
+            _ => None,
+        });
+        let parser_id = ctx
             .resolutions
-            .and_then(|r| r.get_binding(parser.name.span))
-        else {
+            .and_then(|r| r.get_binding(parser.name.span));
+        let Some(parser_id) = parser_id.filter(|&id| {
+            ctx.definitions
+                .get(id)
+                .is_some_and(|info| Some(&info.module) == allowed_module)
+        }) else {
             ctx.diagnostics.push(
                 Diagnostic::error("a parser must be bound in the type's defining module")
                     .with_label(Label::primary(ty.span, "type is defined elsewhere")),
             );
             return;
         };
-        let allowed_module = ctx.definitions.get(owner).and_then(|info| match info.kind {
-            DefinitionKind::BuiltinType => ctx.definitions.get(self.interface).map(|i| &i.module),
-            DefinitionKind::Struct => Some(&info.module),
-            _ => None,
-        });
-        if allowed_module.is_none()
-            || ctx.definitions.get(parser_id).map(|info| &info.module) != allowed_module
-        {
-            ctx.diagnostics.push(
-                Diagnostic::error("a parser must be bound in the type's defining module")
-                    .with_label(Label::primary(ty.span, "type is defined elsewhere")),
-            );
-            return;
-        }
 
         let params: Vec<_> = parser
             .params
@@ -191,9 +186,8 @@ impl TextParsing {
     }
 }
 
-pub(crate) fn protocol_for_call(callee: Span, ctx: &TypeCheckCtx<'_>) -> Option<TextParsing> {
+pub(crate) fn protocol_for_call(callee: &Expr, ctx: &TypeCheckCtx<'_>) -> Option<TextParsing> {
     let protocol = ctx.table.text_parsing?;
-    let res = ctx.resolutions?;
-    let callee = res.get_path(callee).or_else(|| res.get_ident(callee))?;
+    let callee = find_callee_def_id(ungroup(callee).span, ctx.resolutions)?;
     (callee == protocol.entry).then_some(protocol)
 }

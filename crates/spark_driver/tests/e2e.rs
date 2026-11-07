@@ -1032,7 +1032,7 @@ fn stdlib_sys_env() {
 fn target_directed_parse_infers_int_and_propagates_parse_errors() {
     assert_output(
         "run-pass/parsing/parse_inferred_int.spark",
-        "42\n-9223372036854775808\nparse error\nparse error",
+        "42\n-9223372036854775808\nparse error\nparse error\n17\nparse error\n23",
     );
 }
 
