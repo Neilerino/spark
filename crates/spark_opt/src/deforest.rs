@@ -376,9 +376,9 @@ fn rvalue_reads_any_alias(rvalue: &Rvalue, aliases: &[Local]) -> bool {
                 || operand_reads_alias(end, aliases)
                 || operand_reads_alias(step, aliases)
         }
-        Rvalue::CollectionGetOptional {
-            collection, index, ..
-        } => place_reads_alias(collection, aliases) || place_reads_alias(index, aliases),
+        Rvalue::CollectionGetOptional { collection, index } => {
+            place_reads_alias(collection, aliases) || place_reads_alias(index, aliases)
+        }
     }
 }
 

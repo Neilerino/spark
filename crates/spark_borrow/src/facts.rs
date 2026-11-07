@@ -273,11 +273,7 @@ fn collect_rvalue_uses(rvalue: &Rvalue, point: Point, facts: &mut BorrowFacts) {
             collect_operand_uses(lhs, point, facts);
             collect_operand_uses(rhs, point, facts);
         }
-        Rvalue::Ref { place, .. } => {
-            // The borrowed place is "used" (its address is taken).
-            facts.uses.push((point, place.local));
-            collect_place_uses(place, point, facts);
-        }
+        Rvalue::Ref { place, .. } => collect_place_read(place, point, facts),
         Rvalue::Aggregate(_, operands) | Rvalue::StringInterp(operands) => {
             for op in operands {
                 collect_operand_uses(op, point, facts);
@@ -293,11 +289,9 @@ fn collect_rvalue_uses(rvalue: &Rvalue, point: Point, facts: &mut BorrowFacts) {
             collect_operand_uses(end, point, facts);
             collect_operand_uses(step, point, facts);
         }
-        Rvalue::CollectionGetOptional {
-            collection, index, ..
-        } => {
-            collect_place_uses(collection, point, facts);
-            collect_place_uses(index, point, facts);
+        Rvalue::CollectionGetOptional { collection, index } => {
+            collect_place_read(collection, point, facts);
+            collect_place_read(index, point, facts);
         }
         Rvalue::Discriminant(place) => {
             facts.uses.push((point, place.local));
@@ -311,15 +305,20 @@ fn collect_rvalue_uses(rvalue: &Rvalue, point: Point, facts: &mut BorrowFacts) {
 /// Collects locals used in an operand.
 fn collect_operand_uses(operand: &Operand, point: Point, facts: &mut BorrowFacts) {
     match operand {
-        Operand::Copy(place) => {
-            facts.uses.push((point, place.local));
-            collect_place_uses(place, point, facts);
-        }
+        Operand::Copy(place) => collect_place_read(place, point, facts),
         Operand::Move(place) => {
             facts.moves.push((point, place.local));
             collect_place_uses(place, point, facts);
         }
         Operand::Constant(_) => {}
+    }
+}
+
+fn collect_place_read(place: &Place, point: Point, facts: &mut BorrowFacts) {
+    if place.projections.is_empty() {
+        facts.uses.push((point, place.local));
+    } else {
+        collect_place_uses(place, point, facts);
     }
 }
 
@@ -417,6 +416,28 @@ mod tests {
 
         // Return terminator uses Local(0)
         assert!(facts.uses.iter().any(|(_, l)| *l == Local(0)));
+    }
+
+    #[test]
+    fn checked_lookup_reads_both_input_locals() {
+        let mut func = make_simple_func();
+        let mut index = func.locals[1].clone();
+        index.local = Local(2);
+        func.locals.push(index);
+        func.blocks[0].statements[1] = Statement::Assign {
+            place: Place::from_local(Local(0)),
+            rvalue: Rvalue::CollectionGetOptional {
+                collection: Place::from_local(Local(1)),
+                index: Place::from_local(Local(2)),
+            },
+            span: Span::DUMMY,
+        };
+
+        let facts = extract_facts(&func);
+        let lookup = Point::new(BlockId(0), 1);
+        assert!(facts.uses.contains(&(lookup, Local(1))));
+        assert!(facts.uses.contains(&(lookup, Local(2))));
+        assert!(facts.moves.is_empty());
     }
 
     #[test]

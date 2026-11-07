@@ -165,9 +165,7 @@ fn collect_used_in_rvalue(rvalue: &spark_mir::Rvalue, used: &mut FxHashSet<Local
             collect_used_in_operand(end, used);
             collect_used_in_operand(step, used);
         }
-        spark_mir::Rvalue::CollectionGetOptional {
-            collection, index, ..
-        } => {
+        spark_mir::Rvalue::CollectionGetOptional { collection, index } => {
             for place in [collection, index] {
                 used.insert(place.local);
                 collect_used_in_place_projections(place, used);

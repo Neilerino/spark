@@ -1327,7 +1327,6 @@ fn emit_closure_construction<M: Module>(
     Some(dest_addr)
 }
 
-/// Writes an owned optional map value into the destination slot.
 fn emit_collection_lookup<M: Module>(
     ctx: &mut FunctionContext<'_>,
     collection: &Place,
@@ -1366,11 +1365,20 @@ fn emit_collection_lookup<M: Module>(
         .ins()
         .call(func_ref, &[collection_ptr, argument]);
     let raw_ptr = ctx.builder.inst_results(call)[0];
+    emit_optional_lookup_result(ctx, raw_ptr, dest_local, value_ty, table, module);
+}
+
+fn emit_optional_lookup_result<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    raw_ptr: Value,
+    dest_local: Local,
+    value_ty: TypeId,
+    table: &TypeTable,
+    module: &mut M,
+) {
     let dest_addr = ctx
         .local_stack_addr(dest_local)
         .expect("checked lookup requires an Optional destination");
-
-    // Compute the Optional layout.
     let opt_ty = ctx.local_type_id(dest_local);
     let ul = ctx.layouts.union_layout_of(opt_ty, table);
 

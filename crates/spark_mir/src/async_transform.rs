@@ -376,9 +376,7 @@ fn add_rvalue_uses(rvalue: &Rvalue, gen: &mut FxHashSet<Local>) {
             add_operand_uses(end, gen);
             add_operand_uses(step, gen);
         }
-        Rvalue::CollectionGetOptional {
-            collection, index, ..
-        } => {
+        Rvalue::CollectionGetOptional { collection, index } => {
             add_place_uses(collection, gen);
             add_place_uses(index, gen);
         }

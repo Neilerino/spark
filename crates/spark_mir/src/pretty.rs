@@ -248,9 +248,7 @@ impl PrettyPrinter<'_> {
                 self.print_operand(step);
                 self.out.push(')');
             }
-            Rvalue::CollectionGetOptional {
-                collection, index, ..
-            } => {
+            Rvalue::CollectionGetOptional { collection, index } => {
                 let _ = write!(self.out, "CollectionGetOptional({collection}, {index})");
             }
         }

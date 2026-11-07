@@ -732,6 +732,18 @@ fn check_index_access(
 
     match ctx.table.resolve(strip_mutable(base_ty, ctx.table)).clone() {
         Ty::List(elem) => {
+            if elem.is_error()
+                && matches!(&ungroup(base).kind, ExprKind::List(elems) if elems.is_empty())
+            {
+                ctx.diagnostics.push(
+                    Diagnostic::error("cannot infer element type of empty list lookup")
+                        .with_label(Label::primary(base.span, "element type is unknown"))
+                        .with_help(
+                            "Bind the empty list to an explicit `List[T]` type before indexing.",
+                        ),
+                );
+                return TypeId::ERROR;
+            }
             let resolved_idx = ctx.table.resolve(strip_mutable(index_ty, ctx.table));
             if !resolved_idx.is_integer() && index_ty != TypeId::ERROR {
                 ctx.diagnostics.push(

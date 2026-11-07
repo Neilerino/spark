@@ -507,9 +507,25 @@ fn collection_storage_rejects_incompatible_slot_layouts() {
 }
 
 #[test]
+fn list_lookup_reports_untyped_empty_literals() {
+    let fixture = "compile-fail/type_errors/list_untyped_empty_lookup.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_ne!(result.exit_code, 0, "{fixture} {args:?}");
+        assert!(
+            result
+                .stderr
+                .contains("cannot infer element type of empty list lookup"),
+            "{fixture} {args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
 fn list_lookup_checks_signed_and_unsigned_index_bounds() {
     let fixture = "run-pass/collections/list_lookup_bounds.spark";
-    let expected = "0\n7\nfalse\n255\n".to_owned() + &"fallback\n99\n".repeat(7);
+    let expected = "0\n7\nfalse\n255\n".to_owned() + &"fallback\n99\n".repeat(7) + "1\n";
     for args in [&[][..], &["--no-opt"][..]] {
         let result = run_spark_with_args(fixture, args);
         assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);

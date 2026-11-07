@@ -1,3 +1,5 @@
+alias MutableInt = Int!
+
 fn fallback(): Int {
     print("fallback")
     return 99
@@ -24,5 +26,12 @@ fn main(): Int {
     print(values[unsignedMaximum] ?? fallback())
     print(values[narrowNegative] ?? fallback())
     print(empty[0] ?? fallback())
+    mutableSlots: List[MutableInt] = [1]
+    plainSlots: List[Int] = mutableSlots
+    print(plainSlots[0] ?? fallback())
+    sameLayout: List[MutableInt] = plainSlots
+    if sameLayout[0] is Null {
+        return 1
+    }
     return 0
 }

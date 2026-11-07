@@ -115,14 +115,14 @@ fn has_lookup_layout(
     ) else {
         return false;
     };
-    let collection_ty = match table.resolve(collection.ty) {
-        Ty::Mutable(inner) => table.resolve(*inner),
-        other => other,
+    let storage_type = |ty| match table.resolve(ty) {
+        Ty::Mutable(inner) => *inner,
+        _ => ty,
     };
-    let (Ty::List(value) | Ty::Map(_, value)) = collection_ty else {
+    let (Ty::List(value) | Ty::Map(_, value)) = table.resolve(storage_type(collection.ty)) else {
         return false;
     };
-    matches!(table.resolve(dest.ty), Ty::Optional(inner) if inner == value)
+    matches!(table.resolve(dest.ty), Ty::Optional(inner) if storage_type(*inner) == storage_type(*value))
 }
 
 /// Checks that all locals referenced in a place are in bounds.
@@ -268,9 +268,7 @@ fn check_rvalue(
                 errors,
             );
         }
-        Rvalue::CollectionGetOptional {
-            collection, index, ..
-        } => {
+        Rvalue::CollectionGetOptional { collection, index } => {
             check_place(
                 collection,
                 num_locals,
