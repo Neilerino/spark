@@ -247,8 +247,12 @@ pub fn lower_expr(
             lower_collection(elems, AggregateKind::List, expr, fb, mir, type_table, defs)
         }
 
-        HirExprKind::SetLit(elems) => {
-            lower_collection(elems, AggregateKind::Set, expr, fb, mir, type_table, defs)
+        HirExprKind::SetLit(elements) => {
+            let Ty::Set(element) = type_table.resolve(expr.ty) else {
+                return void_temp(fb, expr);
+            };
+            let slots = elements.iter().map(|value| (value, *element));
+            lower_hash_collection(slots, AggregateKind::Set, expr, fb, mir, type_table, defs)
         }
 
         HirExprKind::TupleLit(elems) => {
@@ -737,7 +741,7 @@ fn is_set_binding(receiver: &HirExpr, fb: &FunctionBuilder, table: &TypeTable) -
     })
 }
 
-/// Lowers a collection literal (List, Set, Tuple).
+/// Lowers a list or tuple literal.
 fn lower_collection(
     elems: &[HirExpr],
     kind: AggregateKind,
@@ -751,7 +755,7 @@ fn lower_collection(
         .iter()
         .map(|e| {
             let local = lower_expr(e, fb, mir, type_table, defs);
-            if matches!(kind, AggregateKind::List | AggregateKind::Set) {
+            if matches!(kind, AggregateKind::List) {
                 owned_union_operand(local, fb, type_table)
             } else {
                 Operand::Copy(Place::from_local(local))
@@ -779,40 +783,56 @@ fn lower_map_literal(
         return void_temp(fb, expr);
     };
 
+    let slots = entries
+        .iter()
+        .flat_map(|(key, value)| [(key, *key_ty), (value, *value_ty)]);
+    lower_hash_collection(slots, AggregateKind::Map, expr, fb, mir, type_table, defs)
+}
+
+fn lower_hash_collection<'a>(
+    slots: impl Iterator<Item = (&'a HirExpr, TypeId)>,
+    kind: AggregateKind,
+    expr: &HirExpr,
+    fb: &mut FunctionBuilder,
+    mir: &mut MirBuilder<'_>,
+    type_table: &TypeTable,
+    defs: &DefinitionTable,
+) -> Local {
     fb.push_scope();
-    let mut operands = Vec::with_capacity(entries.len() * 2);
-    for (key, value) in entries {
-        for (slot, slot_ty) in [(key, *key_ty), (value, *value_ty)] {
-            let source = lower_expr(slot, fb, mir, type_table, defs);
-            if fb.is_terminated() || matches!(type_table.resolve(slot.ty), Ty::Never) {
-                if !fb.is_terminated() {
-                    fb.terminate(Terminator::Goto {
-                        target: fb.current_block(),
-                    });
-                }
-                fb.pop_finished_scope();
-                return void_temp(fb, expr);
+    let mut operands = Vec::with_capacity(slots.size_hint().0);
+    for (slot, slot_ty) in slots {
+        let source = lower_expr(slot, fb, mir, type_table, defs);
+        if fb.is_terminated() || matches!(type_table.resolve(slot.ty), Ty::Never) {
+            if !fb.is_terminated() {
+                fb.terminate(Terminator::Goto {
+                    target: fb.current_block(),
+                });
             }
-            let Some(staged) = stage_collection_value(fb, source, slot_ty, slot.span, type_table)
-            else {
-                mir.diagnostics.push(
-                    Diagnostic::error("map entry has incompatible storage after lowering")
-                        .with_label(Label::primary(
-                            slot.span,
-                            "entry storage does not match the map slot",
-                        )),
-                );
-                fb.pop_scope_drops(None, expr.span);
-                return void_temp(fb, expr);
-            };
-            operands.push(Operand::Move(Place::from_local(staged)));
+            fb.pop_finished_scope();
+            return void_temp(fb, expr);
         }
+        let Some(staged) = stage_collection_value(fb, source, slot_ty, slot.span, type_table)
+        else {
+            let message = if matches!(kind, AggregateKind::Map) {
+                "map entry has incompatible storage after lowering"
+            } else {
+                "set element has incompatible storage after lowering"
+            };
+            mir.diagnostics
+                .push(Diagnostic::error(message).with_label(Label::primary(
+                    slot.span,
+                    "value does not match the collection slot",
+                )));
+            fb.pop_scope_drops(None, expr.span);
+            return void_temp(fb, expr);
+        };
+        operands.push(Operand::Move(Place::from_local(staged)));
     }
 
     let result = fb.fresh_temp(expr.ty, expr.span);
     fb.push_assign(
         Place::from_local(result),
-        Rvalue::Aggregate(AggregateKind::Map, operands),
+        Rvalue::Aggregate(kind, operands),
         expr.span,
     );
     fb.pop_finished_scope();

@@ -1,0 +1,29 @@
+fn interrupted(): Int {
+    unused: Set[Int] = {1, (return 42), 3}
+    return unused.len()
+}
+
+fn main(): Int {
+    seen: Set[Int]! = {0, 2, 4}
+    i: Int! = 0
+    loop {
+        if i == 32 { break }
+        seen.add(i * 2)
+        i += 1
+    }
+    print(seen.len())
+    i = 0
+    loop {
+        if i == 32 { break }
+        if not seen.contains(i * 2) { return 1 }
+        if seen.contains(i * 2 + 1) { return 2 }
+        i += 1
+    }
+    seen.remove(32)
+    print(seen.contains(32))
+    seen.add(32)
+    print(seen.contains(32))
+    print(seen.len())
+    print(interrupted())
+    return 0
+}

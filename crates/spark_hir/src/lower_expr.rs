@@ -333,10 +333,17 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
 
         // === Control flow ===
         ExprKind::Block(block) => {
-            if block.stmts.is_empty() && block.expr.is_none() {
-                match ctx.table.resolve(expr_type(expr.id, ctx.table)) {
-                    Ty::Map(..) => return HirExprKind::MapLit(Vec::new()),
-                    Ty::Set(_) => return HirExprKind::SetLit(Vec::new()),
+            if block.stmts.is_empty() {
+                let ty = ctx.table.resolve(expr_type(expr.id, ctx.table));
+                match (ty, &block.expr) {
+                    (Ty::Map(..), None) => return HirExprKind::MapLit(Vec::new()),
+                    (Ty::Set(_), None) => return HirExprKind::SetLit(Vec::new()),
+                    (Ty::Set(element), Some(tail))
+                        if strip_mutable_ty(expr_type(tail.id, ctx.table), ctx.table)
+                            == strip_mutable_ty(*element, ctx.table) =>
+                    {
+                        return HirExprKind::SetLit(vec![lower_expr(tail, ctx)]);
+                    }
                     _ => {}
                 }
             }

@@ -1,0 +1,35 @@
+fn trace(value: Int): Int {
+    print(value)
+    return value
+}
+
+fn main(): Int {
+    changing: Int! = 4
+    seen: Set[Int]! = {trace(2), changing, {
+        changing = 9
+        trace(1)
+    }, trace(2),}
+    print(seen.len())
+    print(seen.contains(4))
+    print(seen.contains(9))
+    print(seen.contains(2))
+    print(seen.contains(1))
+
+    single: Set[Int] = ({7})
+    fromBlock: Set[Int] = {single}
+    print(fromBlock.contains(7))
+    print({8,}.len())
+
+    ordinary: Int = {6}
+    blockValue: Int = {
+        inner: Int = 3
+        inner + 4
+    }
+    emptyMap: Map[Int, Int] = ({})
+    mapped: Map[Int, Int] = {1 + 1: 9}
+    print(ordinary)
+    print(blockValue)
+    print(emptyMap.len())
+    print(mapped[2] ?? -1)
+    return 0
+}

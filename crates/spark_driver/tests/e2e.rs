@@ -776,6 +776,39 @@ fn set_empty_integer_rejects_invalid_mutation_and_storage() {
 }
 
 #[test]
+fn set_literal_integer() {
+    let fixture = "run-pass/collections/set_literal_integer.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout,
+            "2\n1\n2\n3\ntrue\nfalse\ntrue\ntrue\ntrue\n1\n6\n7\n0\n9\n"
+        );
+    }
+}
+
+#[test]
+fn set_literal_integer_growth_and_early_exit() {
+    let fixture = "run-pass/collections/set_literal_integer_growth.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "32\nfalse\ntrue\n32\n42\n");
+    }
+}
+
+#[test]
+fn set_literal_integer_rejects_incompatible_elements() {
+    for fixture in ["set_literal_integer_mixed", "set_literal_integer_width"] {
+        assert_compile_error(
+            &format!("compile-fail/type_errors/{fixture}.spark"),
+            "set element type mismatch",
+        );
+    }
+}
+
+#[test]
 fn map_index_write_inserts_and_replaces() {
     let fixture = "run-pass/collections/map_index_write.spark";
     for args in [&[][..], &["--no-opt"][..]] {

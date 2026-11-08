@@ -8,8 +8,8 @@ use spark_diagnostics::{Diagnostic, Label};
 use spark_resolve::DefinitionKind;
 
 use crate::check_expr::{
-    check_collection_argument, check_expr, check_expr_expected, collection_value_coercion,
-    is_compatible, is_supported_map_key, strip_mutable, strip_ref,
+    check_collection_argument, check_expr, check_expr_expected, check_set_element_type,
+    collection_value_coercion, is_compatible, is_supported_map_key, strip_mutable, strip_ref,
 };
 use crate::ctx::TypeCheckCtx;
 use crate::display::display_type as type_name;
@@ -293,22 +293,51 @@ fn check_binding_initializer(
         && type_empty_collection_initializer(value, ty, ctx.table)
     {
         if let Ty::Set(element) = ctx.table.resolve(ty) {
-            if !ctx
-                .table
-                .resolve(strip_mutable(*element, ctx.table))
-                .is_integer()
-            {
-                ctx.diagnostics.push(
-                    Diagnostic::error("set construction requires integer elements")
-                        .with_label(Label::primary(value.span, "unsupported set element type")),
-                );
+            if !check_set_element_type(*element, value.span, ctx) {
                 return TypeId::ERROR;
             }
         }
-        ty
-    } else {
-        check_expr_expected(value, ctx, current_fn_ret, Some(declared_ty))
+        return ty;
     }
+    if let Ty::Set(element) = ctx.table.resolve(ty) {
+        if let Some(actual) =
+            check_set_singleton_initializer(value, ty, *element, ctx, current_fn_ret)
+        {
+            return actual;
+        }
+    }
+    check_expr_expected(value, ctx, current_fn_ret, Some(declared_ty))
+}
+
+fn check_set_singleton_initializer(
+    expr: &Expr,
+    set_ty: TypeId,
+    element_ty: TypeId,
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+) -> Option<TypeId> {
+    let ty = match &expr.kind {
+        ExprKind::Block(block) if block.stmts.is_empty() => {
+            let tail = block.expr.as_ref()?;
+            let actual = check_expr_expected(tail, ctx, current_fn_ret, Some(element_ty));
+            ctx.table.set_expr_type(block.id, actual);
+            if actual.is_error()
+                || strip_mutable(actual, ctx.table) != strip_mutable(element_ty, ctx.table)
+            {
+                actual
+            } else if check_set_element_type(element_ty, tail.span, ctx) {
+                set_ty
+            } else {
+                TypeId::ERROR
+            }
+        }
+        ExprKind::Paren(inner) => {
+            check_set_singleton_initializer(inner, set_ty, element_ty, ctx, current_fn_ret)?
+        }
+        _ => return None,
+    };
+    ctx.table.set_expr_type(expr.id, ty);
+    Some(ty)
 }
 
 fn type_empty_collection_initializer(
