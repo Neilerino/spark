@@ -636,12 +636,19 @@ fn lower_call(
     type_table: &TypeTable,
     defs: &DefinitionTable,
 ) -> Local {
+    let builtin_sort = matches!(callee.kind, HirExprKind::Local(def) if defs.get(def).is_some_and(
+        |info| info.kind == DefinitionKind::BuiltinFunction && info.name == kw::SORT
+    ));
     let func_local = lower_expr(callee, fb, mir, type_table, defs);
     let arg_operands: Vec<Operand> = args
         .iter()
         .map(|a| {
             let local = lower_expr(a, fb, mir, type_table, defs);
-            owned_aggregate_operand(local, fb, type_table)
+            if builtin_sort && !fb.is_def_local(local) && !fb.owns_local(local) {
+                Operand::Move(Place::from_local(local))
+            } else {
+                owned_aggregate_operand(local, fb, type_table)
+            }
         })
         .collect();
 

@@ -323,6 +323,39 @@ pub const LIST_REMOVE: RuntimeFn = RuntimeFn {
     ret: None,
 };
 
+/// List sort selector for a 64-bit signed integer.
+pub const SORT_TAG_INT: i64 = 0;
+
+/// List sort selector for a 64-bit float.
+pub const SORT_TAG_FLOAT: i64 = 1;
+
+/// List sort selector for a string.
+pub const SORT_TAG_STRING: i64 = 2;
+
+/// List sort selector for a boolean.
+pub const SORT_TAG_BOOL: i64 = 3;
+
+/// List sort selector for an 8-bit signed integer.
+pub const SORT_TAG_I8: i64 = 4;
+
+/// List sort selector for a 16-bit signed integer.
+pub const SORT_TAG_I16: i64 = 5;
+
+/// List sort selector for a 32-bit signed integer.
+pub const SORT_TAG_I32: i64 = 6;
+
+/// List sort selector for an 8-bit unsigned integer.
+pub const SORT_TAG_U8: i64 = 7;
+
+/// List sort selector for a 16-bit unsigned integer.
+pub const SORT_TAG_U16: i64 = 8;
+
+/// List sort selector for a 32-bit unsigned integer.
+pub const SORT_TAG_U32: i64 = 9;
+
+/// List sort selector for a 64-bit unsigned integer.
+pub const SORT_TAG_U64: i64 = 10;
+
 /// `__spark_list_sort(ptr, sort_kind: i64) -> ptr`
 pub const LIST_SORT: RuntimeFn = RuntimeFn {
     name: "__spark_list_sort",

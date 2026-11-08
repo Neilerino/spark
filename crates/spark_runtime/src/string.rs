@@ -202,7 +202,7 @@ pub unsafe extern "C" fn __spark_text_substring(
     rust_str_to_spark(slice.unwrap_or_default())
 }
 
-unsafe fn spark_str_bytes(text: &SparkString) -> &[u8] {
+pub(crate) unsafe fn spark_str_bytes(text: &SparkString) -> &[u8] {
     if text.len == 0 {
         &[]
     } else {

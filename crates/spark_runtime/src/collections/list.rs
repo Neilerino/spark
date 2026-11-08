@@ -1,5 +1,10 @@
 //! List runtime storage and operations.
 
+pub use spark_abi::{SORT_TAG_BOOL, SORT_TAG_FLOAT, SORT_TAG_INT, SORT_TAG_STRING};
+use spark_abi::{
+    SORT_TAG_I16, SORT_TAG_I32, SORT_TAG_I8, SORT_TAG_U16, SORT_TAG_U32, SORT_TAG_U64, SORT_TAG_U8,
+};
+
 use crate::value::{
     buffer_align, value_desc_clone, value_desc_free, value_desc_new, SparkValueDesc,
 };
@@ -341,96 +346,66 @@ pub extern "C" fn __spark_list_from_range(
     list_ptr
 }
 
-// =============================================================================
-// List pipeline operations — sort, take, reverse
-
-/// Sort type tags passed from codegen to `__spark_list_sort`.
-pub const SORT_TAG_INT: i64 = 0;
-pub const SORT_TAG_FLOAT: i64 = 1;
-pub const SORT_TAG_STRING: i64 = 2;
-pub const SORT_TAG_BOOL: i64 = 3;
-// =============================================================================
-
 /// Sorts a list in ascending order, returning a new list.
-///
-/// `type_tag` selects the comparison strategy:
-/// - `0` (Int): compare elements as `i64`
-/// - `1` (Float): compare elements as `f64` using total ordering
-/// - `2` (String): compare `SparkString` contents lexicographically
-/// - `3` (Bool): compare elements as `i8` (false < true)
-///
-/// The original list is not modified (functional semantics).
 ///
 /// # Safety
 ///
 /// `ptr` must be a valid pointer from `__spark_list_new`.
-/// Elements must match the type indicated by `type_tag`.
+/// Elements must have the representation selected by the shared ABI `type_tag`.
 #[no_mangle]
-#[allow(clippy::cast_ptr_alignment, clippy::cast_possible_wrap)]
+#[allow(clippy::cast_ptr_alignment)]
 pub unsafe extern "C" fn __spark_list_sort(ptr: *mut u8, type_tag: i64) -> *mut u8 {
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
+    let mut indices: Vec<_> = (0..list.len).collect();
+
+    unsafe {
+        match type_tag {
+            SORT_TAG_I8 => sort_slots::<i8>(list, &mut indices, Ord::cmp),
+            SORT_TAG_I16 => sort_slots::<i16>(list, &mut indices, Ord::cmp),
+            SORT_TAG_I32 => sort_slots::<i32>(list, &mut indices, Ord::cmp),
+            SORT_TAG_INT => sort_slots::<i64>(list, &mut indices, Ord::cmp),
+            SORT_TAG_U8 | SORT_TAG_BOOL => sort_slots::<u8>(list, &mut indices, Ord::cmp),
+            SORT_TAG_U16 => sort_slots::<u16>(list, &mut indices, Ord::cmp),
+            SORT_TAG_U32 => sort_slots::<u32>(list, &mut indices, Ord::cmp),
+            SORT_TAG_U64 => sort_slots::<u64>(list, &mut indices, Ord::cmp),
+            SORT_TAG_FLOAT => sort_slots::<f64>(list, &mut indices, f64::total_cmp),
+            SORT_TAG_STRING => sort_slots::<*const SparkString>(list, &mut indices, |&a, &b| {
+                crate::string::spark_str_bytes(&*a).cmp(crate::string::spark_str_bytes(&*b))
+            }),
+            _ => {
+                eprintln!("spark: invalid list sort selector");
+                std::process::abort();
+            }
+        }
+    }
+
     let new_list = __spark_list_new(unsafe { value_desc_clone(list.elem_desc) }.cast());
-
-    if list.len == 0 {
-        return new_list;
-    }
-
-    // Sort by index to avoid moving data until we build the result.
-    let mut indices: Vec<usize> = (0..list.len).collect();
-
-    match type_tag {
-        SORT_TAG_FLOAT => {
-            indices.sort_unstable_by(|&a, &b| {
-                let va = unsafe { *(list.data.add(a * list.elem_size()).cast::<f64>()) };
-                let vb = unsafe { *(list.data.add(b * list.elem_size()).cast::<f64>()) };
-                va.total_cmp(&vb)
-            });
-        }
-        SORT_TAG_STRING => {
-            indices.sort_unstable_by(|&a, &b| {
-                let pa = unsafe { *(list.data.add(a * list.elem_size()).cast::<*mut u8>()) };
-                let pb = unsafe { *(list.data.add(b * list.elem_size()).cast::<*mut u8>()) };
-                let sa = unsafe { &*(pa.cast::<SparkString>()) };
-                let sb = unsafe { &*(pb.cast::<SparkString>()) };
-                let slice_a = if sa.len == 0 {
-                    &[]
-                } else {
-                    unsafe { std::slice::from_raw_parts(sa.data, sa.len) }
-                };
-                let slice_b = if sb.len == 0 {
-                    &[]
-                } else {
-                    unsafe { std::slice::from_raw_parts(sb.data, sb.len) }
-                };
-                slice_a.cmp(slice_b)
-            });
-        }
-        SORT_TAG_BOOL => {
-            indices.sort_unstable_by(|&a, &b| {
-                let va = unsafe { *(list.data.add(a * list.elem_size()).cast::<i8>()) };
-                let vb = unsafe { *(list.data.add(b * list.elem_size()).cast::<i8>()) };
-                va.cmp(&vb)
-            });
-        }
-        // SORT_TAG_INT and unknown tags: compare as i64.
-        _ => {
-            // Suppress unused-constant warning; SORT_TAG_INT is the semantic default.
-            let _ = SORT_TAG_INT;
-            indices.sort_unstable_by(|&a, &b| {
-                let va = unsafe { *(list.data.add(a * list.elem_size()).cast::<i64>()) };
-                let vb = unsafe { *(list.data.add(b * list.elem_size()).cast::<i64>()) };
-                va.cmp(&vb)
-            });
-        }
-    }
-
-    for &idx in &indices {
+    for idx in indices {
         let elem = unsafe { list.data.add(idx * list.elem_size()) };
         unsafe { list.elem().retain_elem(elem) };
         unsafe { __spark_list_push(new_list, elem) };
     }
-
     new_list
+}
+
+/// # Safety
+///
+/// Each slot must contain a valid value of `T`.
+unsafe fn sort_slots<T: Copy>(
+    list: &SparkList,
+    indices: &mut [usize],
+    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
+) {
+    let width = std::mem::size_of::<T>();
+    if list.elem_size() != width {
+        eprintln!("spark: invalid list sort slot size");
+        std::process::abort();
+    }
+    indices.sort_unstable_by(|&a, &b| {
+        let left = unsafe { list.data.add(a * width).cast::<T>().read_unaligned() };
+        let right = unsafe { list.data.add(b * width).cast::<T>().read_unaligned() };
+        compare(&left, &right)
+    });
 }
 
 /// Takes the first `count` elements from a list, returning a new list.

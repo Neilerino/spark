@@ -5,7 +5,7 @@
 use cranelift_codegen::ir::types;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Signature, TrapCode, Value};
 use cranelift_module::{FuncId, Linkage, Module};
-use spark_diagnostics::Diagnostics;
+use spark_diagnostics::{Diagnostic, Diagnostics};
 use spark_intern::kw;
 use spark_mir::{BlockId, Operand, Place, Terminator};
 use spark_resolve::DefinitionKind;
@@ -159,7 +159,16 @@ fn emit_call<M: Module>(
             if matches!(info.kind, DefinitionKind::BuiltinFunction)
                 && (info.name == kw::SORT || info.name == kw::TAKE || info.name == kw::REVERSE)
             {
-                emit_builtin_list_fn(ctx, info.name, args, destination, target, ecx, module);
+                emit_builtin_list_fn(
+                    ctx,
+                    info.name,
+                    args,
+                    destination,
+                    target,
+                    ecx,
+                    module,
+                    diagnostics,
+                );
                 return;
             }
             if matches!(info.kind, DefinitionKind::BuiltinMethod) {
@@ -634,7 +643,8 @@ fn emit_builtin_print<M: Module>(
 /// Emits a built-in list function call (sort, take, reverse).
 ///
 /// These are free functions that take a list as the first argument and return a new list.
-/// `expr via sort` is desugared to `sort(expr)` by HIR, so args[0] is the list.
+/// `expr to sort` is desugared to `sort(expr)` by HIR, so args[0] is the list.
+#[allow(clippy::too_many_arguments)]
 fn emit_builtin_list_fn<M: Module>(
     ctx: &mut FunctionContext<'_>,
     fn_name: spark_intern::Symbol,
@@ -643,43 +653,43 @@ fn emit_builtin_list_fn<M: Module>(
     target: BlockId,
     ecx: &EmitCtx<'_>,
     module: &mut M,
+    diagnostics: &mut Diagnostics,
 ) {
-    let table = ecx.table;
-
-    // Evaluate the list argument (args[0]).
+    let target_block = ctx.clif_block(target);
     let list_val = args
         .first()
         .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
 
     let Some(list_ptr) = list_val else {
-        let target_block = ctx.clif_block(target);
         ctx.builder.ins().jump(target_block, &[]);
         return;
     };
 
     if fn_name == kw::SORT {
-        // Determine the sort type tag from the list's element type.
-        let tag: i64 = if let Some(Operand::Copy(place) | Operand::Move(place)) = args.first() {
-            let list_ty_id = ctx.local_type_id(place.local);
-            let (_, stripped) = clif_types::unwrap_mutable(list_ty_id, table);
-            if let Ty::List(elem) = stripped {
-                let (_, inner) = clif_types::unwrap_mutable(*elem, table);
-                match inner {
-                    Ty::Float(_) => 1,
-                    Ty::String => 2,
-                    Ty::Bool => 3,
-                    _ => 0, // Int and fallback
-                }
-            } else {
-                0
-            }
-        } else {
-            0
+        let tag = args.first().and_then(|operand| {
+            let (Operand::Copy(place) | Operand::Move(place)) = operand else {
+                return None;
+            };
+            let ty = emit_rvalue::resolve_place_type(ctx, place, ecx.table);
+            let (_, Ty::List(element)) = clif_types::unwrap_mutable(ty, ecx.table) else {
+                return None;
+            };
+            let (_, element) = clif_types::unwrap_mutable(*element, ecx.table);
+            element.list_sort_element().map(list_sort_tag)
+        });
+        let Some(tag) = tag else {
+            diagnostics.push(Diagnostic::error(
+                "unsupported list sort layout reached code generation",
+            ));
+            ctx.builder.ins().jump(target_block, &[]);
+            return;
         };
         let tag_val = ctx.builder.ins().iconst(types::I64, tag);
         let func_ref = module.declare_func_in_func(ctx.stubs.list_sort, ctx.builder.func);
         let call = ctx.builder.ins().call(func_ref, &[list_ptr, tag_val]);
         let result = ctx.builder.inst_results(call)[0];
+        let release = module.declare_func_in_func(ctx.stubs.list_rc_dec, ctx.builder.func);
+        ctx.builder.ins().call(release, &[list_ptr]);
         if destination.projections.is_empty() {
             ctx.write_local(destination.local, result);
         }
@@ -704,8 +714,27 @@ fn emit_builtin_list_fn<M: Module>(
         }
     }
 
-    let target_block = ctx.clif_block(target);
     ctx.builder.ins().jump(target_block, &[]);
+}
+
+fn list_sort_tag(element: spark_types::ty::ListSortElement) -> i64 {
+    use spark_types::ty::{IntWidth, ListSortElement};
+
+    match element {
+        ListSortElement::Int(width) => match width {
+            IntWidth::I8 => spark_abi::SORT_TAG_I8,
+            IntWidth::I16 => spark_abi::SORT_TAG_I16,
+            IntWidth::I32 => spark_abi::SORT_TAG_I32,
+            IntWidth::I64 => spark_abi::SORT_TAG_INT,
+            IntWidth::U8 => spark_abi::SORT_TAG_U8,
+            IntWidth::U16 => spark_abi::SORT_TAG_U16,
+            IntWidth::U32 => spark_abi::SORT_TAG_U32,
+            IntWidth::U64 => spark_abi::SORT_TAG_U64,
+        },
+        ListSortElement::Float64 => spark_abi::SORT_TAG_FLOAT,
+        ListSortElement::String => spark_abi::SORT_TAG_STRING,
+        ListSortElement::Bool => spark_abi::SORT_TAG_BOOL,
+    }
 }
 
 /// Emits a parallel iteration call (`__spark_parallel_foreach` or `__spark_parallel_map`).

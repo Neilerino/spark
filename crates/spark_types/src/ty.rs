@@ -264,7 +264,33 @@ pub enum Constraint {
     },
 }
 
+/// Element types supported by the built-in list sorter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListSortElement {
+    /// An integer compared at its declared width and signedness.
+    Int(IntWidth),
+    /// A 64-bit float using total ordering.
+    Float64,
+    /// A lexicographically ordered string.
+    String,
+    /// A boolean ordered from false to true.
+    Bool,
+}
+
 impl Ty {
+    /// Returns the built-in sort representation for this element type.
+    #[must_use]
+    pub const fn list_sort_element(&self) -> Option<ListSortElement> {
+        match self {
+            Self::Int(width) => Some(ListSortElement::Int(*width)),
+            Self::Byte => Some(ListSortElement::Int(IntWidth::U8)),
+            Self::Float(FloatWidth::F64) => Some(ListSortElement::Float64),
+            Self::String => Some(ListSortElement::String),
+            Self::Bool => Some(ListSortElement::Bool),
+            _ => None,
+        }
+    }
+
     /// Returns true if this is a numeric type (integer or float).
     #[must_use]
     pub const fn is_numeric(&self) -> bool {

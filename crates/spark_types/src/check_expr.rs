@@ -1262,9 +1262,8 @@ fn check_call(
                     arg_tys.first().copied().unwrap_or(TypeId::ERROR),
                     params,
                     ret,
-                    ctx.table,
-                    ctx.builtins,
-                    ctx.definitions,
+                    args.first().map_or(call_span, |arg| arg.span),
+                    ctx,
                 )
             } else {
                 (params, ret)
@@ -3349,27 +3348,44 @@ fn adapt_builtin_list_fn(
     first_arg_ty: TypeId,
     params: Vec<TypeId>,
     ret: TypeId,
-    table: &mut TypeTable,
-    builtins: &BuiltinTypes,
-    definitions: &DefinitionTable,
+    span: Span,
+    ctx: &mut TypeCheckCtx<'_>,
 ) -> (Vec<TypeId>, TypeId) {
-    let Some(info) = definitions.get(def_id) else {
+    let Some(info) = ctx.definitions.get(def_id) else {
         return (params, ret);
     };
     if info.kind != DefinitionKind::BuiltinFunction {
         return (params, ret);
     }
 
-    // Extract the actual element type from the first argument
-    let Ty::List(actual_elem) = table.resolve(first_arg_ty).clone() else {
+    let is_sort = info.name == kw::SORT;
+    let list_ty = if is_sort {
+        strip_mutable(first_arg_ty, ctx.table)
+    } else {
+        first_arg_ty
+    };
+    let Ty::List(actual_elem) = *ctx.table.resolve(list_ty) else {
         return (params, ret);
     };
-    let actual_list = table.intern(Ty::List(actual_elem));
+    let actual_list = ctx.table.intern(Ty::List(actual_elem));
 
-    if info.name == kw::SORT || info.name == kw::REVERSE {
+    if is_sort {
+        let elem = strip_mutable(actual_elem, ctx.table);
+        if !elem.is_error() && ctx.table.resolve(elem).list_sort_element().is_none() {
+            let name = type_name(elem, ctx.table, ctx.definitions);
+            ctx.diagnostics.push(
+                Diagnostic::error(format!(
+                    "sort does not support list elements of type `{name}`"
+                ))
+                .with_label(Label::primary(span, "unsupported sort element")),
+            );
+            return (vec![actual_list], TypeId::ERROR);
+        }
+    }
+    if is_sort || info.name == kw::REVERSE {
         (vec![actual_list], actual_list)
     } else if info.name == kw::TAKE {
-        (vec![actual_list, builtins.int], actual_list)
+        (vec![actual_list, ctx.builtins.int], actual_list)
     } else {
         (params, ret)
     }
@@ -3406,15 +3422,7 @@ fn check_pipeline_apply(
     };
 
     // Adapt builtin list function types to match actual input type
-    let (params, ret) = adapt_builtin_list_fn(
-        def_id,
-        inner_ty,
-        params,
-        ret,
-        ctx.table,
-        ctx.builtins,
-        ctx.definitions,
-    );
+    let (params, ret) = adapt_builtin_list_fn(def_id, inner_ty, params, ret, span, ctx);
 
     // Build full arg list: [inner_ty, partial_arg_types...]
     let mut all_arg_types = vec![inner_ty];
