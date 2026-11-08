@@ -1985,8 +1985,7 @@ fn validate_partial_each_callback(
         return TypeId::ERROR;
     }
 
-    // Validate element type against first param
-    if !is_compatible(elem_ty, params[0], ctx.table) {
+    if strip_mutable(elem_ty, ctx.table) != strip_mutable(params[0], ctx.table) {
         let expected = type_name(params[0], ctx.table, ctx.definitions);
         let found = type_name(elem_ty, ctx.table, ctx.definitions);
         ctx.diagnostics.push(
@@ -2004,7 +2003,11 @@ fn validate_partial_each_callback(
             .get_expr_type(arg.value.id)
             .unwrap_or(TypeId::ERROR);
         let param_ty = params[i + 1];
-        if !is_compatible(arg_ty, param_ty, ctx.table) {
+        let supported = matches!(
+            collection_value_coercion(arg_ty, param_ty, ctx.table),
+            Some(CollectionValueCoercion::Identity | CollectionValueCoercion::Reference)
+        );
+        if !arg_ty.is_error() && !supported {
             let expected = type_name(param_ty, ctx.table, ctx.definitions);
             let found = type_name(arg_ty, ctx.table, ctx.definitions);
             ctx.diagnostics.push(diagnostics::arg_type_mismatch(
@@ -3109,8 +3112,9 @@ fn validate_reduce_callback(
         return TypeId::ERROR;
     }
 
-    // First param should be compatible with init type (accumulator)
-    if !is_compatible(init_ty, params[0], table) {
+    // Pipeline calls pass the accumulator and element without implicit conversions.
+    let accumulator = strip_mutable(params[0], table);
+    if strip_mutable(init_ty, table) != accumulator {
         let expected = type_name(params[0], table, definitions);
         let found = type_name(init_ty, table, definitions);
         diagnostics.push(
@@ -3121,8 +3125,7 @@ fn validate_reduce_callback(
         );
     }
 
-    // Second param should be compatible with elem type
-    if !is_compatible(elem_ty, params[1], table) {
+    if strip_mutable(elem_ty, table) != strip_mutable(params[1], table) {
         let expected = type_name(params[1], table, definitions);
         let found = type_name(elem_ty, table, definitions);
         diagnostics.push(
@@ -3133,8 +3136,7 @@ fn validate_reduce_callback(
         );
     }
 
-    // Return type must match accumulator type
-    if !is_compatible(ret, params[0], table) {
+    if strip_mutable(ret, table) != accumulator {
         let expected = type_name(params[0], table, definitions);
         let found = type_name(ret, table, definitions);
         diagnostics.push(

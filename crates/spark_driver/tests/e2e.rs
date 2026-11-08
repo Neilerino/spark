@@ -854,6 +854,25 @@ fn tuple_ownership_balances_nested_fields() {
 }
 
 #[test]
+fn map_iterable_rejects_callback_layout_conversions() {
+    for (fixture, diagnostic) in [
+        (
+            "map_iterable_reduce_callback_layout",
+            "`reduce` element type mismatch",
+        ),
+        (
+            "map_iterable_partial_callback_layout",
+            "`each` element type mismatch",
+        ),
+    ] {
+        assert_compile_error(
+            &format!("compile-fail/type_errors/{fixture}.spark"),
+            diagnostic,
+        );
+    }
+}
+
+#[test]
 fn map_iterable_frequency() {
     let fixture = "run-pass/collections/map_iterable_frequency.spark";
     for args in [&[][..], &["--no-opt"][..]] {
