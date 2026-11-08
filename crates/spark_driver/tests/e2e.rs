@@ -860,6 +860,8 @@ fn map_iterable_frequency() {
         let result = run_spark_with_args(fixture, args);
         assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
         let mut lines: Vec<_> = result.stdout.lines().collect();
+        assert_eq!(lines.pop(), Some("171"));
+        assert_eq!(lines.pop(), Some("18"));
         assert_eq!(lines.pop(), Some("2"));
         assert_eq!(lines.pop(), Some("3"));
         assert_eq!(lines.len(), 4);
@@ -1204,7 +1206,12 @@ fn closure_capture_list() {
 
 #[test]
 fn closure_capture_mutable_list() {
-    assert_output("run-pass/lambdas/closure_capture_mutable_list.spark", "3");
+    let fixture = "run-pass/lambdas/closure_capture_mutable_list.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "1\n3\n");
+    }
 }
 
 #[test]
