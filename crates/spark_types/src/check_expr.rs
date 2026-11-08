@@ -217,17 +217,7 @@ fn check_expr_inner(
         } => check_enum_variant(path, variant, fields, expr.span, ctx, current_fn_ret),
 
         // === Block ===
-        ExprKind::Block(block) => {
-            if block.stmts.is_empty() && block.expr.is_none() {
-                if let Some(map_ty) = expected_ty
-                    .map(|ty| strip_mutable(ty, ctx.table))
-                    .filter(|&ty| matches!(ctx.table.resolve(ty), Ty::Map(..)))
-                {
-                    return map_ty;
-                }
-            }
-            check_block(block, ctx, current_fn_ret)
-        }
+        ExprKind::Block(block) => check_block(block, ctx, current_fn_ret),
 
         // === If expression ===
         ExprKind::If {
