@@ -203,11 +203,10 @@ fn extract_statement_facts(
             ..
         } => {
             facts.uses.push((point, *root));
-            facts
-                .uses
-                .extend(indices.iter().map(|&index| (point, index)));
-            facts.uses.push((point, *value));
-            facts.moves.push((point, *value));
+            for &operand in indices.iter().chain(std::iter::once(value)) {
+                facts.uses.push((point, operand));
+                facts.moves.push((point, operand));
+            }
         }
         Statement::Drop { place, .. } => {
             facts.uses.push((point, place.local));

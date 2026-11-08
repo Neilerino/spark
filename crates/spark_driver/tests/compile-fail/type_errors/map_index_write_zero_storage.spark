@@ -1,0 +1,5 @@
+fn main(): Int {
+    entries: Map[Int, Null]! = {}
+    entries[0] = Null
+    return 0
+}

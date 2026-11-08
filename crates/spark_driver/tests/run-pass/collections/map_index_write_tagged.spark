@@ -1,0 +1,32 @@
+alias MaybeInt = Int?
+alias IntOrString = Int | String
+
+fn main(): Int {
+    options: Map[Int, MaybeInt]! = {}
+    options[0] = Null
+    options[1] = 9
+    options[0] to {
+        value: MaybeInt -> print(value ?? -1),
+        Null -> print("missing")
+    }
+    options[1] to {
+        value: MaybeInt -> print(value ?? -1),
+        Null -> print("missing")
+    }
+    options[2] to {
+        value: MaybeInt -> print(value ?? -1),
+        Null -> print("missing")
+    }
+
+    values: Map[Int, IntOrString]! = {}
+    values[0] = "first"
+    values[0] = 8
+    values[0] to {
+        value: IntOrString -> value to {
+            n: Int -> print(n),
+            s: String -> print(s)
+        },
+        Null -> print("missing")
+    }
+    return 0
+}

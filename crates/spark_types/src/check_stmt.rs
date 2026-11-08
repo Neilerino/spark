@@ -9,7 +9,7 @@ use spark_resolve::DefinitionKind;
 
 use crate::check_expr::{
     check_collection_argument, check_expr, check_expr_expected, collection_value_coercion,
-    is_compatible, strip_mutable, strip_ref,
+    is_compatible, is_supported_map_key, strip_mutable, strip_ref,
 };
 use crate::ctx::TypeCheckCtx;
 use crate::display::display_type as type_name;
@@ -213,7 +213,7 @@ fn check_index_target(
         }
     };
 
-    for index in indices {
+    for (position, index) in indices.iter().enumerate() {
         let index_ty = check_expr(index, ctx, current_fn_ret);
         slot = match ctx.table.resolve(strip_mutable(slot, ctx.table)) {
             Ty::List(elem) => {
@@ -227,26 +227,40 @@ fn check_index_target(
                 }
                 elem
             }
-            Ty::Map(key, _) => {
-                if check_collection_argument(
-                    index_ty,
-                    *key,
-                    index.span,
-                    "map key type mismatch",
-                    ctx,
-                ) {
+            Ty::Map(key, value) => {
+                let key = *key;
+                let value = *value;
+                if !matches!(ctx.table.resolve(index_ty), Ty::Never)
+                    && !check_collection_argument(
+                        index_ty,
+                        key,
+                        index.span,
+                        "map key type mismatch",
+                        ctx,
+                    )
+                {
+                    TypeId::ERROR
+                } else if position + 1 != indices.len() {
                     ctx.diagnostics.push(
-                        Diagnostic::error("map indexed assignment is unsupported")
-                            .with_label(Label::primary(index.span, "cannot write this map entry")),
+                        Diagnostic::error("map entry must end an indexed assignment path")
+                            .with_label(Label::primary(index.span, "cannot traverse a map entry")),
                     );
+                    TypeId::ERROR
+                } else if !is_supported_map_key(key, ctx.table) {
+                    ctx.diagnostics.push(
+                        Diagnostic::error("map write keys must be integers or strings")
+                            .with_label(Label::primary(index.span, "unsupported map key type")),
+                    );
+                    TypeId::ERROR
+                } else {
+                    value
                 }
-                TypeId::ERROR
             }
             Ty::Error => TypeId::ERROR,
             _ => {
                 ctx.diagnostics.push(
                     Diagnostic::error("type is not indexable")
-                        .with_label(Label::primary(index.span, "expected a list")),
+                        .with_label(Label::primary(index.span, "expected a list or map")),
                 );
                 TypeId::ERROR
             }
