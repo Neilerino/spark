@@ -1,0 +1,9 @@
+fn equal[T](left: T, right: T): Bool {
+    return left == right
+}
+fn main(): Int {
+    values: List[Int] = [1]
+    item: Tup[Int, List[Int]] = (2, values)
+    print(equal(item, item))
+    return 0
+}

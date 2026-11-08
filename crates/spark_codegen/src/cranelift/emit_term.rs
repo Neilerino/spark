@@ -1491,26 +1491,19 @@ fn emit_builtin_method<M: Module>(
 
     // --- CONTAINS ---
     if method_name == kw::CONTAINS {
-        let (stub, element_ty) = match stripped_ty {
-            Ty::List(elem) => (ctx.stubs.list_contains, *elem),
-            Ty::Map(key, _) => (ctx.stubs.map_contains, *key),
-            Ty::Set(elem) => (ctx.stubs.set_contains, *elem),
+        let stub = match stripped_ty {
+            Ty::List(_) => ctx.stubs.list_contains,
+            Ty::Map(..) => ctx.stubs.map_contains,
+            Ty::Set(_) => ctx.stubs.set_contains,
             _ => {
                 let target_block = ctx.clif_block(target);
                 ctx.builder.ins().jump(target_block, &[]);
                 return;
             }
         };
-        let address = args.get(1).and_then(|arg| {
-            if matches!(stripped_ty, Ty::Set(_)) {
-                borrowed_set_element_addr(ctx, arg, table, module)
-            } else {
-                let value = emit_rvalue::emit_operand(ctx, arg, ecx, module)?;
-                Some(emit_rvalue::store_scalar_to_temp(
-                    ctx, value, element_ty, table,
-                ))
-            }
-        });
+        let address = args
+            .get(1)
+            .and_then(|arg| borrowed_element_addr(ctx, arg, table, module));
         if let Some(address) = address {
             let func_ref = module.declare_func_in_func(stub, ctx.builder.func);
             let call = ctx.builder.ins().call(func_ref, &[recv_ptr, address]);
@@ -1573,7 +1566,7 @@ fn emit_builtin_method<M: Module>(
             (Ty::Set(_), kw::REMOVE) => {
                 if let Some(elem_addr) = args
                     .get(1)
-                    .and_then(|arg| borrowed_set_element_addr(ctx, arg, table, module))
+                    .and_then(|arg| borrowed_element_addr(ctx, arg, table, module))
                 {
                     let func_ref =
                         module.declare_func_in_func(ctx.stubs.set_remove, ctx.builder.func);
@@ -1737,7 +1730,7 @@ fn emit_extern_call<M: Module>(
     ctx.builder.ins().jump(target_block, &[]);
 }
 
-fn borrowed_set_element_addr<M: Module>(
+fn borrowed_element_addr<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operand: &Operand,
     table: &TypeTable,
@@ -1746,6 +1739,11 @@ fn borrowed_set_element_addr<M: Module>(
     let (Operand::Copy(place) | Operand::Move(place)) = operand else {
         return None;
     };
+    let ty = emit_rvalue::resolve_place_type(ctx, place, table);
+    if abi::is_zero_sized(ty, table) {
+        let zero = ctx.builder.ins().iconst(types::I8, 0);
+        return Some(emit_rvalue::store_scalar_to_temp(ctx, zero, ty, table));
+    }
     Some(emit_rvalue::emit_place_addr(ctx, place, table, module).0)
 }
 

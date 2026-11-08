@@ -72,7 +72,7 @@ pub fn lower_expr(
                 && [lhs, rhs].iter().any(|operand| {
                     matches!(
                         type_table.resolve(unwrap_type_wrappers(operand.ty, type_table)),
-                        Ty::Tuple(_) | Ty::String
+                        Ty::Tuple(_) | Ty::String | Ty::Param(_)
                     )
                 });
             if scoped {
@@ -755,7 +755,10 @@ fn lower_method_call(
         );
         return void_temp(fb, expr);
     }
-    let scoped = set_method || snapshot || borrowed_len;
+    let membership = builtin
+        && method == kw::CONTAINS
+        && matches!(receiver_ty, Ty::List(_) | Ty::Map(..) | Ty::Set(_));
+    let scoped = set_method || snapshot || borrowed_len || membership;
     if scoped {
         fb.push_scope();
     }
@@ -770,6 +773,21 @@ fn lower_method_call(
             fb.register_drop(receiver_local);
         }
     }
+    let receiver_local = if membership && fb.is_def_local(receiver_local) {
+        let Some(staged) =
+            stage_collection_value(fb, receiver_local, receiver.ty, receiver.span, type_table)
+        else {
+            mir.diagnostics.push(
+                Diagnostic::error("membership receiver has incompatible storage after lowering")
+                    .with_label(Label::primary(receiver.span, "unsupported receiver layout")),
+            );
+            fb.pop_scope_drops(None, expr.span);
+            return void_temp(fb, expr);
+        };
+        staged
+    } else {
+        receiver_local
+    };
     let mut all_args = vec![Operand::Copy(Place::from_local(receiver_local))];
     for a in args {
         let local = lower_expr(a, fb, mir, type_table, defs);
@@ -778,7 +796,8 @@ fn lower_method_call(
             return void_temp(fb, expr);
         }
         let place = Place::from_local(local);
-        let temporary = set_method && !fb.is_def_local(local) && !fb.owns_local(local);
+        let temporary =
+            (set_method || membership) && !fb.is_def_local(local) && !fb.owns_local(local);
         let operand = if temporary && method == kw::ADD {
             Operand::Move(place)
         } else {

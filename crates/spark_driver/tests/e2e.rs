@@ -929,6 +929,93 @@ fn string_value_comparison_rejects_incompatible_layout() {
 }
 
 #[test]
+fn tuple_list_contains_agrees_with_equality() {
+    let fixture = "run-pass/collections/tuple_list_contains.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "true\ntrue\ntrue\nfalse\ntrue\n");
+    }
+}
+
+#[test]
+fn tuple_list_contains_balances_temporary_owners() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\n         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/collections/tuple_list_contains_ownership.spark"),
+        "true\ntrue\ntrue\ntrue\nfalse\nfalse\ntrue\n0\n0",
+    );
+}
+
+#[test]
+fn list_contains_uses_zero_sized_slot_marker() {
+    assert_native_ownership_fixture(
+        r#"#include <stdint.h>
+extern void *__spark_value_desc_new(int64_t, int64_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+extern void *__spark_list_new(void *);
+extern void __spark_list_push(void *, const unsigned char *);
+void *give(void) {
+    void *list = __spark_list_new(__spark_value_desc_new(0, 1, 0, 0, 0, 0));
+    unsigned char zero = 0;
+    __spark_list_push(list, &zero);
+    return list;
+}
+"#,
+        include_str!("run-pass/collections/list_contains_zero_sized.spark"),
+        "true",
+    );
+}
+
+#[test]
+fn collection_equality_uses_float_values_and_integer_keys() {
+    let fixture = "run-pass/collections/collection_equality_boundaries.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout,
+            "true\nfalse\ntrue\n7\nfalse\ntrue\nfalse\n0\n0\n0\n"
+        );
+    }
+}
+
+#[test]
+fn collection_equality_rejects_unsupported_slots() {
+    for (fixture, diagnostic) in [
+        ("unsupported_hash_slot_types", "unsupported map key type"),
+        (
+            "unsupported_hash_slot_types",
+            "unsupported set element type",
+        ),
+        (
+            "unsupported_specialized_hash_slot",
+            "expected an integer or String after specialization",
+        ),
+        (
+            "unsupported_tuple_list_contains",
+            "List.contains requires supported tuple field types",
+        ),
+        (
+            "unsupported_specialized_tuple_contains",
+            "List.contains requires supported tuple field types",
+        ),
+        (
+            "unsupported_specialized_mutable_tuple_contains",
+            "List.contains requires supported tuple field types",
+        ),
+        (
+            "unsupported_specialized_tuple_eq",
+            "tuple equality requires matching supported field types",
+        ),
+    ] {
+        assert_compile_error(
+            &format!("compile-fail/type_errors/{fixture}.spark"),
+            diagnostic,
+        );
+    }
+}
+
+#[test]
 fn tuple_value_equality() {
     let fixture = "run-pass/collections/tuple_value_equality.spark";
     for args in [&[][..], &["--no-opt"][..]] {

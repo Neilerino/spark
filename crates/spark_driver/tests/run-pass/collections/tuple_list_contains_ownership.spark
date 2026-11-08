@@ -1,0 +1,45 @@
+link "union_probe"
+
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn pair(label: String): Tup[UInt8, String] {
+    return (7 as UInt8, label)
+}
+
+fn candidates(label: String): List[Tup[UInt8, String]] {
+    return [pair(label)]
+}
+
+fn equal[T](left: T, right: T): Bool {
+    return {
+        first: T = left
+        first
+    } == {
+        second: T = right
+        second
+    }
+}
+
+fn main(): Int {
+    suffix: String = "ame"
+    left: String = "s{suffix}"
+    right: String = "s{suffix}"
+    beforeLeft: Int = probe_string_rc(left)
+    beforeRight: Int = probe_string_rc(right)
+    {
+        needle: Tup[UInt8, String] = pair(right)
+        items: List[Tup[UInt8, String]] = candidates(left)
+        print(items.contains(needle))
+        print(equal(needle, pair(left)))
+        print(equal(left, right))
+        print(candidates(left).contains(pair(right)))
+        print(items.contains(pair("different")))
+        empty: List[Tup[UInt8, String]] = []
+        print(empty.contains(needle))
+        counts: Map[String, Int] = {left: 42}
+        print(counts.toList().contains((right, 42)))
+    }
+    print(probe_string_rc(left) - beforeLeft)
+    print(probe_string_rc(right) - beforeRight)
+    return 0
+}

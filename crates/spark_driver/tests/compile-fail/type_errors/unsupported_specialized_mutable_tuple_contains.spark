@@ -1,0 +1,10 @@
+fn member[T](items: List[T!], value: T): Bool {
+    return items.contains(value)
+}
+fn main(): Int {
+    values: List[Int] = [1]
+    item: Tup[Int, List[Int]] = (2, values)
+    items: List[Tup[Int, List[Int]]!] = [item]
+    print(member(items, item))
+    return 0
+}

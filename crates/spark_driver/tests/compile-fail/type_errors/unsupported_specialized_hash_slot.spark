@@ -1,0 +1,8 @@
+fn emptyCount[K](key: K): Int {
+    counts: Map[K, Int] = {}
+    return counts.len()
+}
+
+fn main(): Int {
+    return emptyCount((1, 2))
+}
