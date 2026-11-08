@@ -1,0 +1,12 @@
+import spark.sys { args }
+
+fn quotientThenRemainder(value: Int, divisor: Int): Int {
+    return (value / divisor) % 1
+}
+
+fn main(): Int {
+    argv: List[String] = args()
+    input: String = argv[1] ?? ""
+    print(quotientThenRemainder(42, input.len()))
+    return 0
+}

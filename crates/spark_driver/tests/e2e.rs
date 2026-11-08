@@ -286,6 +286,50 @@ fn arithmetic() {
 }
 
 #[test]
+fn signed_division_remainder() {
+    let fixture = "run-pass/basics/signed_division_remainder.spark";
+    let literal_results = concat!(
+        "-7\n0\n7\n0\n",
+        "-3\n-1\n-1\n-3\n-4\n0\n-2\n0\n0\n0\n0\n0\n",
+        "-7\n0\n-9223372036854775808\n0\n-2\n0\n2305843009213693951\n3\n",
+        "-127\n0\n-63\n-1\n",
+    );
+    for (argument, runtime_results) in [
+        ("x", "-7\n0\n7\n0\n-7\n0\n"),
+        ("xx", "-3\n-1\n3\n-1\n-3\n1\n"),
+        ("xxx", "-2\n-1\n2\n-1\n-2\n1\n"),
+        ("xxxx", "-1\n-3\n1\n-3\n-1\n3\n"),
+    ] {
+        let expected = format!("{literal_results}{runtime_results}");
+        for args in [&["--", argument][..], &["--no-opt", "--", argument][..]] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, expected, "{fixture} {args:?}");
+        }
+    }
+}
+
+#[test]
+fn signed_remainder_preserves_division_trap() {
+    let fixture = "run-fail/basics/signed_remainder_preserves_division_trap.spark";
+    for mode in [&[][..], &["--no-opt"][..]] {
+        let valid_args = [mode, &["--", "x"]].concat();
+        let valid = run_spark_with_args(fixture, &valid_args);
+        assert_eq!(valid.exit_code, 0, "{fixture} {mode:?}: {}", valid.stderr);
+        assert_eq!(valid.stdout, "0\n", "{fixture} {mode:?}");
+
+        let invalid_args = [mode, &["--", ""]].concat();
+        let invalid = run_spark_with_args(fixture, &invalid_args);
+        assert_eq!(
+            invalid.exit_code, 1,
+            "{fixture} {mode:?}: {}",
+            invalid.stderr
+        );
+        assert!(invalid.stdout.is_empty(), "{fixture} {mode:?}");
+    }
+}
+
+#[test]
 fn if_else() {
     assert_output("run-pass/basics/if_else.spark", "bigger");
 }

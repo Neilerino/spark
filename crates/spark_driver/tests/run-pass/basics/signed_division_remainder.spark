@@ -1,0 +1,50 @@
+import spark.sys { args }
+
+fn byOne(value: Int): Void {
+    print(value / 1)
+    print(value % 1)
+}
+
+fn powers(value: Int): Void {
+    print(value / 2)
+    print(value % 2)
+    print(value / 4)
+    print(value % 4)
+}
+
+fn narrow(value: Int8): Void {
+    print((value / (1 as Int8)) as Int)
+    print((value % (1 as Int8)) as Int)
+    print((value / (2 as Int8)) as Int)
+    print((value % (2 as Int8)) as Int)
+}
+
+fn main(): Int {
+    argv: List[String] = args()
+    argument: String? = argv[1]
+    if argument is Null { return 1 }
+    divisor: Int = argument.len()
+    value: Int = -7
+    byOne(value)
+    byOne(7)
+    powers(value)
+    powers(-8)
+    powers(0)
+    print(-7 / 1)
+    print(-7 % 1)
+    minimum: Int = -9223372036854775807 - 1
+    byOne(minimum)
+    print(minimum / 4611686018427387904)
+    print(minimum % 4611686018427387904)
+    maximum: Int = 9223372036854775807
+    print(maximum / 4)
+    print(maximum % 4)
+    narrow(-127 as Int8)
+    print(value / divisor)
+    print(value % divisor)
+    print(value / -divisor)
+    print(value % -divisor)
+    print(7 / -divisor)
+    print(7 % -divisor)
+    return 0
+}
