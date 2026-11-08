@@ -96,7 +96,22 @@ pub fn lower_expr(
 
         // ── Access ───────────────────────────────────────────────
         HirExprKind::FieldAccess { base, field } => {
+            let base_ty = unwrap_type_wrappers(base.ty, type_table);
+            let scoped = matches!(type_table.resolve(base_ty), Ty::Tuple(_))
+                && spark_drop::needs_drop(base_ty, type_table);
+            if scoped {
+                fb.push_scope();
+            }
             let base_local = lower_expr(base, fb, mir, type_table, defs);
+            if scoped {
+                if fb.is_terminated() {
+                    fb.pop_finished_scope();
+                    return void_temp(fb, expr);
+                }
+                if !fb.is_def_local(base_local) && !fb.owns_local(base_local) {
+                    fb.register_drop(base_local);
+                }
+            }
             let temp = fb.fresh_temp(expr.ty, expr.span);
             let mut place = Place::from_local(base_local);
             place.projections.push(Projection::Field(*field));
@@ -105,6 +120,9 @@ pub fn lower_expr(
                 Rvalue::Use(Operand::Copy(place)),
                 expr.span,
             );
+            if scoped {
+                fb.pop_scope_drops(None, expr.span);
+            }
             temp
         }
 
@@ -243,20 +261,22 @@ pub fn lower_expr(
             temp
         }
 
-        HirExprKind::ListLit(elems) => {
-            lower_collection(elems, AggregateKind::List, expr, fb, mir, type_table, defs)
-        }
+        HirExprKind::ListLit(elems) => lower_list(elems, expr, fb, mir, type_table, defs),
 
         HirExprKind::SetLit(elements) => {
             let Ty::Set(element) = type_table.resolve(expr.ty) else {
                 return void_temp(fb, expr);
             };
             let slots = elements.iter().map(|value| (value, *element));
-            lower_hash_collection(slots, AggregateKind::Set, expr, fb, mir, type_table, defs)
+            lower_staged_collection(slots, AggregateKind::Set, expr, fb, mir, type_table, defs)
         }
 
-        HirExprKind::TupleLit(elems) => {
-            lower_collection(elems, AggregateKind::Tuple, expr, fb, mir, type_table, defs)
+        HirExprKind::TupleLit(elements) => {
+            let Ty::Tuple(fields) = type_table.resolve(expr.ty) else {
+                return void_temp(fb, expr);
+            };
+            let slots = elements.iter().zip(fields.iter().copied());
+            lower_staged_collection(slots, AggregateKind::Tuple, expr, fb, mir, type_table, defs)
         }
 
         HirExprKind::MapLit(entries) => lower_map_literal(entries, expr, fb, mir, type_table, defs),
@@ -621,7 +641,7 @@ fn lower_call(
         .iter()
         .map(|a| {
             let local = lower_expr(a, fb, mir, type_table, defs);
-            owned_union_operand(local, fb, type_table)
+            owned_aggregate_operand(local, fb, type_table)
         })
         .collect();
 
@@ -662,18 +682,24 @@ fn lower_method_call(
     type_table: &TypeTable,
     defs: &DefinitionTable,
 ) -> Local {
-    let method_def_id = type_table
-        .get_method_resolution(expr.span)
-        .or_else(|| find_builtin_method(defs, method))
-        .unwrap_or(spark_resolve::DefId::DUMMY);
+    let receiver_ty = type_table.resolve(unwrap_type_wrappers(receiver.ty, type_table));
+    let snapshot = method == kw::TO_LIST && matches!(receiver_ty, Ty::Map(..));
+    let resolved = if snapshot {
+        find_builtin_method(defs, method)
+    } else {
+        type_table
+            .get_method_resolution(expr.span)
+            .or_else(|| find_builtin_method(defs, method))
+    };
+    let method_def_id = resolved.unwrap_or(spark_resolve::DefId::DUMMY);
 
-    let set_method = defs.get(method_def_id).is_some_and(|info| {
-        info.kind == DefinitionKind::BuiltinMethod
-            && matches!(
-                type_table.resolve(unwrap_type_wrappers(receiver.ty, type_table)),
-                Ty::Set(_)
-            )
-    });
+    let builtin = defs
+        .get(method_def_id)
+        .is_some_and(|info| info.kind == DefinitionKind::BuiltinMethod);
+    let set_method = builtin && matches!(receiver_ty, Ty::Set(_));
+    let borrowed_len = builtin
+        && method == kw::LEN
+        && matches!(receiver_ty, Ty::String | Ty::List(_) | Ty::Map(..));
     if set_method
         && matches!(method, kw::ADD | kw::REMOVE)
         && !is_set_binding(receiver, fb, type_table)
@@ -685,12 +711,13 @@ fn lower_method_call(
         );
         return void_temp(fb, expr);
     }
-    if set_method {
+    let scoped = set_method || snapshot || borrowed_len;
+    if scoped {
         fb.push_scope();
     }
 
     let receiver_local = lower_expr(receiver, fb, mir, type_table, defs);
-    if set_method {
+    if scoped {
         if fb.is_terminated() {
             fb.pop_finished_scope();
             return void_temp(fb, expr);
@@ -702,7 +729,7 @@ fn lower_method_call(
     let mut all_args = vec![Operand::Copy(Place::from_local(receiver_local))];
     for a in args {
         let local = lower_expr(a, fb, mir, type_table, defs);
-        if set_method && fb.is_terminated() {
+        if scoped && fb.is_terminated() {
             fb.pop_finished_scope();
             return void_temp(fb, expr);
         }
@@ -733,7 +760,7 @@ fn lower_method_call(
     });
 
     fb.switch_to(cont);
-    if set_method {
+    if scoped {
         fb.pop_scope_drops(None, expr.span);
     }
     dest
@@ -751,10 +778,9 @@ fn is_set_binding(receiver: &HirExpr, fb: &FunctionBuilder, table: &TypeTable) -
     })
 }
 
-/// Lowers a list or tuple literal.
-fn lower_collection(
+/// Lowers a list literal.
+fn lower_list(
     elems: &[HirExpr],
-    kind: AggregateKind,
     expr: &HirExpr,
     fb: &mut FunctionBuilder,
     mir: &mut MirBuilder<'_>,
@@ -765,17 +791,13 @@ fn lower_collection(
         .iter()
         .map(|e| {
             let local = lower_expr(e, fb, mir, type_table, defs);
-            if matches!(kind, AggregateKind::List) {
-                owned_union_operand(local, fb, type_table)
-            } else {
-                Operand::Copy(Place::from_local(local))
-            }
+            owned_aggregate_operand(local, fb, type_table)
         })
         .collect();
     let temp = fb.fresh_temp(expr.ty, expr.span);
     fb.push_assign(
         Place::from_local(temp),
-        Rvalue::Aggregate(kind, operands),
+        Rvalue::Aggregate(AggregateKind::List, operands),
         expr.span,
     );
     temp
@@ -796,10 +818,10 @@ fn lower_map_literal(
     let slots = entries
         .iter()
         .flat_map(|(key, value)| [(key, *key_ty), (value, *value_ty)]);
-    lower_hash_collection(slots, AggregateKind::Map, expr, fb, mir, type_table, defs)
+    lower_staged_collection(slots, AggregateKind::Map, expr, fb, mir, type_table, defs)
 }
 
-fn lower_hash_collection<'a>(
+fn lower_staged_collection<'a>(
     slots: impl Iterator<Item = (&'a HirExpr, TypeId)>,
     kind: AggregateKind,
     expr: &HirExpr,
@@ -823,10 +845,10 @@ fn lower_hash_collection<'a>(
         }
         let Some(staged) = stage_collection_value(fb, source, slot_ty, slot.span, type_table)
         else {
-            let message = if matches!(kind, AggregateKind::Map) {
-                "map entry has incompatible storage after lowering"
-            } else {
-                "set element has incompatible storage after lowering"
+            let message = match kind {
+                AggregateKind::Map => "map entry has incompatible storage after lowering",
+                AggregateKind::Set => "set element has incompatible storage after lowering",
+                _ => "tuple field has incompatible storage after lowering",
             };
             mir.diagnostics
                 .push(Diagnostic::error(message).with_label(Label::primary(
@@ -881,13 +903,14 @@ pub(crate) fn stage_collection_value(
     Some(staged)
 }
 
-fn owned_union_operand(local: Local, fb: &FunctionBuilder, type_table: &TypeTable) -> Operand {
+fn owned_aggregate_operand(local: Local, fb: &FunctionBuilder, type_table: &TypeTable) -> Operand {
     let place = Place::from_local(local);
     let ty = fb.local_type(local);
     if !fb.is_def_local(local)
+        && !fb.owns_local(local)
         && matches!(
             type_table.resolve(unwrap_type_wrappers(ty, type_table)),
-            Ty::Union(_) | Ty::Optional(_)
+            Ty::Union(_) | Ty::Optional(_) | Ty::Tuple(_)
         )
         && spark_drop::needs_drop(ty, type_table)
     {

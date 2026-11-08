@@ -1,0 +1,7 @@
+fn main(): Int {
+    values: Map[Int, Int] = {5: 99}
+    return values reduce 0 (sum: Int, item: Tup[Int, Int]?): Int {
+        entry: Tup[Int, Int] = item ?? (0, 0)
+        sum + entry.1
+    }
+}

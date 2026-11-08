@@ -408,6 +408,21 @@ ages["charlie"] = 35
 ages["charlie"] = 36
 ```
 
+Maps can be passed directly to sequential pipelines. Each element is a
+`Tup[K, V]` with the key at `.0` and value at `.1`. The pipeline takes an
+owned snapshot before processing its first element. Traversal order is
+unspecified. Use `toList()` to take the same snapshot explicitly. Traversal
+requires slot types with supported owned storage and is sequential. A callback
+declares the exact element type. In `reduce`, the initial value, accumulator
+parameter, and callback result have the same type.
+
+```
+counts: Map[String, Int] = {"red": 2, "blue": 1}
+total: Int = counts reduce 0 (sum: Int, entry: Tup[String, Int]): Int {
+    sum + entry.1
+}
+```
+
 #### Set[T]
 
 Unique values, unordered. Set construction supports integers and strings.

@@ -80,6 +80,18 @@ pub fn emit_typed_drop<M: Module>(
             let func_ref = module.declare_func_in_func(stubs.channel_rc_dec, builder.func);
             builder.ins().call(func_ref, &[ptr_val]);
         }
+        Ty::Tuple(fields) => {
+            emit_tuple_rc(
+                builder,
+                ptr_val,
+                fields,
+                table,
+                stubs,
+                module,
+                ptr_type,
+                emit_typed_drop,
+            );
+        }
         _ => {
             if let Some(members) = tagged_payloads(ty) {
                 emit_union_rc(
@@ -120,6 +132,17 @@ pub fn emit_typed_retain<M: Module>(
                 .load(ptr_type, MemFlags::new(), ptr_val, ptr_type.bytes() as i32);
         let func_ref = module.declare_func_in_func(stubs.rc_inc, builder.func);
         builder.ins().call(func_ref, &[env_ptr]);
+    } else if let Ty::Tuple(fields) = ty {
+        emit_tuple_rc(
+            builder,
+            ptr_val,
+            fields,
+            table,
+            stubs,
+            module,
+            ptr_type,
+            emit_typed_retain,
+        );
     } else if let Some(members) = tagged_payloads(ty) {
         emit_union_rc(
             builder,
@@ -159,6 +182,28 @@ pub(super) fn rc_value_at(
 
 type EmitRc<M> =
     fn(&mut FunctionBuilder<'_>, Value, TypeId, &TypeTable, &RuntimeStubs, &mut M, ClifType);
+
+#[allow(clippy::too_many_arguments)]
+fn emit_tuple_rc<M: Module>(
+    builder: &mut FunctionBuilder<'_>,
+    slot: Value,
+    fields: &[TypeId],
+    table: &TypeTable,
+    stubs: &RuntimeStubs,
+    module: &mut M,
+    ptr_type: ClifType,
+    emit_field: EmitRc<M>,
+) {
+    let mut layouts = LayoutCache::new(ptr_type.bytes());
+    for (index, &field) in fields.iter().enumerate() {
+        if spark_drop::needs_drop(field, table) {
+            let offset = layouts.tuple_field_offset(fields, index, table);
+            let address = builder.ins().iadd_imm(slot, i64::from(offset));
+            let value = rc_value_at(builder, address, field, table, ptr_type);
+            emit_field(builder, value, field, table, stubs, module, ptr_type);
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn emit_union_rc<M: Module>(

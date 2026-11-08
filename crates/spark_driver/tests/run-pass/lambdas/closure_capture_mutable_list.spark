@@ -2,6 +2,12 @@ fn main(): Int {
     items: List[Int]! = [1, 2, 3]
     adder: (): Void = fn(): Void { items.append(4) }
     adder()
+    rebind: (): Void = fn(): Void { items = [5, 6] }
+    rebind()
+    values: Map[Int, Int]! = {1: 2}
+    remove: (): Void = fn(): Void { values.remove(1) }
+    remove()
+    print(values.len())
     print(items.len())
     return 0
 }

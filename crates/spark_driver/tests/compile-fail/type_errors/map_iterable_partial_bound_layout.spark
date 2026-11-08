@@ -1,0 +1,9 @@
+fn show(item: Tup[Int, Int], base: Int?): Void {
+    print((base ?? 0) + item.1)
+}
+
+fn main(): Int {
+    values: Map[Int, Int] = {5: 99}
+    values each show{base: 3}
+    return 0
+}
