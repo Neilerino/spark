@@ -1,0 +1,5 @@
+fn main(): Int {
+    m: Map[String, Int] = {"a": 1}
+    print(m.contains(123))
+    return 0
+}

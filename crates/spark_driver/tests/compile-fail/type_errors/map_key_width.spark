@@ -1,0 +1,7 @@
+fn lookup(m: Map[Int8, Int], key: Int): Int? {
+    return m[key]
+}
+
+fn main(): Int {
+    return 0
+}

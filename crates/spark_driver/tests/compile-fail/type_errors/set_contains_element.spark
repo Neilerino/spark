@@ -1,0 +1,7 @@
+fn invalid(s: Set[String]): Void {
+    print(s.contains(123))
+}
+
+fn main(): Int {
+    return 0
+}
