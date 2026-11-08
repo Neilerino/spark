@@ -3,7 +3,7 @@
 //! Checks let bindings, assignments, compound assignments, and
 //! expression statements.
 
-use spark_ast::{Stmt, StmtKind};
+use spark_ast::{Expr, ExprKind, Stmt, StmtKind};
 use spark_diagnostics::{Diagnostic, Label};
 
 use crate::check_expr::{check_expr, check_expr_expected, is_compatible, strip_mutable, strip_ref};
@@ -24,9 +24,7 @@ pub fn check_stmt(stmt: &Stmt, ctx: &mut TypeCheckCtx<'_>, current_fn_ret: Optio
             // Lower the declared type
             let declared_ty = lower_type_expr(ty, ctx);
 
-            // Check the value expression, passing the declared type as context
-            // so that propagation (!) can use it to split union types.
-            let value_ty = check_expr_expected(value, ctx, current_fn_ret, Some(declared_ty));
+            let value_ty = check_binding_initializer(value, declared_ty, ctx, current_fn_ret);
 
             // Verify compatibility
             if !is_compatible(value_ty, declared_ty, ctx.table) {
@@ -143,6 +141,32 @@ pub fn check_stmt(stmt: &Stmt, ctx: &mut TypeCheckCtx<'_>, current_fn_ret: Optio
             let _ = check_expr(expr, ctx, current_fn_ret);
         }
     }
+}
+
+fn check_binding_initializer(
+    value: &Expr,
+    declared_ty: TypeId,
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let ty = strip_mutable(declared_ty, ctx.table);
+    if matches!(ctx.table.resolve(ty), Ty::Map(..))
+        && type_empty_map_initializer(value, ty, ctx.table)
+    {
+        ty
+    } else {
+        check_expr_expected(value, ctx, current_fn_ret, Some(declared_ty))
+    }
+}
+
+fn type_empty_map_initializer(expr: &Expr, map_ty: TypeId, table: &mut crate::TypeTable) -> bool {
+    match &expr.kind {
+        ExprKind::Block(block) if block.stmts.is_empty() && block.expr.is_none() => {}
+        ExprKind::Paren(inner) if type_empty_map_initializer(inner, map_ty, table) => {}
+        _ => return false,
+    }
+    table.set_expr_type(expr.id, map_ty);
+    true
 }
 
 #[cfg(test)]

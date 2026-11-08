@@ -1,0 +1,18 @@
+alias Counts = Map[Int, Int]
+
+fn empty_block(): Void {}
+
+fn main(): Int {
+    counts: Map[Int, Int]! = {}
+    print(counts.len())
+    print(counts[42] ?? 0)
+
+    aliases: Counts = ({})
+    print(aliases.len())
+    print(aliases[42] ?? 0)
+
+    unit: Void = {}
+    if true {}
+    empty_block()
+    return 0
+}

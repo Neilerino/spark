@@ -370,9 +370,11 @@ numbers.append(4)
 #### Map[K, V]
 
 Key-value pairs. Bracket keys and arguments to `contains` and `remove` must
-match the declared key type.
+match the declared key type. An empty initializer `{}` constructs an empty map
+when its binding declares a map type.
 
 ```
+counts: Map[Int, Int]! = {}
 ages: Map[String, Int] = {
     "alice": 30,
     "bob": 25

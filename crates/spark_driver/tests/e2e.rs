@@ -648,6 +648,16 @@ fn map_lookup_retags_nested_coalesced_payloads() {
 }
 
 #[test]
+fn map_literal_empty_uses_expected_type() {
+    let fixture = "run-pass/collections/map_literal_empty.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "0\n0\n0\n0");
+    }
+}
+
+#[test]
 fn map_get_optional() {
     assert_output("run-pass/collections/map_get_optional.spark", "found");
 }
