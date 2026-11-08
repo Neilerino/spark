@@ -1,0 +1,9 @@
+fn main(): Int {
+    floats: List[Float32] = []
+    pairs: List[Tup[Int, Int]] = []
+    directFloats: List[Float32] = sort(floats)
+    pipedFloats: List[Float32] = floats to sort
+    directPairs: List[Tup[Int, Int]] = sort(pairs)
+    pipedPairs: List[Tup[Int, Int]] = pairs to sort
+    return 0
+}

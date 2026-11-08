@@ -1,0 +1,30 @@
+link "union_probe"
+
+extern fn probe_list_rc(value: Ref[List[Int32]]): Int
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn makeList(value: String): List[String] {
+    return [value]
+}
+
+fn main(): Int {
+    values: List[Int32] = [3 as Int32, 1 as Int32, 2 as Int32]
+    before: Int = probe_list_rc(values)
+    {
+        direct: List[Int32] = sort(values)
+        piped: List[Int32] = values to sort
+        print(direct.len())
+        print(piped.len())
+    }
+    print(probe_list_rc(values) - before)
+
+    suffix: String = "alue"
+    text: String = "v{suffix}"
+    beforeText: Int = probe_string_rc(text)
+    {
+        sorted: List[String] = makeList(text) to sort
+        print(sorted.len())
+    }
+    print(probe_string_rc(text) - beforeText)
+    return 0
+}

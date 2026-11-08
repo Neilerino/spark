@@ -1446,6 +1446,61 @@ fn to_sort() {
 }
 
 #[test]
+fn sort_integer_widths() {
+    let fixture = "run-pass/to/sort_integer_widths.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "1\n2\n3\n1\n2\n3\n3\n1\n2\n", "{args:?}");
+    }
+}
+
+#[test]
+fn sort_integer_widths_matrix() {
+    let fixture = "run-pass/to/sort_integer_matrix.spark";
+    let expected = concat!(
+        "-128\n0\n127\n127\n-32768\n0\n32767\n32767\n",
+        "-2147483648\n0\n2147483647\n2147483647\n-8\n0\n7\n7\n",
+        "0\n1\n128\n255\n255\n0\n1\n32768\n65535\n65535\n",
+        "0\n1\n2147483648\n4294967295\n4294967295\n",
+        "true\ntrue\ntrue\ntrue\n0\n255\n0\n9\n",
+    );
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, expected, "{args:?}");
+    }
+}
+
+#[test]
+fn sort_balances_input_ownership() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\n         int64_t probe_list_rc(const void *const *slot) { return *(const size_t *)*slot; }\n
+         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/to/sort_ownership.spark"),
+        "3\n3\n0\n1\n0",
+    );
+}
+
+#[test]
+fn sort_rejects_unsupported_element_layouts() {
+    let fixture = "compile-fail/type_errors/unsupported_sort_element.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_ne!(result.exit_code, 0, "{fixture} {args:?}");
+        assert_eq!(
+            result
+                .stderr
+                .matches("sort does not support list elements of type")
+                .count(),
+            4,
+            "{fixture} {args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
 fn to_sort_float() {
     assert_output("run-pass/to/to_sort_float.spark", "-4\n-1.2\n0\n2.7\n3.5");
 }

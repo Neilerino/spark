@@ -1,0 +1,40 @@
+fn main(): Int {
+    items0: List[Int8] = [127 as Int8, 0 as Int8, (-128) as Int8, 127 as Int8]
+    result0: List[Int8] = sort(items0)
+    result0 each (item: Int8): Void { print(item as Int) }
+    items1: List[Int16] = [32767 as Int16, 0 as Int16, (-32768) as Int16, 32767 as Int16]
+    result1: List[Int16] = items1 to sort
+    result1 each (item: Int16): Void { print(item as Int) }
+    items2: List[Int32]! = [2147483647 as Int32, 0 as Int32, (-2147483648) as Int32, 2147483647 as Int32]
+    result2: List[Int32] = sort(items2)
+    result2 each (item: Int32): Void { print(item as Int) }
+    items3: List[Int64] = [7 as Int64, 0 as Int64, (-8) as Int64, 7 as Int64]
+    result3: List[Int64] = items3 to sort
+    result3 each (item: Int64): Void { print(item as Int) }
+    items4: List[UInt8] = [255 as UInt8, 1 as UInt8, 0 as UInt8, 128 as UInt8, 255 as UInt8]
+    result4: List[UInt8] = sort(items4)
+    result4 each (item: UInt8): Void { print(item as Int) }
+    items5: List[UInt16] = [65535 as UInt16, 1 as UInt16, 0 as UInt16, 32768 as UInt16, 65535 as UInt16]
+    result5: List[UInt16] = items5 to sort
+    result5 each (item: UInt16): Void { print(item as Int) }
+    items6: List[UInt32] = [4294967295 as UInt32, 1 as UInt32, 0 as UInt32, 2147483648 as UInt32, 4294967295 as UInt32]
+    result6: List[UInt32] = sort(items6)
+    result6 each (item: UInt32): Void { print(item as Int) }
+    maximum: UInt64 = (-1) as UInt64
+    wide: List[UInt64] = [maximum, 1 as UInt64, 0 as UInt64, maximum]
+    sortedWide: List[UInt64] = sort(wide)
+    print((sortedWide[0] ?? (2 as UInt64)) == (0 as UInt64))
+    print((sortedWide[1] ?? (2 as UInt64)) == (1 as UInt64))
+    print((sortedWide[2] ?? (2 as UInt64)) == maximum)
+    print((sortedWide[3] ?? (2 as UInt64)) == maximum)
+    bytes: List[Byte] = [(255 as UInt8) as Byte, (0 as UInt8) as Byte]
+    sortedBytes: List[Byte] = bytes to sort
+    sortedBytes each (item: Byte): Void { print((item as UInt8) as Int) }
+    empty: List[Int8] = []
+    sortedEmpty: List[Int8] = empty to sort
+    print(sortedEmpty.len())
+    single: List[Int8] = [9 as Int8]
+    sortedSingle: List[Int8] = sort(single)
+    sortedSingle each (item: Int8): Void { print(item as Int) }
+    return 0
+}

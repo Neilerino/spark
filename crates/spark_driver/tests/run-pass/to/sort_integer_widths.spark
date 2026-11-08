@@ -1,0 +1,9 @@
+fn main(): Int {
+    values: List[Int32] = [3 as Int32, 1 as Int32, 2 as Int32]
+    direct: List[Int32] = sort(values)
+    piped: List[Int32] = values to sort
+    direct each (value: Int32): Void { print(value as Int) }
+    piped each (value: Int32): Void { print(value as Int) }
+    values each (value: Int32): Void { print(value as Int) }
+    return 0
+}
