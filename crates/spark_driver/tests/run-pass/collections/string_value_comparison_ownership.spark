@@ -1,0 +1,24 @@
+link "union_probe"
+
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn alwaysEarly(label: String): Bool {
+    return "{label}" < { return true }
+}
+
+fn main(): Int {
+    suffix: String = "ame"
+    left: String = "s{suffix}"
+    right: String = "s{suffix}"
+    beforeLeft: Int = probe_string_rc(left)
+    beforeRight: Int = probe_string_rc(right)
+    print(left == right)
+    print(left != right)
+    print(left < right)
+    print(left >= right)
+    print("{left}" == "{right}")
+    print(alwaysEarly(left))
+    print(probe_string_rc(left) - beforeLeft)
+    print(probe_string_rc(right) - beforeRight)
+    return 0
+}

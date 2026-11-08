@@ -888,6 +888,47 @@ fn set_string_elements_balance_ownership() {
 }
 
 #[test]
+fn string_value_ordering() {
+    let fixture = "run-pass/collections/string_value_ordering.spark";
+    let expected = concat!(
+        "true\nfalse\nfalse\nfalse\ntrue\ntrue\n",
+        "true\ntrue\ntrue\ntrue\ntrue\ntrue\nfalse\n",
+    );
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, expected, "{args:?}");
+    }
+}
+
+#[test]
+fn string_value_comparison_balances_owners() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\n         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/collections/string_value_comparison_ownership.spark"),
+        "true\nfalse\nfalse\ntrue\ntrue\ntrue\n0\n0",
+    );
+}
+
+#[test]
+fn string_value_hash_keys_include_empty_strings() {
+    let fixture = "run-pass/collections/string_value_hash_keys.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "9\n42\ntrue\ntrue\ntrue\ntrue\n2\n");
+    }
+}
+
+#[test]
+fn string_value_comparison_rejects_incompatible_layout() {
+    assert_compile_error(
+        "compile-fail/type_errors/unsupported_string_comparison.spark",
+        "String comparison requires two String operands",
+    );
+}
+
+#[test]
 fn tuple_value_equality() {
     let fixture = "run-pass/collections/tuple_value_equality.spark";
     for args in [&[][..], &["--no-opt"][..]] {

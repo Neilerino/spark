@@ -1067,6 +1067,16 @@ fn check_binary_op(
             }
             return ctx.builtins.bool_ty;
         }
+        if matches!(lhs, Ty::String) || matches!(rhs, Ty::String) {
+            if lhs_base != rhs_base && !matches!(lhs, Ty::Never) && !matches!(rhs, Ty::Never) {
+                ctx.diagnostics.push(
+                    Diagnostic::error("String comparison requires two String operands")
+                        .with_label(Label::primary(op_span, "incompatible comparison layout")),
+                );
+                return TypeId::ERROR;
+            }
+            return ctx.builtins.bool_ty;
+        }
         if !is_compatible(lhs_base, rhs_base, ctx.table) {
             let l = type_name(lhs_base, ctx.table, &DefinitionTable::new());
             let r = type_name(rhs_base, ctx.table, &DefinitionTable::new());

@@ -1,0 +1,19 @@
+fn main(): Int {
+    emptyLeft: String = ""
+    emptyRight: String = ""
+    suffix: String = "ame"
+    left: String = "s{suffix}"
+    right: String = "s{suffix}"
+    counts: Map[String, Int] = {emptyLeft: 9, left: 42}
+    seen: Set[String]! = {emptyLeft, left}
+    print(counts[emptyRight] ?? 0)
+    print(counts[right] ?? 0)
+    print(counts.contains(emptyRight))
+    print(counts.contains(right))
+    print(seen.contains(emptyRight))
+    print(seen.contains(right))
+    seen.add(emptyRight)
+    seen.add(right)
+    print(seen.len())
+    return 0
+}

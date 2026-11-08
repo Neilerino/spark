@@ -1,0 +1,6 @@
+fn main(): Int {
+    text: String = "hello"
+    maybe: String? = text
+    print(text == maybe)
+    return 0
+}

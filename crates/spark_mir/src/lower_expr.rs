@@ -68,11 +68,11 @@ pub fn lower_expr(
 
         // ── Operators ────────────────────────────────────────────
         HirExprKind::BinaryOp { op, lhs, rhs } => {
-            let scoped = matches!(op, spark_ast::BinaryOp::Eq | spark_ast::BinaryOp::Ne)
+            let scoped = op.is_comparison()
                 && [lhs, rhs].iter().any(|operand| {
                     matches!(
                         type_table.resolve(unwrap_type_wrappers(operand.ty, type_table)),
-                        Ty::Tuple(_)
+                        Ty::Tuple(_) | Ty::String
                     )
                 });
             if scoped {
