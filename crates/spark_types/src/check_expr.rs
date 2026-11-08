@@ -1041,6 +1041,32 @@ fn check_binary_op(
     if op.is_comparison() {
         let lhs_base = strip_ref(strip_mutable(lhs_ty, ctx.table), ctx.table);
         let rhs_base = strip_ref(strip_mutable(rhs_ty, ctx.table), ctx.table);
+        let lhs = ctx.table.resolve(lhs_base);
+        let rhs = ctx.table.resolve(rhs_base);
+        if matches!(lhs, Ty::Tuple(_)) || matches!(rhs, Ty::Tuple(_)) {
+            if !matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+                ctx.diagnostics.push(
+                    Diagnostic::error("tuple ordering is not supported")
+                        .with_label(Label::primary(op_span, "compare individual fields")),
+                );
+                return TypeId::ERROR;
+            }
+            let tuple_ty = if matches!(lhs, Ty::Tuple(_)) {
+                lhs_base
+            } else {
+                rhs_base
+            };
+            let compatible =
+                lhs_base == rhs_base || matches!(lhs, Ty::Never) || matches!(rhs, Ty::Never);
+            if !compatible || !supports_tuple_equality(tuple_ty, ctx.table) {
+                ctx.diagnostics.push(
+                    Diagnostic::error("tuple equality requires matching supported field types")
+                        .with_label(Label::primary(op_span, "unsupported tuple comparison")),
+                );
+                return TypeId::ERROR;
+            }
+            return ctx.builtins.bool_ty;
+        }
         if !is_compatible(lhs_base, rhs_base, ctx.table) {
             let l = type_name(lhs_base, ctx.table, &DefinitionTable::new());
             let r = type_name(rhs_base, ctx.table, &DefinitionTable::new());
@@ -1069,30 +1095,57 @@ fn check_binary_op(
     }
 
     if op.is_bitwise() {
-        let lhs_base = strip_ref(strip_mutable(lhs_ty, ctx.table), ctx.table);
-        let rhs_base = strip_ref(strip_mutable(rhs_ty, ctx.table), ctx.table);
-        let lhs_resolved = ctx.table.resolve(lhs_base);
-        if !lhs_resolved.is_integer() {
-            ctx.diagnostics.push(
-                Diagnostic::error(format!(
-                    "operator `{}` requires integer operands",
-                    op.as_str()
-                ))
-                .with_label(Label::primary(lhs_span, "not integer")),
-            );
-            return TypeId::ERROR;
-        }
-        if !is_compatible(lhs_base, rhs_base, ctx.table) {
-            ctx.diagnostics.push(
-                Diagnostic::error(format!("mismatched integer types for `{}`", op.as_str()))
-                    .with_label(Label::primary(op_span, "type mismatch")),
-            );
-            return TypeId::ERROR;
-        }
-        return lhs_base;
+        return check_bitwise_op(op, lhs_ty, rhs_ty, op_span, lhs_span, ctx);
     }
 
     TypeId::ERROR
+}
+
+fn check_bitwise_op(
+    op: BinaryOp,
+    lhs_ty: TypeId,
+    rhs_ty: TypeId,
+    op_span: Span,
+    lhs_span: Span,
+    ctx: &mut TypeCheckCtx<'_>,
+) -> TypeId {
+    let lhs_base = strip_ref(strip_mutable(lhs_ty, ctx.table), ctx.table);
+    let rhs_base = strip_ref(strip_mutable(rhs_ty, ctx.table), ctx.table);
+    let lhs_resolved = ctx.table.resolve(lhs_base);
+    if !lhs_resolved.is_integer() {
+        ctx.diagnostics.push(
+            Diagnostic::error(format!(
+                "operator `{}` requires integer operands",
+                op.as_str()
+            ))
+            .with_label(Label::primary(lhs_span, "not integer")),
+        );
+        return TypeId::ERROR;
+    }
+    if !is_compatible(lhs_base, rhs_base, ctx.table) {
+        ctx.diagnostics.push(
+            Diagnostic::error(format!("mismatched integer types for `{}`", op.as_str()))
+                .with_label(Label::primary(op_span, "type mismatch")),
+        );
+        return TypeId::ERROR;
+    }
+    lhs_base
+}
+
+/// Checks whether a tuple can be compared by its stored field values.
+#[must_use]
+pub fn supports_tuple_equality(ty: TypeId, table: &TypeTable) -> bool {
+    let Ty::Tuple(fields) = table.resolve(strip_mutable(ty, table)) else {
+        return false;
+    };
+    !fields.is_empty()
+        && fields
+            .iter()
+            .all(|&field| match table.resolve(strip_mutable(field, table)) {
+                Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Byte | Ty::String => true,
+                Ty::Tuple(_) => supports_tuple_equality(field, table),
+                _ => false,
+            })
 }
 
 /// Checks a unary operator application.

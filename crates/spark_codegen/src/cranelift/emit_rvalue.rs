@@ -36,12 +36,32 @@ pub fn emit_rvalue<M: Module>(
         Rvalue::Use(operand) => emit_operand(ctx, operand, ecx, module),
 
         Rvalue::BinaryOp(op, lhs, rhs) => {
+            let lhs_ty = operand_type(lhs, ctx, ecx.table);
+            let (_, lhs_resolved) = clif_types::unwrap_mutable(lhs_ty, ecx.table);
+            if let (Ty::Tuple(fields), BinaryOp::Eq | BinaryOp::Ne) = (lhs_resolved, op) {
+                let left = emit_borrowed_operand(ctx, lhs, ecx, module)?;
+                let right = emit_borrowed_operand(ctx, rhs, ecx, module)?;
+                let string_eq = module.declare_func_in_func(ctx.stubs.string_eq, ctx.builder.func);
+                let equal = super::emit_equality::emit_tuple_equality(
+                    &mut ctx.builder,
+                    &mut ctx.layouts,
+                    ecx.table,
+                    ctx.ptr_type,
+                    string_eq,
+                    left,
+                    right,
+                    fields,
+                );
+                return Some(if *op == BinaryOp::Ne {
+                    ctx.builder.ins().bxor_imm(equal, 1)
+                } else {
+                    equal
+                });
+            }
+
             let lhs_val = emit_operand(ctx, lhs, ecx, module)?;
             let rhs_val = emit_operand(ctx, rhs, ecx, module)?;
 
-            // String equality/inequality must call the runtime.
-            let lhs_ty = operand_type(lhs, ctx, ecx.table);
-            let (_, lhs_resolved) = clif_types::unwrap_mutable(lhs_ty, ecx.table);
             if matches!(lhs_resolved, Ty::String) && matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
                 let func_ref = module.declare_func_in_func(ctx.stubs.string_eq, ctx.builder.func);
                 let call = ctx.builder.ins().call(func_ref, &[lhs_val, rhs_val]);
@@ -171,6 +191,20 @@ pub fn emit_operand<M: Module>(
             Some(emit_place_read(ctx, place, ecx.table, module))
         }
         Operand::Constant(constant) => emit_constant(ctx, constant, ecx, module),
+    }
+}
+
+fn emit_borrowed_operand<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    operand: &Operand,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+) -> Option<Value> {
+    match operand {
+        Operand::Copy(place) | Operand::Move(place) => {
+            Some(emit_place_read(ctx, place, ecx.table, module))
+        }
+        Operand::Constant(_) => emit_operand(ctx, operand, ecx, module),
     }
 }
 

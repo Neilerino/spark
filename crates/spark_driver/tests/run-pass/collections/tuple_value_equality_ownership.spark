@@ -1,0 +1,40 @@
+link "union_probe"
+
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn record(label: String, score: Float): Tup[Int8, Tup[String, Float]] {
+    return (3 as Int8, (label, score))
+}
+
+fn earlyReturn(label: String, skip: Bool): Bool {
+    return record(label, 0.0) == {
+        if skip { return false }
+        record(label, 0.0)
+    }
+}
+
+fn alwaysEarly(label: String): Bool {
+    return record(label, 0.0) == { return true }
+}
+
+fn main(): Int {
+    suffix: String = "ame"
+    leftText: String = "s{suffix}"
+    rightText: String = "s{suffix}"
+    beforeLeft: Int = probe_string_rc(leftText)
+    beforeRight: Int = probe_string_rc(rightText)
+    {
+        left: Tup[Int8, Tup[String, Float]] = record(leftText, 0.0)
+        right: Tup[Int8, Tup[String, Float]] = record(rightText, -0.0)
+        print(left == right)
+        print(left != right)
+        print(record(leftText, 1.0) != record(rightText, 2.0))
+        nan: Float = 0.0 / 0.0
+        print(record(leftText, nan) == record(rightText, nan))
+        print(earlyReturn(leftText, true))
+        print(alwaysEarly(leftText))
+    }
+    print(probe_string_rc(leftText) - beforeLeft)
+    print(probe_string_rc(rightText) - beforeRight)
+    return 0
+}

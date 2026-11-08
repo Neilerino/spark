@@ -27,8 +27,14 @@ pub fn propagate_copies(func: &mut MirFunction, table: &TypeTable) -> bool {
         .map(|d| d.local)
         .collect();
 
+    let borrowed = super::address_taken_locals(func);
     for block in &mut func.blocks {
-        changed |= propagate_in_block(&mut block.statements, &mut block.terminator, &preserved);
+        changed |= propagate_in_block(
+            &mut block.statements,
+            &mut block.terminator,
+            &preserved,
+            &borrowed,
+        );
     }
 
     changed
@@ -39,6 +45,7 @@ fn propagate_in_block(
     statements: &mut [Statement],
     terminator: &mut Terminator,
     preserved: &rustc_hash::FxHashSet<Local>,
+    borrowed: &rustc_hash::FxHashSet<Local>,
 ) -> bool {
     // Phase 1: Find candidate copy assignments: temp = Copy(src)
     // where temp is not a user variable and has no projections.
@@ -51,7 +58,10 @@ fn propagate_in_block(
     // Phase 2: For each candidate, verify safety and apply.
     let mut changed = false;
     for (temp, src, def_idx) in &candidates {
-        if is_safe_to_propagate(statements, terminator, *temp, *src, *def_idx) {
+        if !borrowed.contains(src)
+            && !borrowed.contains(temp)
+            && is_safe_to_propagate(statements, terminator, *temp, *src, *def_idx)
+        {
             // Replace all uses of temp with src in statements after def_idx.
             for stmt in statements.iter_mut().skip(def_idx + 1) {
                 changed |= replace_local_in_statement(stmt, *temp, *src);
