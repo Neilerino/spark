@@ -667,50 +667,30 @@ fn lower_method_call(
         .or_else(|| find_builtin_method(defs, method))
         .unwrap_or(spark_resolve::DefId::DUMMY);
 
-    let builtin = defs
-        .get(method_def_id)
-        .is_some_and(|info| info.kind == DefinitionKind::BuiltinMethod);
-    let receiver_ty = type_table.resolve(unwrap_type_wrappers(receiver.ty, type_table));
-    if builtin && method == kw::EACH_ENTRY && matches!(receiver_ty, Ty::Map(..)) {
-        if let [visitor] = args {
-            return lower_collection_traversal(
-                receiver,
-                visitor,
-                method_def_id,
-                expr,
-                fb,
-                mir,
-                type_table,
-                defs,
-            );
-        }
-    }
-
-    let set_method = builtin && matches!(receiver_ty, Ty::Set(_));
-    let map_remove = builtin && method == kw::REMOVE && matches!(receiver_ty, Ty::Map(..));
-    let scoped = set_method || map_remove;
-    if scoped
+    let set_method = defs.get(method_def_id).is_some_and(|info| {
+        info.kind == DefinitionKind::BuiltinMethod
+            && matches!(
+                type_table.resolve(unwrap_type_wrappers(receiver.ty, type_table)),
+                Ty::Set(_)
+            )
+    });
+    if set_method
         && matches!(method, kw::ADD | kw::REMOVE)
-        && !is_hash_collection_binding(receiver, fb, type_table)
+        && !is_set_binding(receiver, fb, type_table)
     {
-        let message = if set_method {
-            "set mutation requires a mutable binding"
-        } else {
-            "map mutation requires a mutable binding"
-        };
-        mir.diagnostics
-            .push(Diagnostic::error(message).with_label(Label::primary(
-                receiver.span,
-                "use a local or parameter binding",
-            )));
+        mir.diagnostics.push(
+            Diagnostic::error("set mutation requires a mutable binding").with_label(
+                Label::primary(receiver.span, "use a local or parameter binding"),
+            ),
+        );
         return void_temp(fb, expr);
     }
-    if scoped {
+    if set_method {
         fb.push_scope();
     }
 
     let receiver_local = lower_expr(receiver, fb, mir, type_table, defs);
-    if scoped {
+    if set_method {
         if fb.is_terminated() {
             fb.pop_finished_scope();
             return void_temp(fb, expr);
@@ -722,12 +702,12 @@ fn lower_method_call(
     let mut all_args = vec![Operand::Copy(Place::from_local(receiver_local))];
     for a in args {
         let local = lower_expr(a, fb, mir, type_table, defs);
-        if scoped && fb.is_terminated() {
+        if set_method && fb.is_terminated() {
             fb.pop_finished_scope();
             return void_temp(fb, expr);
         }
         let place = Place::from_local(local);
-        let temporary = scoped && !fb.is_def_local(local) && !fb.owns_local(local);
+        let temporary = set_method && !fb.is_def_local(local) && !fb.owns_local(local);
         let operand = if temporary && method == kw::ADD {
             Operand::Move(place)
         } else {
@@ -753,72 +733,20 @@ fn lower_method_call(
     });
 
     fb.switch_to(cont);
-    if scoped {
+    if set_method {
         fb.pop_scope_drops(None, expr.span);
     }
     dest
 }
 
-#[allow(clippy::too_many_arguments)]
-fn lower_collection_traversal(
-    receiver: &HirExpr,
-    visitor: &HirExpr,
-    method: spark_resolve::DefId,
-    expr: &HirExpr,
-    fb: &mut FunctionBuilder,
-    mir: &mut MirBuilder<'_>,
-    table: &TypeTable,
-    defs: &DefinitionTable,
-) -> Local {
-    if let HirExprKind::Local(def) = visitor.kind {
-        if defs.get(def).is_some_and(|info| {
-            matches!(
-                info.kind,
-                DefinitionKind::ExternFunction | DefinitionKind::BuiltinFunction
-            )
-        }) {
-            mir.diagnostics.push(
-                Diagnostic::error("collection visitor must be a Spark function").with_label(
-                    Label::primary(visitor.span, "wrap this call in a Spark function"),
-                ),
-            );
-            return void_temp(fb, expr);
-        }
-    }
-    fb.push_scope();
-    let mut args = Vec::with_capacity(2);
-    for input in [receiver, visitor] {
-        let source = lower_expr(input, fb, mir, table, defs);
-        if fb.is_terminated() {
-            fb.pop_finished_scope();
-            return void_temp(fb, expr);
-        }
-        let staged = stage_collection_value(fb, source, fb.local_type(source), input.span, table)
-            .expect("a traversal operand matches its own type");
-        args.push(Operand::Copy(Place::from_local(staged)));
-    }
-    let dest = fb.fresh_temp(expr.ty, expr.span);
-    let cont = fb.new_block();
-    fb.terminate(Terminator::Call {
-        func: Operand::Constant(Constant::FunctionRef(method)),
-        args,
-        destination: Place::from_local(dest),
-        target: cont,
-        span: expr.span,
-    });
-    fb.switch_to(cont);
-    fb.pop_scope_drops(None, expr.span);
-    dest
-}
-
-fn is_hash_collection_binding(receiver: &HirExpr, fb: &FunctionBuilder, table: &TypeTable) -> bool {
+fn is_set_binding(receiver: &HirExpr, fb: &FunctionBuilder, table: &TypeTable) -> bool {
     let HirExprKind::Local(def) = receiver.kind else {
         return false;
     };
     fb.lookup_def(def).is_some_and(|local| {
         matches!(
             table.resolve(unwrap_type_wrappers(fb.local_type(local), table)),
-            Ty::Set(_) | Ty::Map(..)
+            Ty::Set(_)
         )
     })
 }

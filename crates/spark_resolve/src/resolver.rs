@@ -151,7 +151,6 @@ impl Resolver {
             kw::CHARS,
             kw::APPEND,
             kw::CONTAINS,
-            kw::EACH_ENTRY,
             kw::REMOVE,
             kw::ADD,
             kw::SEND,

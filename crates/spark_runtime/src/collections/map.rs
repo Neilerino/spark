@@ -6,8 +6,7 @@ use crate::value::{buffer_align, value_desc_clone, value_desc_free, SparkValueDe
 
 use super::hash::{
     alloc_hashes, dealloc_hashes, for_occupied_slots, insertion_slot, lookup_slot,
-    next_occupied_slot, rehash_occupied_slots, InsertionSlot, LookupSlot, HASH_TOMBSTONE,
-    MIN_HASH_CAP,
+    rehash_occupied_slots, InsertionSlot, LookupSlot, HASH_TOMBSTONE, MIN_HASH_CAP,
 };
 use super::storage::{alloc_buffer, byte_size, clone_buffer, dealloc_buffer};
 
@@ -172,36 +171,6 @@ pub unsafe extern "C" fn __spark_map_get(map: *mut u8, key_ptr: *const u8) -> *m
         LookupSlot::Occupied(idx) => unsafe { map.values.add(idx * map.value_size()) },
         LookupSlot::Empty => std::ptr::null_mut(),
     }
-}
-
-/// Copies the next occupied pair into caller storage and transfers its owners.
-/// Returns zero at exhaustion, otherwise the cursor for the next call.
-///
-/// # Safety
-///
-/// The map must stay live and unchanged. Output slots must be disjoint,
-/// aligned storage sized for the map's key and value descriptors.
-#[no_mangle]
-#[allow(clippy::cast_ptr_alignment)]
-pub unsafe extern "C" fn __spark_map_next(
-    map: *const u8,
-    start: u64,
-    key_out: *mut u8,
-    value_out: *mut u8,
-) -> u64 {
-    let map = unsafe { &*map.cast::<SparkMap>() };
-    let Some(index) = (unsafe { next_occupied_slot(map.hashes, map.cap, start) }) else {
-        return 0;
-    };
-    unsafe {
-        let key = map.keys.add(index * map.key_size());
-        let value = map.values.add(index * map.value_size());
-        std::ptr::copy_nonoverlapping(key, key_out, map.key_size());
-        std::ptr::copy_nonoverlapping(value, value_out, map.value_size());
-        map.key().retain_elem(key_out);
-        map.value().retain_elem(value_out);
-    }
-    index as u64 + 1
 }
 
 /// Allocates initial hash table storage for a map (capacity = [`MIN_HASH_CAP`]).

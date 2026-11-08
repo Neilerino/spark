@@ -17,16 +17,9 @@ pub use list::{
 };
 pub use map::{
     SparkMap, __spark_map_contains, __spark_map_cow, __spark_map_get, __spark_map_insert,
-    __spark_map_len, __spark_map_new, __spark_map_next, __spark_map_rc_dec, __spark_map_remove,
+    __spark_map_len, __spark_map_new, __spark_map_rc_dec, __spark_map_remove,
 };
 pub use set::{
     SparkSet, __spark_set_contains, __spark_set_cow, __spark_set_insert, __spark_set_len,
     __spark_set_new, __spark_set_rc_dec, __spark_set_remove,
 };
-
-/// Reports a traversal callback that has no Spark entry point.
-#[no_mangle]
-pub extern "C" fn __spark_invalid_collection_visitor() {
-    eprintln!("spark: collection visitor must be a Spark function");
-    std::process::abort();
-}

@@ -117,10 +117,10 @@ struct WrittenCollectionRoots<'a> {
 }
 
 impl WrittenCollectionRoots<'_> {
-    fn record_hash_collection_root(&mut self, target: &spark_hir::HirExpr) {
+    fn record_set_root(&mut self, target: &spark_hir::HirExpr) {
         if let HirExprKind::Local(def_id) = target.kind {
             if matches!(self.table.resolve(target.ty), Ty::Mutable(inner)
-                if matches!(self.table.resolve(*inner), Ty::Set(_) | Ty::Map(..)))
+                if matches!(self.table.resolve(*inner), Ty::Set(_)))
             {
                 self.roots.insert(def_id);
             }
@@ -136,14 +136,14 @@ impl HirVisitor for WrittenCollectionRoots<'_> {
             ..
         } = &expr.kind
         {
-            self.record_hash_collection_root(receiver);
+            self.record_set_root(receiver);
         }
         walk_expr(self, expr);
     }
 
     fn visit_stmt(&mut self, stmt: &HirStmt) {
         match stmt {
-            HirStmt::Assign { target, .. } => self.record_hash_collection_root(target),
+            HirStmt::Assign { target, .. } => self.record_set_root(target),
             HirStmt::IndexedAssign { root, .. } => {
                 if let HirExprKind::Local(def_id) = root.kind {
                     self.roots.insert(def_id);
