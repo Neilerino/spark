@@ -1,0 +1,71 @@
+link "union_probe"
+
+extern fn probe_list_rc(values: Ref[List[Int]]): Int
+extern fn probe_string_rc(value: Ref[String]): Int
+extern fn probe_map_rc(data: Ref[Map[String, List[Int]]]): Int
+
+fn extract(values: List[Int]): List[Int]? {
+    data: Map[String, List[Int]] = {"yes": values}
+    key: String = "yes"
+    before: Int = probe_list_rc(values)
+    keyBefore: Int = probe_string_rc(key)
+    mapBefore: Int = probe_map_rc(data)
+
+    hit: List[Int]? = data[key]
+    print(probe_list_rc(values) - before)
+    print(probe_string_rc(key) - keyBefore)
+    print(probe_map_rc(data) - mapBefore)
+
+    data[key]
+    data["absent"]
+    print(probe_list_rc(values) - before)
+    return hit
+}
+
+fn genericLookup[V](data: Map[String, V], key: String): V? {
+    return data[key]
+}
+
+fn genericDiscard[V](data: Map[String, V], key: String): Void {
+    data[key]
+}
+
+fn genericDefault[V](data: Map[String, V], key: String, fallback: V): V {
+    return data[key] ?? fallback
+}
+
+fn main(): Int {
+    values: List[Int] = [9]
+    before: Int = probe_list_rc(values)
+    {
+        result: List[Int]? = extract(values)
+        print(probe_list_rc(values) - before)
+
+        result to {
+            payload: List[Int] -> print(payload.len()),
+            Null -> print(0)
+        }
+    }
+    print(probe_list_rc(values) - before)
+
+    data: Map[String, List[Int]] = {"yes": values}
+    beforeGeneric: Int = probe_list_rc(values)
+    {
+        hit: List[Int]? = genericLookup(data, "yes")
+        print(probe_list_rc(values) - beforeGeneric)
+        if hit is Null {
+            print("unexpected miss")
+        }
+    }
+    print(probe_list_rc(values) - beforeGeneric)
+    genericDiscard(data, "yes")
+    print(probe_list_rc(values) - beforeGeneric)
+    {
+        fallback: List[Int] = [99, 100]
+        chosen: List[Int] = genericDefault(data, "yes", fallback)
+        print(chosen.len())
+        print(probe_list_rc(values) - beforeGeneric)
+    }
+    print(probe_list_rc(values) - beforeGeneric)
+    return 0
+}

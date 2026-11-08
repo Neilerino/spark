@@ -436,7 +436,8 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
             let lhs_hir = lower_expr(lhs, ctx);
             let rhs_hir = lower_expr(rhs, ctx);
             let ty = expr_type(expr.id, ctx.table);
-            desugar::desugar_coalesce(lhs_hir, rhs_hir, expr.span, ty, ctx.definitions).kind
+            desugar::desugar_coalesce(lhs_hir, rhs_hir, expr.span, ty, ctx.table, ctx.definitions)
+                .kind
         }
 
         // === Desugared: OptionalField (?.) ===
@@ -866,8 +867,12 @@ fn lower_to_narrowing(
     let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len() + 1);
 
     // Collect the union members for ident-as-type-narrow resolution.
-    let union_members: Vec<TypeId> = match ctx.table.resolve(inner_hir.ty) {
-        Ty::Union(members) => members.clone(),
+    let inner_ty = match ctx.table.resolve(inner_hir.ty) {
+        Ty::Mutable(inner) => *inner,
+        _ => inner_hir.ty,
+    };
+    let union_members = match ctx.table.resolve(inner_ty) {
+        Ty::Union(_) | Ty::Optional(_) => spark_types::union::union_members(inner_ty, ctx.table),
         _ => Vec::new(),
     };
 
@@ -900,30 +905,26 @@ fn lower_to_narrowing(
             body: HirExpr::new(HirExprKind::Local(pass_id), ty, span),
             span,
         });
-    } else {
-        let members = &union_members[..];
-        // Collect types already handled by explicit arms
-        let handled: Vec<TypeId> = hir_arms
-            .iter()
-            .filter_map(|arm| match &arm.pattern {
-                HirPattern::TypeNarrow { ty, .. } => Some(*ty),
-                _ => None,
-            })
-            .collect();
-
-        for &member_ty in members {
-            if !handled.contains(&member_ty) {
-                let pass_id = ctx.definitions.next_synthetic_id(span);
-                hir_arms.push(HirMatchArm {
-                    pattern: HirPattern::TypeNarrow {
-                        def_id: pass_id,
-                        ty: member_ty,
-                    },
-                    guard: None,
-                    body: HirExpr::new(HirExprKind::Local(pass_id), member_ty, span),
-                    span,
-                });
+    } else if !hir_arms
+        .iter()
+        .any(|arm| matches!(arm.pattern, HirPattern::Wildcard))
+    {
+        for member_ty in union_members {
+            let is_null = matches!(ctx.table.resolve(member_ty), Ty::Null);
+            let handled = hir_arms.iter().any(|arm| match arm.pattern {
+                HirPattern::TypeNarrow { ty, .. } => ty == member_ty,
+                HirPattern::Literal(HirLiteral::Null) => is_null,
+                _ => false,
+            });
+            if handled {
+                continue;
             }
+            hir_arms.push(desugar::match_member(
+                member_ty,
+                span,
+                ctx.table,
+                ctx.definitions,
+            ));
         }
     }
 

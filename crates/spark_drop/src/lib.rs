@@ -13,7 +13,7 @@ use spark_types::{Ty, TypeId, TypeTable};
 /// This is a superset of [`needs_rc`]: it includes all RC types (String, List,
 /// Map, Set) **plus** `Function` types (whose closure environments are
 /// reference-counted separately via `__spark_env_rc_dec`) and unions with a
-/// droppable member.
+/// droppable member. A generic parameter may specialize to a droppable type.
 ///
 /// Use this for deciding whether to register a local for drop. Use [`needs_rc`]
 /// when you need to know if the value itself is an RC pointer (for `rc_inc`).
@@ -26,9 +26,9 @@ pub fn needs_drop(ty_id: TypeId, table: &TypeTable) -> bool {
         return false;
     }
     match table.resolve(ty_id) {
-        Ty::Function { .. } | Ty::Future { .. } | Ty::Channel { .. } => true,
+        Ty::Function { .. } | Ty::Future { .. } | Ty::Channel { .. } | Ty::Param(_) => true,
         Ty::Union(members) => members.iter().any(|&member| needs_drop(member, table)),
-        Ty::Mutable(inner) => needs_drop(*inner, table),
+        Ty::Mutable(inner) | Ty::Optional(inner) => needs_drop(*inner, table),
         _ => false,
     }
 }

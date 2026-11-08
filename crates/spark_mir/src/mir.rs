@@ -297,12 +297,10 @@ pub enum Rvalue {
     /// if found. This avoids the crash that occurs when a plain
     /// `Place + Index` projection loads from a null `map_get` result.
     MapGetOptional {
-        /// The map operand.
-        map: Operand,
-        /// The key operand.
-        key: Operand,
-        /// The map's value type (inner type of the resulting Optional).
-        value_ty: TypeId,
+        /// The map, borrowed for the lookup.
+        map: Place,
+        /// The key, borrowed for the lookup.
+        key: Place,
     },
     /// Compute the length of a range without allocating a list.
     ///

@@ -1,0 +1,25 @@
+fn source(): Map[String, String] {
+    print("map")
+    word: String = "found"
+    return {"yes": word}
+}
+
+fn key(value: String): String {
+    print("key")
+    return value
+}
+
+fn fallback(): String {
+    print("fallback")
+    return "default"
+}
+
+fn lookup(value: String): String {
+    return source()[key(value)] ?? fallback()
+}
+
+fn main(): Int {
+    print(lookup("yes"))
+    print(lookup("no"))
+    return 0
+}

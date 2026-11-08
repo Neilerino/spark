@@ -11,51 +11,104 @@ use spark_ast::BinaryOp;
 use spark_intern::Symbol;
 use spark_resolve::DefinitionTable;
 use spark_span::Span;
-use spark_types::TypeId;
+use spark_types::{Ty, TypeId, TypeTable};
 
 use crate::hir::{HirExpr, HirExprKind, HirLiteral, HirMatchArm, HirPattern, HirStmt};
 
-/// Desugars `lhs ?? rhs` into a match expression.
-///
-/// ```text
-/// match lhs {
-///     v -> v,     // non-null arm (binding pattern)
-///     _ -> rhs,   // null arm (wildcard, returns default)
-/// }
-/// ```
+/// Desugars coalescing into a typed match that evaluates the fallback on Null.
 #[must_use]
 pub fn desugar_coalesce(
     lhs: HirExpr,
     rhs: HirExpr,
     span: Span,
     ty: TypeId,
+    table: &TypeTable,
     definitions: &mut DefinitionTable,
 ) -> HirExpr {
-    // The non-null arm binds the value and returns it.
-    let fresh_id = definitions.next_synthetic_id(span);
-    let non_null_arm = HirMatchArm {
-        pattern: HirPattern::Binding { def_id: fresh_id },
-        guard: None,
-        body: HirExpr::new(HirExprKind::Local(fresh_id), ty, span),
-        span,
+    let lhs_ty = match table.resolve(lhs.ty) {
+        Ty::Mutable(inner) => *inner,
+        _ => lhs.ty,
     };
-
-    let null_arm = HirMatchArm {
+    let mut arms = vec![HirMatchArm {
         pattern: HirPattern::Literal(HirLiteral::Null),
         guard: None,
-        body: rhs,
+        body: coalesce_result(rhs, ty, table, definitions),
         span,
-    };
+    }];
 
-    // Order: null arm first (specific), then wildcard (catch-all)
+    for member in spark_types::union::union_members(lhs_ty, table) {
+        if matches!(table.resolve(member), Ty::Null) {
+            continue;
+        }
+        let mut arm = match_member(member, span, table, definitions);
+        arm.body = coalesce_result(arm.body, ty, table, definitions);
+        arms.push(arm);
+    }
+
     HirExpr::new(
         HirExprKind::Match {
             scrutinee: Box::new(lhs),
-            arms: vec![null_arm, non_null_arm],
+            arms,
         },
         ty,
         span,
     )
+}
+
+fn coalesce_result(
+    value: HirExpr,
+    result_ty: TypeId,
+    table: &TypeTable,
+    definitions: &mut DefinitionTable,
+) -> HirExpr {
+    let (Ty::Union(members), Ty::Union(result_members)) =
+        (table.resolve(value.ty), table.resolve(result_ty))
+    else {
+        return value;
+    };
+    if value.ty == result_ty || !members.iter().all(|member| result_members.contains(member)) {
+        return value;
+    }
+
+    let span = value.span;
+    let arms = members
+        .iter()
+        .map(|&member| match_member(member, span, table, definitions))
+        .collect();
+    HirExpr::new(
+        HirExprKind::Match {
+            scrutinee: Box::new(value),
+            arms,
+        },
+        result_ty,
+        span,
+    )
+}
+
+pub(crate) fn match_member(
+    member: TypeId,
+    span: Span,
+    table: &TypeTable,
+    definitions: &mut DefinitionTable,
+) -> HirMatchArm {
+    let (pattern, body) = if matches!(table.resolve(member), Ty::Null) {
+        (
+            HirPattern::Literal(HirLiteral::Null),
+            HirExprKind::Literal(HirLiteral::Null),
+        )
+    } else {
+        let def_id = definitions.next_synthetic_id(span);
+        (
+            HirPattern::TypeNarrow { def_id, ty: member },
+            HirExprKind::Local(def_id),
+        )
+    };
+    HirMatchArm {
+        pattern,
+        guard: None,
+        body: HirExpr::new(body, member, span),
+        span,
+    }
 }
 
 /// Desugars `base?.field` into a match on the optional base.
@@ -1153,18 +1206,15 @@ mod tests {
     #[test]
     fn desugar_coalesce_produces_match() {
         let mut defs = test_definitions();
-        let lhs = HirExpr::new(
-            HirExprKind::Literal(HirLiteral::Int(1)),
-            TypeId::ERROR,
-            Span::DUMMY,
-        );
-        let rhs = HirExpr::new(
-            HirExprKind::Literal(HirLiteral::Int(0)),
-            TypeId::ERROR,
-            Span::DUMMY,
-        );
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(spark_types::IntWidth::I64));
+        let optional = table.intern(Ty::Optional(int));
+        table.intern(Ty::Null);
+        let lhs_id = defs.next_synthetic_id(Span::DUMMY);
+        let lhs = HirExpr::new(HirExprKind::Local(lhs_id), optional, Span::DUMMY);
+        let rhs = HirExpr::new(HirExprKind::Literal(HirLiteral::Int(0)), int, Span::DUMMY);
 
-        let result = desugar_coalesce(lhs, rhs, Span::DUMMY, TypeId::ERROR, &mut defs);
+        let result = desugar_coalesce(lhs, rhs, Span::DUMMY, int, &table, &mut defs);
         assert!(matches!(result.kind, HirExprKind::Match { .. }));
         if let HirExprKind::Match { arms, .. } = &result.kind {
             assert_eq!(arms.len(), 2);
@@ -1173,10 +1223,12 @@ mod tests {
                 arms[0].pattern,
                 HirPattern::Literal(HirLiteral::Null)
             ));
-            // Second arm should be a Binding (not Wildcard)
-            assert!(matches!(arms[1].pattern, HirPattern::Binding { .. }));
-            // Second arm body should use Local (not Error)
+            assert!(matches!(
+                arms[1].pattern,
+                HirPattern::TypeNarrow { ty, .. } if ty == int
+            ));
             assert!(matches!(arms[1].body.kind, HirExprKind::Local(_)));
+            assert_eq!(arms[1].body.ty, int);
         }
     }
 

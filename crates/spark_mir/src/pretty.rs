@@ -249,11 +249,7 @@ impl PrettyPrinter<'_> {
                 self.out.push(')');
             }
             Rvalue::MapGetOptional { map, key, .. } => {
-                self.out.push_str("MapGetOptional(");
-                self.print_operand(map);
-                self.out.push_str(", ");
-                self.print_operand(key);
-                self.out.push(')');
+                let _ = write!(self.out, "MapGetOptional({map}, {key})");
             }
         }
     }

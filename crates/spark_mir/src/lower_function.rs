@@ -5,11 +5,11 @@
 
 use spark_hir::{HirFunction, HirParam};
 use spark_resolve::DefinitionTable;
-use spark_types::TypeTable;
+use spark_types::{Ty, TypeTable};
 
 use crate::builder::{FunctionBuilder, MirBuilder};
 use crate::lower_expr::{emit_assign_with_union_wrap, lower_expr};
-use crate::mir::{Local, MirFunction, Terminator};
+use crate::mir::{Local, MirFunction, Place, Statement, Terminator};
 
 /// Lowers a single HIR function into a MIR function.
 pub fn lower_function(
@@ -49,19 +49,23 @@ pub fn lower_function(
     // trailing expression (if any), enabling implicit returns.
     let body_local = lower_expr(&hir_fn.body, &mut fb, mir, type_table, defs);
 
-    // On fallthrough (no explicit `return`), assign the body result to the
-    // return place. This handles implicit returns from trailing expressions
-    // (e.g., `fn(x: Int): Int { x * 2 }` where `x * 2` is the return value).
     if !fb.is_terminated() {
-        emit_assign_with_union_wrap(
-            &mut fb,
-            Local::RETURN_PLACE,
-            body_local,
-            type_table,
-            hir_fn.body.span,
-        );
-        // Drop all remaining locals before the fallthrough return.
-        fb.drops_for_return(Some(body_local), hir_fn.body.span);
+        let span = hir_fn.body.span;
+        if matches!(type_table.resolve(hir_fn.ret_type), Ty::Void) {
+            if !fb.is_def_local(body_local)
+                && !fb.owns_local(body_local)
+                && spark_drop::needs_drop(fb.local_type(body_local), type_table)
+            {
+                fb.push_stmt(Statement::Drop {
+                    place: Place::from_local(body_local),
+                    span,
+                });
+            }
+            fb.drops_for_return(None, span);
+        } else {
+            emit_assign_with_union_wrap(&mut fb, Local::RETURN_PLACE, body_local, type_table, span);
+            fb.drops_for_return(Some(body_local), span);
+        }
         fb.terminate(Terminator::Return);
     }
 

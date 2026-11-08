@@ -80,20 +80,20 @@ pub fn emit_typed_drop<M: Module>(
             let func_ref = module.declare_func_in_func(stubs.channel_rc_dec, builder.func);
             builder.ins().call(func_ref, &[ptr_val]);
         }
-        Ty::Union(members) => emit_union_rc(
-            builder,
-            ptr_val,
-            ty_id,
-            members,
-            table,
-            stubs,
-            module,
-            ptr_type,
-            emit_typed_drop,
-        ),
         _ => {
-            // Non-droppable type — no-op (shouldn't reach here if the caller
-            // checked `needs_drop` first).
+            if let Some(members) = tagged_payloads(ty) {
+                emit_union_rc(
+                    builder,
+                    ptr_val,
+                    ty_id,
+                    members,
+                    table,
+                    stubs,
+                    module,
+                    ptr_type,
+                    emit_typed_drop,
+                );
+            }
         }
     }
 }
@@ -120,7 +120,7 @@ pub fn emit_typed_retain<M: Module>(
                 .load(ptr_type, MemFlags::new(), ptr_val, ptr_type.bytes() as i32);
         let func_ref = module.declare_func_in_func(stubs.rc_inc, builder.func);
         builder.ins().call(func_ref, &[env_ptr]);
-    } else if let Ty::Union(members) = ty {
+    } else if let Some(members) = tagged_payloads(ty) {
         emit_union_rc(
             builder,
             ptr_val,
@@ -132,6 +132,14 @@ pub fn emit_typed_retain<M: Module>(
             ptr_type,
             emit_typed_retain,
         );
+    }
+}
+
+fn tagged_payloads(ty: &Ty) -> Option<&[TypeId]> {
+    match ty {
+        Ty::Union(members) => Some(members),
+        Ty::Optional(inner) => Some(std::slice::from_ref(inner)),
+        _ => None,
     }
 }
 
@@ -164,6 +172,7 @@ fn emit_union_rc<M: Module>(
     ptr_type: ClifType,
     emit_member: EmitRc<M>,
 ) {
+    let first_tag = usize::from(matches!(table.resolve(ty), Ty::Optional(_)));
     let droppable = members
         .iter()
         .copied()
@@ -185,7 +194,7 @@ fn emit_union_rc<M: Module>(
     let branches: Vec<_> = droppable
         .map(|(tag, member)| {
             let block = builder.create_block();
-            switch.set_entry(tag as u128, block);
+            switch.set_entry((tag + first_tag) as u128, block);
             (block, member)
         })
         .collect();
