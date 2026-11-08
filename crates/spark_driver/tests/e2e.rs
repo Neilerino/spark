@@ -644,6 +644,7 @@ fn list_index_write_reports_bounds() {
         ("negative", "index -2, length 1"),
         ("unsigned", "index 18446744073709551615, length 1"),
         ("empty", "index 0, length 0"),
+        ("empty_null", "index 0, length 0"),
         ("outer", "index 1, length 1"),
         ("inner", "index 1, length 1"),
     ] {
@@ -801,6 +802,14 @@ fn map_index_write_rejects_invalid_targets_and_values() {
             expected,
         );
     }
+}
+
+#[test]
+fn map_index_write_rejects_borrowed_capture_storage() {
+    assert_compile_error(
+        "compile-fail/borrow_errors/map_index_write_borrowed_capture.spark",
+        "indexed assignment requires an owned value type",
+    );
 }
 
 #[test]

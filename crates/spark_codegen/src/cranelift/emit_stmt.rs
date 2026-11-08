@@ -149,7 +149,8 @@ fn emit_indexed_assign<M: Module>(
         Ty::Map(..)
     );
     let value_ty = ctx.local_type_id(value);
-    if terminal_is_map && ctx.layouts.layout_of(value_ty, ecx.table).size == 0 {
+    let value_has_storage = ctx.layouts.layout_of(value_ty, ecx.table).size != 0;
+    if terminal_is_map && !value_has_storage {
         return Err("map value type has no storage");
     }
     let prefix: Vec<_> = prefix
@@ -181,9 +182,13 @@ fn emit_indexed_assign<M: Module>(
         collection = ctx.load(ctx.ptr_type, slot, 0);
     }
 
-    let value_operand = Operand::Move(Place::from_local(value));
-    let value_address = emit_rvalue::emit_operand_addr(ctx, &value_operand, value_ty, ecx, module)
-        .unwrap_or_else(|| ctx.builder.ins().iconst(ctx.ptr_type, 0));
+    let value_address = if value_has_storage {
+        let operand = Operand::Move(Place::from_local(value));
+        emit_rvalue::emit_operand_addr(ctx, &operand, value_ty, ecx, module)
+            .expect("staged value has storage")
+    } else {
+        ctx.builder.ins().iconst(ctx.ptr_type, 0)
+    };
     if let Some(index) = terminal_index {
         let list = detach_collection(ctx, list_cow, root, owner, collection);
         let slot = list_write_slot(ctx, checked_slot, list, index);

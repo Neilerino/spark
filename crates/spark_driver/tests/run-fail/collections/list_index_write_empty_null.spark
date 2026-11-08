@@ -1,0 +1,5 @@
+fn main(): Int {
+    items: List[Null]! = []
+    items[0] = Null
+    return 0
+}
