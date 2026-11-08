@@ -1,0 +1,12 @@
+fn main(): Int {
+    seen: Set[Int]! = {1,}
+    edit: (): Bool = fn(): Bool {
+        seen = {2,}
+        return seen.contains(2)
+    }
+    print(edit())
+    print(seen.contains(1))
+    print(edit())
+    print(seen.contains(1))
+    return 0
+}

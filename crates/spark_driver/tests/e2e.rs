@@ -799,6 +799,16 @@ fn set_literal_integer_growth_and_early_exit() {
 }
 
 #[test]
+fn set_literal_integer_preserves_captured_assignment() {
+    let fixture = "run-pass/collections/set_literal_integer_capture_assign.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "true\ntrue\ntrue\ntrue\n");
+    }
+}
+
+#[test]
 fn set_literal_integer_rejects_incompatible_elements() {
     for fixture in ["set_literal_integer_mixed", "set_literal_integer_width"] {
         assert_compile_error(
