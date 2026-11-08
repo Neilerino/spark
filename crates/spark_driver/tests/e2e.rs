@@ -724,6 +724,58 @@ fn list_lookup_distinguishes_present_null_payloads_from_misses() {
 }
 
 #[test]
+fn set_empty_integer() {
+    let fixture = "run-pass/collections/set_empty_integer.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "0\nfalse\n1\ntrue\n0\n0\nfalse\ntrue\n");
+    }
+}
+
+#[test]
+fn set_empty_integer_capture_and_parameter_isolation() {
+    let fixture = "run-pass/collections/set_empty_integer_capture.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "true\ntrue\ntrue\nfalse\n");
+    }
+}
+
+#[test]
+fn set_empty_integer_rejects_invalid_mutation_and_storage() {
+    for (fixture, diagnostic) in [
+        (
+            "borrow_errors/set_empty_integer_loan.spark",
+            "cannot write to a borrowed collection",
+        ),
+        (
+            "type_errors/set_empty_integer_projected.spark",
+            "set mutation requires a mutable binding",
+        ),
+        (
+            "type_errors/set_empty_integer_narrowed.spark",
+            "set mutation requires a mutable binding",
+        ),
+        (
+            "type_errors/set_empty_integer_wrong_width.spark",
+            "set element type mismatch",
+        ),
+        (
+            "type_errors/set_empty_integer_immutable.spark",
+            "cannot mutate immutable Set",
+        ),
+        (
+            "type_errors/set_empty_integer_unsupported.spark",
+            "unsupported set element type",
+        ),
+    ] {
+        assert_compile_error(&format!("compile-fail/{fixture}"), diagnostic);
+    }
+}
+
+#[test]
 fn map_index_write_inserts_and_replaces() {
     let fixture = "run-pass/collections/map_index_write.spark";
     for args in [&[][..], &["--no-opt"][..]] {

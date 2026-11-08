@@ -1,0 +1,5 @@
+fn main(): Int {
+    seen: Set[UInt8]! = {}
+    seen.add(1)
+    return 0
+}

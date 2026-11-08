@@ -1,0 +1,18 @@
+fn main(): Int {
+    seen: Set[Int]! = {}
+    print(seen.len())
+    print(seen.contains(7))
+    empty: Set[Int] = seen
+    seen.add(7)
+    seen.add(7)
+    print(seen.len())
+    print(seen.contains(7))
+    print(empty.len())
+    copy: Set[Int] = seen
+    seen.remove(8)
+    seen.remove(7)
+    print(seen.len())
+    print(seen.contains(7))
+    print(copy.contains(7))
+    return 0
+}

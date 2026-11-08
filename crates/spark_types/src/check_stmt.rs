@@ -289,22 +289,39 @@ fn check_binding_initializer(
     current_fn_ret: Option<TypeId>,
 ) -> TypeId {
     let ty = strip_mutable(declared_ty, ctx.table);
-    if matches!(ctx.table.resolve(ty), Ty::Map(..))
-        && type_empty_map_initializer(value, ty, ctx.table)
+    if matches!(ctx.table.resolve(ty), Ty::Map(..) | Ty::Set(_))
+        && type_empty_collection_initializer(value, ty, ctx.table)
     {
+        if let Ty::Set(element) = ctx.table.resolve(ty) {
+            if !ctx
+                .table
+                .resolve(strip_mutable(*element, ctx.table))
+                .is_integer()
+            {
+                ctx.diagnostics.push(
+                    Diagnostic::error("set construction requires integer elements")
+                        .with_label(Label::primary(value.span, "unsupported set element type")),
+                );
+                return TypeId::ERROR;
+            }
+        }
         ty
     } else {
         check_expr_expected(value, ctx, current_fn_ret, Some(declared_ty))
     }
 }
 
-fn type_empty_map_initializer(expr: &Expr, map_ty: TypeId, table: &mut crate::TypeTable) -> bool {
+fn type_empty_collection_initializer(
+    expr: &Expr,
+    ty: TypeId,
+    table: &mut crate::TypeTable,
+) -> bool {
     match &expr.kind {
         ExprKind::Block(block) if block.stmts.is_empty() && block.expr.is_none() => {}
-        ExprKind::Paren(inner) if type_empty_map_initializer(inner, map_ty, table) => {}
+        ExprKind::Paren(inner) if type_empty_collection_initializer(inner, ty, table) => {}
         _ => return false,
     }
-    table.set_expr_type(expr.id, map_ty);
+    table.set_expr_type(expr.id, ty);
     true
 }
 

@@ -1,0 +1,10 @@
+struct Box {
+    seen: Set[Int]!,
+}
+
+fn main(): Int {
+    seen: Set[Int]! = {}
+    box: Box! = Box { seen: seen }
+    box.seen.add(1)
+    return 0
+}

@@ -658,20 +658,52 @@ fn lower_method_call(
     type_table: &TypeTable,
     defs: &DefinitionTable,
 ) -> Local {
-    let receiver_local = lower_expr(receiver, fb, mir, type_table, defs);
-    let mut all_args = vec![Operand::Copy(Place::from_local(receiver_local))];
-    for a in args {
-        let local = lower_expr(a, fb, mir, type_table, defs);
-        all_args.push(Operand::Copy(Place::from_local(local)));
-    }
-
-    // Look up the method DefId: prefer user-defined (binding) methods from the
-    // type checker, then fall back to builtins.  The type checker resolves based
-    // on receiver type, so its answer is more precise than a name-only lookup.
     let method_def_id = type_table
         .get_method_resolution(expr.span)
         .or_else(|| find_builtin_method(defs, method))
         .unwrap_or(spark_resolve::DefId::DUMMY);
+
+    let set_method = defs.get(method_def_id).is_some_and(|info| {
+        info.kind == DefinitionKind::BuiltinMethod
+            && matches!(
+                type_table.resolve(unwrap_type_wrappers(receiver.ty, type_table)),
+                Ty::Set(_)
+            )
+    });
+    if set_method
+        && matches!(method, kw::ADD | kw::REMOVE)
+        && !is_set_binding(receiver, fb, type_table)
+    {
+        mir.diagnostics.push(
+            Diagnostic::error("set mutation requires a mutable binding").with_label(
+                Label::primary(receiver.span, "use a local or parameter binding"),
+            ),
+        );
+        return void_temp(fb, expr);
+    }
+    if set_method {
+        fb.push_scope();
+    }
+
+    let receiver_local = lower_expr(receiver, fb, mir, type_table, defs);
+    if set_method {
+        if fb.is_terminated() {
+            fb.pop_finished_scope();
+            return void_temp(fb, expr);
+        }
+        if !fb.is_def_local(receiver_local) && !fb.owns_local(receiver_local) {
+            fb.register_drop(receiver_local);
+        }
+    }
+    let mut all_args = vec![Operand::Copy(Place::from_local(receiver_local))];
+    for a in args {
+        let local = lower_expr(a, fb, mir, type_table, defs);
+        if set_method && fb.is_terminated() {
+            fb.pop_finished_scope();
+            return void_temp(fb, expr);
+        }
+        all_args.push(Operand::Copy(Place::from_local(local)));
+    }
 
     let dest = fb.fresh_temp(expr.ty, expr.span);
     let cont = fb.new_block();
@@ -687,7 +719,22 @@ fn lower_method_call(
     });
 
     fb.switch_to(cont);
+    if set_method {
+        fb.pop_scope_drops(None, expr.span);
+    }
     dest
+}
+
+fn is_set_binding(receiver: &HirExpr, fb: &FunctionBuilder, table: &TypeTable) -> bool {
+    let HirExprKind::Local(def) = receiver.kind else {
+        return false;
+    };
+    fb.lookup_def(def).is_some_and(|local| {
+        matches!(
+            table.resolve(unwrap_type_wrappers(fb.local_type(local), table)),
+            Ty::Set(_)
+        )
+    })
 }
 
 /// Lowers a collection literal (List, Set, Tuple).

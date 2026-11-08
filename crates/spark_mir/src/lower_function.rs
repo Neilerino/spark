@@ -4,7 +4,8 @@
 //! then lowers the function body and adds a `Return` terminator.
 
 use rustc_hash::FxHashSet;
-use spark_hir::{walk_stmt, HirExprKind, HirFunction, HirParam, HirStmt, HirVisitor};
+use spark_hir::{walk_expr, walk_stmt, HirExprKind, HirFunction, HirParam, HirStmt, HirVisitor};
+use spark_intern::kw;
 use spark_resolve::{DefId, DefinitionTable};
 use spark_types::{Ty, TypeTable};
 
@@ -77,7 +78,10 @@ fn lower_captures(
     if hir_fn.captures.is_empty() {
         return;
     }
-    let mut written = IndexedWriteRoots::default();
+    let mut written = WrittenCollectionRoots {
+        roots: FxHashSet::default(),
+        table: type_table,
+    };
     written.visit_expr(&hir_fn.body);
 
     // Environment captures occupy consecutive locals at entry.
@@ -88,13 +92,13 @@ fn lower_captures(
             None => fb.fresh_temp(ty, hir_fn.span),
         };
         fb.register_def(def_id, local);
-        if written.0.contains(&def_id) && spark_drop::needs_drop(ty, type_table) {
+        if written.roots.contains(&def_id) && spark_drop::needs_drop(ty, type_table) {
             owned_captures.push((def_id, ty, local));
         }
     }
 
     // TAG [SPARK-115]
-    // Indexed COW consumes the old owner. Leave the environment's owner intact.
+    // Collection COW consumes the old owner. Leave the environment's owner intact.
     for (def_id, ty, borrowed) in owned_captures {
         let local = fb.fresh_temp(ty, hir_fn.span);
         fb.push_assign(
@@ -107,14 +111,34 @@ fn lower_captures(
     }
 }
 
-#[derive(Default)]
-struct IndexedWriteRoots(FxHashSet<DefId>);
+struct WrittenCollectionRoots<'a> {
+    roots: FxHashSet<DefId>,
+    table: &'a TypeTable,
+}
 
-impl HirVisitor for IndexedWriteRoots {
+impl HirVisitor for WrittenCollectionRoots<'_> {
+    fn visit_expr(&mut self, expr: &spark_hir::HirExpr) {
+        if let HirExprKind::MethodCall {
+            receiver,
+            method: kw::ADD | kw::REMOVE,
+            ..
+        } = &expr.kind
+        {
+            if let (HirExprKind::Local(def_id), Ty::Mutable(inner)) =
+                (&receiver.kind, self.table.resolve(receiver.ty))
+            {
+                if matches!(self.table.resolve(*inner), Ty::Set(_)) {
+                    self.roots.insert(*def_id);
+                }
+            }
+        }
+        walk_expr(self, expr);
+    }
+
     fn visit_stmt(&mut self, stmt: &HirStmt) {
         if let HirStmt::IndexedAssign { root, .. } = stmt {
             if let HirExprKind::Local(def_id) = root.kind {
-                self.0.insert(def_id);
+                self.roots.insert(def_id);
             }
         }
         walk_stmt(self, stmt);

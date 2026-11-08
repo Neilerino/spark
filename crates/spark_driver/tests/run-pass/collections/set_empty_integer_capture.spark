@@ -1,0 +1,18 @@
+fn put(seen: Set[UInt8]!, item: UInt8): Bool {
+    seen.add(item)
+    return seen.contains(item)
+}
+
+fn main(): Int {
+    seen: Set[UInt8]! = ({})
+    byte: UInt8 = 255 as UInt8
+    insert: (): Bool = fn(): Bool {
+        seen.add(byte)
+        return seen.contains(byte)
+    }
+    print(insert())
+    print(insert())
+    print(put(seen, byte))
+    print(seen.contains(byte))
+    return 0
+}

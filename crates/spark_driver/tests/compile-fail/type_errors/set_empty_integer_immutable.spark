@@ -1,0 +1,5 @@
+fn main(): Int {
+    seen: Set[Int] = {}
+    seen.add(1)
+    return 0
+}
