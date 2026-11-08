@@ -986,7 +986,9 @@ fn emit_aggregate<M: Module>(
 
         AggregateKind::List => emit_list_construction(ctx, operands, dest_local, ecx, module),
 
-        AggregateKind::Map => emit_map_construction(ctx, operands, dest_local, ecx, module),
+        AggregateKind::Map => {
+            emit_map_construction(ctx, operands, dest_local, ecx, module, diagnostics)
+        }
 
         AggregateKind::Set => {
             emit_set_construction(ctx, operands, dest_local, ecx, module, diagnostics)
@@ -1065,6 +1067,7 @@ fn emit_map_construction<M: Module>(
     dest_local: Local,
     ecx: &EmitCtx<'_>,
     module: &mut M,
+    diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
     let table = ecx.table;
     let dest_ty = ctx.local_type_id(dest_local);
@@ -1074,6 +1077,11 @@ fn emit_map_construction<M: Module>(
         Ty::Map(k, v) => (*k, *v),
         _ => return Some(ctx.builder.ins().iconst(ctx.ptr_type, 0)),
     };
+
+    if !operands.is_empty() && ctx.layouts.layout_of(value_ty, table).size == 0 {
+        diagnostics.error("map value type has no storage");
+        return Some(ctx.builder.ins().iconst(ctx.ptr_type, 0));
+    }
 
     let key_desc = emit_value_desc(ctx, key_ty, ecx, module);
     let value_desc = emit_value_desc(ctx, value_ty, ecx, module);
@@ -1548,7 +1556,7 @@ fn emit_union_construction<M: Module>(
         }
     }
 
-    Some(dest_addr)
+    None
 }
 
 /// Emits a discriminant read from an enum or union place.

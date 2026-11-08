@@ -1,0 +1,4 @@
+fn main(): Int {
+    entries: Map[String, Int] = {123: 1}
+    return 0
+}

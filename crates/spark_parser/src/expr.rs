@@ -1257,48 +1257,67 @@ impl Parser {
         let start = self.current_span();
         self.expect(TokenKind::LBrace);
 
-        // Empty - could be empty block, empty map, or empty set
-        // Treat as empty block for now
-        if self.check(TokenKind::RBrace) {
-            self.advance();
+        if self.eat(TokenKind::RBrace).is_some() {
             let span = self.span_from(start);
-            let block = Block::empty(span);
-            return Expr::new(ExprKind::Block(block), span);
+            return Expr::new(ExprKind::Block(Block::empty(span)), span);
         }
 
-        // Try to determine if this is map/set or block
-        // Map: { key: value, ... }
-        // Set: { value, value, ... } where values are simple
-        // Block: { stmt; stmt; expr }
-
-        // Heuristic: if first element is followed by colon, it's a map
-        // If first element is an expression and followed by comma (no colon), it's a set
-        // Otherwise, it's a block
-
-        if self.check(TokenKind::StringLiteral) && (self.peek().kind == TokenKind::Colon) {
-            // Map literal
-            return self.parse_map_literal(start);
-        }
-
-        // Check if it looks like a statement or block
-        // For now, parse as block
-        self.parse_block_contents(start)
+        let inner_start = self.current_span();
+        let pos_before = self.pos;
+        let first = if self.at_end() {
+            None
+        } else if self.has_typed_binding_prefix() {
+            Some((pos_before, StmtOrExpr::Stmt(self.parse_let_stmt())))
+        } else {
+            let expr = self.parse_expr();
+            if self.check(TokenKind::Colon) {
+                return self.parse_map_literal(start, expr);
+            }
+            Some((pos_before, self.finish_stmt_or_expr(expr)))
+        };
+        let block = self.parse_block_items(inner_start, first);
+        Expr::new(ExprKind::Block(block), self.span_from(start))
     }
 
-    fn parse_map_literal(&mut self, start: Span) -> Expr {
+    fn has_typed_binding_prefix(&mut self) -> bool {
+        if !self.check(TokenKind::Identifier) || self.peek().kind != TokenKind::Colon {
+            return false;
+        }
+
+        let position = self.pos;
+        let diagnostics = std::mem::take(&mut self.diagnostics);
+        self.advance();
+        self.advance();
+        self.parse_type();
+        let is_binding = self.check(TokenKind::Eq) && !self.diagnostics.has_errors();
+        self.pos = position;
+        self.diagnostics = diagnostics;
+        is_binding
+    }
+
+    fn parse_map_literal(&mut self, start: Span, first_key: Expr) -> Expr {
         let mut entries = Vec::new();
+        let mut first_key = Some(first_key);
 
-        loop {
-            if self.check(TokenKind::RBrace) {
-                break;
+        while !self.check(TokenKind::RBrace) && !self.at_end() {
+            let key = first_key.take().unwrap_or_else(|| self.parse_expr());
+            if self.expect(TokenKind::Colon).is_some() {
+                let value =
+                    if self.check_any(&[TokenKind::Comma, TokenKind::RBrace, TokenKind::Eof]) {
+                        self.error_expected("map value");
+                        Expr::error(self.current_span())
+                    } else {
+                        self.parse_expr()
+                    };
+                let entry_span = self.span_from(key.span);
+                entries.push(MapEntry::new(key, value, entry_span));
+                if !self.check_any(&[TokenKind::Comma, TokenKind::RBrace, TokenKind::Eof]) {
+                    self.error_expected("',' or '}'");
+                    self.recover_map_entry();
+                }
+            } else {
+                self.recover_map_entry();
             }
-
-            let key_start = self.current_span();
-            let key = self.parse_expr();
-            self.expect(TokenKind::Colon);
-            let value = self.parse_expr();
-            let entry_span = self.span_from(key_start);
-            entries.push(MapEntry::new(key, value, entry_span));
 
             if self.eat(TokenKind::Comma).is_none() {
                 break;
@@ -1306,14 +1325,25 @@ impl Parser {
         }
 
         self.expect(TokenKind::RBrace);
-        let span = self.span_from(start);
-        Expr::new(ExprKind::Map(entries), span)
+        Expr::new(ExprKind::Map(entries), self.span_from(start))
     }
 
-    fn parse_block_contents(&mut self, start: Span) -> Expr {
-        let block = self.parse_block_inner();
-        let span = self.span_from(start);
-        Expr::new(ExprKind::Block(block), span)
+    fn recover_map_entry(&mut self) {
+        let mut depth = 0;
+        while !self.at_end() {
+            match self.current_kind() {
+                TokenKind::LBrace | TokenKind::LBracket | TokenKind::LParen => depth += 1,
+                TokenKind::RBrace | TokenKind::RBracket | TokenKind::RParen => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                TokenKind::Comma if depth == 0 => break,
+                _ => {}
+            }
+            self.advance();
+        }
     }
 
     /// Parses a block expression: { ... }
@@ -1327,15 +1357,17 @@ impl Parser {
 
     /// Parses block contents (called after opening brace).
     pub(crate) fn parse_block_inner(&mut self) -> Block {
-        let start = self.current_span();
+        self.parse_block_items(self.current_span(), None)
+    }
+
+    fn parse_block_items(&mut self, start: Span, mut first: Option<(usize, StmtOrExpr)>) -> Block {
         let mut stmts = Vec::new();
         let mut trailing_expr = None;
 
-        while !self.check(TokenKind::RBrace) && !self.at_end() {
-            let pos_before = self.pos;
-
-            // Try to parse as statement or expression
-            let item = self.parse_stmt_or_expr();
+        while first.is_some() || (!self.check(TokenKind::RBrace) && !self.at_end()) {
+            let (pos_before, item) = first
+                .take()
+                .unwrap_or_else(|| (self.pos, self.parse_stmt_or_expr()));
 
             match item {
                 StmtOrExpr::Stmt(stmt) => stmts.push(stmt),
@@ -1457,10 +1489,11 @@ impl Parser {
             }
         }
 
-        // Parse as expression
         let expr = self.parse_expr();
+        self.finish_stmt_or_expr(expr)
+    }
 
-        // Check for assignment
+    fn finish_stmt_or_expr(&mut self, expr: Expr) -> StmtOrExpr {
         if self.check_any(&[
             TokenKind::Eq,
             TokenKind::PlusEq,
@@ -1513,6 +1546,24 @@ mod tests {
         let mut lexer = Lexer::new(file_id, source);
         let tokens = lexer.tokenize();
         crate::parse_expr(tokens, file_id)
+    }
+
+    #[test]
+    fn map_recovers_after_missing_value() {
+        let (expr, diagnostics) = parse_expr_str("{key: , other: 2}");
+        assert!(diagnostics.has_errors());
+        let ExprKind::Map(entries) = expr.kind else {
+            panic!("expected a map");
+        };
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(entries[0].value.kind, ExprKind::Error));
+    }
+
+    #[test]
+    fn map_recovers_at_eof_after_separator() {
+        let (expr, diagnostics) = parse_expr_str("{1:");
+        assert!(diagnostics.has_errors());
+        assert!(matches!(expr.kind, ExprKind::Map(_)));
     }
 
     #[test]

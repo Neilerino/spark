@@ -371,10 +371,14 @@ numbers.append(4)
 
 Key-value pairs. Bracket keys and arguments to `contains` and `remove` must
 match the declared key type. An empty initializer `{}` constructs an empty map
-when its binding declares a map type.
+when its binding declares a map type. Map literals accept integer and string key
+expressions. Each entry must fit the map's key and value types. Keys and values
+are evaluated in source order, and the last entry for a repeated key wins.
 
 ```
 counts: Map[Int, Int]! = {}
+offset: Int = 10
+byId: Map[Int, String] = {offset + 1: "alice"}
 ages: Map[String, Int] = {
     "alice": 30,
     "bob": 25

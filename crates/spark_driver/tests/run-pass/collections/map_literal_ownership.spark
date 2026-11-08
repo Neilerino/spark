@@ -1,0 +1,50 @@
+link "union_probe"
+
+extern fn probe_list_rc(values: Ref[List[Int]]): Int
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn keep(key: String): String {
+    return key
+}
+
+fn interrupted(key: String, values: List[Int], absent: Int?): Int? {
+    entries: Map[String, List[Int]] = {
+        keep(key): values,
+        "interrupted": {
+            present: Int = absent!
+            values
+        },
+    }
+    return entries.len()
+}
+
+fn main(): Int {
+    needle: String = "present"
+    values: List[Int] = [9]
+    keyBefore: Int = probe_string_rc(needle)
+    valueBefore: Int = probe_list_rc(values)
+
+    {
+        entries: Map[String, List[Int]] = {
+            keep(needle): values,
+            "a": values, "b": values, "c": values, "d": values,
+            "e": values, "f": values, "g": values, "h": values,
+            "i": values, "j": values, "k": values, "l": values,
+            keep(needle): values,
+        }
+        print(entries.len())
+        print(probe_string_rc(needle) - keyBefore)
+        print(probe_list_rc(values) - valueBefore)
+        if entries[needle] is Null {
+            return 1
+        }
+    }
+
+    print(probe_string_rc(needle) - keyBefore)
+    print(probe_list_rc(values) - valueBefore)
+    none: Int? = Null
+    print(interrupted(needle, values, none) ?? 99)
+    print(probe_string_rc(needle) - keyBefore)
+    print(probe_list_rc(values) - valueBefore)
+    return 0
+}

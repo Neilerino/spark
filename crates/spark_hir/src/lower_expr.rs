@@ -305,16 +305,31 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
             HirExprKind::ListLit(elems.iter().map(|e| lower_expr(e, ctx)).collect())
         }
 
-        ExprKind::Map(entries) => HirExprKind::MapLit(
-            entries
-                .iter()
-                .map(|e| {
-                    let key = lower_expr(&e.key, ctx);
-                    let val = lower_expr(&e.value, ctx);
-                    (key, val)
-                })
-                .collect(),
-        ),
+        ExprKind::Map(entries) => {
+            use spark_types::check_expr::{map_value_coercion, MapValueCoercion};
+
+            let ty = expr_type(expr.id, ctx.table);
+            let Ty::Map(_, slot) = ctx.table.resolve(ty) else {
+                return HirExprKind::Error;
+            };
+            let slot = *slot;
+            HirExprKind::MapLit(
+                entries
+                    .iter()
+                    .map(|entry| {
+                        let key = lower_expr(&entry.key, ctx);
+                        let mut value = lower_expr(&entry.value, ctx);
+                        if matches!(
+                            map_value_coercion(value.ty, slot, ctx.table),
+                            Some(MapValueCoercion::Reference)
+                        ) {
+                            value = coerce_ref(value, slot, entry.value.span, ctx.table);
+                        }
+                        (key, value)
+                    })
+                    .collect(),
+            )
+        }
 
         ExprKind::Set(elems) => {
             HirExprKind::SetLit(elems.iter().map(|e| lower_expr(e, ctx)).collect())

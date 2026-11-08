@@ -1,0 +1,4 @@
+fn main(): Int {
+    entries: Map[String, Int] = {"a": 1, "b": "wrong"}
+    return 0
+}

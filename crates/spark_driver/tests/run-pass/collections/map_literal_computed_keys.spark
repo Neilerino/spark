@@ -1,0 +1,64 @@
+fn offset(base: Int): Int {
+    return base + 1
+}
+
+fn label(): String {
+    return "spark"
+}
+
+fn main(): Int {
+    base: Int = 10
+    entries: Map[Int, Int] = {
+        offset(base: base) + 1: 2,
+        base: 0,
+        base + 1: 1,
+        base + 3: 3,
+        base + 4: 4,
+        base + 5: 5,
+        base + 6: 6,
+        base + 7: 7,
+        base + 8: 8,
+        base + 9: 9,
+        base + 10: 10,
+        base + 11: 11,
+        base + 12: 12,
+        offset(base): 101,
+    }
+    print(entries.len())
+    print(entries[base] ?? 99)
+    print(entries[offset(base)] ?? 99)
+    print(entries[17] ?? 99)
+    print(entries[22] ?? 99)
+    print(entries[23] ?? 99)
+
+    byName: Map[Int, Int] = {base: 42}
+    print(byName[base] ?? 0)
+    negative: Map[Int, Int] = {-1: 81}
+    print(negative[-1] ?? 0)
+    high: UInt8 = 255 as UInt8
+    narrow: Map[UInt8, Int] = {high: 8}
+    print(narrow[high] ?? 0)
+
+    words: Map[String, Int] = {label(): 7}
+    print(words[label()] ?? 0)
+
+    first: Int = 42
+    references: Map[String, Ref[Int]] = {"name": first}
+    if references["name"] is Null {
+        return 1
+    }
+    print(references.len())
+
+    value: Int! = 2
+    fromBlock: Int = {
+        local: Map[Int, Int] = {base: 42}
+        local[base] ?? 0
+    }
+    assignmentBlock: Int = {
+        value = 5
+        value
+    }
+    print(fromBlock)
+    print(assignmentBlock)
+    return 0
+}

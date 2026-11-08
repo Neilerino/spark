@@ -1,0 +1,4 @@
+fn main(): Int {
+    entries: Map[String, Null] = {"a": Null}
+    return 0
+}

@@ -286,6 +286,11 @@ impl FunctionBuilder {
         }
     }
 
+    /// Exits a scope whose registered values have all been moved.
+    pub(crate) fn pop_transferred_scope(&mut self) {
+        self.scope_stack.pop();
+    }
+
     /// Emits drops for all scopes (for `return`), excluding one local.
     pub fn drops_for_return(&mut self, exclude: Option<Local>, span: Span) {
         // Collect all locals from all scopes (innermost first).
