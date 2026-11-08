@@ -440,12 +440,6 @@ tags: Set[String]! = {"rust"}
 tags.add("python")
 ```
 
-Use `seen.eachElement(visitor)` with a synchronous Spark function of type
-`(T): Void` to visit each distinct element once. The receiver and visitor
-are evaluated once in that order. As with `eachEntry`, order is unspecified,
-an empty set makes zero calls, and changes to other owning copies leave the
-visited snapshot intact.
-
 #### Tup[A, B, ...]
 
 Fixed-size, mixed-type collection.

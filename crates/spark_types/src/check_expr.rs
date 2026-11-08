@@ -2325,9 +2325,6 @@ fn check_method_call(
         Ty::Map(key, value) if method == kw::EACH_ENTRY => {
             check_collection_visitor(&[key, value], arg_tys, arg_span, call_span, ctx)
         }
-        Ty::Set(element) if method == kw::EACH_ELEMENT => {
-            check_collection_visitor(&[element], arg_tys, arg_span, call_span, ctx)
-        }
         Ty::Map(key, _) | Ty::Set(key) => {
             let is_set = matches!(stripped, Ty::Set(_));
             let (collection, diagnostic) = if is_set {

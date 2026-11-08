@@ -439,13 +439,6 @@ pub const SET_INSERT: RuntimeFn = RuntimeFn {
     ret: None,
 };
 
-/// `__spark_set_next(set: ptr, start: u64, out: ptr) -> u64`
-pub const SET_NEXT: RuntimeFn = RuntimeFn {
-    name: "__spark_set_next",
-    params: &[Ptr, I64, Ptr],
-    ret: Some(I64),
-};
-
 /// `__spark_set_rc_dec(ptr) -> void`
 pub const SET_RC_DEC: RuntimeFn = RuntimeFn {
     name: "__spark_set_rc_dec",
@@ -714,7 +707,6 @@ pub const ALL_RUNTIME_FUNCTIONS: &[&RuntimeFn] = &[
     // Set
     &SET_NEW,
     &SET_INSERT,
-    &SET_NEXT,
     &SET_RC_DEC,
     &SET_COW,
     &SET_LEN,

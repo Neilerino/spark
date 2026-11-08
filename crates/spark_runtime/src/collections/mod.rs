@@ -21,7 +21,7 @@ pub use map::{
 };
 pub use set::{
     SparkSet, __spark_set_contains, __spark_set_cow, __spark_set_insert, __spark_set_len,
-    __spark_set_new, __spark_set_next, __spark_set_rc_dec, __spark_set_remove,
+    __spark_set_new, __spark_set_rc_dec, __spark_set_remove,
 };
 
 /// Reports a traversal callback that has no Spark entry point.

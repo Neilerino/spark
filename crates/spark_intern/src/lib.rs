@@ -419,7 +419,6 @@ impl Interner {
             "chars",
             "substring",
             "eachEntry",
-            "eachElement",
         ];
 
         for kw in keywords {
@@ -828,8 +827,6 @@ pub mod kw {
     pub const SUBSTRING: Symbol = Symbol(137);
     /// The map traversal method.
     pub const EACH_ENTRY: Symbol = Symbol(138);
-    /// The set traversal method.
-    pub const EACH_ELEMENT: Symbol = Symbol(139);
 
     /// Returns true if the given symbol is a built-in function name.
     #[must_use]

@@ -9,7 +9,7 @@ use super::hash::{
     next_occupied_slot, rehash_occupied_slots, InsertionSlot, LookupSlot, HASH_TOMBSTONE,
     MIN_HASH_CAP,
 };
-use super::storage::{alloc_buffer, byte_size, clone_buffer, copy_owned_slot, dealloc_buffer};
+use super::storage::{alloc_buffer, byte_size, clone_buffer, dealloc_buffer};
 
 // =============================================================================
 // Map — type-erased open-addressing hash map with reference counting
@@ -194,8 +194,12 @@ pub unsafe extern "C" fn __spark_map_next(
         return 0;
     };
     unsafe {
-        copy_owned_slot(map.key(), map.keys, index, key_out);
-        copy_owned_slot(map.value(), map.values, index, value_out);
+        let key = map.keys.add(index * map.key_size());
+        let value = map.values.add(index * map.value_size());
+        std::ptr::copy_nonoverlapping(key, key_out, map.key_size());
+        std::ptr::copy_nonoverlapping(value, value_out, map.value_size());
+        map.key().retain_elem(key_out);
+        map.value().retain_elem(value_out);
     }
     index as u64 + 1
 }

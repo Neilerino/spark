@@ -9,7 +9,7 @@ use spark_diagnostics::Diagnostics;
 use spark_intern::kw;
 use spark_mir::{BlockId, Operand, Place, Terminator};
 use spark_resolve::DefinitionKind;
-use spark_types::{Ty, TypeId, TypeTable};
+use spark_types::{Ty, TypeTable};
 
 use super::context::{self, EmitCtx, FunctionContext};
 use super::emit_rvalue;
@@ -1379,25 +1379,16 @@ fn emit_builtin_method<M: Module>(
         spark_mir::Operand::Constant(_) => ctx.builder.ins().iconst(ctx.ptr_type, 0),
     };
 
-    let pair;
-    let traversal: Option<(FuncId, &[TypeId])> = match (method_name, stripped_ty) {
-        (kw::EACH_ENTRY, Ty::Map(key, value)) => {
-            pair = [*key, *value];
-            Some((ctx.stubs.map_next, &pair))
-        }
-        (kw::EACH_ELEMENT, Ty::Set(element)) => {
-            Some((ctx.stubs.set_next, std::slice::from_ref(element)))
-        }
-        _ => None,
-    };
-    if let (Some((scan, slots)), [_, Operand::Copy(visitor)]) = (traversal, args) {
+    if let (kw::EACH_ENTRY, Ty::Map(key, value), [_, Operand::Copy(visitor)]) =
+        (method_name, stripped_ty, args)
+    {
         let visitor = emit_rvalue::emit_place_read(ctx, visitor, table, module);
         super::emit_traversal::emit_traversal(
             ctx,
-            scan,
+            ctx.stubs.map_next,
             recv_ptr,
             visitor,
-            slots,
+            &[*key, *value],
             destination,
             module,
         );

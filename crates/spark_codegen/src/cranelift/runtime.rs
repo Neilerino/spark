@@ -126,8 +126,6 @@ pub struct RuntimeStubs {
     pub set_new: FuncId,
     /// `__spark_set_insert`
     pub set_insert: FuncId,
-    /// `__spark_set_next`
-    pub set_next: FuncId,
     /// `__spark_set_rc_dec`
     pub set_rc_dec: FuncId,
     /// `__spark_set_cow`
@@ -286,7 +284,6 @@ impl RuntimeStubs {
             // Set
             set_new: declare_abi(module, &abi::SET_NEW, ptr_type, call_conv),
             set_insert: declare_abi(module, &abi::SET_INSERT, ptr_type, call_conv),
-            set_next: declare_abi(module, &abi::SET_NEXT, ptr_type, call_conv),
             set_rc_dec: declare_abi(module, &abi::SET_RC_DEC, ptr_type, call_conv),
             set_cow: declare_abi(module, &abi::SET_COW, ptr_type, call_conv),
             set_len: declare_abi(module, &abi::SET_LEN, ptr_type, call_conv),

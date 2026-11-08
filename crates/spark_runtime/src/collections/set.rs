@@ -6,10 +6,9 @@ use crate::value::{buffer_align, value_desc_clone, value_desc_free, SparkValueDe
 
 use super::hash::{
     alloc_hashes, dealloc_hashes, for_occupied_slots, insertion_slot, lookup_slot,
-    next_occupied_slot, rehash_occupied_slots, InsertionSlot, LookupSlot, HASH_TOMBSTONE,
-    MIN_HASH_CAP,
+    rehash_occupied_slots, InsertionSlot, LookupSlot, HASH_TOMBSTONE, MIN_HASH_CAP,
 };
-use super::storage::{alloc_buffer, byte_size, clone_buffer, copy_owned_slot, dealloc_buffer};
+use super::storage::{alloc_buffer, byte_size, clone_buffer, dealloc_buffer};
 
 // =============================================================================
 // Set — type-erased open-addressing hash set with reference counting
@@ -113,24 +112,6 @@ pub unsafe extern "C" fn __spark_set_insert(set: *mut u8, elem_ptr: *const u8) {
             unsafe { set.elem().drop_elem(elem_ptr.cast_mut()) };
         }
     }
-}
-
-/// Copies the next occupied element into caller storage and transfers its owner.
-/// Returns zero at exhaustion, otherwise the cursor for the next call.
-///
-/// # Safety
-///
-/// The set must stay live and unchanged. The output must be separate,
-/// aligned storage sized for the set's element descriptor.
-#[no_mangle]
-#[allow(clippy::cast_ptr_alignment)]
-pub unsafe extern "C" fn __spark_set_next(set: *const u8, start: u64, out: *mut u8) -> u64 {
-    let set = unsafe { &*set.cast::<SparkSet>() };
-    let Some(index) = (unsafe { next_occupied_slot(set.hashes, set.cap, start) }) else {
-        return 0;
-    };
-    unsafe { copy_owned_slot(set.elem(), set.data, index, out) };
-    index as u64 + 1
 }
 
 /// Allocates initial hash table storage for a set (capacity = [`MIN_HASH_CAP`]).
