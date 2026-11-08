@@ -864,6 +864,10 @@ fn map_iterable_rejects_callback_layout_conversions() {
             "map_iterable_partial_callback_layout",
             "`each` element type mismatch",
         ),
+        (
+            "map_iterable_partial_bound_layout",
+            "argument type mismatch",
+        ),
     ] {
         assert_compile_error(
             &format!("compile-fail/type_errors/{fixture}.spark"),
