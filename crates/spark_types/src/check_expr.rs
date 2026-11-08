@@ -1095,30 +1095,41 @@ fn check_binary_op(
     }
 
     if op.is_bitwise() {
-        let lhs_base = strip_ref(strip_mutable(lhs_ty, ctx.table), ctx.table);
-        let rhs_base = strip_ref(strip_mutable(rhs_ty, ctx.table), ctx.table);
-        let lhs_resolved = ctx.table.resolve(lhs_base);
-        if !lhs_resolved.is_integer() {
-            ctx.diagnostics.push(
-                Diagnostic::error(format!(
-                    "operator `{}` requires integer operands",
-                    op.as_str()
-                ))
-                .with_label(Label::primary(lhs_span, "not integer")),
-            );
-            return TypeId::ERROR;
-        }
-        if !is_compatible(lhs_base, rhs_base, ctx.table) {
-            ctx.diagnostics.push(
-                Diagnostic::error(format!("mismatched integer types for `{}`", op.as_str()))
-                    .with_label(Label::primary(op_span, "type mismatch")),
-            );
-            return TypeId::ERROR;
-        }
-        return lhs_base;
+        return check_bitwise_op(op, lhs_ty, rhs_ty, op_span, lhs_span, ctx);
     }
 
     TypeId::ERROR
+}
+
+fn check_bitwise_op(
+    op: BinaryOp,
+    lhs_ty: TypeId,
+    rhs_ty: TypeId,
+    op_span: Span,
+    lhs_span: Span,
+    ctx: &mut TypeCheckCtx<'_>,
+) -> TypeId {
+    let lhs_base = strip_ref(strip_mutable(lhs_ty, ctx.table), ctx.table);
+    let rhs_base = strip_ref(strip_mutable(rhs_ty, ctx.table), ctx.table);
+    let lhs_resolved = ctx.table.resolve(lhs_base);
+    if !lhs_resolved.is_integer() {
+        ctx.diagnostics.push(
+            Diagnostic::error(format!(
+                "operator `{}` requires integer operands",
+                op.as_str()
+            ))
+            .with_label(Label::primary(lhs_span, "not integer")),
+        );
+        return TypeId::ERROR;
+    }
+    if !is_compatible(lhs_base, rhs_base, ctx.table) {
+        ctx.diagnostics.push(
+            Diagnostic::error(format!("mismatched integer types for `{}`", op.as_str()))
+                .with_label(Label::primary(op_span, "type mismatch")),
+        );
+        return TypeId::ERROR;
+    }
+    lhs_base
 }
 
 /// Checks whether a tuple can be compared by its stored field values.
