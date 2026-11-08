@@ -120,18 +120,75 @@ fn check_indexed_write_loans(
                 continue;
             };
             let point = Point::new(spark_mir::BlockId(block_idx as u32), stmt_idx as u32);
-            if facts
-                .loans
-                .iter()
-                .zip(regions)
-                .any(|(loan, region)| region.points.contains(&point) && *root == loan.place.local)
-            {
-                diagnostics.push(
-                    Diagnostic::error("cannot write to a borrowed collection")
-                        .with_label(Label::primary(*span, "collection is still borrowed")),
-                );
-            }
+            reject_borrowed_collection_write(*root, point, *span, facts, regions, diagnostics);
         }
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+pub(super) fn check_set_mutation_loans(
+    func: &MirFunction,
+    facts: &BorrowFacts,
+    regions: &[Region],
+    table: &TypeTable,
+    definitions: &spark_resolve::DefinitionTable,
+    diagnostics: &mut Diagnostics,
+) {
+    use spark_intern::kw;
+    use spark_resolve::DefinitionKind;
+
+    for (block_idx, block) in func.blocks.iter().enumerate() {
+        let Terminator::Call {
+            func: Operand::Constant(spark_mir::Constant::FunctionRef(def)),
+            args,
+            span,
+            ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        let Some(Operand::Copy(receiver) | Operand::Move(receiver)) = args.first() else {
+            continue;
+        };
+        let receiver_ty = table.resolve(func.locals[receiver.local.index()].ty);
+        let receiver_ty = match receiver_ty {
+            Ty::Mutable(inner) => table.resolve(*inner),
+            ty => ty,
+        };
+        if !matches!(receiver_ty, Ty::Set(_))
+            || !definitions.get(*def).is_some_and(|info| {
+                info.kind == DefinitionKind::BuiltinMethod
+                    && matches!(info.name, kw::ADD | kw::REMOVE)
+            })
+        {
+            continue;
+        }
+        let point = Point::new(
+            spark_mir::BlockId(block_idx as u32),
+            block.statements.len() as u32,
+        );
+        reject_borrowed_collection_write(receiver.local, point, *span, facts, regions, diagnostics);
+    }
+}
+
+fn reject_borrowed_collection_write(
+    root: Local,
+    point: Point,
+    span: spark_span::Span,
+    facts: &BorrowFacts,
+    regions: &[Region],
+    diagnostics: &mut Diagnostics,
+) {
+    if facts
+        .loans
+        .iter()
+        .zip(regions)
+        .any(|(loan, region)| region.points.contains(&point) && root == loan.place.local)
+    {
+        diagnostics.push(
+            Diagnostic::error("cannot write to a borrowed collection")
+                .with_label(Label::primary(span, "collection is still borrowed")),
+        );
     }
 }
 

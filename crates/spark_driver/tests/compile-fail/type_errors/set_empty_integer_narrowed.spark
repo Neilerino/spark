@@ -1,0 +1,7 @@
+fn main(): Int {
+    initial: Set[Int] = {}
+    seen: Set[Int]?! = initial
+    if seen is Null { return 1 }
+    seen.add(7)
+    return 0
+}

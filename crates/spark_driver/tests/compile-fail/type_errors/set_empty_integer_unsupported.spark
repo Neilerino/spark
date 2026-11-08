@@ -1,0 +1,4 @@
+fn main(): Int {
+    seen: Set[Null] = {}
+    return 0
+}
