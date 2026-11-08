@@ -873,6 +873,40 @@ fn map_iterable_frequency() {
 }
 
 #[test]
+fn set_iterable_each_and_filter() {
+    let fixture = "run-pass/collections/set_iterable.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        let lines: Vec<_> = result.stdout.lines().collect();
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], "0");
+        let mut visited = [lines[1], lines[2]];
+        visited.sort_unstable();
+        assert_eq!(visited, ["blue", "red"]);
+        assert_eq!(&lines[3..], &["blue", "5"]);
+    }
+}
+
+#[test]
+fn set_iterable_snapshot_owns_string_elements() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/collections/set_iterable_ownership.spark"),
+        "4\n2\n1\n7\n0",
+    );
+}
+
+#[test]
+fn hash_collection_pipeline_is_sequential() {
+    assert_compile_error(
+        "compile-fail/type_errors/hash_collection_parallel.spark",
+        "parallel iteration does not support hash collections",
+    );
+}
+
+#[test]
 fn map_index_write_inserts_and_replaces() {
     let fixture = "run-pass/collections/map_index_write.spark";
     for args in [&[][..], &["--no-opt"][..]] {

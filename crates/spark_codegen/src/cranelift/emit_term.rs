@@ -1392,10 +1392,10 @@ fn emit_builtin_method<M: Module>(
         spark_mir::Operand::Constant(_) => ctx.builder.ins().iconst(ctx.ptr_type, 0),
     };
 
-    if method_name == kw::TO_LIST && matches!(stripped_ty, Ty::Map(..)) {
+    if method_name == kw::TO_LIST && matches!(stripped_ty, Ty::Map(..) | Ty::Set(_)) {
         let list = super::emit_iterable::emit_hash_snapshot(
             ctx,
-            ctx.stubs.map_next,
+            stripped_ty,
             recv_ptr,
             destination.local,
             ecx,

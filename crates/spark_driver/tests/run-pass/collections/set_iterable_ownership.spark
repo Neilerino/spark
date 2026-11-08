@@ -1,0 +1,24 @@
+link "union_probe"
+
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn main(): Int {
+    suffix: String = "ue"
+    tag: String = "bl{suffix}"
+    before: Int = probe_string_rc(tag)
+    {
+        tags: Set[String]! = {tag, "red"}
+        tags each (item: String): Void {
+            if item.len() == tag.len() { print(item.len()) }
+        }
+        selected: List[String] = tags filter (item: String): Bool { item.len() == tag.len() }
+        snapshot: List[String] = tags.toList()
+        tags.remove(tag)
+        print(probe_string_rc(tag) - before)
+        print(selected.len())
+        total: Int = snapshot reduce 0 (sum: Int, item: String): Int { sum + item.len() }
+        print(total)
+    }
+    print(probe_string_rc(tag) - before)
+    return 0
+}

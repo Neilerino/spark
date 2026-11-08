@@ -1,7 +1,7 @@
 //! Materializes owned list snapshots of hash collections.
 
 use cranelift_codegen::ir::{types, InstBuilder, StackSlotData, StackSlotKind, Value};
-use cranelift_module::{FuncId, Module};
+use cranelift_module::Module;
 use spark_mir::Local;
 use spark_types::Ty;
 
@@ -10,7 +10,7 @@ use super::{emit_rvalue, types as clif_types};
 
 pub(super) fn emit_hash_snapshot<M: Module>(
     ctx: &mut FunctionContext<'_>,
-    scan: FuncId,
+    collection: &Ty,
     receiver: Value,
     destination: Local,
     ecx: &EmitCtx<'_>,
@@ -25,7 +25,6 @@ pub(super) fn emit_hash_snapshot<M: Module>(
     let descriptor = emit_rvalue::emit_value_desc(ctx, element, ecx, module);
     let new = module.declare_func_in_func(ctx.stubs.list_new, ctx.builder.func);
     let push = module.declare_func_in_func(ctx.stubs.list_push, ctx.builder.func);
-    let next = module.declare_func_in_func(scan, ctx.builder.func);
     let call = ctx.builder.ins().call(new, &[descriptor]);
     let list = ctx.builder.inst_results(call)[0];
 
@@ -36,12 +35,6 @@ pub(super) fn emit_hash_snapshot<M: Module>(
         u8::try_from(layout.align.trailing_zeros()).unwrap_or(0),
     ));
     let address = ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0);
-    let Ty::Tuple(fields) = table.resolve(element) else {
-        unreachable!("map snapshot has tuple elements");
-    };
-    let offset = ctx.layouts.tuple_field_offset(fields, 1, table);
-    let value = ctx.builder.ins().iadd_imm(address, i64::from(offset));
-
     let scan_block = ctx.builder.create_block();
     let push_block = ctx.builder.create_block();
     let done = ctx.builder.create_block();
@@ -50,10 +43,19 @@ pub(super) fn emit_hash_snapshot<M: Module>(
     ctx.builder.ins().jump(scan_block, &[start]);
 
     ctx.builder.switch_to_block(scan_block);
-    let call = ctx
-        .builder
-        .ins()
-        .call(next, &[receiver, cursor, address, value]);
+    let mut args = vec![receiver, cursor, address];
+    let scan = if matches!(collection, Ty::Map(..)) {
+        let Ty::Tuple(fields) = table.resolve(element) else {
+            unreachable!("map snapshot has tuple elements");
+        };
+        let offset = ctx.layouts.tuple_field_offset(fields, 1, table);
+        args.push(ctx.builder.ins().iadd_imm(address, i64::from(offset)));
+        ctx.stubs.map_next
+    } else {
+        ctx.stubs.set_next
+    };
+    let next = module.declare_func_in_func(scan, ctx.builder.func);
+    let call = ctx.builder.ins().call(next, &args);
     let cursor = ctx.builder.inst_results(call)[0];
     ctx.builder.ins().brif(cursor, push_block, &[], done, &[]);
     ctx.builder.seal_block(push_block);

@@ -1,4 +1,6 @@
-//! Raw byte-buffer allocation helpers for collection storage.
+//! Raw byte-buffer helpers for collection storage.
+
+use crate::value::SparkValueDesc;
 
 #[must_use]
 pub(super) const fn byte_size(cap: usize, elem_size: usize) -> usize {
@@ -48,6 +50,28 @@ pub(super) unsafe fn clone_buffer(
         unsafe { std::ptr::copy_nonoverlapping(src, dst, copy_byte_size) };
     }
     dst
+}
+
+/// Copies one live payload slot and retains the copied owner.
+///
+/// # Safety
+///
+/// The source buffer must contain the indexed slot. The destination must be
+/// separate, aligned storage large enough for the descriptor.
+pub(super) unsafe fn copy_owned_slot(
+    descriptor: &SparkValueDesc,
+    source: *const u8,
+    index: usize,
+    destination: *mut u8,
+) {
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            source.add(index * descriptor.size),
+            destination,
+            descriptor.size,
+        );
+        descriptor.retain_elem(destination);
+    }
 }
 
 pub(super) unsafe fn dealloc_buffer(ptr: *mut u8, byte_size: usize, align: usize) {

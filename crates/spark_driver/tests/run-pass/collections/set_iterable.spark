@@ -1,0 +1,23 @@
+fn show(value: String): Void {
+    print(value)
+}
+
+fn main(): Int {
+    tags: Set[String]! = {}
+    tags each show
+    empty: List[String] = tags filter (value: String): Bool { value.len() > 3 }
+    print(empty.len())
+    tags.add("red")
+    tags.add("blue")
+    tags.add("green")
+    tags.add("red")
+    tags.remove("green")
+    tags each show
+    selected: List[String] = tags filter (value: String): Bool { value.len() > 3 }
+    selected each show
+    numbers: Set[Int] = {1, 2, 3, 2}
+    total: Int = numbers filter (value: Int): Bool { value > 1 }
+        reduce 0 (sum: Int, value: Int): Int { sum + value }
+    print(total)
+    return 0
+}
