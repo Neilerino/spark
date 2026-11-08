@@ -74,7 +74,7 @@ impl Backend {
 
     /// Returns `true` if a workspace root is configured.
     fn has_workspace(&self) -> bool {
-        self.workspace.read().ok().is_some_and(|ws| ws.is_some())
+        self.workspace.read().is_ok_and(|ws| ws.is_some())
     }
 
     /// Runs the single-file compiler frontend on a document, caches
@@ -983,17 +983,7 @@ fn dot_completions_for_ty(
                     });
                 }
             }
-            if let Some(methods) = table.get_type_methods(*def_id) {
-                for (name, method_def_id) in methods {
-                    items.push(CompletionItem {
-                        label: name.as_str().to_string(),
-                        kind: Some(CompletionItemKind::METHOD),
-                        detail: def_type_str(analysis, *method_def_id),
-                        sort_text: Some(format!("1{}", name.as_str())),
-                        ..Default::default()
-                    });
-                }
-            }
+            add_bound_method_completions(&mut items, *def_id, table, analysis);
         }
         spark_types::Ty::Enum(def_id) => {
             if let Some(variants) = table.get_enum_variants(*def_id) {
@@ -1006,17 +996,7 @@ fn dot_completions_for_ty(
                     });
                 }
             }
-            if let Some(methods) = table.get_type_methods(*def_id) {
-                for (name, method_def_id) in methods {
-                    items.push(CompletionItem {
-                        label: name.as_str().to_string(),
-                        kind: Some(CompletionItemKind::METHOD),
-                        detail: def_type_str(analysis, *method_def_id),
-                        sort_text: Some(format!("1{}", name.as_str())),
-                        ..Default::default()
-                    });
-                }
-            }
+            add_bound_method_completions(&mut items, *def_id, table, analysis);
         }
         spark_types::Ty::String => {
             add_builtin_methods(
@@ -1075,6 +1055,25 @@ fn dot_completions_for_ty(
         None
     } else {
         Some(items)
+    }
+}
+
+fn add_bound_method_completions(
+    items: &mut Vec<CompletionItem>,
+    def_id: spark_resolve::DefId,
+    table: &spark_types::TypeTable,
+    analysis: &AnalysisResult,
+) {
+    if let Some(methods) = table.get_type_methods(def_id) {
+        for (name, method_def_id) in methods {
+            items.push(CompletionItem {
+                label: name.as_str().to_string(),
+                kind: Some(CompletionItemKind::METHOD),
+                detail: def_type_str(analysis, *method_def_id),
+                sort_text: Some(format!("1{}", name.as_str())),
+                ..Default::default()
+            });
+        }
     }
 }
 

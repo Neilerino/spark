@@ -160,7 +160,7 @@ fn lower_named_def(
     }
 
     match &info.kind {
-        DefinitionKind::Struct => {
+        DefinitionKind::Struct | DefinitionKind::Enum => {
             if !type_args.is_empty() {
                 let arg_types: Vec<TypeId> =
                     type_args.iter().map(|t| lower_type_expr(t, ctx)).collect();
@@ -212,59 +212,12 @@ fn lower_named_def(
                 );
                 return TypeId::ERROR;
             }
-            ctx.table.intern(Ty::Struct(def_id))
-        }
-        DefinitionKind::Enum => {
-            if !type_args.is_empty() {
-                let arg_types: Vec<TypeId> =
-                    type_args.iter().map(|t| lower_type_expr(t, ctx)).collect();
-                if let Some(params) = ctx.table.get_generic_params(def_id).map(<[_]>::to_vec) {
-                    if arg_types.len() != params.len() {
-                        ctx.diagnostics.push(
-                            Diagnostic::error(format!(
-                                "expected {} type argument{}, found {}",
-                                params.len(),
-                                if params.len() == 1 { "" } else { "s" },
-                                arg_types.len()
-                            ))
-                            .with_label(Label::primary(
-                                type_expr.span,
-                                "wrong number of type arguments",
-                            )),
-                        );
-                        return TypeId::ERROR;
-                    }
-                    // Validate generic constraints on type arguments
-                    let subst = crate::substitute::build_subst_map(&params, &arg_types);
-                    crate::constraint::validate_constraints(
-                        &params,
-                        &subst,
-                        ctx.table,
-                        ctx.definitions,
-                        type_expr.span,
-                        ctx.diagnostics,
-                    );
-                }
-                return ctx.table.intern(Ty::Applied {
-                    base: def_id,
-                    args: arg_types,
-                });
-            }
-            if ctx
-                .table
-                .get_generic_params(def_id)
-                .is_some_and(|p| !p.is_empty())
-            {
-                ctx.diagnostics.push(
-                    Diagnostic::error(format!(
-                        "missing type arguments for generic type `{}`",
-                        info.name
-                    ))
-                    .with_label(Label::primary(type_expr.span, "requires type arguments")),
-                );
-                return TypeId::ERROR;
-            }
-            ctx.table.intern(Ty::Enum(def_id))
+            let ty = if matches!(info.kind, DefinitionKind::Struct) {
+                Ty::Struct(def_id)
+            } else {
+                Ty::Enum(def_id)
+            };
+            ctx.table.intern(ty)
         }
         DefinitionKind::TypeAlias | DefinitionKind::TypeDef => {
             // For now, look up the type that was registered for this def

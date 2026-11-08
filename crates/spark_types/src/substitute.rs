@@ -231,22 +231,8 @@ fn substitute_mut_inner(ty_id: TypeId, subst: &SubstMap, table: &mut TypeTable) 
     match ty {
         Ty::Param(def_id) => subst.get(&def_id).copied().unwrap_or(ty_id),
 
-        Ty::List(inner) => {
-            let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner {
-                ty_id
-            } else {
-                table.intern(Ty::List(new_inner))
-            }
-        }
-        Ty::Set(inner) => {
-            let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner {
-                ty_id
-            } else {
-                table.intern(Ty::Set(new_inner))
-            }
-        }
+        Ty::List(inner) => substitute_wrapped(ty_id, inner, subst, table, Ty::List),
+        Ty::Set(inner) => substitute_wrapped(ty_id, inner, subst, table, Ty::Set),
         Ty::Map(k, v) => {
             let new_k = substitute_mut_inner(k, subst, table);
             let new_v = substitute_mut_inner(v, subst, table);
@@ -256,60 +242,19 @@ fn substitute_mut_inner(ty_id: TypeId, subst: &SubstMap, table: &mut TypeTable) 
                 table.intern(Ty::Map(new_k, new_v))
             }
         }
-        Ty::Optional(inner) => {
-            let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner {
-                ty_id
-            } else {
-                table.intern(Ty::Optional(new_inner))
-            }
-        }
-        Ty::Mutable(inner) => {
-            let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner {
-                ty_id
-            } else {
-                table.intern(Ty::Mutable(new_inner))
-            }
-        }
+        Ty::Optional(inner) => substitute_wrapped(ty_id, inner, subst, table, Ty::Optional),
+        Ty::Mutable(inner) => substitute_wrapped(ty_id, inner, subst, table, Ty::Mutable),
         Ty::Ref {
             inner,
             mutable,
             lifetime,
-        } => {
-            let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner {
-                ty_id
-            } else {
-                table.intern(Ty::Ref {
-                    inner: new_inner,
-                    mutable,
-                    lifetime,
-                })
-            }
-        }
-        Ty::Tuple(elems) => {
-            let new_elems: Vec<TypeId> = elems
-                .iter()
-                .map(|e| substitute_mut_inner(*e, subst, table))
-                .collect();
-            if new_elems == elems {
-                ty_id
-            } else {
-                table.intern(Ty::Tuple(new_elems))
-            }
-        }
-        Ty::Union(members) => {
-            let new_members: Vec<TypeId> = members
-                .iter()
-                .map(|m| substitute_mut_inner(*m, subst, table))
-                .collect();
-            if new_members == members {
-                ty_id
-            } else {
-                table.intern(Ty::Union(new_members))
-            }
-        }
+        } => substitute_wrapped(ty_id, inner, subst, table, |inner| Ty::Ref {
+            inner,
+            mutable,
+            lifetime,
+        }),
+        Ty::Tuple(elems) => substitute_elements(ty_id, &elems, subst, table, Ty::Tuple),
+        Ty::Union(members) => substitute_elements(ty_id, &members, subst, table, Ty::Union),
         Ty::Function {
             params,
             ret,
@@ -330,37 +275,16 @@ fn substitute_mut_inner(ty_id: TypeId, subst: &SubstMap, table: &mut TypeTable) 
                 })
             }
         }
-        Ty::Applied { base, args } => {
-            let new_args: Vec<TypeId> = args
-                .iter()
-                .map(|a| substitute_mut_inner(*a, subst, table))
-                .collect();
-            if new_args == args {
-                ty_id
-            } else {
-                table.intern(Ty::Applied {
-                    base,
-                    args: new_args,
-                })
-            }
-        }
+        Ty::Applied { base, args } => substitute_elements(ty_id, &args, subst, table, |args| {
+            Ty::Applied { base, args }
+        }),
 
         Ty::Future { inner } => {
-            let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner {
-                ty_id
-            } else {
-                table.intern(Ty::Future { inner: new_inner })
-            }
+            substitute_wrapped(ty_id, inner, subst, table, |inner| Ty::Future { inner })
         }
 
         Ty::Channel { inner } => {
-            let new_inner = substitute_mut_inner(inner, subst, table);
-            if new_inner == inner {
-                ty_id
-            } else {
-                table.intern(Ty::Channel { inner: new_inner })
-            }
+            substitute_wrapped(ty_id, inner, subst, table, |inner| Ty::Channel { inner })
         }
 
         Ty::Int(_)
@@ -377,6 +301,39 @@ fn substitute_mut_inner(ty_id: TypeId, subst: &SubstMap, table: &mut TypeTable) 
         | Ty::Enum(_)
         | Ty::AsyncState { .. }
         | Ty::Error => ty_id,
+    }
+}
+
+fn substitute_wrapped(
+    ty_id: TypeId,
+    inner: TypeId,
+    subst: &SubstMap,
+    table: &mut TypeTable,
+    wrap: impl FnOnce(TypeId) -> Ty,
+) -> TypeId {
+    let substituted = substitute_mut_inner(inner, subst, table);
+    if substituted == inner {
+        ty_id
+    } else {
+        table.intern(wrap(substituted))
+    }
+}
+
+fn substitute_elements(
+    ty_id: TypeId,
+    elements: &[TypeId],
+    subst: &SubstMap,
+    table: &mut TypeTable,
+    wrap: impl FnOnce(Vec<TypeId>) -> Ty,
+) -> TypeId {
+    let substituted: Vec<_> = elements
+        .iter()
+        .map(|&element| substitute_mut_inner(element, subst, table))
+        .collect();
+    if substituted == elements {
+        ty_id
+    } else {
+        table.intern(wrap(substituted))
     }
 }
 

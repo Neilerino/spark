@@ -717,7 +717,7 @@ fn emit_builtin_list_fn<M: Module>(
     ctx.builder.ins().jump(target_block, &[]);
 }
 
-fn list_sort_tag(element: spark_types::ty::ListSortElement) -> i64 {
+const fn list_sort_tag(element: spark_types::ty::ListSortElement) -> i64 {
     use spark_types::ty::{IntWidth, ListSortElement};
 
     match element {

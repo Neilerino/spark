@@ -2,7 +2,7 @@ use rayon::prelude::*;
 
 use crate::callback::Callback;
 use crate::value::value_desc_new;
-use crate::{SparkList, __spark_list_new, __spark_list_push};
+use crate::{__spark_list_new, __spark_list_push, SparkList};
 
 #[no_mangle]
 #[allow(clippy::cast_ptr_alignment)]

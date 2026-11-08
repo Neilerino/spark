@@ -1,9 +1,10 @@
 //! Shared `SparkString` conversion helpers.
 
 use crate::{
-    value::{retain_rc_elem, value_desc_new},
-    SparkString, __spark_eq_string_elem, __spark_list_new, __spark_list_push, __spark_list_rc_dec,
+    __spark_eq_string_elem, __spark_list_new, __spark_list_push, __spark_list_rc_dec,
     __spark_string_from_literal, __spark_string_rc_dec,
+    value::{retain_rc_elem, value_desc_new},
+    SparkString,
 };
 
 /// Parses one signed decimal integer without copying the source string.
@@ -202,7 +203,7 @@ pub unsafe extern "C" fn __spark_text_substring(
     rust_str_to_spark(slice.unwrap_or_default())
 }
 
-pub(crate) unsafe fn spark_str_bytes(text: &SparkString) -> &[u8] {
+pub unsafe fn spark_str_bytes(text: &SparkString) -> &[u8] {
     if text.len == 0 {
         &[]
     } else {

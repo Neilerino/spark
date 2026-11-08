@@ -30,19 +30,14 @@ fn declared_union_type(
 ) -> Option<TypeId> {
     let dt = strip_mutable(table.get_def_type(def_id)?, table);
     match table.resolve(dt) {
-        Ty::Optional(inner) => {
-            if *inner == value_ty || matches!(table.resolve(value_ty), Ty::Null) {
-                return Some(dt);
-            }
+        Ty::Optional(inner)
+            if *inner == value_ty || matches!(table.resolve(value_ty), Ty::Null) =>
+        {
+            Some(dt)
         }
-        Ty::Union(members) => {
-            if members.contains(&value_ty) {
-                return Some(dt);
-            }
-        }
-        _ => {}
+        Ty::Union(members) if members.contains(&value_ty) => Some(dt),
+        _ => None,
     }
-    None
 }
 
 /// Lowers a single HIR statement, emitting MIR into the current block.
