@@ -738,7 +738,7 @@ fn map_literal_balances_ownership_on_growth_replacement_and_early_return() {
          static int64_t *number_ref = &number;\n\
          int64_t **nested_int(void) { return &number_ref; }\n",
         include_str!("run-pass/collections/map_literal_ownership.spark"),
-        "13\n1\n13\n0\n0\n99\n0\n0\n73",
+        "13\n1\n13\n0\n0\n99\n0\n0\n81\n0\n0\n82\n84\n73",
     );
 }
 

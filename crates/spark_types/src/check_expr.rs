@@ -789,28 +789,31 @@ fn check_map_literal(
     current_fn_ret: Option<TypeId>,
     expected_ty: Option<TypeId>,
 ) -> TypeId {
-    let mut slots = extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
-        Ty::Map(key, value) => Some((*key, *value)),
-        _ => None,
-    });
+    let (mut key_slot, mut value_slot) =
+        extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
+            Ty::Map(key, value) => Some((Some(*key), Some(*value))),
+            _ => None,
+        })
+        .unwrap_or_default();
     let mut valid = true;
 
     for entry in entries {
-        let key = check_expr_expected(&entry.key, ctx, current_fn_ret, slots.map(|(key, _)| key));
-        let value = check_expr_expected(
-            &entry.value,
-            ctx,
-            current_fn_ret,
-            slots.map(|(_, value)| value),
-        );
-        let (key_slot, value_slot) = *slots.get_or_insert((key, value));
+        let key = check_expr_expected(&entry.key, ctx, current_fn_ret, key_slot);
+        if !matches!(ctx.table.resolve(key), Ty::Never) {
+            let slot = *key_slot.get_or_insert(key);
+            valid &=
+                check_collection_argument(key, slot, entry.key.span, "map key type mismatch", ctx);
+        }
 
-        valid &=
-            check_collection_argument(key, key_slot, entry.key.span, "map key type mismatch", ctx);
-        if value.is_error() || value_slot.is_error() {
+        let value = check_expr_expected(&entry.value, ctx, current_fn_ret, value_slot);
+        if matches!(ctx.table.resolve(value), Ty::Never) {
+            continue;
+        }
+        let slot = *value_slot.get_or_insert(value);
+        if value.is_error() || slot.is_error() {
             valid = false;
-        } else if map_value_coercion(value, value_slot, ctx.table).is_none() {
-            let expected = type_name(value_slot, ctx.table, ctx.definitions);
+        } else if map_value_coercion(value, slot, ctx.table).is_none() {
+            let expected = type_name(slot, ctx.table, ctx.definitions);
             let actual = type_name(value, ctx.table, ctx.definitions);
             ctx.diagnostics
                 .push(
@@ -823,7 +826,8 @@ fn check_map_literal(
         }
     }
 
-    let (key, value) = slots.unwrap_or((TypeId::ERROR, TypeId::ERROR));
+    let key = key_slot.unwrap_or(TypeId::ERROR);
+    let value = value_slot.unwrap_or(TypeId::ERROR);
     if let Some(first) = entries.first() {
         if !key.is_error()
             && !matches!(

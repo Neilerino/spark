@@ -19,6 +19,24 @@ fn interrupted(key: String, values: List[Int], absent: Int?): Int? {
     return entries.len()
 }
 
+fn returned(key: String, values: List[Int]): Int {
+    entries: Map[String, List[Int]] = {
+        keep(key): values,
+        "return": return 81
+    }
+    return entries.len()
+}
+
+fn returnedFromKey(): Int {
+    entries: Map[Int, Int] = {1 + 1: 0, (return 82): 7}
+    return entries.len()
+}
+
+fn returnedFromBranches(flag: Bool): Int {
+    entries: Map[Int, Int] = {1 + 1: if flag { return 83 } else { return 84 }}
+    return entries.len()
+}
+
 fn main(): Int {
     needle: String = "present"
     values: List[Int] = [9]
@@ -47,6 +65,11 @@ fn main(): Int {
     print(interrupted(needle, values, none) ?? 99)
     print(probe_string_rc(needle) - keyBefore)
     print(probe_list_rc(values) - valueBefore)
+    print(returned(needle, values))
+    print(probe_string_rc(needle) - keyBefore)
+    print(probe_list_rc(values) - valueBefore)
+    print(returnedFromKey())
+    print(returnedFromBranches(false))
     refs: Map[String, Int] = {"number": nested_int()}
     print(refs["number"] ?? 0)
     return 0

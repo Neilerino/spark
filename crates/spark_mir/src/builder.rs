@@ -286,8 +286,8 @@ impl FunctionBuilder {
         }
     }
 
-    /// Exits a scope whose registered values have all been moved.
-    pub(crate) fn pop_transferred_scope(&mut self) {
+    /// Exits a scope after its values were moved or cleaned up on an exit edge.
+    pub(crate) fn pop_finished_scope(&mut self) {
         self.scope_stack.pop();
     }
 

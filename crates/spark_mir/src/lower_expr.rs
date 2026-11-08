@@ -737,6 +737,15 @@ fn lower_map_literal(
     for (key, value) in entries {
         for (slot, slot_ty) in [(key, *key_ty), (value, *value_ty)] {
             let source = lower_expr(slot, fb, mir, type_table, defs);
+            if fb.is_terminated() || matches!(type_table.resolve(slot.ty), Ty::Never) {
+                if !fb.is_terminated() {
+                    fb.terminate(Terminator::Goto {
+                        target: fb.current_block(),
+                    });
+                }
+                fb.pop_finished_scope();
+                return void_temp(fb, expr);
+            }
             let source_ty = fb.local_type(source);
             let place = Place::from_local(source);
             let operand = if fb.is_def_local(source) || fb.owns_local(source) {
@@ -780,7 +789,7 @@ fn lower_map_literal(
         Rvalue::Aggregate(AggregateKind::Map, operands),
         expr.span,
     );
-    fb.pop_transferred_scope();
+    fb.pop_finished_scope();
     result
 }
 
