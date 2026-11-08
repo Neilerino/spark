@@ -658,6 +658,91 @@ fn map_literal_empty_uses_expected_type() {
 }
 
 #[test]
+fn map_literal_computed_keys_survive_growth() {
+    let fixture = "run-pass/collections/map_literal_computed_keys.spark";
+    let expected = "13\n0\n101\n7\n12\n99\n42\n81\n8\n7\n42\n42\n5";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), expected);
+    }
+}
+
+#[test]
+fn map_literal_rejects_incompatible_entries() {
+    for (name, diagnostic, label) in [
+        (
+            "map_literal_mixed_keys",
+            "map key type mismatch",
+            "expected `String`, found `Int64`",
+        ),
+        (
+            "map_literal_wrong_first_key",
+            "map key type mismatch",
+            "expected `String`, found `Int64`",
+        ),
+        (
+            "map_literal_unsupported_key",
+            "map literal keys must be integers or strings",
+            "unsupported map key type",
+        ),
+        (
+            "map_literal_wrong_later_value",
+            "map value type mismatch",
+            "expected `Int64`, found `String`",
+        ),
+        (
+            "map_literal_zero_sized_value",
+            "map value type has no storage",
+            "use a value type with a stored representation",
+        ),
+    ] {
+        let fixture = format!("compile-fail/type_errors/{name}.spark");
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(&fixture, args);
+            assert_ne!(result.exit_code, 0, "{fixture} {args:?}");
+            assert!(
+                result.stderr.contains(diagnostic),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+            assert!(
+                result.stderr.contains(label),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn map_literal_snapshots_slots_and_packs_optional_values() {
+    let fixture = "run-pass/collections/map_literal_snapshots.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout.trim(),
+            "key\nvalue\n10\n20\n11\nstored\ninner null\nmissing\n6\nunion"
+        );
+    }
+}
+
+#[test]
+fn map_literal_balances_ownership_on_growth_replacement_and_early_return() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_list_rc(const void *const *slot) { return *(const size_t *)*slot; }\n\
+         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n\
+         static int64_t number = 73;\n\
+         static int64_t *number_ref = &number;\n\
+         int64_t **nested_int(void) { return &number_ref; }\n",
+        include_str!("run-pass/collections/map_literal_ownership.spark"),
+        "13\n1\n13\n0\n0\n99\n0\n0\n81\n0\n0\n82\n84\n73",
+    );
+}
+
+#[test]
 fn map_get_optional() {
     assert_output("run-pass/collections/map_get_optional.spark", "found");
 }

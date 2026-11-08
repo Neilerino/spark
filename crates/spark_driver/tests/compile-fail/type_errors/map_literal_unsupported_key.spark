@@ -1,0 +1,4 @@
+fn main(): Int {
+    entries: Map[Bool, Int] = {false: 1}
+    return 0
+}

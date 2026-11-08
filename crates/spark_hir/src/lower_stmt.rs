@@ -40,19 +40,6 @@ pub(crate) fn lower_stmt(stmt: &Stmt, ctx: &mut LowerCtx<'_>) -> HirStmt {
                     | (Ty::Set(expected_elem), HirExprKind::SetLit(elems)) => {
                         coerce_collection_elems(elems, *expected_elem, value.span, table);
                     }
-                    (Ty::Map(expected_key, expected_val), HirExprKind::MapLit(entries)) => {
-                        let expected_key = *expected_key;
-                        let expected_val = *expected_val;
-                        *entries = std::mem::take(entries)
-                            .into_iter()
-                            .map(|(k, v)| {
-                                (
-                                    coerce_ref(k, expected_key, value.span, table),
-                                    coerce_ref(v, expected_val, value.span, table),
-                                )
-                            })
-                            .collect();
-                    }
                     _ => {}
                 }
             }

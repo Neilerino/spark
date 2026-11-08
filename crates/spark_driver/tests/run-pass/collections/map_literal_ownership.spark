@@ -1,0 +1,76 @@
+link "union_probe"
+
+extern fn probe_list_rc(values: Ref[List[Int]]): Int
+extern fn probe_string_rc(value: Ref[String]): Int
+extern fn nested_int(): Ref[Ref[Int]]
+
+fn keep(key: String): String {
+    return key
+}
+
+fn interrupted(key: String, values: List[Int], absent: Int?): Int? {
+    entries: Map[String, List[Int]] = {
+        keep(key): values,
+        "interrupted": {
+            present: Int = absent!
+            values
+        },
+    }
+    return entries.len()
+}
+
+fn returned(key: String, values: List[Int]): Int {
+    entries: Map[String, List[Int]] = {
+        keep(key): values,
+        "return": return 81
+    }
+    return entries.len()
+}
+
+fn returnedFromKey(): Int {
+    entries: Map[Int, Int] = {1 + 1: 0, (return 82): 7}
+    return entries.len()
+}
+
+fn returnedFromBranches(flag: Bool): Int {
+    entries: Map[Int, Int] = {1 + 1: if flag { return 83 } else { return 84 }}
+    return entries.len()
+}
+
+fn main(): Int {
+    needle: String = "present"
+    values: List[Int] = [9]
+    keyBefore: Int = probe_string_rc(needle)
+    valueBefore: Int = probe_list_rc(values)
+
+    {
+        entries: Map[String, List[Int]] = {
+            keep(needle): values,
+            "a": values, "b": values, "c": values, "d": values,
+            "e": values, "f": values, "g": values, "h": values,
+            "i": values, "j": values, "k": values, "l": values,
+            keep(needle): values,
+        }
+        print(entries.len())
+        print(probe_string_rc(needle) - keyBefore)
+        print(probe_list_rc(values) - valueBefore)
+        if entries[needle] is Null {
+            return 1
+        }
+    }
+
+    print(probe_string_rc(needle) - keyBefore)
+    print(probe_list_rc(values) - valueBefore)
+    none: Int? = Null
+    print(interrupted(needle, values, none) ?? 99)
+    print(probe_string_rc(needle) - keyBefore)
+    print(probe_list_rc(values) - valueBefore)
+    print(returned(needle, values))
+    print(probe_string_rc(needle) - keyBefore)
+    print(probe_list_rc(values) - valueBefore)
+    print(returnedFromKey())
+    print(returnedFromBranches(false))
+    refs: Map[String, Int] = {"number": nested_int()}
+    print(refs["number"] ?? 0)
+    return 0
+}

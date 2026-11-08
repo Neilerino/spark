@@ -1,0 +1,54 @@
+alias Stored = Int | String
+
+fn tap(marker: String, value: Int): Int {
+    print(marker)
+    return value
+}
+
+fn show(value: Stored): Void {
+    value to {
+        number: Int -> print(number),
+        text: String -> print(text)
+    }
+}
+
+fn main(): Int {
+    key: Int! = 1
+    payload: Int! = 10
+    entries: Map[Int, Int] = {
+        key: payload,
+        tap("key", key + 1): {
+            key = 3
+            payload = 11
+            tap("value", 20)
+        },
+        key: payload,
+    }
+    print(entries[1] ?? 0)
+    print(entries[2] ?? 0)
+    print(entries[3] ?? 0)
+
+    tagged: Map[String, String?] = {"hit": "stored", "null": Null}
+    tagged["hit"] to {
+        value: String? -> print(value ?? "inner null"),
+        Null -> print("missing")
+    }
+    tagged["null"] to {
+        value: String? -> print(value ?? "inner null"),
+        Null -> print("missing")
+    }
+    tagged["miss"] to {
+        value: String? -> print(value ?? "inner null"),
+        Null -> print("missing")
+    }
+    taggedUnion: Map[String, Stored] = {"number": 6, "text": "union"}
+    taggedUnion["number"] to {
+        value: Stored -> show(value),
+        Null -> print("missing")
+    }
+    taggedUnion["text"] to {
+        value: Stored -> show(value),
+        Null -> print("missing")
+    }
+    return 0
+}

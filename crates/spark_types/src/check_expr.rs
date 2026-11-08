@@ -328,32 +328,7 @@ fn check_expr_inner(
             }
         }
 
-        ExprKind::Map(entries) => {
-            let expected_kv = extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
-                Ty::Map(k, v) => Some((*k, *v)),
-                _ => None,
-            });
-            let expected_key = expected_kv.map(|(k, _)| k);
-            let expected_val = expected_kv.map(|(_, v)| v);
-
-            if entries.is_empty() {
-                let key_ty = expected_key.unwrap_or(TypeId::ERROR);
-                let val_ty = expected_val.unwrap_or(TypeId::ERROR);
-                ctx.table.intern(Ty::Map(key_ty, val_ty))
-            } else {
-                let key_ty =
-                    check_expr_expected(&entries[0].key, ctx, current_fn_ret, expected_key);
-                let val_ty =
-                    check_expr_expected(&entries[0].value, ctx, current_fn_ret, expected_val);
-                for entry in &entries[1..] {
-                    let _ = check_expr_expected(&entry.key, ctx, current_fn_ret, expected_key);
-                    let _ = check_expr_expected(&entry.value, ctx, current_fn_ret, expected_val);
-                }
-                let final_key = resolve_with_expected(key_ty, expected_key, ctx.table);
-                let final_val = resolve_with_expected(val_ty, expected_val, ctx.table);
-                ctx.table.intern(Ty::Map(final_key, final_val))
-            }
-        }
+        ExprKind::Map(entries) => check_map_literal(entries, ctx, current_fn_ret, expected_ty),
 
         ExprKind::Set(elems) => {
             let expected_elem = extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
@@ -805,6 +780,142 @@ fn check_index_access(
             );
             TypeId::ERROR
         }
+    }
+}
+
+fn check_map_literal(
+    entries: &[spark_ast::MapEntry],
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+    expected_ty: Option<TypeId>,
+) -> TypeId {
+    let (mut key_slot, mut value_slot) =
+        extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
+            Ty::Map(key, value) => Some((Some(*key), Some(*value))),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let mut valid = true;
+
+    for entry in entries {
+        let key = check_expr_expected(&entry.key, ctx, current_fn_ret, key_slot);
+        if !matches!(ctx.table.resolve(key), Ty::Never) {
+            let slot = *key_slot.get_or_insert(key);
+            valid &=
+                check_collection_argument(key, slot, entry.key.span, "map key type mismatch", ctx);
+        }
+
+        let value = check_expr_expected(&entry.value, ctx, current_fn_ret, value_slot);
+        if matches!(ctx.table.resolve(value), Ty::Never) {
+            continue;
+        }
+        let slot = *value_slot.get_or_insert(value);
+        if value.is_error() || slot.is_error() {
+            valid = false;
+        } else if map_value_coercion(value, slot, ctx.table).is_none() {
+            let expected = type_name(slot, ctx.table, ctx.definitions);
+            let actual = type_name(value, ctx.table, ctx.definitions);
+            ctx.diagnostics
+                .push(
+                    Diagnostic::error("map value type mismatch").with_label(Label::primary(
+                        entry.value.span,
+                        format!("expected `{expected}`, found `{actual}`"),
+                    )),
+                );
+            valid = false;
+        }
+    }
+
+    let key = key_slot.unwrap_or(TypeId::ERROR);
+    let value = value_slot.unwrap_or(TypeId::ERROR);
+    if let Some(first) = entries.first() {
+        if !key.is_error()
+            && !matches!(
+                ctx.table.resolve(strip_mutable(key, ctx.table)),
+                Ty::Int(_) | Ty::String
+            )
+        {
+            ctx.diagnostics.push(
+                Diagnostic::error("map literal keys must be integers or strings")
+                    .with_label(Label::primary(first.key.span, "unsupported map key type")),
+            );
+            valid = false;
+        }
+        if matches!(
+            ctx.table.resolve(strip_mutable(value, ctx.table)),
+            Ty::Null | Ty::Void | Ty::Never
+        ) {
+            ctx.diagnostics.push(
+                Diagnostic::error("map value type has no storage").with_label(Label::primary(
+                    first.value.span,
+                    "use a value type with a stored representation",
+                )),
+            );
+            valid = false;
+        }
+    }
+
+    if valid {
+        ctx.table.intern(Ty::Map(key, value))
+    } else {
+        TypeId::ERROR
+    }
+}
+
+/// A conversion materialized before a value enters a map slot.
+#[derive(Clone, Copy, Debug)]
+pub enum MapValueCoercion {
+    /// The source already has the slot layout.
+    Identity,
+    /// HIR inserts a borrow or dereferences to the slot value type.
+    Reference,
+    /// MIR wraps the source with the tag for this declared member.
+    Tagged(TypeId),
+}
+
+/// Determines which conversion, if any, can materialize the map value slot.
+#[must_use]
+pub fn map_value_coercion(
+    actual: TypeId,
+    expected: TypeId,
+    table: &TypeTable,
+) -> Option<MapValueCoercion> {
+    let actual = strip_mutable(actual, table);
+    let expected = strip_mutable(expected, table);
+    if actual == expected {
+        return Some(MapValueCoercion::Identity);
+    }
+
+    match (table.resolve(actual), table.resolve(expected)) {
+        (
+            Ty::Ref {
+                inner: source,
+                mutable: source_mut,
+                ..
+            },
+            Ty::Ref {
+                inner: target,
+                mutable: target_mut,
+                ..
+            },
+        ) if collection_slot_matches(*source, *target, table) && (!target_mut || *source_mut) => {
+            Some(MapValueCoercion::Identity)
+        }
+        (Ty::Ref { .. }, Ty::Ref { .. }) => None,
+        (Ty::Null, Ty::Optional(_)) => Some(MapValueCoercion::Tagged(actual)),
+        (_, Ty::Optional(inner)) if collection_slot_matches(actual, *inner, table) => {
+            Some(MapValueCoercion::Tagged(*inner))
+        }
+        (_, Ty::Union(members)) if members.contains(&actual) => {
+            Some(MapValueCoercion::Tagged(actual))
+        }
+        (_, Ty::Ref { inner, .. }) if collection_slot_matches(actual, *inner, table) => {
+            Some(MapValueCoercion::Reference)
+        }
+        (Ty::Ref { .. }, _) if reference_base(actual, table).0 == expected => {
+            Some(MapValueCoercion::Reference)
+        }
+        _ => None,
     }
 }
 
@@ -1659,26 +1770,28 @@ fn check_cast(actual: TypeId, target: TypeId, span: Span, ctx: &mut TypeCheckCtx
 /// Checks that a cast preserves collection storage through mutable and reference wrappers.
 #[must_use]
 pub fn collection_cast_preserves_layout(actual: TypeId, target: TypeId, table: &TypeTable) -> bool {
-    let referent = |mut ty| {
-        let mut depth = 0;
-        loop {
-            match table.resolve(strip_mutable(ty, table)) {
-                Ty::Ref { inner, .. } => {
-                    depth += 1;
-                    ty = *inner;
-                }
-                resolved => return (resolved, depth),
-            }
-        }
-    };
-    let (actual_ty, actual_depth) = referent(actual);
-    let (target_ty, target_depth) = referent(target);
+    let (actual_base, actual_depth) = reference_base(actual, table);
+    let (target_base, target_depth) = reference_base(target, table);
+    let actual_ty = table.resolve(actual_base);
+    let target_ty = table.resolve(target_base);
     let involves_collection = [actual_ty, target_ty]
         .iter()
         .any(|ty| matches!(ty, Ty::List(_) | Ty::Map(_, _) | Ty::Set(_)));
     !involves_collection
         || (actual_depth == target_depth
             && collection_layout_matches(actual_ty, target_ty, table).unwrap_or(false))
+}
+
+fn reference_base(mut ty: TypeId, table: &TypeTable) -> (TypeId, usize) {
+    let mut depth = 0;
+    loop {
+        ty = strip_mutable(ty, table);
+        let Ty::Ref { inner, .. } = table.resolve(ty) else {
+            return (ty, depth);
+        };
+        depth += 1;
+        ty = *inner;
+    }
 }
 
 fn collection_layout_matches(actual: &Ty, expected: &Ty, table: &TypeTable) -> Option<bool> {
