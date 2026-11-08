@@ -326,6 +326,15 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
 
         // === Control flow ===
         ExprKind::Block(block) => {
+            if block.stmts.is_empty()
+                && block.expr.is_none()
+                && matches!(
+                    ctx.table.resolve(expr_type(expr.id, ctx.table)),
+                    Ty::Map(..)
+                )
+            {
+                return HirExprKind::MapLit(Vec::new());
+            }
             let lowered = lower_block(block, ctx);
             lowered.kind
         }
