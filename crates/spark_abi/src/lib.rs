@@ -168,6 +168,13 @@ pub const STRING_EQ: RuntimeFn = RuntimeFn {
     ret: Some(I8),
 };
 
+/// `__spark_string_cmp(ptr, ptr) -> i8`
+pub const STRING_CMP: RuntimeFn = RuntimeFn {
+    name: "__spark_string_cmp",
+    params: &[Ptr, Ptr],
+    ret: Some(I8),
+};
+
 /// `__spark_hash_string_elem(elem_ptr: ptr) -> i64`
 pub const HASH_STRING_ELEM: RuntimeFn = RuntimeFn {
     name: "__spark_hash_string_elem",
@@ -698,6 +705,7 @@ pub const ALL_RUNTIME_FUNCTIONS: &[&RuntimeFn] = &[
     &STRING_CHARS,
     &STRING_CONCAT,
     &STRING_EQ,
+    &STRING_CMP,
     &HASH_STRING_ELEM,
     &EQ_STRING_ELEM,
     // Conversion

@@ -1,0 +1,23 @@
+fn before(left: Ref[String], right: String): Bool {
+    return left < right
+}
+
+fn main(): Int {
+    suffix: String = "ame"
+    left: String = "s{suffix}"
+    right: String = "s{suffix}"
+    print(left == right)
+    print(left != right)
+    print(left < right)
+    print(left > right)
+    print(left <= right)
+    print(left >= right)
+    print("z" > "aa")
+    print("aa" < "z")
+    print("a" < "aa")
+    print("é" > "z")
+    print("" < "a")
+    print(before("ab", "ac"))
+    print("ab" >= "ac")
+    return 0
+}

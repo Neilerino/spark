@@ -54,7 +54,7 @@ pub use parallel::{
     __spark_parallel_range_foreach, __spark_parallel_range_map, __spark_parallel_range_map_reduce,
     __spark_range_len,
 };
-use value::{fix_hash, fnv1a_hash, libc_memcmp};
+use value::{fix_hash, fnv1a_hash};
 
 // =============================================================================
 // Print functions
@@ -198,15 +198,25 @@ pub unsafe extern "C" fn __spark_string_len(ptr: *mut u8) -> i64 {
 pub unsafe extern "C" fn __spark_string_eq(a: *mut u8, b: *mut u8) -> i8 {
     let sa = unsafe { &*(a.cast::<SparkString>()) };
     let sb = unsafe { &*(b.cast::<SparkString>()) };
-    if sa.len != sb.len {
-        return 0;
+    i8::from(
+        sa.len == sb.len && unsafe { string::spark_str_bytes(sa) == string::spark_str_bytes(sb) },
+    )
+}
+
+/// Orders Strings lexicographically by their UTF-8 bytes, returning -1, 0, or 1.
+///
+/// # Safety
+/// Both pointers must refer to live `SparkString` values.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_string_cmp(a: *const u8, b: *const u8) -> i8 {
+    let left = unsafe { string::spark_str_bytes(&*a.cast::<SparkString>()) };
+    let right = unsafe { string::spark_str_bytes(&*b.cast::<SparkString>()) };
+    match left.cmp(right) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
     }
-    if sa.len == 0 {
-        return 1;
-    }
-    let slice_a = unsafe { std::slice::from_raw_parts(sa.data, sa.len) };
-    let slice_b = unsafe { std::slice::from_raw_parts(sb.data, sb.len) };
-    i8::from(slice_a == slice_b)
 }
 
 // =============================================================================
@@ -321,12 +331,7 @@ pub unsafe extern "C" fn __spark_eq_string_elem(a: *const u8, b: *const u8) -> i
     if pa.is_null() || pb.is_null() {
         return 0;
     }
-    let sa = unsafe { &*(pa.cast::<SparkString>()) };
-    let sb = unsafe { &*(pb.cast::<SparkString>()) };
-    if sa.len != sb.len {
-        return 0;
-    }
-    i8::from(unsafe { libc_memcmp(sa.data, sb.data, sa.len) })
+    unsafe { __spark_string_eq(pa, pb) }
 }
 
 // =============================================================================
@@ -590,6 +595,22 @@ mod tests {
             assert_eq!(__spark_string_eq(a, b), 1);
             __spark_string_rc_dec(a);
             __spark_string_rc_dec(b);
+        }
+    }
+
+    #[test]
+    fn string_cmp_matches_equality_and_byte_order() {
+        for (left, right, expected) in [("", "", 0), ("a", "ab", -1), ("z", "aa", 1), ("é", "z", 1)]
+        {
+            unsafe {
+                let left = __spark_string_from_literal(left.as_ptr(), left.len() as i64);
+                let right = __spark_string_from_literal(right.as_ptr(), right.len() as i64);
+                assert_eq!(__spark_string_cmp(left, right), expected);
+                assert_eq!(__spark_string_cmp(right, left), -expected);
+                assert_eq!(__spark_string_eq(left, right), i8::from(expected == 0));
+                __spark_string_rc_dec(left);
+                __spark_string_rc_dec(right);
+            }
         }
     }
 

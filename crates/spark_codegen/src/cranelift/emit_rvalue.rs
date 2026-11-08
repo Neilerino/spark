@@ -59,24 +59,16 @@ pub fn emit_rvalue<M: Module>(
                 });
             }
 
+            if matches!(lhs_resolved, Ty::String) && op.is_comparison() {
+                return emit_string_comparison(ctx, *op, lhs, rhs, ecx, module);
+            }
+
             let lhs_val = emit_operand(ctx, lhs, ecx, module)?;
             let rhs_val = emit_operand(ctx, rhs, ecx, module)?;
-
-            if matches!(lhs_resolved, Ty::String) && matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
-                let func_ref = module.declare_func_in_func(ctx.stubs.string_eq, ctx.builder.func);
-                let call = ctx.builder.ins().call(func_ref, &[lhs_val, rhs_val]);
-                let eq_val = ctx.builder.inst_results(call)[0];
-                if *op == BinaryOp::Ne {
-                    Some(ctx.builder.ins().bxor_imm(eq_val, 1))
-                } else {
-                    Some(eq_val)
-                }
-            } else {
-                let result_ty = ctx.local_type_id(dest_local);
-                Some(emit_binop(
-                    ctx, *op, lhs_val, rhs_val, result_ty, lhs_ty, ecx.table,
-                ))
-            }
+            let result_ty = ctx.local_type_id(dest_local);
+            Some(emit_binop(
+                ctx, *op, lhs_val, rhs_val, result_ty, lhs_ty, ecx.table,
+            ))
         }
 
         Rvalue::UnaryOp(op, operand) => {
@@ -192,6 +184,44 @@ pub fn emit_operand<M: Module>(
         }
         Operand::Constant(constant) => emit_constant(ctx, constant, ecx, module),
     }
+}
+
+fn emit_string_comparison<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    op: BinaryOp,
+    lhs: &Operand,
+    rhs: &Operand,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+) -> Option<Value> {
+    let left = emit_borrowed_operand(ctx, lhs, ecx, module)?;
+    let right = emit_borrowed_operand(ctx, rhs, ecx, module)?;
+    let stub = if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+        ctx.stubs.string_eq
+    } else {
+        ctx.stubs.string_cmp
+    };
+    let function = module.declare_func_in_func(stub, ctx.builder.func);
+    let call = ctx.builder.ins().call(function, &[left, right]);
+    let result = ctx.builder.inst_results(call)[0];
+
+    for (operand, value) in [(lhs, left), (rhs, right)] {
+        if matches!(operand, Operand::Constant(Constant::String(_))) {
+            let drop = module.declare_func_in_func(ctx.stubs.string_rc_dec, ctx.builder.func);
+            ctx.builder.ins().call(drop, &[value]);
+        }
+    }
+
+    let condition = match op {
+        BinaryOp::Eq => return Some(result),
+        BinaryOp::Ne => return Some(ctx.builder.ins().bxor_imm(result, 1)),
+        BinaryOp::Lt => IntCC::SignedLessThan,
+        BinaryOp::Le => IntCC::SignedLessThanOrEqual,
+        BinaryOp::Gt => IntCC::SignedGreaterThan,
+        BinaryOp::Ge => IntCC::SignedGreaterThanOrEqual,
+        _ => unreachable!("checked String comparison"),
+    };
+    Some(ctx.builder.ins().icmp_imm(condition, result, 0))
 }
 
 fn emit_borrowed_operand<M: Module>(

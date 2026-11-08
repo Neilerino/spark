@@ -40,6 +40,8 @@ pub struct RuntimeStubs {
     pub string_concat: FuncId,
     /// `__spark_string_eq`
     pub string_eq: FuncId,
+    /// `__spark_string_cmp`
+    pub string_cmp: FuncId,
     /// `__spark_hash_string_elem`
     pub hash_string_elem: FuncId,
     /// `__spark_eq_string_elem`
@@ -230,6 +232,7 @@ impl RuntimeStubs {
             string_chars: declare_abi(module, &abi::STRING_CHARS, ptr_type, call_conv),
             string_concat: declare_abi(module, &abi::STRING_CONCAT, ptr_type, call_conv),
             string_eq: declare_abi(module, &abi::STRING_EQ, ptr_type, call_conv),
+            string_cmp: declare_abi(module, &abi::STRING_CMP, ptr_type, call_conv),
             hash_string_elem: declare_abi(module, &abi::HASH_STRING_ELEM, ptr_type, call_conv),
             eq_string_elem: declare_abi(module, &abi::EQ_STRING_ELEM, ptr_type, call_conv),
 
