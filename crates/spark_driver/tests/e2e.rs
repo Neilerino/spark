@@ -844,101 +844,31 @@ fn set_string_elements_balance_ownership() {
 }
 
 #[test]
-fn map_each_entry_frequency() {
-    let fixture = "run-pass/collections/map_each_entry.spark";
-    for args in [&[][..], &["--no-opt"][..]] {
-        let result = run_spark_with_args(fixture, args);
-        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
-        let lines: Vec<_> = result.stdout.lines().collect();
-        assert_eq!(lines.len(), 4);
-        let mut pairs: Vec<_> = lines.chunks_exact(2).map(|row| (row[0], row[1])).collect();
-        pairs.sort_unstable();
-        assert_eq!(pairs, [("blue", "1"), ("red", "2")]);
-    }
-}
-
-#[test]
-fn map_each_entry_growth_and_mutation_snapshot() {
-    let fixture = "run-pass/collections/map_each_entry_snapshot.spark";
-    let expected: Vec<_> = (0..32)
-        .filter(|&key| key != 7)
-        .map(|key| key * 1000 + if key == 2 { 100 } else { key + 1 })
-        .collect();
-    for args in [&[][..], &["--no-opt"][..]] {
-        let result = run_spark_with_args(fixture, args);
-        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
-        let mut values: Vec<i32> = result
-            .stdout
-            .lines()
-            .map(|line| line.parse().unwrap())
-            .collect();
-        assert_eq!(values.pop(), Some(0));
-        assert_eq!(values.pop(), Some(1009));
-        assert_eq!(values.pop(), Some(31));
-        values.sort_unstable();
-        assert_eq!(values, expected);
-    }
-}
-
-#[test]
-fn map_each_entry_preserves_narrow_and_aggregate_layouts() {
-    let fixture = "run-pass/collections/map_each_entry_layouts.spark";
-    for args in [&[][..], &["--no-opt"][..]] {
-        let result = run_spark_with_args(fixture, args);
-        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
-        assert_eq!(result.stdout, "255\n42\n7\n");
-    }
-}
-
-#[test]
-fn map_each_entry_balances_ownership() {
+fn tuple_ownership_balances_nested_fields() {
     assert_native_ownership_fixture(
         "#include <stddef.h>\n#include <stdint.h>\n\
-         static int64_t count(const void *const *slot) { return *(const size_t *)*slot; }\n\
-         int64_t probe_string_rc(const void *const *slot) { return count(slot); }\n\
-         int64_t probe_list_rc(const void *const *slot) { return count(slot); }\n\
-         int64_t probe_map_rc(const void *const *slot) { return count(slot); }\n",
-        include_str!("run-pass/collections/map_each_entry_ownership.spark"),
-        "empty\nreceiver\nvisitor\nreceiver\nvisitor\n9\n3\n9\n0\n0\n0\nreceiver\nvisitor\n0\n3\n9\nreceiver\n99\n0",
+         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/collections/tuple_ownership.spark"),
+        "2\n3\n3\n4\n0\n6\n3\n3\n0",
     );
 }
 
 #[test]
-fn map_each_entry_rejects_invalid_callbacks_and_mutation_targets() {
-    for (suffix, diagnostic) in [
-        ("width", "collection visitor must have type"),
-        ("extern", "collection visitor must be a Spark function"),
-        ("arity", "expected 1 argument"),
-        ("async", "collection visitor must be a synchronous function"),
-        (
-            "slot",
-            "collection traversal requires supported owned slot types",
-        ),
-        (
-            "remove_projected",
-            "map mutation requires a mutable binding",
-        ),
-    ] {
-        assert_compile_error(
-            &format!("compile-fail/type_errors/map_each_entry_{suffix}.spark"),
-            diagnostic,
-        );
-    }
-}
-
-#[test]
-fn map_each_entry_diagnoses_invalid_opaque_callbacks() {
-    let fixture = "run-fail/collections/map_each_entry_extern_alias.spark";
+fn map_iterable_frequency() {
+    let fixture = "run-pass/collections/map_iterable_frequency.spark";
     for args in [&[][..], &["--no-opt"][..]] {
         let result = run_spark_with_args(fixture, args);
-        assert_ne!(result.exit_code, 0, "{fixture} {args:?}");
-        assert!(
-            result
-                .stderr
-                .contains("collection visitor must be a Spark function"),
-            "{}",
-            result.stderr
-        );
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        let mut lines: Vec<_> = result.stdout.lines().collect();
+        assert_eq!(lines.pop(), Some("2"));
+        assert_eq!(lines.pop(), Some("3"));
+        assert_eq!(lines.len(), 4);
+        let mut pairs: Vec<_> = lines
+            .chunks_exact(2)
+            .map(|pair| (pair[0], pair[1]))
+            .collect();
+        pairs.sort_unstable();
+        assert_eq!(pairs, [("blue", "1"), ("red", "2")]);
     }
 }
 

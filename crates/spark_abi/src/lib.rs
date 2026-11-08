@@ -367,13 +367,6 @@ pub const MAP_INSERT: RuntimeFn = RuntimeFn {
     ret: None,
 };
 
-/// `__spark_invalid_collection_visitor() -> void`
-pub const INVALID_COLLECTION_VISITOR: RuntimeFn = RuntimeFn {
-    name: "__spark_invalid_collection_visitor",
-    params: &[],
-    ret: None,
-};
-
 /// `__spark_map_next(map: ptr, start: u64, key_out: ptr, value_out: ptr) -> u64`
 pub const MAP_NEXT: RuntimeFn = RuntimeFn {
     name: "__spark_map_next",
@@ -697,7 +690,6 @@ pub const ALL_RUNTIME_FUNCTIONS: &[&RuntimeFn] = &[
     &MAP_NEW,
     &MAP_INSERT,
     &MAP_NEXT,
-    &INVALID_COLLECTION_VISITOR,
     &MAP_GET,
     &MAP_RC_DEC,
     &MAP_COW,

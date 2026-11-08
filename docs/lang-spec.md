@@ -408,13 +408,18 @@ ages["charlie"] = 35
 ages["charlie"] = 36
 ```
 
-Use `entries.eachEntry(visitor)` to visit each key and value together. The
-visitor is a synchronous Spark function of type `(K, V): Void`, with the
-map's exact slot types. Traversal requires concrete slot types the compiler
-can copy safely. Visits are unordered. Spark evaluates the receiver once and keeps a
-snapshot before evaluating the visitor expression once. An empty map makes
-zero visitor calls. Returning from a visitor call resumes traversal. Changes
-to other owning copies do not change the pairs visited in the snapshot.
+Maps can be passed directly to sequential pipelines. Each element is a
+`Tup[K, V]` with the key at `.0` and value at `.1`. The pipeline takes an
+owned snapshot before processing its first element. Traversal order is
+unspecified. Use `toList()` to take the same snapshot explicitly. Traversal
+requires slot types with supported owned storage and is sequential.
+
+```
+counts: Map[String, Int] = {"red": 2, "blue": 1}
+total: Int = counts reduce 0 (sum: Int, entry: Tup[String, Int]): Int {
+    sum + entry.1
+}
+```
 
 #### Set[T]
 

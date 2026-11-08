@@ -1,0 +1,43 @@
+link "union_probe"
+
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn echo(value: String): String {
+    return value
+}
+
+fn number(entry: Tup[Int, Tup[String, Int]]): Int {
+    inner: Tup[String, Int] = entry.1
+    return inner.1
+}
+
+fn main(): Int {
+    suffix: String = "ey"
+    key: String = "k{suffix}"
+    before: Int = probe_string_rc(key)
+    {
+        entry: Tup[Int, Tup[String, Int]] = (7, (echo(key), 2))
+        copy: Tup[Int, Tup[String, Int]] = entry
+        print(number(copy))
+        entries: List[Tup[Int, Tup[String, Int]]] = [(7, (echo(key), 3))]
+        entries each (item: Tup[Int, Tup[String, Int]]): Void { print(number(item)) }
+        print(probe_string_rc(key) - before)
+    }
+    print((key, 4).1)
+    print(probe_string_rc(key) - before)
+    {
+        values: Map[String, String]! = {key: key}
+        values each (entry: Tup[String, String]): Void {
+            print(entry.1.len() + key.len())
+        }
+        entries: List[Tup[String, String]] = values.toList()
+        values[key] = "changed"
+        length: Int = entries reduce 0 (sum: Int, entry: Tup[String, String]): Int {
+            sum + entry.1.len()
+        }
+        print(length)
+        print(probe_string_rc(key) - before)
+    }
+    print(probe_string_rc(key) - before)
+    return 0
+}

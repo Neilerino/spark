@@ -1,0 +1,26 @@
+fn show(entry: Tup[String, Int]): Void {
+    print(entry.0)
+    print(entry.1)
+}
+
+fn main(): Int {
+    words: List[String] = ["red", "blue", "red"]
+    counts: Map[String, Int]! = {}
+    counts each show
+    i: Int! = 0
+    loop {
+        if i == words.len() { break }
+        word: String = words[i] ?? ""
+        counts[word] = (counts[word] ?? 0) + 1
+        i += 1
+    }
+    counts each show
+    total: Int = counts reduce 0 (sum: Int, entry: Tup[String, Int]): Int {
+        sum + entry.1
+    }
+    print(total)
+    repeated: Int = counts filter (entry: Tup[String, Int]): Bool { entry.1 > 1 }
+        reduce 0 (sum: Int, entry: Tup[String, Int]): Int { sum + entry.1 }
+    print(repeated)
+    return 0
+}

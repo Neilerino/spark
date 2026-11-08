@@ -126,7 +126,7 @@ fn check_indexed_write_loans(
 }
 
 #[allow(clippy::cast_possible_truncation)]
-pub(super) fn check_hash_collection_mutation_loans(
+pub(super) fn check_set_mutation_loans(
     func: &MirFunction,
     facts: &BorrowFacts,
     regions: &[Region],
@@ -155,7 +155,7 @@ pub(super) fn check_hash_collection_mutation_loans(
             Ty::Mutable(inner) => table.resolve(*inner),
             ty => ty,
         };
-        if !matches!(receiver_ty, Ty::Set(_) | Ty::Map(..))
+        if !matches!(receiver_ty, Ty::Set(_))
             || !definitions.get(*def).is_some_and(|info| {
                 info.kind == DefinitionKind::BuiltinMethod
                     && matches!(info.name, kw::ADD | kw::REMOVE)

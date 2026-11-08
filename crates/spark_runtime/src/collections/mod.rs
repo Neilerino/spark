@@ -23,10 +23,3 @@ pub use set::{
     SparkSet, __spark_set_contains, __spark_set_cow, __spark_set_insert, __spark_set_len,
     __spark_set_new, __spark_set_rc_dec, __spark_set_remove,
 };
-
-/// Reports a traversal callback that has no Spark entry point.
-#[no_mangle]
-pub extern "C" fn __spark_invalid_collection_visitor() {
-    eprintln!("spark: collection visitor must be a Spark function");
-    std::process::abort();
-}

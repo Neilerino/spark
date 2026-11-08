@@ -32,7 +32,6 @@ mod sys;
 mod time;
 mod value;
 
-pub use collections::__spark_invalid_collection_visitor;
 pub use collections::{
     SparkList, SparkMap, SparkSet, __spark_list_contains, __spark_list_cow,
     __spark_list_from_range, __spark_list_get, __spark_list_len, __spark_list_new,
