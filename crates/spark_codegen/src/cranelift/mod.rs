@@ -5,6 +5,7 @@
 
 pub mod context;
 pub mod drop_glue;
+mod emit_iterable;
 pub mod emit_rvalue;
 pub mod emit_stmt;
 pub mod emit_term;

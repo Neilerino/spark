@@ -27,7 +27,9 @@ pub fn needs_drop(ty_id: TypeId, table: &TypeTable) -> bool {
     }
     match table.resolve(ty_id) {
         Ty::Function { .. } | Ty::Future { .. } | Ty::Channel { .. } | Ty::Param(_) => true,
-        Ty::Union(members) => members.iter().any(|&member| needs_drop(member, table)),
+        Ty::Union(members) | Ty::Tuple(members) => {
+            members.iter().any(|&member| needs_drop(member, table))
+        }
         Ty::Mutable(inner) | Ty::Optional(inner) => needs_drop(*inner, table),
         _ => false,
     }

@@ -687,6 +687,7 @@ fn lower_pipeline(
     for (i, stage) in stages.iter().enumerate() {
         if i < stages.len() - 1 {
             // Intermediate stage: wrap in a let binding
+            current_hir = maybe_wrap_iterable(current_hir, ctx.table);
             let stage_result_ty = infer_stage_output_ty(stage, current_hir.ty, ctx.table);
             let temp_id = ctx.definitions.next_synthetic_id(stage.span);
             let stage_hir_kind = lower_single_pipeline_stage(stage, current_hir, stage.span, ctx);
@@ -1458,9 +1459,24 @@ fn maybe_wrap_displayable(expr: HirExpr, table: &TypeTable) -> HirExpr {
     )
 }
 
-/// If `source` is a struct that binds `Iterable[E]`, wraps it with a
-/// call to the binding's `toList(receiver)` method. Otherwise returns `source` unchanged.
+/// Converts an iterable source to its list representation through `toList`.
 fn maybe_wrap_iterable(source: HirExpr, table: &TypeTable) -> HirExpr {
+    if let Ty::Map(key, value) = table.resolve(strip_mutable_ty(source.ty, table)) {
+        let element = table
+            .lookup(&Ty::Tuple(vec![*key, *value]))
+            .unwrap_or(TypeId::ERROR);
+        let list = table.lookup(&Ty::List(element)).unwrap_or(TypeId::ERROR);
+        let span = source.span;
+        return HirExpr::new(
+            HirExprKind::MethodCall {
+                receiver: Box::new(source),
+                method: kw::TO_LIST,
+                args: Vec::new(),
+            },
+            list,
+            span,
+        );
+    }
     let Some(iterable_id) = table.well_known.iterable else {
         return source;
     };

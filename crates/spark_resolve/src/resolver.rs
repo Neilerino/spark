@@ -143,6 +143,7 @@ impl Resolver {
         // but need DefIds so MIR and codegen can reference them.
         for &method_name in &[
             kw::LEN,
+            kw::TO_LIST,
             kw::LINES,
             kw::SPLIT,
             kw::SPLIT_WHITESPACE,

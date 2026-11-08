@@ -255,7 +255,7 @@ fn emit_call<M: Module>(
                 diagnostics,
             );
         } else {
-            let func_val = emit_rvalue::emit_operand(ctx, func, ecx, module);
+            let func_val = read_indirect_callee(ctx, func, ecx, module);
             emit_indirect_call_sret(
                 ctx,
                 func_val,
@@ -270,7 +270,7 @@ fn emit_call<M: Module>(
     } else if let Some(def_id) = resolved_def_id {
         emit_direct_call(ctx, def_id, &arg_vals, ecx.func_ids, module, diagnostics)
     } else {
-        let func_val = emit_rvalue::emit_operand(ctx, func, ecx, module);
+        let func_val = read_indirect_callee(ctx, func, ecx, module);
         emit_indirect_call(ctx, func_val, &arg_vals, destination, table, module)
     };
 
@@ -282,6 +282,20 @@ fn emit_call<M: Module>(
 
     let target_block = ctx.clif_block(target);
     ctx.builder.ins().jump(target_block, &[]);
+}
+
+fn read_indirect_callee<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    func: &Operand,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+) -> Option<Value> {
+    match func {
+        Operand::Copy(place) | Operand::Move(place) => {
+            Some(emit_rvalue::emit_place_read(ctx, place, ecx.table, module))
+        }
+        Operand::Constant(_) => emit_rvalue::emit_operand(ctx, func, ecx, module),
+    }
 }
 
 /// Resolves an [`Intrinsic`] from a function operand.
@@ -1377,6 +1391,21 @@ fn emit_builtin_method<M: Module>(
         }
         spark_mir::Operand::Constant(_) => ctx.builder.ins().iconst(ctx.ptr_type, 0),
     };
+
+    if method_name == kw::TO_LIST && matches!(stripped_ty, Ty::Map(..)) {
+        let list = super::emit_iterable::emit_hash_snapshot(
+            ctx,
+            ctx.stubs.map_next,
+            recv_ptr,
+            destination.local,
+            ecx,
+            module,
+        );
+        ctx.write_local(destination.local, list);
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    }
 
     // Helper: get the recv local for write-back after COW
     let recv_local = match &args[0] {

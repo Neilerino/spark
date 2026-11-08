@@ -961,27 +961,34 @@ fn emit_aggregate<M: Module>(
             let dest_ty = ctx.local_type_id(dest_local);
             let (_, unwrapped) = clif_types::unwrap_mutable(dest_ty, table);
 
-            if let Ty::Tuple(elem_types) = unwrapped {
-                let elem_types = elem_types.clone();
-                let mut offset = 0u32;
-                let mut max_align = 1u32;
-
-                for (i, operand) in operands.iter().enumerate() {
-                    if i < elem_types.len() {
-                        let elem_layout = ctx.layouts.layout_of(elem_types[i], table);
-                        offset = align_to(offset, elem_layout.align);
-
-                        if let Some(val) = emit_operand(ctx, operand, ecx, module) {
-                            ctx.store(val, dest_addr, i32::try_from(offset).unwrap_or(0));
+            if let Ty::Tuple(fields) = unwrapped {
+                for (index, (operand, &ty)) in operands.iter().zip(fields).enumerate() {
+                    let layout = ctx.layouts.layout_of(ty, table);
+                    if layout.size == 0 {
+                        continue;
+                    }
+                    let offset = ctx.layouts.tuple_field_offset(fields, index, table);
+                    if let Some(value) = emit_operand(ctx, operand, ecx, module) {
+                        let field = ctx.builder.ins().iadd_imm(dest_addr, i64::from(offset));
+                        if abi::is_scalar(ty, table) {
+                            ctx.store(value, field, 0);
+                        } else {
+                            ctx.builder.emit_small_memory_copy(
+                                module.target_config(),
+                                field,
+                                value,
+                                u64::from(layout.size),
+                                1,
+                                1,
+                                true,
+                                MemFlags::new(),
+                            );
                         }
-
-                        offset += elem_layout.size;
-                        max_align = max_align.max(elem_layout.align);
                     }
                 }
             }
 
-            Some(dest_addr)
+            None
         }
 
         AggregateKind::List => emit_list_construction(ctx, operands, dest_local, ecx, module),
@@ -1141,7 +1148,7 @@ fn emit_set_construction<M: Module>(
     Some(set_ptr)
 }
 
-fn emit_value_desc<M: Module>(
+pub(super) fn emit_value_desc<M: Module>(
     ctx: &mut FunctionContext<'_>,
     elem_ty: TypeId,
     ecx: &EmitCtx<'_>,
