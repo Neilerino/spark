@@ -888,6 +888,47 @@ fn set_string_elements_balance_ownership() {
 }
 
 #[test]
+fn tuple_value_equality() {
+    let fixture = "run-pass/collections/tuple_value_equality.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout, "true\nfalse\nfalse\ntrue\ntrue\ntrue\ntrue\ntrue\n4\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn tuple_value_equality_balances_nested_owners() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\n         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/collections/tuple_value_equality_ownership.spark"),
+        "true\nfalse\ntrue\nfalse\nfalse\ntrue\n0\n0",
+    );
+}
+
+#[test]
+fn tuple_value_equality_rejects_unsupported_fields_and_ordering() {
+    let fixture = "compile-fail/type_errors/unsupported_tuple_comparison.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_ne!(result.exit_code, 0, "{fixture} {args:?}");
+        for diagnostic in [
+            "tuple ordering is not supported",
+            "tuple equality requires matching supported field types",
+        ] {
+            assert!(
+                result.stderr.contains(diagnostic),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
 fn tuple_ownership_balances_nested_fields() {
     assert_native_ownership_fixture(
         "#include <stddef.h>\n#include <stdint.h>\n\

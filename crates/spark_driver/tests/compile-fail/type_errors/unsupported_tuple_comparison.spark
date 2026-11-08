@@ -1,0 +1,9 @@
+fn main(): Int {
+    left: Tup[Int, Int] = (1, 2)
+    right: Tup[Int, Int] = (1, 3)
+    print(left < right)
+    values: List[Int] = [1]
+    nested: Tup[Int, List[Int]] = (2, values)
+    print(nested == nested)
+    return 0
+}

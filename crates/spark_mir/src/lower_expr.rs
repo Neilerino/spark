@@ -68,8 +68,42 @@ pub fn lower_expr(
 
         // ── Operators ────────────────────────────────────────────
         HirExprKind::BinaryOp { op, lhs, rhs } => {
-            let lhs_local = lower_expr(lhs, fb, mir, type_table, defs);
-            let rhs_local = lower_expr(rhs, fb, mir, type_table, defs);
+            let scoped = matches!(op, spark_ast::BinaryOp::Eq | spark_ast::BinaryOp::Ne)
+                && [lhs, rhs].iter().any(|operand| {
+                    matches!(
+                        type_table.resolve(unwrap_type_wrappers(operand.ty, type_table)),
+                        Ty::Tuple(_)
+                    )
+                });
+            if scoped {
+                fb.push_scope();
+            }
+            let mut lower_operand = |operand: &HirExpr| {
+                let local = lower_expr(operand, fb, mir, type_table, defs);
+                if !scoped {
+                    return Some(local);
+                }
+                if fb.is_terminated() {
+                    return None;
+                }
+                stage_collection_value(fb, local, operand.ty, operand.span, type_table)
+            };
+            let operands =
+                lower_operand(lhs).and_then(|left| lower_operand(rhs).map(|right| (left, right)));
+            let Some((lhs_local, rhs_local)) = operands else {
+                if fb.is_terminated() {
+                    fb.pop_finished_scope();
+                } else {
+                    mir.diagnostics.push(
+                        Diagnostic::error(
+                            "comparison operand has incompatible storage after lowering",
+                        )
+                        .with_label(Label::primary(expr.span, "unsupported comparison layout")),
+                    );
+                    fb.pop_scope_drops(None, expr.span);
+                }
+                return void_temp(fb, expr);
+            };
             let temp = fb.fresh_temp(expr.ty, expr.span);
             fb.push_assign(
                 Place::from_local(temp),
@@ -80,6 +114,9 @@ pub fn lower_expr(
                 ),
                 expr.span,
             );
+            if scoped {
+                fb.pop_scope_drops(None, expr.span);
+            }
             temp
         }
 

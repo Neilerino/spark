@@ -1,25 +1,13 @@
 //! Strength reduction for signed division and remainder by positive powers of two.
 
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use spark_ast::BinaryOp;
 use spark_mir::{Constant, Local, LocalDecl, MirFunction, Operand, Place, Rvalue, Statement};
 use spark_span::Span;
 use spark_types::{IntWidth, Ty, TypeId, TypeTable};
 
 pub(crate) fn reduce_signed_divrem(func: &mut MirFunction, table: &TypeTable) -> bool {
-    // Indirect writes can change an address-taken local without reassigning it.
-    let borrowed: FxHashSet<_> = func
-        .blocks
-        .iter()
-        .flat_map(|block| &block.statements)
-        .filter_map(|statement| match statement {
-            Statement::Assign {
-                rvalue: Rvalue::Ref { place, .. },
-                ..
-            } => Some(place.local),
-            _ => None,
-        })
-        .collect();
+    let borrowed = super::address_taken_locals(func);
 
     let mut changed = false;
     for block in &mut func.blocks {
