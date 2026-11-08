@@ -1,0 +1,12 @@
+fn produce(): List[Ref[Int]] {
+    first: Int = 1
+    borrowed: Ref[Int] = first
+    values: List[Ref[Int]]! = [borrowed]
+    replacement: Int = 9
+    values[0] = replacement
+    return values
+}
+
+fn main(): Int {
+    return produce().len()
+}

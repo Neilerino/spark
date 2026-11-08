@@ -81,6 +81,32 @@ fn validate_block(
                     }
                 }
             }
+            Statement::IndexedAssign {
+                root,
+                indices,
+                value,
+                ..
+            } => {
+                if indices.is_empty() {
+                    errors.push(format!(
+                        "DefId({func_id})/{block_id}/stmt[{stmt_idx}]: indexed assignment requires an index"
+                    ));
+                }
+                for &local in std::iter::once(root)
+                    .chain(indices)
+                    .chain(std::iter::once(value))
+                {
+                    check_place(
+                        &Place::from_local(local),
+                        num_locals,
+                        func_id,
+                        block_id,
+                        stmt_idx,
+                        "indexed assignment operand",
+                        errors,
+                    );
+                }
+            }
             Statement::Drop { place, .. } => {
                 check_place(
                     place, num_locals, func_id, block_id, stmt_idx, "drop", errors,

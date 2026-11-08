@@ -812,7 +812,7 @@ fn check_map_literal(
         let slot = *value_slot.get_or_insert(value);
         if value.is_error() || slot.is_error() {
             valid = false;
-        } else if map_value_coercion(value, slot, ctx.table).is_none() {
+        } else if collection_value_coercion(value, slot, ctx.table).is_none() {
             let expected = type_name(slot, ctx.table, ctx.definitions);
             let actual = type_name(value, ctx.table, ctx.definitions);
             ctx.diagnostics
@@ -862,9 +862,9 @@ fn check_map_literal(
     }
 }
 
-/// A conversion materialized before a value enters a map slot.
+/// A conversion materialized before a value enters a collection slot.
 #[derive(Clone, Copy, Debug)]
-pub enum MapValueCoercion {
+pub enum CollectionValueCoercion {
     /// The source already has the slot layout.
     Identity,
     /// HIR inserts a borrow or dereferences to the slot value type.
@@ -873,17 +873,17 @@ pub enum MapValueCoercion {
     Tagged(TypeId),
 }
 
-/// Determines which conversion, if any, can materialize the map value slot.
+/// Determines which conversion, if any, can materialize the collection value slot.
 #[must_use]
-pub fn map_value_coercion(
+pub fn collection_value_coercion(
     actual: TypeId,
     expected: TypeId,
     table: &TypeTable,
-) -> Option<MapValueCoercion> {
+) -> Option<CollectionValueCoercion> {
     let actual = strip_mutable(actual, table);
     let expected = strip_mutable(expected, table);
     if actual == expected {
-        return Some(MapValueCoercion::Identity);
+        return Some(CollectionValueCoercion::Identity);
     }
 
     match (table.resolve(actual), table.resolve(expected)) {
@@ -899,21 +899,21 @@ pub fn map_value_coercion(
                 ..
             },
         ) if collection_slot_matches(*source, *target, table) && (!target_mut || *source_mut) => {
-            Some(MapValueCoercion::Identity)
+            Some(CollectionValueCoercion::Identity)
         }
         (Ty::Ref { .. }, Ty::Ref { .. }) => None,
-        (Ty::Null, Ty::Optional(_)) => Some(MapValueCoercion::Tagged(actual)),
+        (Ty::Null, Ty::Optional(_)) => Some(CollectionValueCoercion::Tagged(actual)),
         (_, Ty::Optional(inner)) if collection_slot_matches(actual, *inner, table) => {
-            Some(MapValueCoercion::Tagged(*inner))
+            Some(CollectionValueCoercion::Tagged(*inner))
         }
         (_, Ty::Union(members)) if members.contains(&actual) => {
-            Some(MapValueCoercion::Tagged(actual))
+            Some(CollectionValueCoercion::Tagged(actual))
         }
         (_, Ty::Ref { inner, .. }) if collection_slot_matches(actual, *inner, table) => {
-            Some(MapValueCoercion::Reference)
+            Some(CollectionValueCoercion::Reference)
         }
         (Ty::Ref { .. }, _) if reference_base(actual, table).0 == expected => {
-            Some(MapValueCoercion::Reference)
+            Some(CollectionValueCoercion::Reference)
         }
         _ => None,
     }
@@ -2394,7 +2394,7 @@ fn check_list_method(
     }
 }
 
-fn check_collection_argument(
+pub(crate) fn check_collection_argument(
     actual: TypeId,
     expected: TypeId,
     span: Span,

@@ -1,0 +1,34 @@
+link "union_probe"
+
+extern fn probe_list_rc(values: Ref[List[Int]]): Int
+
+fn try_write(value: List[Int], index: Int?): Int? {
+    items: List[List[Int]]! = [[1]]
+    items[index!] = value
+    return 1
+}
+
+fn main(): Int {
+    old: List[Int] = [4]
+    incoming: List[Int] = [9]
+    old_count: Int = probe_list_rc(old)
+    incoming_count: Int = probe_list_rc(incoming)
+    {
+        items: List[List[Int]]! = [old]
+        print(probe_list_rc(old) - old_count)
+        items[0] = incoming
+        print(probe_list_rc(old) - old_count)
+        print(probe_list_rc(incoming) - incoming_count)
+        items[0] = items[0] ?? [0]
+        print(probe_list_rc(incoming) - incoming_count)
+        print((items[0] ?? [0])[0] ?? -1)
+    }
+    print(probe_list_rc(incoming) - incoming_count)
+    missing: Int? = Null
+    result: Int? = try_write(incoming, missing)
+    if result is Null {
+        print("early exit")
+    }
+    print(probe_list_rc(incoming) - incoming_count)
+    return 0
+}

@@ -5,8 +5,12 @@
 
 use spark_ast::{Expr, ExprKind, Stmt, StmtKind};
 use spark_diagnostics::{Diagnostic, Label};
+use spark_resolve::DefinitionKind;
 
-use crate::check_expr::{check_expr, check_expr_expected, is_compatible, strip_mutable, strip_ref};
+use crate::check_expr::{
+    check_collection_argument, check_expr, check_expr_expected, collection_value_coercion,
+    is_compatible, strip_mutable, strip_ref,
+};
 use crate::ctx::TypeCheckCtx;
 use crate::display::display_type as type_name;
 use crate::lower::lower_type_expr;
@@ -54,41 +58,20 @@ pub fn check_stmt(stmt: &Stmt, ctx: &mut TypeCheckCtx<'_>, current_fn_ret: Optio
         }
 
         StmtKind::Assign { target, value } => {
-            let target_ty = check_expr(target, ctx, current_fn_ret);
-            let value_ty = check_expr(value, ctx, current_fn_ret);
-
-            // Target must be mutable
-            if !target_ty.is_error() && !matches!(ctx.table.resolve(target_ty), Ty::Mutable(_)) {
-                ctx.diagnostics.push(
-                    Diagnostic::error("cannot assign to immutable variable").with_label(
-                        Label::primary(
-                            target.span,
-                            "not mutable (declare with `Type!` for mutability)",
-                        ),
-                    ),
-                );
-            }
-
-            // Check type compatibility (strip mutable wrapper for comparison)
-            let inner_ty = if let Ty::Mutable(inner) = ctx.table.resolve(target_ty) {
-                *inner
-            } else {
-                target_ty
-            };
-
-            if !is_compatible(value_ty, inner_ty, ctx.table) {
-                let expected = type_name(inner_ty, ctx.table, ctx.definitions);
-                let found = type_name(value_ty, ctx.table, ctx.definitions);
-                ctx.diagnostics.push(
-                    Diagnostic::error(format!(
-                        "assignment type mismatch: expected `{expected}`, found `{found}`"
-                    ))
-                    .with_label(Label::primary(value.span, format!("expected `{expected}`"))),
-                );
-            }
+            check_assignment(target, value, ctx, current_fn_ret);
         }
 
         StmtKind::CompoundAssign { target, op, value } => {
+            let (root, indices) = target.index_path();
+            if !indices.is_empty() {
+                check_index_target(root, &indices, ctx, current_fn_ret);
+                check_expr(value, ctx, current_fn_ret);
+                ctx.diagnostics.push(
+                    Diagnostic::error("indexed compound assignment is unsupported")
+                        .with_label(Label::primary(target.span, "use plain indexed assignment")),
+                );
+                return;
+            }
             let target_ty = check_expr(target, ctx, current_fn_ret);
             let value_ty = check_expr(value, ctx, current_fn_ret);
 
@@ -140,6 +123,148 @@ pub fn check_stmt(stmt: &Stmt, ctx: &mut TypeCheckCtx<'_>, current_fn_ret: Optio
         StmtKind::Expr(expr) => {
             let _ = check_expr(expr, ctx, current_fn_ret);
         }
+    }
+}
+
+fn check_assignment(
+    target: &Expr,
+    value: &Expr,
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+) {
+    let (root, indices) = target.index_path();
+    if !indices.is_empty() {
+        let slot = check_index_target(root, &indices, ctx, current_fn_ret);
+        ctx.table.set_expr_type(target.id, slot);
+        let actual = check_expr_expected(value, ctx, current_fn_ret, Some(slot));
+        if !actual.is_error()
+            && !slot.is_error()
+            && !matches!(ctx.table.resolve(actual), Ty::Never)
+            && collection_value_coercion(actual, slot, ctx.table).is_none()
+        {
+            let expected = type_name(slot, ctx.table, ctx.definitions);
+            let found = type_name(actual, ctx.table, ctx.definitions);
+            ctx.diagnostics.push(
+                Diagnostic::error(format!(
+                    "assignment type mismatch: expected `{expected}`, found `{found}`"
+                ))
+                .with_label(Label::primary(value.span, format!("expected `{expected}`"))),
+            );
+        }
+        return;
+    }
+    let target_ty = check_expr(target, ctx, current_fn_ret);
+    let value_ty = check_expr(value, ctx, current_fn_ret);
+
+    // Target must be mutable
+    if !target_ty.is_error() && !matches!(ctx.table.resolve(target_ty), Ty::Mutable(_)) {
+        ctx.diagnostics.push(
+            Diagnostic::error("cannot assign to immutable variable").with_label(Label::primary(
+                target.span,
+                "not mutable (declare with `Type!` for mutability)",
+            )),
+        );
+    }
+
+    // Check type compatibility (strip mutable wrapper for comparison)
+    let inner_ty = if let Ty::Mutable(inner) = ctx.table.resolve(target_ty) {
+        *inner
+    } else {
+        target_ty
+    };
+
+    if !is_compatible(value_ty, inner_ty, ctx.table) {
+        let expected = type_name(inner_ty, ctx.table, ctx.definitions);
+        let found = type_name(value_ty, ctx.table, ctx.definitions);
+        ctx.diagnostics.push(
+            Diagnostic::error(format!(
+                "assignment type mismatch: expected `{expected}`, found `{found}`"
+            ))
+            .with_label(Label::primary(value.span, format!("expected `{expected}`"))),
+        );
+    }
+}
+
+fn check_index_target(
+    root: &Expr,
+    indices: &[&Expr],
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let root_ty = check_expr(root, ctx, current_fn_ret);
+    let mut slot = match ctx.table.resolve(root_ty) {
+        Ty::Mutable(inner) if is_binding_place(root, ctx) => *inner,
+        Ty::Mutable(_) => {
+            ctx.diagnostics.push(
+                Diagnostic::error("indexed assignment requires a mutable binding").with_label(
+                    Label::primary(root.span, "use a local or parameter binding"),
+                ),
+            );
+            TypeId::ERROR
+        }
+        Ty::Error => TypeId::ERROR,
+        _ => {
+            ctx.diagnostics.push(
+                Diagnostic::error("cannot assign to immutable variable").with_label(
+                    Label::primary(root.span, "indexed writes require a mutable place"),
+                ),
+            );
+            TypeId::ERROR
+        }
+    };
+
+    for index in indices {
+        let index_ty = check_expr(index, ctx, current_fn_ret);
+        slot = match ctx.table.resolve(strip_mutable(slot, ctx.table)) {
+            Ty::List(elem) => {
+                let elem = *elem;
+                let resolved = ctx.table.resolve(strip_mutable(index_ty, ctx.table));
+                if !resolved.is_integer() && !matches!(resolved, Ty::Error | Ty::Never) {
+                    ctx.diagnostics.push(
+                        Diagnostic::error("list index must be an integer")
+                            .with_label(Label::primary(index.span, "expected an integer")),
+                    );
+                }
+                elem
+            }
+            Ty::Map(key, _) => {
+                if check_collection_argument(
+                    index_ty,
+                    *key,
+                    index.span,
+                    "map key type mismatch",
+                    ctx,
+                ) {
+                    ctx.diagnostics.push(
+                        Diagnostic::error("map indexed assignment is unsupported")
+                            .with_label(Label::primary(index.span, "cannot write this map entry")),
+                    );
+                }
+                TypeId::ERROR
+            }
+            Ty::Error => TypeId::ERROR,
+            _ => {
+                ctx.diagnostics.push(
+                    Diagnostic::error("type is not indexable")
+                        .with_label(Label::primary(index.span, "expected a list")),
+                );
+                TypeId::ERROR
+            }
+        };
+    }
+    strip_mutable(slot, ctx.table)
+}
+
+fn is_binding_place(expr: &Expr, ctx: &TypeCheckCtx<'_>) -> bool {
+    match &expr.kind {
+        ExprKind::Ident(ident) => ctx
+            .resolutions
+            .and_then(|resolutions| resolutions.get_ident(ident.span))
+            .and_then(|id| ctx.definitions.get(id))
+            .is_some_and(|info| {
+                matches!(info.kind, DefinitionKind::Local | DefinitionKind::Parameter)
+            }),
+        _ => false,
     }
 }
 

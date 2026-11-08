@@ -1,13 +1,13 @@
 //! Statement lowering: MIR statements → Cranelift IR.
-//!
-//! Handles `Assign`, `Drop`, and `Nop` statements.
 
-use cranelift_codegen::ir::{InstBuilder, MemFlags};
+use cranelift_codegen::ir::{types, InstBuilder, MemFlags};
 use cranelift_module::Module;
 use spark_diagnostics::Diagnostics;
-use spark_mir::Statement;
+use spark_mir::{Local, Operand, Place, Statement};
+use spark_types::ty::Ty;
 use spark_types::TypeTable;
 
+use super::clif_types;
 use super::context::{EmitCtx, FunctionContext, LocalStorage};
 use super::drop_glue;
 use super::emit_rvalue;
@@ -104,11 +104,88 @@ pub fn emit_statement<M: Module>(
             }
         }
 
+        Statement::IndexedAssign {
+            root,
+            indices,
+            value,
+            ..
+        } => {
+            emit_indexed_assign(ctx, *root, indices, *value, ecx, module);
+        }
+
         Statement::Drop { place, span: _ } => {
             emit_drop(ctx, place, table, module);
         }
 
         Statement::Nop => {}
+    }
+}
+
+fn emit_indexed_assign<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    root: Local,
+    indices: &[Local],
+    value: Local,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+) {
+    let original = ctx.read_local(root);
+    let indices: Vec<_> = indices
+        .iter()
+        .map(|&local| {
+            let index = ctx.read_local(local);
+            let (_, Ty::Int(width)) =
+                clif_types::unwrap_mutable(ctx.local_type_id(local), ecx.table)
+            else {
+                unreachable!("list write requires an integer index");
+            };
+            let signed = crate::abi::int_is_signed(*width);
+            let index = if ctx.builder.func.dfg.value_type(index) == types::I64 {
+                index
+            } else if signed {
+                ctx.builder.ins().sextend(types::I64, index)
+            } else {
+                ctx.builder.ins().uextend(types::I64, index)
+            };
+            let signed = ctx.builder.ins().iconst(types::I8, i64::from(signed));
+            (index, signed)
+        })
+        .collect();
+
+    let checked_slot = module.declare_func_in_func(ctx.stubs.list_write_slot, ctx.builder.func);
+    let mut list = original;
+    for (offset, &(index, signed)) in indices.iter().enumerate() {
+        let call = ctx.builder.ins().call(checked_slot, &[list, index, signed]);
+        if offset + 1 < indices.len() {
+            list = ctx.load(ctx.ptr_type, ctx.builder.inst_results(call)[0], 0);
+        }
+    }
+
+    let cow = module.declare_func_in_func(ctx.stubs.list_cow, ctx.builder.func);
+    let mut owner = None;
+    list = original;
+    for (offset, &(index, signed)) in indices.iter().enumerate() {
+        let call = ctx.builder.ins().call(cow, &[list]);
+        list = ctx.builder.inst_results(call)[0];
+        if let Some(slot) = owner {
+            ctx.builder.ins().store(MemFlags::new(), list, slot, 0);
+        } else {
+            ctx.write_local(root, list);
+        }
+
+        let call = ctx.builder.ins().call(checked_slot, &[list, index, signed]);
+        let slot = ctx.builder.inst_results(call)[0];
+        if offset + 1 == indices.len() {
+            let operand = Operand::Move(Place::from_local(value));
+            let value_ty = ctx.local_type_id(value);
+            let address = emit_rvalue::emit_operand_addr(ctx, &operand, value_ty, ecx, module)
+                .unwrap_or_else(|| ctx.builder.ins().iconst(ctx.ptr_type, 0));
+            let replace = module.declare_func_in_func(ctx.stubs.list_replace, ctx.builder.func);
+            ctx.builder.ins().call(replace, &[list, slot, address]);
+        } else {
+            owner = Some(slot);
+            list = ctx.load(ctx.ptr_type, slot, 0);
+        }
     }
 }
 

@@ -64,6 +64,25 @@ impl Expr {
         }
     }
 
+    /// Splits a bracket access into its root and indices in source order.
+    #[must_use]
+    pub fn index_path(&self) -> (&Self, Vec<&Self>) {
+        let mut root = self;
+        let mut indices = Vec::new();
+        loop {
+            match &root.kind {
+                ExprKind::Paren(inner) => root = inner,
+                ExprKind::Index { base, index } => {
+                    indices.push(index.as_ref());
+                    root = base;
+                }
+                _ => break,
+            }
+        }
+        indices.reverse();
+        (root, indices)
+    }
+
     /// Creates an error expression for recovery.
     #[must_use]
     pub fn error(span: Span) -> Self {

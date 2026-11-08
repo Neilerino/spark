@@ -306,8 +306,6 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
         }
 
         ExprKind::Map(entries) => {
-            use spark_types::check_expr::{map_value_coercion, MapValueCoercion};
-
             let ty = expr_type(expr.id, ctx.table);
             let Ty::Map(_, slot) = ctx.table.resolve(ty) else {
                 return HirExprKind::Error;
@@ -318,13 +316,7 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
                     .iter()
                     .map(|entry| {
                         let key = lower_expr(&entry.key, ctx);
-                        let mut value = lower_expr(&entry.value, ctx);
-                        if matches!(
-                            map_value_coercion(value.ty, slot, ctx.table),
-                            Some(MapValueCoercion::Reference)
-                        ) {
-                            value = coerce_ref(value, slot, entry.value.span, ctx.table);
-                        }
+                        let value = lower_collection_value(&entry.value, slot, ctx);
                         (key, value)
                     })
                     .collect(),
@@ -1355,6 +1347,20 @@ fn extract_fn_ret_ty(ty: TypeId, table: &TypeTable, default: TypeId) -> TypeId {
     match table.resolve(ty) {
         Ty::Function { ret, .. } => *ret,
         _ => default,
+    }
+}
+
+pub(crate) fn lower_collection_value(expr: &Expr, slot: TypeId, ctx: &mut LowerCtx<'_>) -> HirExpr {
+    use spark_types::check_expr::{collection_value_coercion, CollectionValueCoercion};
+
+    let value = lower_expr(expr, ctx);
+    if matches!(
+        collection_value_coercion(value.ty, slot, ctx.table),
+        Some(CollectionValueCoercion::Reference)
+    ) {
+        coerce_ref(value, slot, expr.span, ctx.table)
+    } else {
+        value
     }
 }
 

@@ -1,0 +1,14 @@
+async fn position(): Int {
+    return 1
+}
+
+async fn update(): Int {
+    items: List[Int]! = [4, 5]
+    items[await position()] = 9
+    return items[1] ?? -1
+}
+
+fn main(): Int {
+    print(await update())
+    return 0
+}

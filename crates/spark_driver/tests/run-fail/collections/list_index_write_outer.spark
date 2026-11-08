@@ -1,0 +1,5 @@
+fn main(): Int {
+    items: List[List[Int]]! = [[1]]
+    items[1][0] = 3
+    return 0
+}

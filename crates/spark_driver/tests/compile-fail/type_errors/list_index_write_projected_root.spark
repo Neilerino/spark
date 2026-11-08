@@ -1,0 +1,9 @@
+struct Box {
+    items: List[Int]!,
+}
+
+fn main(): Int {
+    boxed: Box! = Box { items: [1] }
+    boxed.items[0] = 2
+    return 0
+}

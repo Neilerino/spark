@@ -1,0 +1,10 @@
+alias RefOrString = Ref[Int] | String
+
+fn main(): Int {
+    number: Int = 8
+    borrowed: Ref[Int] = number
+    text: RefOrString = "old"
+    values: List[RefOrString]! = [text]
+    values[0] = borrowed
+    return 0
+}

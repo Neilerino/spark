@@ -92,6 +92,18 @@ impl PrettyPrinter<'_> {
                 let _ = write!(self.out, "{place} = ");
                 self.print_rvalue(rvalue);
             }
+            Statement::IndexedAssign {
+                root,
+                indices,
+                value,
+                ..
+            } => {
+                let _ = write!(self.out, "{root}");
+                for index in indices {
+                    let _ = write!(self.out, "[{index}]");
+                }
+                let _ = write!(self.out, " = move {value}");
+            }
             Statement::Drop { place, .. } => {
                 let _ = write!(self.out, "drop({place})");
             }

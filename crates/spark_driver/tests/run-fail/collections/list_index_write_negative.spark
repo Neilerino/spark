@@ -1,0 +1,6 @@
+fn main(): Int {
+    items: List[Int]! = [1]
+    index: Int8 = (-2) as Int8
+    items[index] = 3
+    return 0
+}

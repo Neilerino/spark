@@ -196,6 +196,19 @@ fn extract_statement_facts(
             // Record uses from place projections.
             collect_place_uses(place, point, facts);
         }
+        Statement::IndexedAssign {
+            root,
+            indices,
+            value,
+            ..
+        } => {
+            facts.uses.push((point, *root));
+            facts
+                .uses
+                .extend(indices.iter().map(|&index| (point, index)));
+            facts.uses.push((point, *value));
+            facts.moves.push((point, *value));
+        }
         Statement::Drop { place, .. } => {
             facts.uses.push((point, place.local));
         }

@@ -177,6 +177,17 @@ pub enum Statement {
         /// Source span.
         span: Span,
     },
+    /// Replace an element through a checked collection path, consuming the staged value.
+    IndexedAssign {
+        /// Collection owner, read and updated by copy-on-write.
+        root: Local,
+        /// Staged indices in source order.
+        indices: Vec<Local>,
+        /// Staged value transferred to the destination slot.
+        value: Local,
+        /// Source span.
+        span: Span,
+    },
     /// Drop the value at a place.
     Drop {
         /// The place to drop.

@@ -101,6 +101,7 @@ pub fn check(input: BorrowInput) -> BorrowOutput {
     let mut diagnostics = Diagnostics::new();
 
     for func in mir.functions.values() {
+        check::check_indexed_write_storage(func, &table, &mut diagnostics);
         // Skip functions that don't use Ref types (optimization).
         if !function_uses_refs(func, &table) {
             continue;

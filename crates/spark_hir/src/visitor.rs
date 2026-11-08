@@ -249,6 +249,18 @@ pub fn walk_stmt<V: HirVisitor>(v: &mut V, stmt: &HirStmt) {
             v.visit_expr(target);
             v.visit_expr(value);
         }
+        HirStmt::IndexedAssign {
+            root,
+            indices,
+            value,
+            ..
+        } => {
+            v.visit_expr(root);
+            for index in indices {
+                v.visit_expr(index);
+            }
+            v.visit_expr(value);
+        }
         HirStmt::Expr(e) => v.visit_expr(e),
     }
 }
@@ -514,6 +526,18 @@ pub fn walk_stmt_mut<V: HirMutVisitor>(v: &mut V, stmt: &mut HirStmt) {
         HirStmt::Let { value, .. } => v.visit_expr_mut(value),
         HirStmt::Assign { target, value } => {
             v.visit_expr_mut(target);
+            v.visit_expr_mut(value);
+        }
+        HirStmt::IndexedAssign {
+            root,
+            indices,
+            value,
+            ..
+        } => {
+            v.visit_expr_mut(root);
+            for index in indices {
+                v.visit_expr_mut(index);
+            }
             v.visit_expr_mut(value);
         }
         HirStmt::Expr(e) => v.visit_expr_mut(e),
