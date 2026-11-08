@@ -66,6 +66,7 @@ fn check_expr_inner(
                 for part in &s.parts {
                     if let StringPart::Interpolation(sub_expr) = part {
                         let sub_ty = check_expr(sub_expr, ctx, current_fn_ret);
+                        // TAG [SPARK-118]
                         // Verify the type supports string conversion.
                         let resolved = ctx.table.resolve(sub_ty);
                         let ok = matches!(
@@ -809,7 +810,7 @@ fn check_map_literal(
     let key = key_slot.unwrap_or(TypeId::ERROR);
     let value = value_slot.unwrap_or(TypeId::ERROR);
     if let Some(first) = entries.first() {
-        if !key.is_error() && !is_supported_map_key(key, ctx.table) {
+        if !key.is_error() && !is_supported_hash_slot(key, ctx.table) {
             ctx.diagnostics.push(
                 Diagnostic::error("map literal keys must be integers or strings")
                     .with_label(Label::primary(first.key.span, "unsupported map key type")),
@@ -877,17 +878,17 @@ pub(crate) fn check_set_element_type(ty: TypeId, span: Span, ctx: &mut TypeCheck
     if ty.is_error() {
         return false;
     }
-    if ctx.table.resolve(strip_mutable(ty, ctx.table)).is_integer() {
+    if is_supported_hash_slot(ty, ctx.table) {
         return true;
     }
     ctx.diagnostics.push(
-        Diagnostic::error("set construction requires integer elements")
+        Diagnostic::error("set construction requires integer or string elements")
             .with_label(Label::primary(span, "unsupported set element type")),
     );
     false
 }
 
-pub(crate) fn is_supported_map_key(key: TypeId, table: &TypeTable) -> bool {
+pub(crate) fn is_supported_hash_slot(key: TypeId, table: &TypeTable) -> bool {
     matches!(
         table.resolve(strip_mutable(key, table)),
         Ty::Int(_) | Ty::String

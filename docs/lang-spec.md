@@ -410,10 +410,20 @@ ages["charlie"] = 36
 
 #### Set[T]
 
-Unique values, unordered. Arguments to `contains`, `add`, and `remove`
-must match the declared element type.
+Unique values, unordered. Set construction supports integers and strings.
+Strings compare by contents. Arguments to `contains`, `add`, and `remove`
+must match the declared element type. Mutation requires a mutable local or
+parameter binding.
+
+Use `{}` in an explicitly typed set binding to construct an empty set.
+A comma makes a nonempty set literal, with an optional trailing comma.
+A single value in braces can initialize an explicitly typed set when it
+matches the element type. Use `{value,}` for a singleton in other expression
+contexts. Elements are evaluated once in source order. Equal elements occupy
+a single slot.
 
 ```
+seen: Set[Int]! = {}
 tags: Set[String] = {"rust", "python", "go"}
 hasPython: Bool = tags.contains("python")
 

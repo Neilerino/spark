@@ -809,6 +809,31 @@ fn set_literal_integer_rejects_incompatible_elements() {
 }
 
 #[test]
+fn set_string_elements() {
+    let fixture = "run-pass/collections/set_string_elements.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout,
+            "0\n1\ntrue\nfalse\nfalse\ntrue\n2\ntrue\ntrue\n1\ntrue\n25\ntrue\nfalse\n24\n"
+        );
+    }
+}
+
+#[test]
+fn set_string_elements_balance_ownership() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         static int64_t count(const void *const *slot) { return *(const size_t *)*slot; }\n\
+         int64_t probe_string_rc(const void *const *slot) { return count(slot); }\n\
+         int64_t probe_set_rc(const void *const *slot) { return count(slot); }\n",
+        include_str!("run-pass/collections/set_string_ownership.spark"),
+        "1\n0\ntrue\ntrue\n1\n0\nfalse\ntrue\n1\n0\n1\n1\ntrue\n0\n0\n0\n1\n1\n0\n0\n0\n99\n0",
+    );
+}
+
+#[test]
 fn map_index_write_inserts_and_replaces() {
     let fixture = "run-pass/collections/map_index_write.spark";
     for args in [&[][..], &["--no-opt"][..]] {
