@@ -1,0 +1,4 @@
+fn main(): Int {
+    seen: Set[UInt8] = {1 as UInt8, 2}
+    return seen.len()
+}

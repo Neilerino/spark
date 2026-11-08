@@ -1273,6 +1273,9 @@ impl Parser {
             if self.check(TokenKind::Colon) {
                 return self.parse_map_literal(start, expr);
             }
+            if self.check(TokenKind::Comma) {
+                return self.parse_set_literal(start, expr);
+            }
             Some((pos_before, self.finish_stmt_or_expr(expr)))
         };
         let block = self.parse_block_items(inner_start, first);
@@ -1313,10 +1316,10 @@ impl Parser {
                 entries.push(MapEntry::new(key, value, entry_span));
                 if !self.check_any(&[TokenKind::Comma, TokenKind::RBrace, TokenKind::Eof]) {
                     self.error_expected("',' or '}'");
-                    self.recover_map_entry();
+                    self.recover_braced_entry();
                 }
             } else {
-                self.recover_map_entry();
+                self.recover_braced_entry();
             }
 
             if self.eat(TokenKind::Comma).is_none() {
@@ -1328,7 +1331,28 @@ impl Parser {
         Expr::new(ExprKind::Map(entries), self.span_from(start))
     }
 
-    fn recover_map_entry(&mut self) {
+    fn parse_set_literal(&mut self, start: Span, first: Expr) -> Expr {
+        let mut elements = vec![first];
+        while self.eat(TokenKind::Comma).is_some() {
+            if self.check_any(&[TokenKind::RBrace, TokenKind::Eof]) {
+                break;
+            }
+            if self.check(TokenKind::Comma) {
+                self.error_expected("set element");
+                continue;
+            }
+
+            elements.push(self.parse_expr());
+            if !self.check_any(&[TokenKind::Comma, TokenKind::RBrace, TokenKind::Eof]) {
+                self.error_expected("',' or '}'");
+                self.recover_braced_entry();
+            }
+        }
+        self.expect(TokenKind::RBrace);
+        Expr::new(ExprKind::Set(elements), self.span_from(start))
+    }
+
+    fn recover_braced_entry(&mut self) {
         let mut depth = 0;
         while !self.at_end() {
             match self.current_kind() {
@@ -1564,6 +1588,32 @@ mod tests {
         let (expr, diagnostics) = parse_expr_str("{1:");
         assert!(diagnostics.has_errors());
         assert!(matches!(expr.kind, ExprKind::Map(_)));
+    }
+
+    #[test]
+    fn set_recovers_after_missing_element() {
+        let (expr, diagnostics) = parse_expr_str("{1, , 2}");
+        assert!(diagnostics.has_errors());
+        assert!(matches!(expr.kind, ExprKind::Set(elements) if elements.len() == 2));
+    }
+
+    #[test]
+    fn set_recovers_at_eof() {
+        let (expr, diagnostics) = parse_expr_str("{1,");
+        assert!(diagnostics.has_errors());
+        assert!(matches!(expr.kind, ExprKind::Set(elements) if elements.len() == 1));
+    }
+
+    #[test]
+    fn set_recovers_before_following_binding() {
+        let (expr, diagnostics) =
+            parse_expr_str("{ broken: Set[Int] = {1, , 2}\nnext: Int = 7\nnext }");
+        assert!(diagnostics.has_errors());
+        let ExprKind::Block(block) = expr.kind else {
+            panic!("expected block");
+        };
+        assert_eq!(block.stmts.len(), 2);
+        assert!(block.expr.is_some());
     }
 
     #[test]

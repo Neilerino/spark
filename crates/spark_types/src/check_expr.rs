@@ -330,27 +330,7 @@ fn check_expr_inner(
 
         ExprKind::Map(entries) => check_map_literal(entries, ctx, current_fn_ret, expected_ty),
 
-        ExprKind::Set(elems) => {
-            let expected_elem = extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
-                Ty::Set(elem) => Some(*elem),
-                _ => None,
-            });
-
-            if elems.is_empty() {
-                ctx.table
-                    .intern(Ty::Set(expected_elem.unwrap_or(TypeId::ERROR)))
-            } else {
-                let first_ty = check_expr_expected(&elems[0], ctx, current_fn_ret, expected_elem);
-                for elem in &elems[1..] {
-                    let _ = check_expr_expected(elem, ctx, current_fn_ret, expected_elem);
-                }
-                ctx.table.intern(Ty::Set(resolve_with_expected(
-                    first_ty,
-                    expected_elem,
-                    ctx.table,
-                )))
-            }
-        }
+        ExprKind::Set(elems) => check_set_literal(elems, ctx, current_fn_ret, expected_ty),
 
         ExprKind::Tuple(elems) => {
             let elem_types: Vec<TypeId> = elems
@@ -855,6 +835,56 @@ fn check_map_literal(
     } else {
         TypeId::ERROR
     }
+}
+
+fn check_set_literal(
+    elements: &[Expr],
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+    expected_ty: Option<TypeId>,
+) -> TypeId {
+    let mut slot = extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
+        Ty::Set(element) => Some(*element),
+        _ => None,
+    });
+    let mut valid = true;
+    for element in elements {
+        let actual = check_expr_expected(element, ctx, current_fn_ret, slot);
+        if actual.is_error() {
+            valid = false;
+        } else if !matches!(ctx.table.resolve(actual), Ty::Never) {
+            let expected = *slot.get_or_insert_with(|| strip_mutable(actual, ctx.table));
+            valid &= check_collection_argument(
+                actual,
+                expected,
+                element.span,
+                "set element type mismatch",
+                ctx,
+            );
+        }
+    }
+    if let (Some(slot), Some(first)) = (slot, elements.first()) {
+        valid &= check_set_element_type(slot, first.span, ctx);
+    }
+    if valid {
+        ctx.table.intern(Ty::Set(slot.unwrap_or(TypeId::ERROR)))
+    } else {
+        TypeId::ERROR
+    }
+}
+
+pub(crate) fn check_set_element_type(ty: TypeId, span: Span, ctx: &mut TypeCheckCtx<'_>) -> bool {
+    if ty.is_error() {
+        return false;
+    }
+    if ctx.table.resolve(strip_mutable(ty, ctx.table)).is_integer() {
+        return true;
+    }
+    ctx.diagnostics.push(
+        Diagnostic::error("set construction requires integer elements")
+            .with_label(Label::primary(span, "unsupported set element type")),
+    );
+    false
 }
 
 pub(crate) fn is_supported_map_key(key: TypeId, table: &TypeTable) -> bool {
