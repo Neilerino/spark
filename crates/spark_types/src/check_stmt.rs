@@ -24,14 +24,7 @@ pub fn check_stmt(stmt: &Stmt, ctx: &mut TypeCheckCtx<'_>, current_fn_ret: Optio
             // Lower the declared type
             let declared_ty = lower_type_expr(ty, ctx);
 
-            let slot_ty = strip_mutable(declared_ty, ctx.table);
-            let value_ty = if matches!(ctx.table.resolve(slot_ty), Ty::Map(..))
-                && type_empty_map_initializer(value, slot_ty, ctx.table)
-            {
-                slot_ty
-            } else {
-                check_expr_expected(value, ctx, current_fn_ret, Some(declared_ty))
-            };
+            let value_ty = check_binding_initializer(value, declared_ty, ctx, current_fn_ret);
 
             // Verify compatibility
             if !is_compatible(value_ty, declared_ty, ctx.table) {
@@ -147,6 +140,22 @@ pub fn check_stmt(stmt: &Stmt, ctx: &mut TypeCheckCtx<'_>, current_fn_ret: Optio
         StmtKind::Expr(expr) => {
             let _ = check_expr(expr, ctx, current_fn_ret);
         }
+    }
+}
+
+fn check_binding_initializer(
+    value: &Expr,
+    declared_ty: TypeId,
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+) -> TypeId {
+    let ty = strip_mutable(declared_ty, ctx.table);
+    if matches!(ctx.table.resolve(ty), Ty::Map(..))
+        && type_empty_map_initializer(value, ty, ctx.table)
+    {
+        ty
+    } else {
+        check_expr_expected(value, ctx, current_fn_ret, Some(declared_ty))
     }
 }
 

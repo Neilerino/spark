@@ -2,6 +2,7 @@ link "union_probe"
 
 extern fn probe_list_rc(values: Ref[List[Int]]): Int
 extern fn probe_string_rc(value: Ref[String]): Int
+extern fn nested_int(): Ref[Ref[Int]]
 
 fn keep(key: String): String {
     return key
@@ -46,5 +47,7 @@ fn main(): Int {
     print(interrupted(needle, values, none) ?? 99)
     print(probe_string_rc(needle) - keyBefore)
     print(probe_list_rc(values) - valueBefore)
+    refs: Map[String, Int] = {"number": nested_int()}
+    print(refs["number"] ?? 0)
     return 0
 }

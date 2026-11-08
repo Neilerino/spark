@@ -863,7 +863,7 @@ fn check_map_literal(
 pub enum MapValueCoercion {
     /// The source already has the slot layout.
     Identity,
-    /// HIR inserts one borrow or dereference.
+    /// HIR inserts a borrow or dereferences to the slot value type.
     Reference,
     /// MIR wraps the source with the tag for this declared member.
     Tagged(TypeId),
@@ -908,7 +908,7 @@ pub fn map_value_coercion(
         (_, Ty::Ref { inner, .. }) if collection_slot_matches(actual, *inner, table) => {
             Some(MapValueCoercion::Reference)
         }
-        (Ty::Ref { inner, .. }, _) if collection_slot_matches(*inner, expected, table) => {
+        (Ty::Ref { .. }, _) if reference_base(actual, table).0 == expected => {
             Some(MapValueCoercion::Reference)
         }
         _ => None,
@@ -1766,26 +1766,28 @@ fn check_cast(actual: TypeId, target: TypeId, span: Span, ctx: &mut TypeCheckCtx
 /// Checks that a cast preserves collection storage through mutable and reference wrappers.
 #[must_use]
 pub fn collection_cast_preserves_layout(actual: TypeId, target: TypeId, table: &TypeTable) -> bool {
-    let referent = |mut ty| {
-        let mut depth = 0;
-        loop {
-            match table.resolve(strip_mutable(ty, table)) {
-                Ty::Ref { inner, .. } => {
-                    depth += 1;
-                    ty = *inner;
-                }
-                resolved => return (resolved, depth),
-            }
-        }
-    };
-    let (actual_ty, actual_depth) = referent(actual);
-    let (target_ty, target_depth) = referent(target);
+    let (actual_base, actual_depth) = reference_base(actual, table);
+    let (target_base, target_depth) = reference_base(target, table);
+    let actual_ty = table.resolve(actual_base);
+    let target_ty = table.resolve(target_base);
     let involves_collection = [actual_ty, target_ty]
         .iter()
         .any(|ty| matches!(ty, Ty::List(_) | Ty::Map(_, _) | Ty::Set(_)));
     !involves_collection
         || (actual_depth == target_depth
             && collection_layout_matches(actual_ty, target_ty, table).unwrap_or(false))
+}
+
+fn reference_base(mut ty: TypeId, table: &TypeTable) -> (TypeId, usize) {
+    let mut depth = 0;
+    loop {
+        ty = strip_mutable(ty, table);
+        let Ty::Ref { inner, .. } = table.resolve(ty) else {
+            return (ty, depth);
+        };
+        depth += 1;
+        ty = *inner;
+    }
 }
 
 fn collection_layout_matches(actual: &Ty, expected: &Ty, table: &TypeTable) -> Option<bool> {

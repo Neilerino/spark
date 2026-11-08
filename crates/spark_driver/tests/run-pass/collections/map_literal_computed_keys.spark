@@ -44,10 +44,10 @@ fn main(): Int {
 
     first: Int = 42
     references: Map[String, Ref[Int]] = {"name": first}
-    if references["name"] is Null {
-        return 1
+    references["name"] to {
+        stored: Ref[Int] -> print(stored),
+        Null -> print("missing")
     }
-    print(references.len())
 
     value: Int! = 2
     fromBlock: Int = {

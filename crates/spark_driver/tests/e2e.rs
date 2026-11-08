@@ -660,7 +660,7 @@ fn map_literal_empty_uses_expected_type() {
 #[test]
 fn map_literal_computed_keys_survive_growth() {
     let fixture = "run-pass/collections/map_literal_computed_keys.spark";
-    let expected = "13\n0\n101\n7\n12\n99\n42\n81\n8\n7\n1\n42\n5";
+    let expected = "13\n0\n101\n7\n12\n99\n42\n81\n8\n7\n42\n42\n5";
     for args in [&[][..], &["--no-opt"][..]] {
         let result = run_spark_with_args(fixture, args);
         assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
@@ -733,9 +733,12 @@ fn map_literal_balances_ownership_on_growth_replacement_and_early_return() {
     assert_native_ownership_fixture(
         "#include <stddef.h>\n#include <stdint.h>\n\
          int64_t probe_list_rc(const void *const *slot) { return *(const size_t *)*slot; }\n\
-         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n\
+         static int64_t number = 73;\n\
+         static int64_t *number_ref = &number;\n\
+         int64_t **nested_int(void) { return &number_ref; }\n",
         include_str!("run-pass/collections/map_literal_ownership.spark"),
-        "13\n1\n13\n0\n0\n99\n0\n0",
+        "13\n1\n13\n0\n0\n99\n0\n0\n73",
     );
 }
 
