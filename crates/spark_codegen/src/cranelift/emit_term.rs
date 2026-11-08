@@ -1681,6 +1681,7 @@ fn emit_extern_call<M: Module>(
 /// Emits COW (copy-on-write) for a mutable collection receiver.
 ///
 /// Returns the (possibly new) pointer after COW.
+// TAG [SPARK-115]
 fn emit_cow<M: Module>(
     ctx: &mut FunctionContext<'_>,
     recv_ptr: Value,

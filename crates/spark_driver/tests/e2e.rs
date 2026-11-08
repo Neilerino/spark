@@ -28,6 +28,7 @@
 //! │   ├── parsing/    # target-directed text parsing
 //! │   ├── io/         # io_stderr
 //! │   └── multifile/  # multi-file project dirs
+//! ├── run-fail/      # Programs that compile and terminate with a runtime diagnostic
 //! ├── compile-fail/   # Programs that should fail compilation
 //! │   ├── syntax_errors/
 //! │   ├── type_errors/
@@ -578,6 +579,127 @@ fn optional_narrowing_rejects_non_bool_guards() {
         "compile-fail/type_errors/optional_non_bool_guard.spark",
         "pattern guard must be Bool",
     );
+}
+
+#[test]
+fn list_index_write_preserves_copy() {
+    let fixture = "run-pass/collections/list_index_write.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "3\n4\n9\n6\n3\n4\n5\n6\n", "{args:?}");
+    }
+}
+
+#[test]
+fn list_index_write_preserves_nested_copies_and_evaluation_order() {
+    let fixture = "run-pass/collections/list_index_write_nested.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "value\nouter\ninner\n4\n9\n8\n5\n6\n5\n");
+    }
+}
+
+#[test]
+fn list_index_write_handles_tagged_values_and_await() {
+    for (fixture, expected) in [
+        (
+            "run-pass/collections/list_index_write_tagged.spark",
+            "9\n-1\nchanged\n",
+        ),
+        ("run-pass/collections/list_index_write_async.spark", "9\n"),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, expected);
+        }
+    }
+}
+
+#[test]
+fn list_index_write_preserves_closure_capture() {
+    let fixture = "run-pass/collections/list_index_write_capture.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "4\n1\n4\n1\n");
+    }
+}
+
+#[test]
+fn list_index_write_balances_ownership_on_replacement_and_early_exit() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_list_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/collections/list_index_write_ownership.spark"),
+        "1\n0\n1\n1\n9\n0\nearly exit\n0",
+    );
+}
+
+#[test]
+fn list_index_write_reports_bounds() {
+    for (name, index_and_length) in [
+        ("negative", "index -2, length 1"),
+        ("unsigned", "index 18446744073709551615, length 1"),
+        ("empty", "index 0, length 0"),
+        ("outer", "index 1, length 1"),
+        ("inner", "index 1, length 1"),
+    ] {
+        let fixture = format!("run-fail/collections/list_index_write_{name}.spark");
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(&fixture, args);
+            assert_ne!(result.exit_code, 0, "{fixture} {args:?}");
+            assert!(
+                result.stderr.contains(&format!(
+                    "list write index out of bounds: {index_and_length}"
+                )),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn list_index_write_rejects_invalid_targets_and_values() {
+    for (fixture, expected) in [
+        (
+            "type_errors/list_index_write_immutable.spark",
+            "cannot assign to immutable variable",
+        ),
+        (
+            "type_errors/list_index_write_invalid_index.spark",
+            "list index must be an integer",
+        ),
+        (
+            "type_errors/list_index_write_invalid_value.spark",
+            "assignment type mismatch",
+        ),
+        (
+            "type_errors/list_index_write_projected_root.spark",
+            "indexed assignment requires a mutable binding",
+        ),
+        (
+            "type_errors/list_index_write_compound.spark",
+            "indexed compound assignment is unsupported",
+        ),
+        (
+            "borrow_errors/list_index_write_borrowed_value.spark",
+            "indexed assignment requires an owned value type",
+        ),
+        (
+            "borrow_errors/list_index_write_borrowed_escape.spark",
+            "indexed assignment requires an owned value type",
+        ),
+        (
+            "borrow_errors/list_index_write_live_loan.spark",
+            "cannot write to a borrowed collection",
+        ),
+    ] {
+        assert_compile_error(&format!("compile-fail/{fixture}"), expected);
+    }
 }
 
 #[test]

@@ -271,6 +271,19 @@ fn analyze_consumers(
                         consumers.push(Consumer::Escapes);
                     }
                 }
+                Statement::IndexedAssign {
+                    root,
+                    indices,
+                    value,
+                    ..
+                } => {
+                    if is_alias(aliases, *root)
+                        || indices.iter().any(|&index| is_alias(aliases, index))
+                        || is_alias(aliases, *value)
+                    {
+                        consumers.push(Consumer::Escapes);
+                    }
+                }
                 Statement::Drop { place, .. } => {
                     if is_alias(aliases, place.local) {
                         // Drop of the list (or alias) is fine — becomes dead code.

@@ -3,13 +3,14 @@
 //! Allocates the return place, parameter locals, and entry block,
 //! then lowers the function body and adds a `Return` terminator.
 
-use spark_hir::{HirFunction, HirParam};
-use spark_resolve::DefinitionTable;
+use rustc_hash::FxHashSet;
+use spark_hir::{walk_stmt, HirExprKind, HirFunction, HirParam, HirStmt, HirVisitor};
+use spark_resolve::{DefId, DefinitionTable};
 use spark_types::{Ty, TypeTable};
 
 use crate::builder::{FunctionBuilder, MirBuilder};
 use crate::lower_expr::{emit_assign_with_union_wrap, lower_expr};
-use crate::mir::{Local, MirFunction, Place, Statement, Terminator};
+use crate::mir::{Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator};
 
 /// Lowers a single HIR function into a MIR function.
 pub fn lower_function(
@@ -33,17 +34,7 @@ pub fn lower_function(
 
     let param_count = u32::try_from(hir_fn.params.len()).unwrap_or(u32::MAX);
 
-    // Allocate locals for captured variables.
-    // The codegen will load these from the env_ptr at function entry.
-    // The body's `HirExprKind::Local(captured_def_id)` resolves to these locals.
-    for (cap_def_id, cap_ty) in &hir_fn.captures {
-        let name = defs.get(*cap_def_id).map(|info| info.name);
-        let local = match name {
-            Some(sym) => fb.fresh_local(*cap_ty, sym, false, hir_fn.span),
-            None => fb.fresh_temp(*cap_ty, hir_fn.span),
-        };
-        fb.register_def(*cap_def_id, local);
-    }
+    lower_captures(hir_fn, &mut fb, type_table, defs);
 
     // Lower the body expression. The result local holds the value of the
     // trailing expression (if any), enabling implicit returns.
@@ -75,6 +66,59 @@ pub fn lower_function(
         hir_fn.captures.clone(),
         hir_fn.is_async,
     )
+}
+
+fn lower_captures(
+    hir_fn: &HirFunction,
+    fb: &mut FunctionBuilder,
+    type_table: &TypeTable,
+    defs: &DefinitionTable,
+) {
+    if hir_fn.captures.is_empty() {
+        return;
+    }
+    let mut written = IndexedWriteRoots::default();
+    written.visit_expr(&hir_fn.body);
+
+    // Environment captures occupy consecutive locals at entry.
+    let mut owned_captures = Vec::new();
+    for &(def_id, ty) in &hir_fn.captures {
+        let local = match defs.get(def_id) {
+            Some(info) => fb.fresh_local(ty, info.name, false, hir_fn.span),
+            None => fb.fresh_temp(ty, hir_fn.span),
+        };
+        fb.register_def(def_id, local);
+        if written.0.contains(&def_id) && spark_drop::needs_drop(ty, type_table) {
+            owned_captures.push((def_id, ty, local));
+        }
+    }
+
+    // TAG [SPARK-115]
+    // Indexed COW consumes the old owner. Leave the environment's owner intact.
+    for (def_id, ty, borrowed) in owned_captures {
+        let local = fb.fresh_temp(ty, hir_fn.span);
+        fb.push_assign(
+            Place::from_local(local),
+            Rvalue::Use(Operand::Copy(Place::from_local(borrowed))),
+            hir_fn.span,
+        );
+        fb.register_def(def_id, local);
+        fb.register_drop(local);
+    }
+}
+
+#[derive(Default)]
+struct IndexedWriteRoots(FxHashSet<DefId>);
+
+impl HirVisitor for IndexedWriteRoots {
+    fn visit_stmt(&mut self, stmt: &HirStmt) {
+        if let HirStmt::IndexedAssign { root, .. } = stmt {
+            if let HirExprKind::Local(def_id) = root.kind {
+                self.0.insert(def_id);
+            }
+        }
+        walk_stmt(self, stmt);
+    }
 }
 
 /// Allocates a local for a function parameter.

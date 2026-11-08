@@ -267,6 +267,16 @@ fn compute_live_across_awaits(
                         gen[idx].insert(place.local);
                     }
                 }
+                Statement::IndexedAssign {
+                    root,
+                    indices,
+                    value,
+                    ..
+                } => {
+                    gen[idx].insert(*root);
+                    gen[idx].extend(indices);
+                    gen[idx].insert(*value);
+                }
                 Statement::Drop { place, .. } => {
                     gen[idx].insert(place.local);
                 }
@@ -1094,6 +1104,20 @@ fn remap_statement(stmt: &Statement, local_remap: &FxHashMap<Local, Local>) -> S
         } => Statement::Assign {
             place: remap_place(place, local_remap),
             rvalue: remap_rvalue(rvalue, local_remap),
+            span: *span,
+        },
+        Statement::IndexedAssign {
+            root,
+            indices,
+            value,
+            span,
+        } => Statement::IndexedAssign {
+            root: *local_remap.get(root).unwrap_or(root),
+            indices: indices
+                .iter()
+                .map(|local| *local_remap.get(local).unwrap_or(local))
+                .collect(),
+            value: *local_remap.get(value).unwrap_or(value),
             span: *span,
         },
         Statement::Drop { place, span } => Statement::Drop {

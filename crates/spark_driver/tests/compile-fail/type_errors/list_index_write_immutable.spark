@@ -1,0 +1,5 @@
+fn main(): Int {
+    items: List[Int] = [1]
+    items[0] = 2
+    return 0
+}

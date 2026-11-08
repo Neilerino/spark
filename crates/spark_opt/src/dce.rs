@@ -119,6 +119,16 @@ fn collect_used_in_statement(stmt: &Statement, used: &mut FxHashSet<Local>) {
             // Collect from the rvalue.
             collect_used_in_rvalue(rvalue, used);
         }
+        Statement::IndexedAssign {
+            root,
+            indices,
+            value,
+            ..
+        } => {
+            used.insert(*root);
+            used.extend(indices);
+            used.insert(*value);
+        }
         Statement::Drop { place, .. } => {
             used.insert(place.local);
             collect_used_in_place_projections(place, used);

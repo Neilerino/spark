@@ -1,0 +1,6 @@
+fn main(): Int {
+    items: List[Int]! = [1]
+    index: UInt64 = (-1) as UInt64
+    items[index] = 3
+    return 0
+}

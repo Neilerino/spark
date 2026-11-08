@@ -1,0 +1,10 @@
+fn read(items: Ref[List[Int]]): Int {
+    return items.len()
+}
+
+fn main(): Int {
+    items: List[Int]! = [1]
+    loan: Ref[List[Int]] = items
+    items[0] = 2
+    return read(loan)
+}

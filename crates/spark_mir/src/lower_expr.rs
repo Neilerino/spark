@@ -8,7 +8,7 @@ use spark_diagnostics::{Diagnostic, Label};
 use spark_hir::{HirExpr, HirExprKind, HirLiteral};
 use spark_intern::{kw, Symbol};
 use spark_resolve::{DefinitionKind, DefinitionTable};
-use spark_types::check_expr::{map_value_coercion, MapValueCoercion};
+use spark_types::check_expr::{collection_value_coercion, CollectionValueCoercion};
 use spark_types::{Ty, TypeId, TypeTable};
 
 use crate::builder::{FunctionBuilder, LoopContext, MirBuilder};
@@ -746,39 +746,18 @@ fn lower_map_literal(
                 fb.pop_finished_scope();
                 return void_temp(fb, expr);
             }
-            let source_ty = fb.local_type(source);
-            let place = Place::from_local(source);
-            let operand = if fb.is_def_local(source) || fb.owns_local(source) {
-                Operand::Copy(place)
-            } else {
-                Operand::Move(place)
+            let Some(staged) = stage_collection_value(fb, source, slot_ty, slot.span, type_table)
+            else {
+                mir.diagnostics.push(
+                    Diagnostic::error("map entry has incompatible storage after lowering")
+                        .with_label(Label::primary(
+                            slot.span,
+                            "entry storage does not match the map slot",
+                        )),
+                );
+                fb.pop_scope_drops(None, expr.span);
+                return void_temp(fb, expr);
             };
-            let rvalue = match map_value_coercion(source_ty, slot_ty, type_table) {
-                Some(MapValueCoercion::Tagged(member_ty)) => Rvalue::Aggregate(
-                    AggregateKind::Union {
-                        union_ty: unwrap_type_wrappers(slot_ty, type_table),
-                        member_ty,
-                    },
-                    vec![operand],
-                ),
-                Some(MapValueCoercion::Identity) => Rvalue::Use(operand),
-                _ => {
-                    mir.diagnostics.push(
-                        Diagnostic::error("map entry has incompatible storage after lowering")
-                            .with_label(Label::primary(
-                                slot.span,
-                                "entry storage does not match the map slot",
-                            )),
-                    );
-                    fb.pop_scope_drops(None, expr.span);
-                    return void_temp(fb, expr);
-                }
-            };
-            let staged = fb.fresh_temp(slot_ty, slot.span);
-            fb.push_assign(Place::from_local(staged), rvalue, slot.span);
-            if spark_drop::needs_drop(slot_ty, type_table) {
-                fb.register_drop(staged);
-            }
             operands.push(Operand::Move(Place::from_local(staged)));
         }
     }
@@ -791,6 +770,38 @@ fn lower_map_literal(
     );
     fb.pop_finished_scope();
     result
+}
+
+pub(crate) fn stage_collection_value(
+    fb: &mut FunctionBuilder,
+    source: Local,
+    slot_ty: TypeId,
+    span: spark_span::Span,
+    type_table: &TypeTable,
+) -> Option<Local> {
+    let place = Place::from_local(source);
+    let operand = if fb.is_def_local(source) || fb.owns_local(source) {
+        Operand::Copy(place)
+    } else {
+        Operand::Move(place)
+    };
+    let rvalue = match collection_value_coercion(fb.local_type(source), slot_ty, type_table)? {
+        CollectionValueCoercion::Tagged(member_ty) => Rvalue::Aggregate(
+            AggregateKind::Union {
+                union_ty: unwrap_type_wrappers(slot_ty, type_table),
+                member_ty,
+            },
+            vec![operand],
+        ),
+        CollectionValueCoercion::Identity => Rvalue::Use(operand),
+        CollectionValueCoercion::Reference => return None,
+    };
+    let staged = fb.fresh_temp(slot_ty, span);
+    fb.push_assign(Place::from_local(staged), rvalue, span);
+    if spark_drop::needs_drop(slot_ty, type_table) {
+        fb.register_drop(staged);
+    }
+    Some(staged)
 }
 
 fn owned_union_operand(local: Local, fb: &FunctionBuilder, type_table: &TypeTable) -> Operand {

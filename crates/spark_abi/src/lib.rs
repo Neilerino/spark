@@ -274,6 +274,20 @@ pub const LIST_TRY_GET: RuntimeFn = RuntimeFn {
     ret: Some(Ptr),
 };
 
+/// `__spark_list_write_slot(list: ptr, index: u64, signed: i8) -> ptr`
+pub const LIST_WRITE_SLOT: RuntimeFn = RuntimeFn {
+    name: "__spark_list_write_slot",
+    params: &[Ptr, I64, I8],
+    ret: Some(Ptr),
+};
+
+/// `__spark_list_replace(list: ptr, slot: ptr, value: ptr) -> void`
+pub const LIST_REPLACE: RuntimeFn = RuntimeFn {
+    name: "__spark_list_replace",
+    params: &[Ptr, Ptr, Ptr],
+    ret: None,
+};
+
 /// `__spark_list_rc_dec(ptr) -> void`
 pub const LIST_RC_DEC: RuntimeFn = RuntimeFn {
     name: "__spark_list_rc_dec",
@@ -654,6 +668,8 @@ pub const ALL_RUNTIME_FUNCTIONS: &[&RuntimeFn] = &[
     &LIST_PUSH,
     &LIST_GET,
     &LIST_TRY_GET,
+    &LIST_WRITE_SLOT,
+    &LIST_REPLACE,
     &LIST_RC_DEC,
     &LIST_COW,
     &LIST_LEN,

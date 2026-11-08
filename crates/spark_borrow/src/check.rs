@@ -9,7 +9,9 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_mir::{Local, MirFunction, Operand, Place, Projection, Rvalue, Statement, Terminator};
+use spark_types::{Ty, TypeId, TypeTable};
 
 use crate::errors;
 use crate::facts::{BorrowFacts, Loan, LoanId, Point};
@@ -23,11 +25,114 @@ pub fn check_borrows(
     diagnostics: &mut spark_diagnostics::Diagnostics,
 ) {
     check_conflicting_borrows(func, facts, regions, diagnostics);
+    check_indexed_write_loans(func, facts, regions, diagnostics);
     check_use_after_move(func, facts, diagnostics);
     check_borrow_of_moved(func, facts, diagnostics);
     check_mutation_through_immutable_ref(func, facts, diagnostics);
     check_dangling_returns(func, facts, diagnostics);
     check_aliasing_call_args(func, facts, diagnostics);
+}
+
+/// Enforces owned slots until collection borrows can be tracked across escapes.
+pub fn check_indexed_write_storage(
+    func: &MirFunction,
+    table: &TypeTable,
+    diagnostics: &mut Diagnostics,
+) {
+    for stmt in func.blocks.iter().flat_map(|block| &block.statements) {
+        if let Statement::IndexedAssign { value, span, .. } = stmt {
+            let ty = func.locals[value.index()].ty;
+            if contains_borrowed_reference(ty, table, &mut FxHashSet::default()) {
+                diagnostics.push(
+                    Diagnostic::error("indexed assignment requires an owned value type")
+                        .with_label(Label::primary(
+                            *span,
+                            "this slot type contains a borrowed reference",
+                        )),
+                );
+            }
+        }
+    }
+}
+
+fn contains_borrowed_reference(
+    ty: TypeId,
+    table: &TypeTable,
+    seen: &mut FxHashSet<TypeId>,
+) -> bool {
+    if !seen.insert(ty) {
+        return false;
+    }
+    match table.resolve(ty) {
+        Ty::Ref { .. } => true,
+        Ty::List(inner)
+        | Ty::Set(inner)
+        | Ty::Optional(inner)
+        | Ty::Mutable(inner)
+        | Ty::Future { inner }
+        | Ty::Channel { inner } => contains_borrowed_reference(*inner, table, seen),
+        Ty::Map(key, value) => {
+            contains_borrowed_reference(*key, table, seen)
+                || contains_borrowed_reference(*value, table, seen)
+        }
+        Ty::Tuple(elements) | Ty::Union(elements) => elements
+            .iter()
+            .any(|&element| contains_borrowed_reference(element, table, seen)),
+        Ty::Struct(def) | Ty::Enum(def) => fields_contain_borrowed_reference(*def, table, seen),
+        Ty::Applied { base, args } => {
+            args.iter()
+                .any(|&arg| contains_borrowed_reference(arg, table, seen))
+                || fields_contain_borrowed_reference(*base, table, seen)
+        }
+        _ => false,
+    }
+}
+
+fn fields_contain_borrowed_reference(
+    def: spark_resolve::DefId,
+    table: &TypeTable,
+    seen: &mut FxHashSet<TypeId>,
+) -> bool {
+    table
+        .get_struct_fields(def)
+        .into_iter()
+        .chain(
+            table
+                .get_enum_variants(def)
+                .into_iter()
+                .flatten()
+                .filter_map(|&(_, variant)| table.get_variant_fields(variant)),
+        )
+        .flatten()
+        .any(|&(_, field)| contains_borrowed_reference(field, table, seen))
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn check_indexed_write_loans(
+    func: &MirFunction,
+    facts: &BorrowFacts,
+    regions: &[Region],
+    diagnostics: &mut spark_diagnostics::Diagnostics,
+) {
+    for (block_idx, block) in func.blocks.iter().enumerate() {
+        for (stmt_idx, statement) in block.statements.iter().enumerate() {
+            let Statement::IndexedAssign { root, span, .. } = statement else {
+                continue;
+            };
+            let point = Point::new(spark_mir::BlockId(block_idx as u32), stmt_idx as u32);
+            if facts
+                .loans
+                .iter()
+                .zip(regions)
+                .any(|(loan, region)| region.points.contains(&point) && *root == loan.place.local)
+            {
+                diagnostics.push(
+                    Diagnostic::error("cannot write to a borrowed collection")
+                        .with_label(Label::primary(*span, "collection is still borrowed")),
+                );
+            }
+        }
+    }
 }
 
 /// Checks for conflicting borrows at each program point.

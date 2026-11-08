@@ -379,6 +379,17 @@ pub enum HirStmt {
         /// The value.
         value: HirExpr,
     },
+    /// Assignment through a mutable collection path.
+    IndexedAssign {
+        /// The owning place.
+        root: HirExpr,
+        /// Indices from the root to the destination.
+        indices: Vec<HirExpr>,
+        /// The destination element type.
+        slot_ty: TypeId,
+        /// The value to store.
+        value: HirExpr,
+    },
     /// Expression statement (for side effects).
     Expr(HirExpr),
 }

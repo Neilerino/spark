@@ -122,6 +122,45 @@ pub unsafe extern "C" fn __spark_list_try_get(list: *const u8, index: u64) -> *c
     unsafe { list.data.add(index * list.elem_size()) }
 }
 
+/// Gets a list slot for indexed assignment, terminating on a bounds violation.
+///
+/// # Safety
+///
+/// `list` must be a live list. The returned slot is borrowed from its buffer.
+#[no_mangle]
+pub unsafe extern "C" fn __spark_list_write_slot(list: *mut u8, index: u64, signed: u8) -> *mut u8 {
+    let slot = unsafe { __spark_list_try_get(list, index) };
+    if slot.is_null() {
+        let len = unsafe { __spark_list_len(list) };
+        if signed != 0 {
+            let index = i64::from_ne_bytes(index.to_ne_bytes());
+            eprintln!("spark: list write index out of bounds: index {index}, length {len}");
+        } else {
+            eprintln!("spark: list write index out of bounds: index {index}, length {len}");
+        }
+        std::process::abort();
+    }
+    slot.cast_mut()
+}
+
+/// Replaces an element, dropping the old value and consuming the incoming bytes.
+///
+/// # Safety
+///
+/// `slot` must be a live element slot in a unique list. `value` must point to
+/// independently staged bytes of the list's element type.
+#[no_mangle]
+#[allow(clippy::cast_ptr_alignment)]
+pub unsafe extern "C" fn __spark_list_replace(list: *mut u8, slot: *mut u8, value: *const u8) {
+    let list = unsafe { &*list.cast::<SparkList>() };
+    if list.elem_size() != 0 {
+        unsafe {
+            list.elem().drop_elem(slot);
+            std::ptr::copy_nonoverlapping(value, slot, list.elem_size());
+        }
+    }
+}
+
 /// Grows the list's backing buffer, doubling capacity (minimum [`MIN_CAP`]).
 fn list_grow(list: &mut SparkList) {
     let new_cap = if list.cap == 0 { MIN_CAP } else { list.cap * 2 };

@@ -350,6 +350,20 @@ fn remap_statement(stmt: &Statement, local_off: u32, block_off: u32) -> Statemen
             rvalue: remap_rvalue(rvalue, local_off, block_off),
             span: *span,
         },
+        Statement::IndexedAssign {
+            root,
+            indices,
+            value,
+            span,
+        } => Statement::IndexedAssign {
+            root: remap_local(*root, local_off),
+            indices: indices
+                .iter()
+                .map(|&local| remap_local(local, local_off))
+                .collect(),
+            value: remap_local(*value, local_off),
+            span: *span,
+        },
         Statement::Drop { place, span } => Statement::Drop {
             place: remap_place(place, local_off),
             span: *span,

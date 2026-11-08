@@ -332,9 +332,9 @@ mod tests {
             } => {
                 for stmt in stmts {
                     let inner = match stmt {
-                        HirStmt::Let { value, .. } | HirStmt::Assign { value, .. } => {
-                            find_match(value)
-                        }
+                        HirStmt::Let { value, .. }
+                        | HirStmt::Assign { value, .. }
+                        | HirStmt::IndexedAssign { value, .. } => find_match(value),
                         HirStmt::Expr(e) => find_match(e),
                     };
                     if inner.is_some() {

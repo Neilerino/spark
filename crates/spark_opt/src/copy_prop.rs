@@ -74,10 +74,14 @@ fn find_candidates(
     let mut assign_counts: FxHashMap<Local, usize> = FxHashMap::default();
 
     for stmt in statements {
-        if let Statement::Assign { place, .. } = stmt {
-            if place.projections.is_empty() {
+        match stmt {
+            Statement::Assign { place, .. } if place.projections.is_empty() => {
                 *assign_counts.entry(place.local).or_insert(0) += 1;
             }
+            Statement::IndexedAssign { root, .. } => {
+                *assign_counts.entry(*root).or_insert(0) += 1;
+            }
+            _ => {}
         }
     }
 
@@ -149,6 +153,12 @@ fn statement_reads_local(stmt: &Statement, local: Local) -> bool {
         Statement::Assign { place, rvalue, .. } => {
             place_projections_read_local(place, local) || rvalue_reads_local(rvalue, local)
         }
+        Statement::IndexedAssign {
+            root,
+            indices,
+            value,
+            ..
+        } => *root == local || indices.contains(&local) || *value == local,
         Statement::Drop { place, .. } => {
             place.local == local || place_projections_read_local(place, local)
         }
@@ -231,6 +241,7 @@ fn terminator_reads_local(term: &Terminator, local: Local) -> bool {
 fn statement_assigns_local(stmt: &Statement, local: Local) -> bool {
     match stmt {
         Statement::Assign { place, .. } => place.local == local && place.projections.is_empty(),
+        Statement::IndexedAssign { root, .. } => *root == local,
         _ => false,
     }
 }
@@ -252,7 +263,7 @@ fn replace_local_in_statement(stmt: &mut Statement, from: Local, to: Local) -> b
             };
             changed | replace_local_in_place_projections(place, from, to)
         }
-        Statement::Nop => false,
+        Statement::IndexedAssign { .. } | Statement::Nop => false,
     }
 }
 
