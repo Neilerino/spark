@@ -116,6 +116,18 @@ struct WrittenCollectionRoots<'a> {
     table: &'a TypeTable,
 }
 
+impl WrittenCollectionRoots<'_> {
+    fn record_set_root(&mut self, target: &spark_hir::HirExpr) {
+        if let HirExprKind::Local(def_id) = target.kind {
+            if matches!(self.table.resolve(target.ty), Ty::Mutable(inner)
+                if matches!(self.table.resolve(*inner), Ty::Set(_)))
+            {
+                self.roots.insert(def_id);
+            }
+        }
+    }
+}
+
 impl HirVisitor for WrittenCollectionRoots<'_> {
     fn visit_expr(&mut self, expr: &spark_hir::HirExpr) {
         if let HirExprKind::MethodCall {
@@ -124,22 +136,20 @@ impl HirVisitor for WrittenCollectionRoots<'_> {
             ..
         } = &expr.kind
         {
-            if let (HirExprKind::Local(def_id), Ty::Mutable(inner)) =
-                (&receiver.kind, self.table.resolve(receiver.ty))
-            {
-                if matches!(self.table.resolve(*inner), Ty::Set(_)) {
-                    self.roots.insert(*def_id);
-                }
-            }
+            self.record_set_root(receiver);
         }
         walk_expr(self, expr);
     }
 
     fn visit_stmt(&mut self, stmt: &HirStmt) {
-        if let HirStmt::IndexedAssign { root, .. } = stmt {
-            if let HirExprKind::Local(def_id) = root.kind {
-                self.roots.insert(def_id);
+        match stmt {
+            HirStmt::Assign { target, .. } => self.record_set_root(target),
+            HirStmt::IndexedAssign { root, .. } => {
+                if let HirExprKind::Local(def_id) = root.kind {
+                    self.roots.insert(def_id);
+                }
             }
+            _ => {}
         }
         walk_stmt(self, stmt);
     }

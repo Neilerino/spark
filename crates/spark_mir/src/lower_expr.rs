@@ -706,7 +706,17 @@ fn lower_method_call(
             fb.pop_finished_scope();
             return void_temp(fb, expr);
         }
-        all_args.push(Operand::Copy(Place::from_local(local)));
+        let place = Place::from_local(local);
+        let temporary = set_method && !fb.is_def_local(local) && !fb.owns_local(local);
+        let operand = if temporary && method == kw::ADD {
+            Operand::Move(place)
+        } else {
+            if temporary && spark_drop::needs_drop(fb.local_type(local), type_table) {
+                fb.register_drop(local);
+            }
+            Operand::Copy(place)
+        };
+        all_args.push(operand);
     }
 
     let dest = fb.fresh_temp(expr.ty, expr.span);

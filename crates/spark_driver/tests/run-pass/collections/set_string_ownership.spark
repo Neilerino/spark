@@ -1,0 +1,70 @@
+link "union_probe"
+
+extern fn probe_string_rc(value: Ref[String]): Int
+extern fn probe_set_rc(value: Ref[Set[String]]): Int
+
+fn echo(value: String): String {
+    return value
+}
+
+fn echo_set(value: Set[String]): Set[String] {
+    return value
+}
+
+fn interrupted(value: String, absent: Int?): Int? {
+    entries: Set[String] = {value, {
+        number: Int = absent!
+        echo(value)
+    }}
+    return entries.len()
+}
+
+fn main(): Int {
+    suffix: String = "ue"
+    first: String = "val{suffix}"
+    prefix: String = "valu"
+    equal: String = "{prefix}e"
+    firstBefore: Int = probe_string_rc(first)
+    equalBefore: Int = probe_string_rc(equal)
+
+    {
+        entries: Set[String]! = {}
+        entries.add(first)
+        entries.add(equal)
+        entries.add(echo(first))
+        print(probe_string_rc(first) - firstBefore)
+        print(probe_string_rc(equal) - equalBefore)
+        print(entries.contains(equal))
+        print(entries.contains(echo(first)))
+        print(probe_string_rc(first) - firstBefore)
+        print(probe_string_rc(equal) - equalBefore)
+        snapshot: Set[String] = entries
+        entries.remove(echo(equal))
+        print(entries.contains(first))
+        print(snapshot.contains(equal))
+        print(probe_string_rc(first) - firstBefore)
+        print(probe_string_rc(equal) - equalBefore)
+        entries.add(echo(first))
+        entries.remove(first)
+        print(probe_string_rc(first) - firstBefore)
+        setBefore: Int = probe_set_rc(snapshot)
+        print(echo_set(snapshot).len())
+        print(echo_set(snapshot).contains(echo(equal)))
+        print(probe_set_rc(snapshot) - setBefore)
+    }
+    print(probe_string_rc(first) - firstBefore)
+    print(probe_string_rc(equal) - equalBefore)
+
+    {
+        entries: Set[String] = {first, equal, echo(first),}
+        print(entries.len())
+        print(probe_string_rc(first) - firstBefore)
+        print(probe_string_rc(equal) - equalBefore)
+    }
+    print(probe_string_rc(first) - firstBefore)
+    print(probe_string_rc(equal) - equalBefore)
+    absent: Int? = Null
+    print(interrupted(first, absent) ?? 99)
+    print(probe_string_rc(first) - firstBefore)
+    return 0
+}

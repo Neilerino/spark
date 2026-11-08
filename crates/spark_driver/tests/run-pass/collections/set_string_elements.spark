@@ -1,0 +1,50 @@
+fn item_name(index: Int): String {
+    return "item-{index}"
+}
+
+fn main(): Int {
+    suffix: String = "st"
+    first: String = "ru{suffix}"
+    prefix: String = "rus"
+    equal: String = "{prefix}t"
+    tags: Set[String]! = {}
+    print(tags.len())
+    tags.add(first)
+    tags.add(equal)
+    print(tags.len())
+    print(tags.contains(equal))
+    print(tags.contains("spark"))
+    original: Set[String] = tags
+    tags.remove(equal)
+    print(tags.contains(first))
+    print(original.contains(equal))
+
+    literal: Set[String] = {first, "spark", equal,}
+    print(literal.len())
+    print(literal.contains(equal))
+    print(literal.contains("spark"))
+    singleton: Set[String]! = {"rust"}
+    singleton.add("rust")
+    print(singleton.len())
+    print({"spark",}.contains("spark"))
+    growing: Set[String]! = {"seed",}
+    i: Int! = 0
+    loop {
+        if i == 24 { break }
+        growing.add(item_name(i))
+        growing.add(item_name(i))
+        i += 1
+    }
+    i = 0
+    loop {
+        if i == 24 { break }
+        if not growing.contains(item_name(i)) { return 1 }
+        i += 1
+    }
+    print(growing.len())
+    print(growing.contains("seed"))
+    growing.remove("item-12")
+    print(growing.contains("item-12"))
+    print(growing.len())
+    return 0
+}

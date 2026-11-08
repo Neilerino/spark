@@ -1433,26 +1433,29 @@ fn emit_builtin_method<M: Module>(
 
     // --- CONTAINS ---
     if method_name == kw::CONTAINS {
-        // args[1] is the element/key to search for
-        let arg_val = args
-            .get(1)
-            .and_then(|a| emit_rvalue::emit_operand(ctx, a, ecx, module));
-
-        if let Some(val) = arg_val {
-            let (stub_id, arg_ty) = match stripped_ty {
-                Ty::List(elem) => (ctx.stubs.list_contains, *elem),
-                Ty::Map(k, _) => (ctx.stubs.map_contains, *k),
-                Ty::Set(elem) => (ctx.stubs.set_contains, *elem),
-                _ => {
-                    let target_block = ctx.clif_block(target);
-                    ctx.builder.ins().jump(target_block, &[]);
-                    return;
-                }
-            };
-            // Store the value to a temp slot to get its address.
-            let val_addr = emit_rvalue::store_scalar_to_temp(ctx, val, arg_ty, table);
-            let func_ref = module.declare_func_in_func(stub_id, ctx.builder.func);
-            let call = ctx.builder.ins().call(func_ref, &[recv_ptr, val_addr]);
+        let (stub, element_ty) = match stripped_ty {
+            Ty::List(elem) => (ctx.stubs.list_contains, *elem),
+            Ty::Map(key, _) => (ctx.stubs.map_contains, *key),
+            Ty::Set(elem) => (ctx.stubs.set_contains, *elem),
+            _ => {
+                let target_block = ctx.clif_block(target);
+                ctx.builder.ins().jump(target_block, &[]);
+                return;
+            }
+        };
+        let address = args.get(1).and_then(|arg| {
+            if matches!(stripped_ty, Ty::Set(_)) {
+                borrowed_set_element_addr(ctx, arg, table, module)
+            } else {
+                let value = emit_rvalue::emit_operand(ctx, arg, ecx, module)?;
+                Some(emit_rvalue::store_scalar_to_temp(
+                    ctx, value, element_ty, table,
+                ))
+            }
+        });
+        if let Some(address) = address {
+            let func_ref = module.declare_func_in_func(stub, ctx.builder.func);
+            let call = ctx.builder.ins().call(func_ref, &[recv_ptr, address]);
             let result = ctx.builder.inst_results(call)[0];
             if destination.projections.is_empty() {
                 ctx.write_local(destination.local, result);
@@ -1509,16 +1512,14 @@ fn emit_builtin_method<M: Module>(
                 }
             }
             // Set.remove(item)
-            (Ty::Set(elem), _) if method_name == kw::REMOVE => {
-                let elem_ty = *elem;
-                if let Some(arg) = args.get(1) {
-                    if let Some(elem_addr) =
-                        emit_rvalue::emit_operand_addr(ctx, arg, elem_ty, ecx, module)
-                    {
-                        let func_ref =
-                            module.declare_func_in_func(ctx.stubs.set_remove, ctx.builder.func);
-                        ctx.builder.ins().call(func_ref, &[cow_ptr, elem_addr]);
-                    }
+            (Ty::Set(_), kw::REMOVE) => {
+                if let Some(elem_addr) = args
+                    .get(1)
+                    .and_then(|arg| borrowed_set_element_addr(ctx, arg, table, module))
+                {
+                    let func_ref =
+                        module.declare_func_in_func(ctx.stubs.set_remove, ctx.builder.func);
+                    ctx.builder.ins().call(func_ref, &[cow_ptr, elem_addr]);
                 }
             }
             // Map.remove(key)
@@ -1676,6 +1677,18 @@ fn emit_extern_call<M: Module>(
 
     let target_block = ctx.clif_block(target);
     ctx.builder.ins().jump(target_block, &[]);
+}
+
+fn borrowed_set_element_addr<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    operand: &Operand,
+    table: &TypeTable,
+    module: &mut M,
+) -> Option<Value> {
+    let (Operand::Copy(place) | Operand::Move(place)) = operand else {
+        return None;
+    };
+    Some(emit_rvalue::emit_place_addr(ctx, place, table, module).0)
 }
 
 /// Emits COW (copy-on-write) for a mutable collection receiver.

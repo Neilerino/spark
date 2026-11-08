@@ -9,7 +9,7 @@ use spark_resolve::DefinitionKind;
 
 use crate::check_expr::{
     check_collection_argument, check_expr, check_expr_expected, check_set_element_type,
-    collection_value_coercion, is_compatible, is_supported_map_key, strip_mutable, strip_ref,
+    collection_value_coercion, is_compatible, is_supported_hash_slot, strip_mutable, strip_ref,
 };
 use crate::ctx::TypeCheckCtx;
 use crate::display::display_type as type_name;
@@ -246,7 +246,7 @@ fn check_index_target(
                             .with_label(Label::primary(index.span, "cannot traverse a map entry")),
                     );
                     TypeId::ERROR
-                } else if !is_supported_map_key(key, ctx.table) {
+                } else if !is_supported_hash_slot(key, ctx.table) {
                     ctx.diagnostics.push(
                         Diagnostic::error("map write keys must be integers or strings")
                             .with_label(Label::primary(index.span, "unsupported map key type")),
