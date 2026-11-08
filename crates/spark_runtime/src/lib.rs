@@ -41,8 +41,8 @@ pub use collections::{
     __spark_list_write_slot, __spark_map_contains, __spark_map_cow, __spark_map_get,
     __spark_map_insert, __spark_map_len, __spark_map_new, __spark_map_next, __spark_map_rc_dec,
     __spark_map_remove, __spark_set_contains, __spark_set_cow, __spark_set_insert, __spark_set_len,
-    __spark_set_new, __spark_set_rc_dec, __spark_set_remove, SORT_TAG_BOOL, SORT_TAG_FLOAT,
-    SORT_TAG_INT, SORT_TAG_STRING,
+    __spark_set_new, __spark_set_next, __spark_set_rc_dec, __spark_set_remove, SORT_TAG_BOOL,
+    SORT_TAG_FLOAT, SORT_TAG_INT, SORT_TAG_STRING,
 };
 pub(crate) use future::tokio_runtime;
 pub use future::{

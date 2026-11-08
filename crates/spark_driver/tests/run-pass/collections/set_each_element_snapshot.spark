@@ -1,0 +1,27 @@
+fn item_name(index: Int): String {
+    return "item-{index}"
+}
+
+fn main(): Int {
+    suffix: String = "ed"
+    first: String = "r{suffix}"
+    prefix: String = "re"
+    equal: String = "{prefix}d"
+    visited: Set[String]! = {first, equal,}
+    i: Int! = 0
+    loop {
+        if i == 24 { break }
+        visited.add(item_name(i))
+        i += 1
+    }
+    visited.remove("item-7")
+    visited.eachElement(fn(value: String): Void {
+        visited.remove(value)
+        if visited.contains(value) {
+            print("unexpected hit")
+        }
+        print(value)
+    })
+    print(visited.len())
+    return 0
+}

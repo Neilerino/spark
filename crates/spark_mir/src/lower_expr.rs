@@ -671,7 +671,12 @@ fn lower_method_call(
         .get(method_def_id)
         .is_some_and(|info| info.kind == DefinitionKind::BuiltinMethod);
     let receiver_ty = type_table.resolve(unwrap_type_wrappers(receiver.ty, type_table));
-    if builtin && method == kw::EACH_ENTRY && matches!(receiver_ty, Ty::Map(..)) {
+    if builtin
+        && matches!(
+            (method, receiver_ty),
+            (kw::EACH_ENTRY, Ty::Map(..)) | (kw::EACH_ELEMENT, Ty::Set(_))
+        )
+    {
         if let [visitor] = args {
             return lower_collection_traversal(
                 receiver,

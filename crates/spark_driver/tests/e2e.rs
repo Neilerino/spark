@@ -844,6 +844,57 @@ fn set_string_elements_balance_ownership() {
 }
 
 #[test]
+fn set_each_element_deduplicates_and_skips_removed_elements() {
+    let fixture = "run-pass/collections/set_each_element.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        let mut values: Vec<_> = result.stdout.lines().collect();
+        values.sort_unstable();
+        assert_eq!(values, ["2", "7"]);
+    }
+}
+
+#[test]
+fn set_each_element_visits_grown_snapshot() {
+    let fixture = "run-pass/collections/set_each_element_snapshot.spark";
+    let mut expected: Vec<_> = (0..24)
+        .filter(|&i| i != 7)
+        .map(|i| format!("item-{i}"))
+        .collect();
+    expected.push("red".to_owned());
+    expected.sort_unstable();
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        let mut values: Vec<_> = result.stdout.lines().collect();
+        assert_eq!(values.pop(), Some("24"));
+        values.sort_unstable();
+        assert_eq!(values, expected);
+    }
+}
+
+#[test]
+fn set_each_element_balances_ownership() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         static int64_t count(const void *const *slot) { return *(const size_t *)*slot; }\n\
+         int64_t probe_string_rc(const void *const *slot) { return count(slot); }\n\
+         int64_t probe_set_rc(const void *const *slot) { return count(slot); }\n",
+        include_str!("run-pass/collections/set_each_element_ownership.spark"),
+        "receiver\nvisitor\nreceiver\nvisitor\n3\n3\n0\n0",
+    );
+}
+
+#[test]
+fn set_each_element_rejects_non_void_visitor() {
+    assert_compile_error(
+        "compile-fail/type_errors/set_each_element_visitor.spark",
+        "collection visitor must have type (String): Void",
+    );
+}
+
+#[test]
 fn map_each_entry_frequency() {
     let fixture = "run-pass/collections/map_each_entry.spark";
     for args in [&[][..], &["--no-opt"][..]] {

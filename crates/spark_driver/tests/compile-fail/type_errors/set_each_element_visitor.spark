@@ -1,0 +1,9 @@
+fn show(value: String): Int {
+    return value.len()
+}
+
+fn main(): Int {
+    visited: Set[String] = {}
+    visited.eachElement(show)
+    return 0
+}
