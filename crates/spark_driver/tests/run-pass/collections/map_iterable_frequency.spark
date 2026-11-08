@@ -22,5 +22,19 @@ fn main(): Int {
     repeated: Int = counts filter (entry: Tup[String, Int]): Bool { entry.1 > 1 }
         reduce 0 (sum: Int, entry: Tup[String, Int]): Int { sum + entry.1 }
     print(repeated)
+    grown: Map[Int, Int]! = {}
+    n: Int! = 0
+    loop {
+        if n == 20 { break }
+        grown[n] = n
+        n += 1
+    }
+    grown.remove(3)
+    grown.remove(16)
+    print(grown.toList().len())
+    remaining: Int = grown reduce 0 (sum: Int, entry: Tup[Int, Int]): Int {
+        sum + entry.1
+    }
+    print(remaining)
     return 0
 }

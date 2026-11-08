@@ -854,12 +854,37 @@ fn tuple_ownership_balances_nested_fields() {
 }
 
 #[test]
+fn map_iterable_rejects_callback_layout_conversions() {
+    for (fixture, diagnostic) in [
+        (
+            "map_iterable_reduce_callback_layout",
+            "`reduce` element type mismatch",
+        ),
+        (
+            "map_iterable_partial_callback_layout",
+            "`each` element type mismatch",
+        ),
+        (
+            "map_iterable_partial_bound_layout",
+            "argument type mismatch",
+        ),
+    ] {
+        assert_compile_error(
+            &format!("compile-fail/type_errors/{fixture}.spark"),
+            diagnostic,
+        );
+    }
+}
+
+#[test]
 fn map_iterable_frequency() {
     let fixture = "run-pass/collections/map_iterable_frequency.spark";
     for args in [&[][..], &["--no-opt"][..]] {
         let result = run_spark_with_args(fixture, args);
         assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
         let mut lines: Vec<_> = result.stdout.lines().collect();
+        assert_eq!(lines.pop(), Some("171"));
+        assert_eq!(lines.pop(), Some("18"));
         assert_eq!(lines.pop(), Some("2"));
         assert_eq!(lines.pop(), Some("3"));
         assert_eq!(lines.len(), 4);
@@ -1238,7 +1263,12 @@ fn closure_capture_list() {
 
 #[test]
 fn closure_capture_mutable_list() {
-    assert_output("run-pass/lambdas/closure_capture_mutable_list.spark", "3");
+    let fixture = "run-pass/lambdas/closure_capture_mutable_list.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "1\n3\n");
+    }
 }
 
 #[test]

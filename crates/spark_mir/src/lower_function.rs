@@ -5,7 +5,7 @@
 
 use rustc_hash::FxHashSet;
 use spark_hir::{walk_expr, walk_stmt, HirExprKind, HirFunction, HirParam, HirStmt, HirVisitor};
-use spark_intern::kw;
+use spark_intern::{kw, Symbol};
 use spark_resolve::{DefId, DefinitionTable};
 use spark_types::{Ty, TypeTable};
 
@@ -78,7 +78,7 @@ fn lower_captures(
     if hir_fn.captures.is_empty() {
         return;
     }
-    let mut written = WrittenCollectionRoots {
+    let mut written = WrittenCaptureRoots {
         roots: FxHashSet::default(),
         table: type_table,
     };
@@ -98,7 +98,7 @@ fn lower_captures(
     }
 
     // TAG [SPARK-115]
-    // Collection COW consumes the old owner. Leave the environment's owner intact.
+    // Mutation can consume the old owner. Leave the environment's owner intact.
     for (def_id, ty, borrowed) in owned_captures {
         let local = fb.fresh_temp(ty, hir_fn.span);
         fb.push_assign(
@@ -111,44 +111,51 @@ fn lower_captures(
     }
 }
 
-struct WrittenCollectionRoots<'a> {
+struct WrittenCaptureRoots<'a> {
     roots: FxHashSet<DefId>,
     table: &'a TypeTable,
 }
 
-impl WrittenCollectionRoots<'_> {
-    fn record_set_root(&mut self, target: &spark_hir::HirExpr) {
+impl WrittenCaptureRoots<'_> {
+    fn record_method_write(&mut self, target: &spark_hir::HirExpr, method: Symbol) {
+        let HirExprKind::Local(def_id) = target.kind else {
+            return;
+        };
+        let Ty::Mutable(inner) = self.table.resolve(target.ty) else {
+            return;
+        };
+        if matches!(
+            (self.table.resolve(*inner), method),
+            (Ty::List(_), kw::APPEND | kw::REMOVE)
+                | (Ty::Map(..), kw::REMOVE)
+                | (Ty::Set(_), kw::ADD | kw::REMOVE)
+        ) {
+            self.roots.insert(def_id);
+        }
+    }
+
+    fn record_local_write(&mut self, target: &spark_hir::HirExpr) {
         if let HirExprKind::Local(def_id) = target.kind {
-            if matches!(self.table.resolve(target.ty), Ty::Mutable(inner)
-                if matches!(self.table.resolve(*inner), Ty::Set(_)))
-            {
-                self.roots.insert(def_id);
-            }
+            self.roots.insert(def_id);
         }
     }
 }
 
-impl HirVisitor for WrittenCollectionRoots<'_> {
+impl HirVisitor for WrittenCaptureRoots<'_> {
     fn visit_expr(&mut self, expr: &spark_hir::HirExpr) {
         if let HirExprKind::MethodCall {
-            receiver,
-            method: kw::ADD | kw::REMOVE,
-            ..
+            receiver, method, ..
         } = &expr.kind
         {
-            self.record_set_root(receiver);
+            self.record_method_write(receiver, *method);
         }
         walk_expr(self, expr);
     }
 
     fn visit_stmt(&mut self, stmt: &HirStmt) {
         match stmt {
-            HirStmt::Assign { target, .. } => self.record_set_root(target),
-            HirStmt::IndexedAssign { root, .. } => {
-                if let HirExprKind::Local(def_id) = root.kind {
-                    self.roots.insert(def_id);
-                }
-            }
+            HirStmt::Assign { target, .. } => self.record_local_write(target),
+            HirStmt::IndexedAssign { root, .. } => self.record_local_write(root),
             _ => {}
         }
         walk_stmt(self, stmt);
