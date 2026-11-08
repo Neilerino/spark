@@ -1,0 +1,22 @@
+fn main(): Int {
+    entries: Map[Int, Int]! = {0: 100}
+    original: Map[Int, Int] = entries
+    i: Int! = 1
+    loop {
+        if i == 32 { break }
+        entries[i * 2] = 100 + i
+        i += 1
+    }
+    entries[6] = 999
+    print(entries.len())
+    i = 0
+    loop {
+        if i == 32 { break }
+        print(entries[i * 2] ?? -1)
+        i += 1
+    }
+    print(original.len())
+    print(original[0] ?? -1)
+    print(original[6] ?? -1)
+    return 0
+}

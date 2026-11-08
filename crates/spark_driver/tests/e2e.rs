@@ -644,6 +644,7 @@ fn list_index_write_reports_bounds() {
         ("negative", "index -2, length 1"),
         ("unsigned", "index 18446744073709551615, length 1"),
         ("empty", "index 0, length 0"),
+        ("empty_null", "index 0, length 0"),
         ("outer", "index 1, length 1"),
         ("inner", "index 1, length 1"),
     ] {
@@ -720,6 +721,95 @@ fn list_lookup_distinguishes_present_null_payloads_from_misses() {
         assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
         assert_eq!(result.stdout.trim(), "7\n10\nmissing");
     }
+}
+
+#[test]
+fn map_index_write_inserts_and_replaces() {
+    let fixture = "run-pass/collections/map_index_write.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "7\n1\n9\n-1\n1\n-1\n0\n456\n1\n");
+    }
+}
+
+#[test]
+fn map_index_write_preserves_entries_across_growth() {
+    let fixture = "run-pass/collections/map_index_write_growth.spark";
+    let mut expected = vec![32];
+    expected.extend(100..132);
+    expected[4] = 999;
+    expected.extend([1, 100, -1]);
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        let values: Vec<i32> = result
+            .stdout
+            .lines()
+            .map(|line| line.parse().unwrap())
+            .collect();
+        assert_eq!(values, expected);
+    }
+}
+
+#[test]
+fn map_index_write_handles_list_paths_and_tagged_values() {
+    for (fixture, expected) in [
+        (
+            "run-pass/collections/map_index_write_nested.spark",
+            "value\nrow\nkey\n9\n7\n1\n-1\n1\n-1\n",
+        ),
+        (
+            "run-pass/collections/map_index_write_tagged.spark",
+            "-1\n9\nmissing\n8\n",
+        ),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, expected);
+        }
+    }
+}
+
+#[test]
+fn map_index_write_balances_key_and_value_ownership() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         static int64_t count(const void *const *slot) { return *(const size_t *)*slot; }\n\
+         int64_t probe_list_rc(const void *const *slot) { return count(slot); }\n\
+         int64_t probe_string_rc(const void *const *slot) { return count(slot); }\n",
+        include_str!("run-pass/collections/map_index_write_ownership.spark"),
+        "1\n1\n2\n0\n1\n1\n0\n1\n1\n4\n9\n0\n0\n0\n0\n-1\n0",
+    );
+}
+
+#[test]
+fn map_index_write_rejects_invalid_targets_and_values() {
+    for (name, expected) in [
+        ("immutable", "cannot assign to immutable variable"),
+        ("wrong_value", "assignment type mismatch"),
+        ("key_type", "map write keys must be integers or strings"),
+        ("zero_storage", "map value type has no storage"),
+        (
+            "intermediate",
+            "map entry must end an indexed assignment path",
+        ),
+        ("compound", "indexed compound assignment is unsupported"),
+    ] {
+        assert_compile_error(
+            &format!("compile-fail/type_errors/map_index_write_{name}.spark"),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn map_index_write_rejects_borrowed_capture_storage() {
+    assert_compile_error(
+        "compile-fail/borrow_errors/map_index_write_borrowed_capture.spark",
+        "indexed assignment requires an owned value type",
+    );
 }
 
 #[test]

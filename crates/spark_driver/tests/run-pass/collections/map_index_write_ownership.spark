@@ -1,0 +1,50 @@
+link "union_probe"
+
+extern fn probe_list_rc(values: Ref[List[Int]]): Int
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn try_insert(value: List[Int], key: String?): Int? {
+    entries: Map[String, List[Int]]! = {}
+    entries[key!] = value
+    return entries.len()
+}
+
+fn main(): Int {
+    suffix: String = "try"
+    first: String = "en{suffix}"
+    prefix: String = "ent"
+    duplicate: String = "{prefix}ry"
+    old: List[Int] = [4]
+    incoming: List[Int] = [9]
+    first_count: Int = probe_string_rc(first)
+    duplicate_count: Int = probe_string_rc(duplicate)
+    old_count: Int = probe_list_rc(old)
+    incoming_count: Int = probe_list_rc(incoming)
+    {
+        entries: Map[String, List[Int]]! = {}
+        entries[first] = old
+        print(probe_string_rc(first) - first_count)
+        print(probe_list_rc(old) - old_count)
+        original: Map[String, List[Int]] = entries
+        entries[duplicate] = incoming
+        print(probe_string_rc(first) - first_count)
+        print(probe_string_rc(duplicate) - duplicate_count)
+        print(probe_list_rc(old) - old_count)
+        print(probe_list_rc(incoming) - incoming_count)
+        entries[duplicate] = entries[first] ?? [0]
+        print(probe_string_rc(duplicate) - duplicate_count)
+        print(probe_list_rc(incoming) - incoming_count)
+        print(entries.len())
+        print((original[first] ?? [0])[0] ?? -1)
+        print((entries[first] ?? [0])[0] ?? -1)
+    }
+    print(probe_string_rc(first) - first_count)
+    print(probe_string_rc(duplicate) - duplicate_count)
+    print(probe_list_rc(old) - old_count)
+    print(probe_list_rc(incoming) - incoming_count)
+
+    missing: String? = Null
+    print(try_insert(incoming, missing) ?? -1)
+    print(probe_list_rc(incoming) - incoming_count)
+    return 0
+}

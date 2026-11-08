@@ -829,12 +829,7 @@ fn check_map_literal(
     let key = key_slot.unwrap_or(TypeId::ERROR);
     let value = value_slot.unwrap_or(TypeId::ERROR);
     if let Some(first) = entries.first() {
-        if !key.is_error()
-            && !matches!(
-                ctx.table.resolve(strip_mutable(key, ctx.table)),
-                Ty::Int(_) | Ty::String
-            )
-        {
+        if !key.is_error() && !is_supported_map_key(key, ctx.table) {
             ctx.diagnostics.push(
                 Diagnostic::error("map literal keys must be integers or strings")
                     .with_label(Label::primary(first.key.span, "unsupported map key type")),
@@ -860,6 +855,13 @@ fn check_map_literal(
     } else {
         TypeId::ERROR
     }
+}
+
+pub(crate) fn is_supported_map_key(key: TypeId, table: &TypeTable) -> bool {
+    matches!(
+        table.resolve(strip_mutable(key, table)),
+        Ty::Int(_) | Ty::String
+    )
 }
 
 /// A conversion materialized before a value enters a collection slot.

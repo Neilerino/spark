@@ -355,8 +355,9 @@ element of a list in a mutable local or parameter binding, including through
 nested list indices. A negative or
 out-of-range index terminates the program with a bounds diagnostic before the
 assignment modifies the list. List copies retain their previous contents.
-Indexed assignment requires an owned slot type. Slot types that contain a
-borrowed `Ref` and indexed compound assignment are unsupported.
+Indexed assignment requires an owned slot type. Slot types containing a
+borrowed `Ref` or a callable are unsupported. Callable types do not record the
+lifetimes of captured values. Indexed compound assignment is unsupported.
 
 ```
 numbers: List[Int] = [1, 2, 3, 4, 5]
@@ -381,6 +382,13 @@ when its binding declares a map type. Map literals accept integer and string key
 expressions. Each entry must fit the map's key and value types. Keys and values
 are evaluated in source order, and the last entry for a repeated key wins.
 
+Plain indexed assignment to a mutable map binding inserts a missing key or
+replaces the value of an existing key. Map copies retain their previous
+contents. A map entry can end a path through nested lists, as in
+`rows[i][key] = value`. Intermediate steps in that path must index lists.
+The assignment evaluates the value first, then each selector once from left
+to right. The slot type must be owned, as for indexed list writes.
+
 ```
 counts: Map[Int, Int]! = {}
 offset: Int = 10
@@ -397,6 +405,7 @@ missingAge: Int = ages["charlie"] ?? 0
 // Mutation (requires mutable map)
 ages: Map[String, Int]! = {"alice": 30}
 ages["charlie"] = 35
+ages["charlie"] = 36
 ```
 
 #### Set[T]

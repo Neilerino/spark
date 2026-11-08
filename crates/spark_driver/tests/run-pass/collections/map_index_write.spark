@@ -1,0 +1,21 @@
+fn main(): Int {
+    entries: Map[Int, Int]! = {}
+    original: Map[Int, Int] = entries
+    offset: Int = 3
+    entries[offset + 1] = 7
+    print(entries[offset + 1] ?? -1)
+    print(entries.len())
+    entries[offset + 1] = 9
+    print(entries[offset + 1] ?? -1)
+    print(entries[offset + 2] ?? -1)
+    print(entries.len())
+    print(original[offset + 1] ?? -1)
+    print(original.len())
+    narrow: Map[UInt8, Int16]! = {}
+    high: UInt8 = 255 as UInt8
+    narrow[high] = 123 as Int16
+    narrow[high] = 456 as Int16
+    print((narrow[high] ?? (0 as Int16)) as Int)
+    print(narrow.len())
+    return 0
+}

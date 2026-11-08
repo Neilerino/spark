@@ -1,0 +1,5 @@
+fn main(): Int {
+    entries: Map[Int, List[Int]]! = {}
+    entries[0][0] = 1
+    return 0
+}

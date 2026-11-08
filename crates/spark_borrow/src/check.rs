@@ -42,12 +42,12 @@ pub fn check_indexed_write_storage(
     for stmt in func.blocks.iter().flat_map(|block| &block.statements) {
         if let Statement::IndexedAssign { value, span, .. } = stmt {
             let ty = func.locals[value.index()].ty;
-            if contains_borrowed_reference(ty, table, &mut FxHashSet::default()) {
+            if can_carry_borrowed_reference(ty, table, &mut FxHashSet::default()) {
                 diagnostics.push(
                     Diagnostic::error("indexed assignment requires an owned value type")
                         .with_label(Label::primary(
                             *span,
-                            "this slot type contains a borrowed reference",
+                            "this slot type can carry a borrowed reference",
                         )),
                 );
             }
@@ -55,7 +55,7 @@ pub fn check_indexed_write_storage(
     }
 }
 
-fn contains_borrowed_reference(
+fn can_carry_borrowed_reference(
     ty: TypeId,
     table: &TypeTable,
     seen: &mut FxHashSet<TypeId>,
@@ -64,24 +64,24 @@ fn contains_borrowed_reference(
         return false;
     }
     match table.resolve(ty) {
-        Ty::Ref { .. } => true,
+        Ty::Ref { .. } | Ty::Function { .. } => true,
         Ty::List(inner)
         | Ty::Set(inner)
         | Ty::Optional(inner)
         | Ty::Mutable(inner)
         | Ty::Future { inner }
-        | Ty::Channel { inner } => contains_borrowed_reference(*inner, table, seen),
+        | Ty::Channel { inner } => can_carry_borrowed_reference(*inner, table, seen),
         Ty::Map(key, value) => {
-            contains_borrowed_reference(*key, table, seen)
-                || contains_borrowed_reference(*value, table, seen)
+            can_carry_borrowed_reference(*key, table, seen)
+                || can_carry_borrowed_reference(*value, table, seen)
         }
         Ty::Tuple(elements) | Ty::Union(elements) => elements
             .iter()
-            .any(|&element| contains_borrowed_reference(element, table, seen)),
+            .any(|&element| can_carry_borrowed_reference(element, table, seen)),
         Ty::Struct(def) | Ty::Enum(def) => fields_contain_borrowed_reference(*def, table, seen),
         Ty::Applied { base, args } => {
             args.iter()
-                .any(|&arg| contains_borrowed_reference(arg, table, seen))
+                .any(|&arg| can_carry_borrowed_reference(arg, table, seen))
                 || fields_contain_borrowed_reference(*base, table, seen)
         }
         _ => false,
@@ -104,7 +104,7 @@ fn fields_contain_borrowed_reference(
                 .filter_map(|&(_, variant)| table.get_variant_fields(variant)),
         )
         .flatten()
-        .any(|&(_, field)| contains_borrowed_reference(field, table, seen))
+        .any(|&(_, field)| can_carry_borrowed_reference(field, table, seen))
 }
 
 #[allow(clippy::cast_possible_truncation)]

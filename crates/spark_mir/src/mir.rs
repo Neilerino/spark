@@ -177,11 +177,11 @@ pub enum Statement {
         /// Source span.
         span: Span,
     },
-    /// Replace an element through a checked collection path, consuming the staged value.
+    /// Write through a checked collection path, consuming the staged value and any map key.
     IndexedAssign {
         /// Collection owner, read and updated by copy-on-write.
         root: Local,
-        /// Staged indices in source order.
+        /// Staged list indices and any terminal map key, in source order.
         indices: Vec<Local>,
         /// Staged value transferred to the destination slot.
         value: Local,
