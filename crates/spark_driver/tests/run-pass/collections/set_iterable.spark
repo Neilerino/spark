@@ -19,5 +19,18 @@ fn main(): Int {
     total: Int = numbers filter (value: Int): Bool { value > 1 }
         reduce 0 (sum: Int, value: Int): Int { sum + value }
     print(total)
+    grown: Set[Int]! = {}
+    n: Int! = 0
+    loop {
+        if n == 20 { break }
+        grown.add(n)
+        n += 1
+    }
+    grown.remove(3)
+    grown.remove(16)
+    remaining: List[Int] = grown filter (value: Int): Bool { value >= 0 }
+    print(remaining.len())
+    sum: Int = remaining reduce 0 (acc: Int, value: Int): Int { acc + value }
+    print(sum)
     return 0
 }

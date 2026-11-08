@@ -904,12 +904,12 @@ fn set_iterable_each_and_filter() {
         let result = run_spark_with_args(fixture, args);
         assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
         let lines: Vec<_> = result.stdout.lines().collect();
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 7);
         assert_eq!(lines[0], "0");
         let mut visited = [lines[1], lines[2]];
         visited.sort_unstable();
         assert_eq!(visited, ["blue", "red"]);
-        assert_eq!(&lines[3..], &["blue", "5"]);
+        assert_eq!(&lines[3..], &["blue", "5", "18", "171"]);
     }
 }
 
