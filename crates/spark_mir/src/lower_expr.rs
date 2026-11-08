@@ -683,7 +683,7 @@ fn lower_method_call(
     defs: &DefinitionTable,
 ) -> Local {
     let receiver_ty = type_table.resolve(unwrap_type_wrappers(receiver.ty, type_table));
-    let snapshot = method == kw::TO_LIST && matches!(receiver_ty, Ty::Map(..));
+    let snapshot = method == kw::TO_LIST && matches!(receiver_ty, Ty::Map(..) | Ty::Set(_));
     let resolved = if snapshot {
         find_builtin_method(defs, method)
     } else {

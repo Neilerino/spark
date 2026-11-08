@@ -447,6 +447,15 @@ tags: Set[String]! = {"rust"}
 tags.add("python")
 ```
 
+Sets can be passed directly to sequential pipelines. Each element has type
+`T`. The pipeline visits an owned snapshot of the set in unspecified order.
+Use `toList()` to take the snapshot explicitly.
+
+```
+tags: Set[String] = {"rust", "python", "go"}
+longTags: List[String] = tags filter (tag: String): Bool { tag.len() > 3 }
+```
+
 #### Tup[A, B, ...]
 
 Fixed-size, mixed-type collection.

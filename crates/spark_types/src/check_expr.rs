@@ -2330,6 +2330,11 @@ fn check_method_call(
             hash_iterable_list(&[key, value], call_span, ctx.table, ctx.diagnostics)
                 .map_or(TypeId::ERROR, |(_, list)| list)
         }
+        Ty::Set(element) if method == kw::TO_LIST => {
+            diagnostics::expect_args(0, arg_tys.len(), call_span, ctx.diagnostics);
+            hash_iterable_list(&[element], call_span, ctx.table, ctx.diagnostics)
+                .map_or(TypeId::ERROR, |(_, list)| list)
+        }
         Ty::Map(key, _) | Ty::Set(key) => {
             let is_set = matches!(stripped, Ty::Set(_));
             let (collection, diagnostic) = if is_set {
@@ -2733,13 +2738,15 @@ fn check_pipeline_stage(
     let base_ty = strip_mutable(input_ty, ctx.table);
 
     if stage.parallel
-        && (matches!(ctx.table.resolve(base_ty), Ty::Map(..))
+        && (matches!(ctx.table.resolve(base_ty), Ty::Map(..) | Ty::Set(_))
             || matches!(ctx.table.resolve(base_ty), Ty::List(element)
             if matches!(ctx.table.resolve(*element), Ty::Tuple(_))))
     {
         ctx.diagnostics.push(
-            Diagnostic::error("parallel iteration does not support map or tuple elements")
-                .with_label(Label::primary(source_span, "use a sequential pipeline")),
+            Diagnostic::error(
+                "parallel iteration does not support hash collections or tuple elements",
+            )
+            .with_label(Label::primary(source_span, "use a sequential pipeline")),
         );
         return TypeId::ERROR;
     }
@@ -2937,8 +2944,7 @@ fn check_pipeline_stage(
     }
 }
 
-/// Extracts the element type from a `List[T]` or an `Iterable[E]` struct,
-/// reporting an error if neither.
+/// Finds the element type of a pipeline source and interns any required snapshot list.
 fn extract_list_elem(
     base_ty: TypeId,
     operation: &str,
@@ -2949,10 +2955,10 @@ fn extract_list_elem(
 ) -> TypeId {
     match table.resolve(base_ty).clone() {
         Ty::List(elem) => elem,
-        Ty::Map(key, value) => match hash_iterable_list(&[key, value], span, table, diagnostics) {
-            Some((elem, _)) => elem,
-            None => TypeId::ERROR,
-        },
+        Ty::Map(key, value) => hash_iterable_list(&[key, value], span, table, diagnostics)
+            .map_or(TypeId::ERROR, |(elem, _)| elem),
+        Ty::Set(element) => hash_iterable_list(&[element], span, table, diagnostics)
+            .map_or(TypeId::ERROR, |(elem, _)| elem),
         Ty::Error => TypeId::ERROR,
         Ty::Struct(def_id) => {
             // Check if the struct binds Iterable[E]

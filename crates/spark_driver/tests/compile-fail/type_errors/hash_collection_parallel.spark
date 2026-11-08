@@ -1,0 +1,5 @@
+fn main(): Int {
+    values: Set[Int] = {1, 2}
+    values parallel each (value: Int): Void { print(value) }
+    return 0
+}

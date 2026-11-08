@@ -764,7 +764,6 @@ fn lower_single_pipeline_stage(
     let bool_ty = find_bool_type(table);
     let void_ty = find_void_type(table);
 
-    // Iterable: if source is a struct binding Iterable, wrap with .toList()
     let source_hir = maybe_wrap_iterable(source_hir, table);
 
     match &stage.kind {
@@ -1461,10 +1460,12 @@ fn maybe_wrap_displayable(expr: HirExpr, table: &TypeTable) -> HirExpr {
 
 /// Converts an iterable source to its list representation through `toList`.
 fn maybe_wrap_iterable(source: HirExpr, table: &TypeTable) -> HirExpr {
-    if let Ty::Map(key, value) = table.resolve(strip_mutable_ty(source.ty, table)) {
-        let element = table
-            .lookup(&Ty::Tuple(vec![*key, *value]))
-            .unwrap_or(TypeId::ERROR);
+    let collection_element = match table.resolve(strip_mutable_ty(source.ty, table)) {
+        Ty::Map(key, value) => table.lookup(&Ty::Tuple(vec![*key, *value])),
+        Ty::Set(element) => Some(*element),
+        _ => None,
+    };
+    if let Some(element) = collection_element {
         let list = table.lookup(&Ty::List(element)).unwrap_or(TypeId::ERROR);
         let span = source.span;
         return HirExpr::new(
