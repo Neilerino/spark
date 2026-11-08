@@ -10,9 +10,10 @@
 //!
 //! 1. **Nop elimination** — remove `Statement::Nop` placeholders
 //! 2. **Constant folding** — evaluate constant `BinaryOp`/`UnaryOp` at compile time
-//! 3. **CFG simplification** — merge goto chains, fold constant `SwitchInt`
-//! 4. **Dead code elimination** — remove unreachable blocks and dead assignments
-//! 5. **Copy propagation** — replace temp copies with source locals
+//! 3. **Signed division strength reduction** — lower division and remainder by positive powers of two
+//! 4. **CFG simplification** — merge goto chains, fold constant `SwitchInt`
+//! 5. **Dead code elimination** — remove unreachable blocks and dead assignments
+//! 6. **Copy propagation** — replace temp copies with source locals
 //!
 //! ## Quick Start
 //!
@@ -42,6 +43,7 @@ mod const_fold;
 mod copy_prop;
 mod dce;
 mod deforest;
+mod divrem;
 mod inline;
 mod nop_elim;
 mod simplify_cfg;
@@ -132,12 +134,13 @@ fn optimize_function(func: &mut MirFunction, table: &TypeTable) {
     }
 }
 
-/// Runs all five optimization passes in order. Returns `true` if any
+/// Runs the per-function optimization passes in order. Returns `true` if any
 /// pass modified the function.
 fn run_passes(func: &mut MirFunction, table: &TypeTable) -> bool {
     let mut changed = false;
     changed |= nop_elim::eliminate_nops(func);
     changed |= const_fold::fold_constants(func);
+    changed |= divrem::reduce_signed_divrem(func, table);
     changed |= simplify_cfg::simplify_cfg(func);
     changed |= dce::eliminate_dead_code(func);
     changed |= copy_prop::propagate_copies(func, table);
@@ -357,6 +360,10 @@ mod tests {
 
     /// Full pipeline helper: lex → parse → resolve → type-check → HIR → MIR → optimize.
     fn optimize_source(source: &str) -> OptOutput {
+        optimize_source_with_level(source, OptLevel::default())
+    }
+
+    fn optimize_source_with_level(source: &str, opt_level: OptLevel) -> OptOutput {
         use spark_lexer::Lexer;
         use spark_modules::{ModuleGraph, ModuleInfo, ModulePath};
         use spark_parser::parse;
@@ -423,7 +430,7 @@ mod tests {
             mir: mir_output.mir,
             table: mir_output.table,
             definitions: DefinitionTable::new(),
-            opt_level: OptLevel::default(),
+            opt_level,
         })
     }
 
@@ -445,6 +452,36 @@ mod tests {
     fn optimize_arithmetic() {
         let output = optimize_source("fn f(): Int { return 2 + 3 }");
         assert!(!output.diagnostics.has_errors());
+    }
+
+    #[test]
+    fn signed_divrem_rewrite_respects_opt_level() {
+        use spark_ast::BinaryOp::{Div, Mod, Shr};
+
+        let source = "fn f(x: Int, divisor: Int): Int {
+            return x / 1 + x % 1 + x / 4 + x % 4 + x / divisor + x % divisor
+        }";
+        for level in [OptLevel::None, OptLevel::Basic] {
+            let output = optimize_source_with_level(source, level);
+            let func = output.mir.functions.values().next().expect("function");
+            let operators: Vec<_> = func
+                .blocks
+                .iter()
+                .flat_map(|block| &block.statements)
+                .filter_map(|statement| match statement {
+                    Statement::Assign {
+                        rvalue: Rvalue::BinaryOp(op, ..),
+                        ..
+                    } => Some(*op),
+                    _ => None,
+                })
+                .collect();
+
+            let expected = if level == OptLevel::None { 3 } else { 1 };
+            assert_eq!(operators.iter().filter(|&&op| op == Div).count(), expected);
+            assert_eq!(operators.iter().filter(|&&op| op == Mod).count(), expected);
+            assert_eq!(operators.contains(&Shr), level == OptLevel::Basic);
+        }
     }
 
     #[test]
