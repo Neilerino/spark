@@ -1,0 +1,7 @@
+link "union_probe"
+extern fn give(): List[Null]
+fn main(): Int {
+    values: List[Null] = give()
+    print(values.contains(Null))
+    return 0
+}

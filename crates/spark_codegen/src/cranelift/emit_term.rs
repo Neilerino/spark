@@ -1739,6 +1739,11 @@ fn borrowed_element_addr<M: Module>(
     let (Operand::Copy(place) | Operand::Move(place)) = operand else {
         return None;
     };
+    let ty = emit_rvalue::resolve_place_type(ctx, place, table);
+    if abi::is_zero_sized(ty, table) {
+        let zero = ctx.builder.ins().iconst(types::I8, 0);
+        return Some(emit_rvalue::store_scalar_to_temp(ctx, zero, ty, table));
+    }
     Some(emit_rvalue::emit_place_addr(ctx, place, table, module).0)
 }
 

@@ -948,6 +948,25 @@ fn tuple_list_contains_balances_temporary_owners() {
 }
 
 #[test]
+fn list_contains_uses_zero_sized_slot_marker() {
+    assert_native_ownership_fixture(
+        r#"#include <stdint.h>
+extern void *__spark_value_desc_new(int64_t, int64_t, uintptr_t, uintptr_t, uintptr_t, uintptr_t);
+extern void *__spark_list_new(void *);
+extern void __spark_list_push(void *, const unsigned char *);
+void *give(void) {
+    void *list = __spark_list_new(__spark_value_desc_new(0, 1, 0, 0, 0, 0));
+    unsigned char zero = 0;
+    __spark_list_push(list, &zero);
+    return list;
+}
+"#,
+        include_str!("run-pass/collections/list_contains_zero_sized.spark"),
+        "true",
+    );
+}
+
+#[test]
 fn collection_equality_uses_float_values_and_integer_keys() {
     let fixture = "run-pass/collections/collection_equality_boundaries.spark";
     for args in [&[][..], &["--no-opt"][..]] {
