@@ -1160,7 +1160,7 @@ pub(super) fn emit_value_desc<M: Module>(
     let drop = elem_dtor_func_addr(ctx, elem_ty, ecx.elem_dtor_ids, module);
     let retain = elem_retain_func_addr(ctx, elem_ty, ecx.elem_retain_ids, module);
     let hash = elem_hash_func_addr(ctx, elem_ty, ecx.table, module);
-    let eq = elem_eq_func_addr(ctx, elem_ty, ecx.table, module);
+    let eq = elem_eq_func_addr(ctx, elem_ty, ecx, module);
     let func_ref = module.declare_func_in_func(ctx.stubs.value_desc_new, ctx.builder.func);
     let call = ctx
         .builder
@@ -1217,16 +1217,21 @@ fn elem_hash_func_addr<M: Module>(
     }
 }
 
-/// Returns an equality callback function address for set/map keys, or null.
+/// Returns the stored-value equality callback or null for byte equality.
 fn elem_eq_func_addr<M: Module>(
     ctx: &mut FunctionContext<'_>,
     elem_ty: TypeId,
-    table: &TypeTable,
+    ecx: &EmitCtx<'_>,
     module: &mut M,
 ) -> Value {
-    let (_, unwrapped) = clif_types::unwrap_mutable(elem_ty, table);
-    if matches!(unwrapped, Ty::String) {
-        let func_ref = module.declare_func_in_func(ctx.stubs.eq_string_elem, ctx.builder.func);
+    let (elem_ty, unwrapped) = clif_types::unwrap_mutable(elem_ty, ecx.table);
+    let equality = if matches!(unwrapped, Ty::String) {
+        Some(ctx.stubs.eq_string_elem)
+    } else {
+        ecx.elem_eq_ids.get(&elem_ty).copied()
+    };
+    if let Some(equality) = equality {
+        let func_ref = module.declare_func_in_func(equality, ctx.builder.func);
         ctx.builder.ins().func_addr(ctx.ptr_type, func_ref)
     } else {
         ctx.builder.ins().iconst(ctx.ptr_type, 0)

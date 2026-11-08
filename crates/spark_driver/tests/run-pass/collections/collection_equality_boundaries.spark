@@ -1,0 +1,31 @@
+fn emptyCount[K](key: K): Int {
+    counts: Map[K, Int] = {}
+    return counts.len()
+}
+
+fn main(): Int {
+    zero: Float = 0.0
+    nan: Float = zero / zero
+    scores: List[Float] = [-0.0, nan]
+    print(scores.contains(zero))
+    print(scores.contains(nan))
+    narrowZero: Float32 = 0.0 as Float32
+    narrowScores: List[Float32] = [(-0.0) as Float32]
+    print(narrowScores.contains(narrowZero))
+
+    original: Int16 = -2 as Int16
+    probe: Int16 = (1 - 3) as Int16
+    absent: Int16 = 4 as Int16
+    counts: Map[Int16, Int]! = {original: 7}
+    seen: Set[Int16]! = {original}
+    print(counts[probe] ?? 0)
+    print(counts.contains(absent))
+    print(seen.contains(probe))
+    print(seen.contains(absent))
+    counts.remove(probe)
+    seen.remove(probe)
+    print(counts.len())
+    print(seen.len())
+    print(emptyCount(3))
+    return 0
+}

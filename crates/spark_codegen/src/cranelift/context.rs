@@ -39,6 +39,8 @@ pub struct EmitCtx<'a> {
     pub elem_dtor_ids: &'a FxHashMap<TypeId, FuncId>,
     /// Mapping from element types to their collection-element retain functions.
     pub elem_retain_ids: &'a FxHashMap<TypeId, FuncId>,
+    /// Mapping from element types to their slot equality functions.
+    pub elem_eq_ids: &'a FxHashMap<TypeId, FuncId>,
     /// Poll function info for cooperative async.
     pub poll_fn_map: &'a FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
     /// Mapping from lambda `DefIds` to their async function `DefIds`.

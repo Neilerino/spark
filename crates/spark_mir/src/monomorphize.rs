@@ -15,7 +15,7 @@ use spark_resolve::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visi
 use spark_span::Span;
 use spark_types::check_expr::collection_cast_preserves_layout;
 use spark_types::substitute::{substitute_mut, SubstMap};
-use spark_types::{mangle_type, TypeId, TypeTable};
+use spark_types::{mangle_type, Ty, TypeId, TypeTable};
 
 use crate::mir::{
     AggregateKind, Constant, Mir, MirFunction, Operand, Projection, Rvalue, Statement, Terminator,
@@ -70,12 +70,23 @@ pub fn monomorphize(
         // Substitute all TypeIds in locals.
         for local in &mut mono_fn.locals {
             local.ty = substitute_mut(local.ty, subst, table);
+            if let Some(slot) = unsupported_hash_slot(local.ty, table) {
+                diagnostics.push(
+                    Diagnostic::error(format!("unsupported {slot} type")).with_label(
+                        Label::primary(
+                            local.span,
+                            "expected an integer or String after specialization",
+                        ),
+                    ),
+                );
+            }
         }
         // Substitute the return type.
         mono_fn.return_type = substitute_mut(mono_fn.return_type, subst, table);
 
         // Substitute TypeIds in rvalues (casts, etc.).
         substitute_rvalues(&mut mono_fn, subst, table, diagnostics);
+        validate_specialized_comparisons(&mono_fn, table, definitions, diagnostics);
 
         // Allocate a fresh DefId for this monomorphized function.
         let original_name = definitions
@@ -128,6 +139,97 @@ pub fn monomorphize(
     let generic_def_ids: Vec<DefId> = mono_requests.iter().map(|(d, _, _)| *d).collect();
     for def_id in generic_def_ids {
         mir.functions.remove(&def_id);
+    }
+}
+
+fn validate_specialized_comparisons(
+    function: &MirFunction,
+    table: &TypeTable,
+    definitions: &DefinitionTable,
+    diagnostics: &mut Diagnostics,
+) {
+    use spark_intern::kw;
+    use spark_types::check_expr::{list_membership_error, tuple_comparison_error};
+
+    let operand_type = |operand: &Operand| {
+        let local = operand_local(operand)?;
+        let ty = function.locals[local.index()].ty;
+        Some(match table.resolve(ty) {
+            Ty::Mutable(inner) => *inner,
+            _ => ty,
+        })
+    };
+
+    for block in &function.blocks {
+        for statement in &block.statements {
+            let Statement::Assign {
+                rvalue: Rvalue::BinaryOp(op, left, right),
+                span,
+                ..
+            } = statement
+            else {
+                continue;
+            };
+            if !op.is_comparison() {
+                continue;
+            }
+            let (Some(left), Some(right)) = (operand_type(left), operand_type(right)) else {
+                continue;
+            };
+            if let Some(message) = tuple_comparison_error(*op, left, right, table) {
+                diagnostics.push(Diagnostic::error(message).with_label(Label::primary(
+                    *span,
+                    "unsupported comparison after specialization",
+                )));
+            }
+        }
+
+        let Terminator::Call {
+            func, args, span, ..
+        } = &block.terminator
+        else {
+            continue;
+        };
+        let Some(def) = function
+            .resolve_callee_def_id(func)
+            .and_then(|id| definitions.get(id))
+        else {
+            continue;
+        };
+        if def.kind != DefinitionKind::BuiltinMethod || def.name != kw::CONTAINS {
+            continue;
+        }
+        let [receiver, _] = args.as_slice() else {
+            continue;
+        };
+        let Some(Ty::List(element)) = operand_type(receiver).map(|ty| table.resolve(ty)) else {
+            continue;
+        };
+        if let Some(message) = list_membership_error(*element, table) {
+            diagnostics.push(Diagnostic::error(message).with_label(Label::primary(
+                *span,
+                "unsupported tuple comparison after specialization",
+            )));
+        }
+    }
+}
+
+fn unsupported_hash_slot(ty: TypeId, table: &TypeTable) -> Option<&'static str> {
+    use spark_types::check_expr::is_unsupported_concrete_hash_slot;
+
+    let invalid = |slot| is_unsupported_concrete_hash_slot(slot, table);
+    match table.resolve(ty) {
+        Ty::Map(key, _) if invalid(*key) => Some("map key"),
+        Ty::Set(element) if invalid(*element) => Some("set element"),
+        Ty::Map(_, value)
+        | Ty::List(value)
+        | Ty::Mutable(value)
+        | Ty::Optional(value)
+        | Ty::Ref { inner: value, .. } => unsupported_hash_slot(*value, table),
+        Ty::Tuple(types) | Ty::Union(types) | Ty::Applied { args: types, .. } => types
+            .iter()
+            .find_map(|&item| unsupported_hash_slot(item, table)),
+        _ => None,
     }
 }
 

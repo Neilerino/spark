@@ -1,0 +1,11 @@
+alias Coordinates = Map[Tup[Int, Int], Int]
+
+fn rejectSet(items: Set[Float]): Int {
+    return items.len()
+}
+
+fn main(): Int {
+    counts: Coordinates = {}
+    print(counts.contains((1, 2)))
+    return 0
+}

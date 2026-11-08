@@ -293,6 +293,20 @@ fn lower_named_def(
     }
 }
 
+fn check_hash_type_argument(
+    ty: TypeId,
+    span: spark_span::Span,
+    slot: &str,
+    ctx: &mut TypeCheckCtx<'_>,
+) {
+    if crate::check_expr::is_unsupported_concrete_hash_slot(ty, ctx.table) {
+        ctx.diagnostics.push(
+            Diagnostic::error(format!("unsupported {slot} type"))
+                .with_label(Label::primary(span, "expected an integer or String")),
+        );
+    }
+}
+
 /// Lowers built-in generic types like `List[T]`, `Map[K, V]`, `Set[T]`.
 fn lower_builtin_generic(
     name: spark_intern::Symbol,
@@ -323,6 +337,7 @@ fn lower_builtin_generic(
             return TypeId::ERROR;
         }
         let key = lower_type_expr(&type_args[0], ctx);
+        check_hash_type_argument(key, type_args[0].span, "map key", ctx);
         let value = lower_type_expr(&type_args[1], ctx);
         return ctx.table.intern(Ty::Map(key, value));
     }
@@ -336,6 +351,7 @@ fn lower_builtin_generic(
             return TypeId::ERROR;
         }
         let elem = lower_type_expr(&type_args[0], ctx);
+        check_hash_type_argument(elem, type_args[0].span, "set element", ctx);
         return ctx.table.intern(Ty::Set(elem));
     }
 

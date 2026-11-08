@@ -555,6 +555,7 @@ impl CraneliftBackend {
         dtor_ids: &FxHashMap<DefId, FuncId>,
         elem_dtor_ids: &FxHashMap<TypeId, FuncId>,
         elem_retain_ids: &FxHashMap<TypeId, FuncId>,
+        elem_eq_ids: &FxHashMap<TypeId, FuncId>,
         stubs: &runtime::RuntimeStubs,
         poll_fn_map: &FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
         lambda_to_async: &FxHashMap<DefId, DefId>,
@@ -729,6 +730,7 @@ impl CraneliftBackend {
                 dtor_ids,
                 elem_dtor_ids,
                 elem_retain_ids,
+                elem_eq_ids,
                 poll_fn_map,
                 lambda_to_async,
             };
@@ -790,6 +792,13 @@ impl CodegenBackend for CraneliftBackend {
         // Phase 2b: Generate element destructor functions for collections.
         let elem_dtor_ids = self.generate_collection_dtors(mir, table, &stubs);
         let elem_retain_ids = self.generate_collection_retains(mir, table, &stubs);
+        let elem_eq_ids = emit_equality::generate_list_equalities(
+            mir,
+            table,
+            stubs.string_eq,
+            &mut self.module,
+            diagnostics,
+        );
 
         // Phase 2c: Precompute lambda → async function mapping for spawn_coop.
         // For each lambda that calls an async function with a poll entry,
@@ -824,6 +833,7 @@ impl CodegenBackend for CraneliftBackend {
                     &dtor_ids,
                     &elem_dtor_ids,
                     &elem_retain_ids,
+                    &elem_eq_ids,
                     &stubs,
                     poll_fn_map,
                     &lambda_to_async,

@@ -888,7 +888,9 @@ pub(crate) fn check_set_element_type(ty: TypeId, span: Span, ctx: &mut TypeCheck
     false
 }
 
-pub(crate) fn is_supported_hash_slot(key: TypeId, table: &TypeTable) -> bool {
+/// Checks whether a concrete Map key or Set element has matching equality and hashing.
+#[must_use]
+pub fn is_supported_hash_slot(key: TypeId, table: &TypeTable) -> bool {
     matches!(
         table.resolve(strip_mutable(key, table)),
         Ty::Int(_) | Ty::String
@@ -950,6 +952,13 @@ pub fn collection_value_coercion(
         }
         _ => None,
     }
+}
+
+/// Checks a hash slot once its type is known, leaving generic parameters for specialization.
+#[must_use]
+pub fn is_unsupported_concrete_hash_slot(ty: TypeId, table: &TypeTable) -> bool {
+    let ty = strip_mutable(ty, table);
+    !matches!(table.resolve(ty), Ty::Error | Ty::Param(_)) && !is_supported_hash_slot(ty, table)
 }
 
 // === List range ===
@@ -1044,23 +1053,9 @@ fn check_binary_op(
         let lhs = ctx.table.resolve(lhs_base);
         let rhs = ctx.table.resolve(rhs_base);
         if matches!(lhs, Ty::Tuple(_)) || matches!(rhs, Ty::Tuple(_)) {
-            if !matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+            if let Some(message) = tuple_comparison_error(op, lhs_base, rhs_base, ctx.table) {
                 ctx.diagnostics.push(
-                    Diagnostic::error("tuple ordering is not supported")
-                        .with_label(Label::primary(op_span, "compare individual fields")),
-                );
-                return TypeId::ERROR;
-            }
-            let tuple_ty = if matches!(lhs, Ty::Tuple(_)) {
-                lhs_base
-            } else {
-                rhs_base
-            };
-            let compatible =
-                lhs_base == rhs_base || matches!(lhs, Ty::Never) || matches!(rhs, Ty::Never);
-            if !compatible || !supports_tuple_equality(tuple_ty, ctx.table) {
-                ctx.diagnostics.push(
-                    Diagnostic::error("tuple equality requires matching supported field types")
+                    Diagnostic::error(message)
                         .with_label(Label::primary(op_span, "unsupported tuple comparison")),
                 );
                 return TypeId::ERROR;
@@ -1129,6 +1124,32 @@ fn check_binary_op(
     }
 
     TypeId::ERROR
+}
+
+/// Returns the diagnostic for an unsupported tuple comparison, including after specialization.
+#[must_use]
+pub fn tuple_comparison_error(
+    op: BinaryOp,
+    lhs: TypeId,
+    rhs: TypeId,
+    table: &TypeTable,
+) -> Option<&'static str> {
+    let lhs = strip_mutable(lhs, table);
+    let rhs = strip_mutable(rhs, table);
+    let (left, right) = (table.resolve(lhs), table.resolve(rhs));
+    let tuple = if matches!(left, Ty::Tuple(_)) {
+        lhs
+    } else if matches!(right, Ty::Tuple(_)) {
+        rhs
+    } else {
+        return None;
+    };
+    if !matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
+        return Some("tuple ordering is not supported");
+    }
+    let compatible = lhs == rhs || matches!(left, Ty::Never) || matches!(right, Ty::Never);
+    (!compatible || !supports_tuple_equality(tuple, table))
+        .then_some("tuple equality requires matching supported field types")
 }
 
 /// Checks whether a tuple can be compared by its stored field values.
@@ -2473,10 +2494,23 @@ fn check_list_method(
         ctx.builtins.void
     } else if method == kw::CONTAINS {
         diagnostics::expect_args(1, arg_tys.len(), call_span, ctx.diagnostics);
-        if !arg_tys.is_empty() && !is_compatible(arg_tys[0], elem, ctx.table) {
+        if let Some(message) = list_membership_error(elem, ctx.table) {
             ctx.diagnostics.push(
-                Diagnostic::error("argument type does not match list element type")
-                    .with_label(Label::primary(call_span, "type mismatch")),
+                Diagnostic::error(message)
+                    .with_label(Label::primary(call_span, "unsupported tuple comparison")),
+            );
+            return TypeId::ERROR;
+        }
+        if let [arg] = arg_tys {
+            if matches!(ctx.table.resolve(*arg), Ty::Never) {
+                return ctx.builtins.bool_ty;
+            }
+            check_collection_argument(
+                *arg,
+                elem,
+                call_span,
+                "argument type does not match list element type",
+                ctx,
             );
         }
         ctx.builtins.bool_ty
@@ -2489,6 +2523,14 @@ fn check_list_method(
             .push(diagnostics::no_method("List", method, call_span));
         TypeId::ERROR
     }
+}
+
+/// Returns the diagnostic for a list element unsupported by value membership.
+#[must_use]
+pub fn list_membership_error(elem: TypeId, table: &TypeTable) -> Option<&'static str> {
+    let elem = strip_mutable(elem, table);
+    (matches!(table.resolve(elem), Ty::Tuple(_)) && !supports_tuple_equality(elem, table))
+        .then_some("List.contains requires supported tuple field types")
 }
 
 pub(crate) fn check_collection_argument(
