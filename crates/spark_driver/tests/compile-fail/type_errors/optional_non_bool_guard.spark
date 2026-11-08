@@ -1,0 +1,8 @@
+fn main(): Int {
+    data: List[Int] = [1]
+    value: Int? = data[0]
+    return value to {
+        Null if 1 -> 7,
+        _ -> 9
+    }
+}

@@ -248,8 +248,8 @@ impl PrettyPrinter<'_> {
                 self.print_operand(step);
                 self.out.push(')');
             }
-            Rvalue::MapGetOptional { map, key, .. } => {
-                let _ = write!(self.out, "MapGetOptional({map}, {key})");
+            Rvalue::CollectionGetOptional { collection, index } => {
+                let _ = write!(self.out, "CollectionGetOptional({collection}, {index})");
             }
         }
     }

@@ -146,10 +146,15 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
             }
         }
 
-        ExprKind::Index { base, index } => HirExprKind::Index {
-            base: Box::new(lower_expr(base, ctx)),
-            index: Box::new(lower_expr(index, ctx)),
-        },
+        ExprKind::Index { base, index } => {
+            let base = Box::new(lower_expr(base, ctx));
+            let index = Box::new(lower_expr(index, ctx));
+            let base_ty = strip_mutable_ty(base.ty, ctx.table);
+            match ctx.table.resolve(base_ty) {
+                Ty::List(_) | Ty::Map(_, _) => HirExprKind::CollectionLookup { base, index },
+                _ => HirExprKind::Index { base, index },
+            }
+        }
 
         // === Calls ===
         ExprKind::Call { callee, args } => {
@@ -460,7 +465,7 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
         ExprKind::Propagate(inner) => {
             let inner_hir = lower_expr(inner, ctx);
             let ty = expr_type(expr.id, ctx.table);
-            let inner_ty = inner_hir.ty;
+            let inner_ty = strip_mutable_ty(inner_hir.ty, ctx.table);
             desugar_propagate_expr(
                 inner_hir,
                 inner_ty,
@@ -476,14 +481,13 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
         ExprKind::Pipeline { source, stages } => lower_pipeline(source, stages, expr, ctx),
 
         ExprKind::To { expr: inner, arms } => {
-            let inner_ty = expr_type(inner.id, ctx.table);
+            let inner_ty = strip_mutable_ty(expr_type(inner.id, ctx.table), ctx.table);
             let is_union = matches!(ctx.table.resolve(inner_ty), Ty::Union(_) | Ty::Optional(_));
             let inner_hir = lower_expr(inner, ctx);
 
             if is_union {
                 // Union/optional: use narrowing lowering (adds passthrough arms)
-                let ty = expr_type(expr.id, ctx.table);
-                lower_to_narrowing(inner_hir, arms, ty, ctx, expr.span)
+                lower_to_narrowing(inner_hir, arms, ctx, expr.span)
             } else {
                 // Non-union: lower directly to HirExprKind::Match (exhaustive, no passthrough)
                 HirExprKind::Match {
@@ -860,25 +864,23 @@ fn lower_single_pipeline_stage(
 fn lower_to_narrowing(
     inner_hir: HirExpr,
     arms: &[spark_ast::MatchArm],
-    ty: TypeId,
     ctx: &mut LowerCtx<'_>,
     span: Span,
 ) -> HirExprKind {
     let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len() + 1);
 
-    // Collect the union members for ident-as-type-narrow resolution.
-    let inner_ty = match ctx.table.resolve(inner_hir.ty) {
-        Ty::Mutable(inner) => *inner,
-        _ => inner_hir.ty,
-    };
-    let union_members = match ctx.table.resolve(inner_ty) {
-        Ty::Union(_) | Ty::Optional(_) => spark_types::union::union_members(inner_ty, ctx.table),
-        _ => Vec::new(),
-    };
+    let inner_ty = strip_mutable_ty(inner_hir.ty, ctx.table);
+    let union_members = spark_types::union::union_members(inner_ty, ctx.table);
 
     for arm in arms {
+        let (pattern, guard) = match &arm.pattern.kind {
+            spark_ast::PatternKind::Guard { pattern, guard } => {
+                (pattern.as_ref(), Some(lower_expr(guard, ctx)))
+            }
+            _ => (&arm.pattern, None),
+        };
         let pattern = lower_to_pattern(
-            &arm.pattern,
+            pattern,
             ctx.definitions,
             ctx.resolutions,
             ctx.table,
@@ -888,43 +890,34 @@ fn lower_to_narrowing(
         let body = lower_expr(&arm.body, ctx);
         hir_arms.push(HirMatchArm {
             pattern,
-            guard: None,
+            guard,
             body,
             span: arm.span,
         });
     }
 
-    // Add passthrough arms for unhandled union members using TypeNarrow
-    // so the MIR pattern compiler extracts payloads properly.
-    if union_members.is_empty() {
-        // Non-union: fall back to binding passthrough
-        let pass_id = ctx.definitions.next_synthetic_id(span);
-        hir_arms.push(HirMatchArm {
-            pattern: HirPattern::Binding { def_id: pass_id },
-            guard: None,
-            body: HirExpr::new(HirExprKind::Local(pass_id), ty, span),
-            span,
-        });
-    } else if !hir_arms
+    if !hir_arms
         .iter()
-        .any(|arm| matches!(arm.pattern, HirPattern::Wildcard))
+        .any(|arm| arm.guard.is_none() && matches!(arm.pattern, HirPattern::Wildcard))
     {
         for member_ty in union_members {
             let is_null = matches!(ctx.table.resolve(member_ty), Ty::Null);
-            let handled = hir_arms.iter().any(|arm| match arm.pattern {
-                HirPattern::TypeNarrow { ty, .. } => ty == member_ty,
-                HirPattern::Literal(HirLiteral::Null) => is_null,
-                _ => false,
-            });
-            if handled {
-                continue;
+            let handled = hir_arms
+                .iter()
+                .filter(|arm| arm.guard.is_none())
+                .any(|arm| match arm.pattern {
+                    HirPattern::TypeNarrow { ty, .. } => ty == member_ty,
+                    HirPattern::Literal(HirLiteral::Null) => is_null,
+                    _ => false,
+                });
+            if !handled {
+                hir_arms.push(desugar::match_member(
+                    member_ty,
+                    span,
+                    ctx.table,
+                    ctx.definitions,
+                ));
             }
-            hir_arms.push(desugar::match_member(
-                member_ty,
-                span,
-                ctx.table,
-                ctx.definitions,
-            ));
         }
     }
 

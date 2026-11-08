@@ -1,0 +1,40 @@
+link "union_probe"
+
+extern fn probe_list_rc(values: Ref[List[Int]]): Int
+
+fn source(values: List[Int]): List[List[Int]] {
+    print("list")
+    return [values]
+}
+
+fn position(value: Int): Int {
+    print("index")
+    return value
+}
+
+fn lookup(values: List[Int], index: Int): List[Int]? {
+    result: List[Int] = source(values)[position(index)]!
+    print("continued")
+    return result
+}
+
+fn main(): Int {
+    values: List[Int] = [9]
+    before: Int = probe_list_rc(values)
+    {
+        result: List[Int]? = lookup(values, 0)
+        print(probe_list_rc(values) - before)
+        result to {
+            payload: List[Int] -> print(payload.len()),
+            Null -> print("unexpected miss")
+        }
+    }
+    print(probe_list_rc(values) - before)
+
+    absent: List[Int]? = lookup(values, -1)
+    if absent is Null {
+        print("missing")
+    }
+    print(probe_list_rc(values) - before)
+    return 0
+}

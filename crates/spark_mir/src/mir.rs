@@ -292,15 +292,12 @@ pub enum Rvalue {
         /// Step value.
         step: Operand,
     },
-    /// Null-safe map index: calls `__spark_map_get`, checks for null,
-    /// and produces `Optional(V)` — `Null` if key not found, `Some(value)`
-    /// if found. This avoids the crash that occurs when a plain
-    /// `Place + Index` projection loads from a null `map_get` result.
-    MapGetOptional {
-        /// The map, borrowed for the lookup.
-        map: Place,
-        /// The key, borrowed for the lookup.
-        key: Place,
+    /// Reads an owned Optional from a list or map, with Null on a miss.
+    CollectionGetOptional {
+        /// The collection, borrowed for the lookup.
+        collection: Place,
+        /// The list index or map key, borrowed for the lookup.
+        index: Place,
     },
     /// Compute the length of a range without allocating a list.
     ///

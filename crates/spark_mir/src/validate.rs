@@ -4,12 +4,12 @@
 //! before it reaches code generation, where structural errors would
 //! manifest as silent runtime corruption or ICE panics.
 //!
-//! This module is intentionally conservative: it only checks structural
-//! invariants that must always hold, regardless of the program being
-//! compiled. Type-level checks are left to the type checker.
+//! Checks structural invariants and destination layouts required by codegen.
 //!
 //! All formatting is deferred to error sites so the happy path (valid MIR)
 //! performs only integer comparisons with zero heap allocations.
+
+use spark_types::{Ty, TypeTable};
 
 use crate::mir::{
     AggregateKind, BasicBlock, BlockId, Mir, MirFunction, Operand, Place, Projection, Rvalue,
@@ -22,19 +22,17 @@ use crate::mir::{
 /// The caller can choose to panic, emit diagnostics, or log depending on
 /// the build configuration.
 #[must_use]
-pub fn validate(mir: &Mir) -> Vec<String> {
+pub fn validate(mir: &Mir, table: &TypeTable) -> Vec<String> {
     let mut errors = Vec::new();
     for func in mir.functions.values() {
-        validate_function(func, &mut errors);
+        validate_function(func, table, &mut errors);
     }
     errors
 }
 
 /// Validates a single MIR function.
-fn validate_function(func: &MirFunction, errors: &mut Vec<String>) {
+fn validate_function(func: &MirFunction, table: &TypeTable, errors: &mut Vec<String>) {
     let func_id = func.def_id.as_u32();
-    let num_locals = func.locals.len();
-    let num_blocks = func.blocks.len();
 
     if func.blocks.is_empty() {
         errors.push(format!("DefId({func_id}): function has no blocks"));
@@ -52,19 +50,21 @@ fn validate_function(func: &MirFunction, errors: &mut Vec<String>) {
 
     for (block_idx, block) in func.blocks.iter().enumerate() {
         let block_id = BlockId(block_idx as u32);
-        validate_block(func_id, block, block_id, num_locals, num_blocks, errors);
+        validate_block(func, block, block_id, table, errors);
     }
 }
 
 /// Validates a single basic block.
 fn validate_block(
-    func_id: u32,
+    func: &MirFunction,
     block: &BasicBlock,
     block_id: BlockId,
-    num_locals: usize,
-    num_blocks: usize,
+    table: &TypeTable,
     errors: &mut Vec<String>,
 ) {
+    let func_id = func.def_id.as_u32();
+    let num_locals = func.locals.len();
+    let num_blocks = func.blocks.len();
     for (stmt_idx, stmt) in block.statements.iter().enumerate() {
         match stmt {
             Statement::Assign { place, rvalue, .. } => {
@@ -72,6 +72,14 @@ fn validate_block(
                     place, num_locals, func_id, block_id, stmt_idx, "dest", errors,
                 );
                 check_rvalue(rvalue, num_locals, func_id, block_id, stmt_idx, errors);
+                if let Rvalue::CollectionGetOptional { collection, .. } = rvalue {
+                    if !has_lookup_layout(func, table, place, collection) {
+                        errors.push(format!(
+                            "DefId({func_id})/{block_id}/stmt[{stmt_idx}]: \
+                             checked lookup requires a matching Optional destination local"
+                        ));
+                    }
+                }
             }
             Statement::Drop { place, .. } => {
                 check_place(
@@ -90,6 +98,31 @@ fn validate_block(
         block_id,
         errors,
     );
+}
+
+fn has_lookup_layout(
+    func: &MirFunction,
+    table: &TypeTable,
+    dest: &Place,
+    collection: &Place,
+) -> bool {
+    if !dest.projections.is_empty() || !collection.projections.is_empty() {
+        return false;
+    }
+    let (Some(dest), Some(collection)) = (
+        func.locals.get(dest.local.index()),
+        func.locals.get(collection.local.index()),
+    ) else {
+        return false;
+    };
+    let storage_type = |ty| match table.resolve(ty) {
+        Ty::Mutable(inner) => *inner,
+        _ => ty,
+    };
+    let (Ty::List(value) | Ty::Map(_, value)) = table.resolve(storage_type(collection.ty)) else {
+        return false;
+    };
+    matches!(table.resolve(dest.ty), Ty::Optional(inner) if storage_type(*inner) == storage_type(*value))
 }
 
 /// Checks that all locals referenced in a place are in bounds.
@@ -235,23 +268,23 @@ fn check_rvalue(
                 errors,
             );
         }
-        Rvalue::MapGetOptional { map, key, .. } => {
+        Rvalue::CollectionGetOptional { collection, index } => {
             check_place(
-                map,
+                collection,
                 num_locals,
                 func_id,
                 block_id,
                 stmt_idx,
-                "map_get.map",
+                "lookup.collection",
                 errors,
             );
             check_place(
-                key,
+                index,
                 num_locals,
                 func_id,
                 block_id,
                 stmt_idx,
-                "map_get.key",
+                "lookup.index",
                 errors,
             );
         }
@@ -440,8 +473,42 @@ mod tests {
         let mir = Mir {
             functions: std::iter::once((DefId::new(0), func)).collect(),
         };
-        let errors = validate(&mir);
+        let errors = validate(&mir, &TypeTable::new());
         assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn checked_lookup_requires_optional_of_the_collection_element() {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(spark_types::IntWidth::I64));
+        let bool_ty = table.intern(Ty::Bool);
+        let list = table.intern(Ty::List(int));
+        let optional_bool = table.intern(Ty::Optional(bool_ty));
+        let optional_int = table.intern(Ty::Optional(int));
+        let mut func = dummy_func(
+            3,
+            vec![BasicBlock {
+                statements: vec![Statement::Assign {
+                    place: Place::from_local(Local(0)),
+                    rvalue: Rvalue::CollectionGetOptional {
+                        collection: Place::from_local(Local(1)),
+                        index: Place::from_local(Local(2)),
+                    },
+                    span: Span::DUMMY,
+                }],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+        );
+        func.locals[1].ty = list;
+        func.locals[2].ty = int;
+
+        for (dest_ty, is_valid) in [(optional_bool, false), (optional_int, true)] {
+            func.locals[0].ty = dest_ty;
+            let mut errors = Vec::new();
+            validate_function(&func, &table, &mut errors);
+            assert_eq!(errors.is_empty(), is_valid, "{errors:?}");
+        }
     }
 
     #[test]
@@ -461,7 +528,7 @@ mod tests {
         let mir = Mir {
             functions: std::iter::once((DefId::new(0), func)).collect(),
         };
-        let errors = validate(&mir);
+        let errors = validate(&mir, &TypeTable::new());
         assert!(!errors.is_empty(), "should detect out-of-bounds local");
         assert!(errors[0].contains("Local(5)"));
     }
@@ -481,7 +548,7 @@ mod tests {
         let mir = Mir {
             functions: std::iter::once((DefId::new(0), func)).collect(),
         };
-        let errors = validate(&mir);
+        let errors = validate(&mir, &TypeTable::new());
         assert!(!errors.is_empty(), "should detect out-of-bounds block");
         assert!(errors[0].contains("bb99"));
     }
@@ -510,7 +577,7 @@ mod tests {
         let mir = Mir {
             functions: std::iter::once((DefId::new(0), func)).collect(),
         };
-        let errors = validate(&mir);
+        let errors = validate(&mir, &TypeTable::new());
         assert!(!errors.is_empty(), "should detect field/operand mismatch");
         assert!(errors[0].contains("2 fields but 1 operands"));
     }
@@ -521,7 +588,7 @@ mod tests {
         let mir = Mir {
             functions: std::iter::once((DefId::new(0), func)).collect(),
         };
-        let errors = validate(&mir);
+        let errors = validate(&mir, &TypeTable::new());
         assert!(!errors.is_empty(), "should detect empty function");
         assert!(errors[0].contains("no blocks"));
     }
@@ -552,7 +619,7 @@ mod tests {
         let mir = Mir {
             functions: std::iter::once((DefId::new(0), func)).collect(),
         };
-        let errors = validate(&mir);
+        let errors = validate(&mir, &TypeTable::new());
         assert!(
             !errors.is_empty(),
             "should detect wrong union operand count"

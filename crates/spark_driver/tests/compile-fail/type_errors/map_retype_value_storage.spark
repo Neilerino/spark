@@ -1,0 +1,7 @@
+fn convert(data: Map[String, String]): Map[String, String?] {
+    return data
+}
+
+fn main(): Int {
+    return 0
+}

@@ -10,8 +10,10 @@
 //! 6. Removes original generic function bodies from the MIR.
 
 use rustc_hash::FxHashMap;
+use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_resolve::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visibility};
 use spark_span::Span;
+use spark_types::check_expr::collection_cast_preserves_layout;
 use spark_types::substitute::{substitute_mut, SubstMap};
 use spark_types::{mangle_type, TypeId, TypeTable};
 
@@ -24,7 +26,12 @@ use crate::mir::{
 /// Clones generic function bodies with concrete type substitutions,
 /// rewrites call sites, and removes uninstantiated generic originals.
 #[allow(clippy::too_many_lines)]
-pub fn monomorphize(mir: &mut Mir, table: &mut TypeTable, definitions: &mut DefinitionTable) {
+pub fn monomorphize(
+    mir: &mut Mir,
+    table: &mut TypeTable,
+    definitions: &mut DefinitionTable,
+    diagnostics: &mut Diagnostics,
+) {
     if table.mono_instances().is_empty() {
         return;
     }
@@ -68,7 +75,7 @@ pub fn monomorphize(mir: &mut Mir, table: &mut TypeTable, definitions: &mut Defi
         mono_fn.return_type = substitute_mut(mono_fn.return_type, subst, table);
 
         // Substitute TypeIds in rvalues (casts, etc.).
-        substitute_rvalues(&mut mono_fn, subst, table);
+        substitute_rvalues(&mut mono_fn, subst, table, diagnostics);
 
         // Allocate a fresh DefId for this monomorphized function.
         let original_name = definitions
@@ -125,15 +132,32 @@ pub fn monomorphize(mir: &mut Mir, table: &mut TypeTable, definitions: &mut Defi
 }
 
 /// Substitutes `TypeId`s inside rvalues (casts, etc.) within a function.
-fn substitute_rvalues(func: &mut MirFunction, subst: &SubstMap, table: &mut TypeTable) {
+fn substitute_rvalues(
+    func: &mut MirFunction,
+    subst: &SubstMap,
+    table: &mut TypeTable,
+    diagnostics: &mut Diagnostics,
+) {
     for block in &mut func.blocks {
         for stmt in &mut block.statements {
-            let Statement::Assign { rvalue, .. } = stmt else {
+            let Statement::Assign { rvalue, span, .. } = stmt else {
                 continue;
             };
             match rvalue {
-                Rvalue::Cast { target_ty, .. } => {
+                Rvalue::Cast { operand, target_ty } => {
                     *target_ty = substitute_mut(*target_ty, subst, table);
+                    if let Some(source) = operand_local(operand) {
+                        let source_ty = func.locals[source.index()].ty;
+                        if !collection_cast_preserves_layout(source_ty, *target_ty, table) {
+                            diagnostics.push(
+                                Diagnostic::error("cast would change collection storage type")
+                                    .with_label(Label::primary(
+                                        *span,
+                                        "invalid after specialization",
+                                    )),
+                            );
+                        }
+                    }
                 }
                 Rvalue::Aggregate(
                     AggregateKind::Union {
@@ -249,7 +273,12 @@ mod tests {
         };
         let mut table = TypeTable::new();
         let mut definitions = DefinitionTable::new();
-        monomorphize(&mut mir, &mut table, &mut definitions);
+        monomorphize(
+            &mut mir,
+            &mut table,
+            &mut definitions,
+            &mut Diagnostics::new(),
+        );
         assert!(mir.functions.is_empty());
     }
 
@@ -325,7 +354,12 @@ mod tests {
         let subst = build_subst_map(&[t_param_def], &[int_ty]);
         table.set_mono_instance(call_span, identity_def, subst);
 
-        monomorphize(&mut mir, &mut table, &mut definitions);
+        monomorphize(
+            &mut mir,
+            &mut table,
+            &mut definitions,
+            &mut Diagnostics::new(),
+        );
 
         // Original generic function should be removed.
         assert!(
@@ -513,7 +547,12 @@ mod tests {
         let subst = build_subst_map(&[t_param_def], &[int_ty]);
         table.set_mono_instance(call_span, generic_def, subst);
 
-        monomorphize(&mut mir, &mut table, &mut definitions);
+        monomorphize(
+            &mut mir,
+            &mut table,
+            &mut definitions,
+            &mut Diagnostics::new(),
+        );
 
         // Generic should be removed.
         assert!(!mir.functions.contains_key(&generic_def));

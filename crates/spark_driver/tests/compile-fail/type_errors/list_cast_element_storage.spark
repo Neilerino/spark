@@ -1,0 +1,6 @@
+fn main(): Int {
+    original: List[Int] = [1]
+    converted: List[Bool] = original as List[Bool]
+    print(converted[0] ?? false)
+    return 0
+}

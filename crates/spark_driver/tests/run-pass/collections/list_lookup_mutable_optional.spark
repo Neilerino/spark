@@ -1,0 +1,35 @@
+fn narrow(data: List[Int], index: Int): Int {
+    value: Int?! = data[index]
+    return value to {
+        Int -> 7,
+        Null -> 9
+    }
+}
+
+fn propagate(data: List[Int], index: Int): Int? {
+    value: Int?! = data[index]
+    result: Int = value!
+    print("continued")
+    return result
+}
+
+fn guarded(data: List[Int], index: Int): Int {
+    value: Int?! = data[index]
+    return value to {
+        Null if false -> 7,
+        number: Int if number > 1 -> number,
+        _ -> 9
+    }
+}
+
+fn main(): Int {
+    data: List[Int] = [1]
+    print(narrow(data, 0))
+    print(narrow(data, 1))
+    print(propagate(data, 0) ?? 99)
+    print(propagate(data, 1) ?? 99)
+    print(guarded([1, 2], 0))
+    print(guarded([1, 2], 1))
+    print(guarded(data, 1))
+    return 0
+}

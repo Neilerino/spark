@@ -1,0 +1,12 @@
+alias MaybeText = String?
+
+fn main(): Int {
+    items: List[String] = ["a"]
+    widened: List[String?] = items
+    read: MaybeText? = widened[0]
+    if read is Null {
+        print("miss")
+    }
+    print("done")
+    return 0
+}

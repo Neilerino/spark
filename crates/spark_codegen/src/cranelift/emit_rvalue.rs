@@ -107,8 +107,8 @@ pub fn emit_rvalue<M: Module>(
             Some(ctx.builder.inst_results(call)[0])
         }
 
-        Rvalue::MapGetOptional { map, key } => {
-            emit_map_get_optional(ctx, map, key, dest_local, ecx, module);
+        Rvalue::CollectionGetOptional { collection, index } => {
+            emit_collection_lookup(ctx, collection, index, dest_local, ecx, module);
             None
         }
 
@@ -1327,37 +1327,58 @@ fn emit_closure_construction<M: Module>(
     Some(dest_addr)
 }
 
-/// Writes an owned optional map value into the destination slot.
-fn emit_map_get_optional<M: Module>(
+fn emit_collection_lookup<M: Module>(
     ctx: &mut FunctionContext<'_>,
-    map: &Place,
-    key: &Place,
+    collection: &Place,
+    index: &Place,
     dest_local: Local,
     ecx: &EmitCtx<'_>,
     module: &mut M,
 ) {
     let table = ecx.table;
-    let map_ty = resolve_place_type(ctx, map, table);
-    let (_, Ty::Map(key_ty, value_ty)) = clif_types::unwrap_mutable(map_ty, table) else {
-        unreachable!("map lookup requires a map");
+    let collection_ty = resolve_place_type(ctx, collection, table);
+    let (_, collection_ty) = clif_types::unwrap_mutable(collection_ty, table);
+    let collection_ptr = emit_place_read(ctx, collection, table, module);
+    let index_value = emit_place_read(ctx, index, table, module);
+    let (lookup, argument, value_ty) = match collection_ty {
+        Ty::Map(key_ty, value_ty) => {
+            let key_addr = if abi::is_scalar(*key_ty, table) {
+                store_scalar_to_temp(ctx, index_value, *key_ty, table)
+            } else {
+                index_value
+            };
+            (ctx.stubs.map_get, key_addr, *value_ty)
+        }
+        Ty::List(value_ty) => {
+            let index_ty = resolve_place_type(ctx, index, table);
+            let (_, Ty::Int(width)) = clif_types::unwrap_mutable(index_ty, table) else {
+                unreachable!("list lookup requires an integer index");
+            };
+            let argument = list_lookup_index(ctx, index_value, abi::int_is_signed(*width));
+            (ctx.stubs.list_try_get, argument, *value_ty)
+        }
+        _ => unreachable!("checked lookup requires a list or map"),
     };
-    let value_ty = *value_ty;
-    let map_ptr = emit_place_read(ctx, map, table, module);
-    let key_value = emit_place_read(ctx, key, table, module);
-    let key_addr = if abi::is_scalar(*key_ty, table) {
-        store_scalar_to_temp(ctx, key_value, *key_ty, table)
-    } else {
-        key_value
-    };
-
-    let func_ref = module.declare_func_in_func(ctx.stubs.map_get, ctx.builder.func);
-    let call = ctx.builder.ins().call(func_ref, &[map_ptr, key_addr]);
+    let func_ref = module.declare_func_in_func(lookup, ctx.builder.func);
+    let call = ctx
+        .builder
+        .ins()
+        .call(func_ref, &[collection_ptr, argument]);
     let raw_ptr = ctx.builder.inst_results(call)[0];
+    emit_optional_lookup_result(ctx, raw_ptr, dest_local, value_ty, table, module);
+}
+
+fn emit_optional_lookup_result<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    raw_ptr: Value,
+    dest_local: Local,
+    value_ty: TypeId,
+    table: &TypeTable,
+    module: &mut M,
+) {
     let dest_addr = ctx
         .local_stack_addr(dest_local)
-        .expect("map lookup requires an Optional destination");
-
-    // Compute the Optional layout.
+        .expect("checked lookup requires an Optional destination");
     let opt_ty = ctx.local_type_id(dest_local);
     let ul = ctx.layouts.union_layout_of(opt_ty, table);
 
@@ -1439,6 +1460,26 @@ fn emit_map_get_optional<M: Module>(
     }
     ctx.builder.ins().jump(join_block, &[]);
     ctx.builder.switch_to_block(join_block);
+}
+
+fn list_lookup_index(ctx: &mut FunctionContext<'_>, value: Value, signed: bool) -> Value {
+    let wide = if ctx.builder.func.dfg.value_type(value) == types::I64 {
+        value
+    } else {
+        ctx.builder.ins().uextend(types::I64, value)
+    };
+    if !signed {
+        return wide;
+    }
+
+    // No list length can exceed this miss index.
+    let miss = ctx.builder.ins().iconst(types::I64, -1);
+    let negative = ctx.builder.ins().icmp_imm(
+        cranelift_codegen::ir::condcodes::IntCC::SignedLessThan,
+        value,
+        0,
+    );
+    ctx.builder.ins().select(negative, miss, wide)
 }
 
 /// Emits union construction: writes tag + payload into a stack slot.

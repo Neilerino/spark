@@ -90,7 +90,7 @@ pub fn lower(input: MirInput) -> MirOutput {
     } = input;
 
     let mut functions = std::collections::HashMap::new();
-    let diagnostics;
+    let mut diagnostics;
 
     {
         let mut mir_builder = builder::MirBuilder::new(&table);
@@ -107,7 +107,7 @@ pub fn lower(input: MirInput) -> MirOutput {
     let mut mir = Mir { functions };
 
     // Run monomorphization to instantiate generic functions with concrete types.
-    monomorphize::monomorphize(&mut mir, &mut table, &mut definitions);
+    monomorphize::monomorphize(&mut mir, &mut table, &mut definitions, &mut diagnostics);
 
     MirOutput {
         mir,

@@ -1,0 +1,29 @@
+alias MaybeInt = Int?
+
+async fn index(): Int {
+    return 1
+}
+
+async fn pick(values: List[MaybeInt]): MaybeInt? {
+    return values[await index()]
+}
+
+fn main(): Int {
+    none: MaybeInt = Null
+    some: MaybeInt = 7
+    values: List[MaybeInt] = [none, some]
+    result: MaybeInt? = await pick(values)
+    result to {
+        payload: MaybeInt -> print(payload ?? 10),
+        Null -> print("missing")
+    }
+    values[0] to {
+        payload: MaybeInt -> print(payload ?? 10),
+        Null -> print("missing")
+    }
+    values[2] to {
+        payload: MaybeInt -> print(payload ?? 10),
+        Null -> print("missing")
+    }
+    return 0
+}

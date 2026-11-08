@@ -136,6 +136,14 @@ pub enum HirExprKind {
         index: Box<HirExpr>,
     },
 
+    /// Checked list or map value read returning an Optional.
+    CollectionLookup {
+        /// The collection expression.
+        base: Box<HirExpr>,
+        /// The list index or map key.
+        index: Box<HirExpr>,
+    },
+
     // === Calls ===
     /// Function call: `callee(args...)`.
     Call {

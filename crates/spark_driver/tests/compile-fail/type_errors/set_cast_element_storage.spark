@@ -1,0 +1,7 @@
+fn convert(data: Set[String]): Set[Int] {
+    return data as Set[Int]
+}
+
+fn main(): Int {
+    return 0
+}
