@@ -408,6 +408,14 @@ ages["charlie"] = 35
 ages["charlie"] = 36
 ```
 
+Use `entries.eachEntry(visitor)` to visit each key and value together. The
+visitor is a synchronous Spark function of type `(K, V): Void`, with the
+map's exact slot types. Traversal requires concrete slot types the compiler
+can copy safely. Visits are unordered. Spark evaluates the receiver once and keeps a
+snapshot before evaluating the visitor expression once. An empty map makes
+zero visitor calls. Returning from a visitor call resumes traversal. Changes
+to other owning copies do not change the pairs visited in the snapshot.
+
 #### Set[T]
 
 Unique values, unordered. Set construction supports integers and strings.

@@ -2322,6 +2322,9 @@ fn check_method_call(
         Ty::List(elem) => {
             check_list_method(method, elem, is_mutable, arg_tys, call_span, recv_span, ctx)
         }
+        Ty::Map(key, value) if method == kw::EACH_ENTRY => {
+            check_collection_visitor(&[key, value], arg_tys, arg_span, call_span, ctx)
+        }
         Ty::Map(key, _) | Ty::Set(key) => {
             let is_set = matches!(stripped, Ty::Set(_));
             let (collection, diagnostic) = if is_set {
@@ -2382,6 +2385,125 @@ fn check_method_call(
             TypeId::ERROR
         }
     }
+}
+
+fn check_collection_visitor(
+    slots: &[TypeId],
+    args: &[TypeId],
+    arg_span: Span,
+    call_span: Span,
+    ctx: &mut TypeCheckCtx<'_>,
+) -> TypeId {
+    diagnostics::expect_args(1, args.len(), call_span, ctx.diagnostics);
+    let [visitor] = args else {
+        return TypeId::ERROR;
+    };
+    if visitor.is_error() {
+        return TypeId::ERROR;
+    }
+    let Ty::Function {
+        params,
+        ret,
+        is_async: false,
+    } = ctx.table.resolve(strip_mutable(*visitor, ctx.table))
+    else {
+        ctx.diagnostics.push(
+            Diagnostic::error("collection visitor must be a synchronous function")
+                .with_label(Label::primary(arg_span, "expected a synchronous callback")),
+        );
+        return TypeId::ERROR;
+    };
+    if *ret != ctx.builtins.void
+        || params.len() != slots.len()
+        || !params
+            .iter()
+            .zip(slots)
+            .all(|(&param, &slot)| collection_slot_matches(param, slot, ctx.table))
+    {
+        let params = slots
+            .iter()
+            .map(|&slot| type_name(slot, ctx.table, ctx.definitions))
+            .collect::<Vec<_>>()
+            .join(", ");
+        ctx.diagnostics.push(
+            Diagnostic::error(format!(
+                "collection visitor must have type ({params}): Void"
+            ))
+            .with_label(Label::primary(arg_span, "callback layout does not match")),
+        );
+        return TypeId::ERROR;
+    }
+    if slots.iter().any(|&slot| {
+        matches!(ctx.table.resolve(strip_mutable(slot, ctx.table)), Ty::Null)
+            || !supports_traversal_value(
+                slot,
+                ctx.table,
+                true,
+                &mut rustc_hash::FxHashSet::default(),
+            )
+    }) {
+        ctx.diagnostics.push(
+            Diagnostic::error("collection traversal requires supported owned slot types")
+                .with_label(Label::primary(
+                    call_span,
+                    "unsupported collection slot layout",
+                )),
+        );
+        return TypeId::ERROR;
+    }
+    ctx.builtins.void
+}
+
+fn supports_traversal_value(
+    ty: TypeId,
+    table: &TypeTable,
+    allow_owner: bool,
+    path: &mut rustc_hash::FxHashSet<TypeId>,
+) -> bool {
+    let ty = strip_mutable(ty, table);
+    if !path.insert(ty) {
+        return false;
+    }
+    let valid = match table.resolve(ty) {
+        Ty::Int(_) | Ty::Float(_) | Ty::Bool | Ty::Char | Ty::Byte | Ty::CPtr | Ty::Null => true,
+        Ty::String => allow_owner,
+        Ty::List(inner) | Ty::Set(inner) => {
+            allow_owner && supports_traversal_value(*inner, table, true, path)
+        }
+        Ty::Map(key, value) => {
+            allow_owner
+                && supports_traversal_value(*key, table, true, path)
+                && supports_traversal_value(*value, table, true, path)
+        }
+        Ty::Optional(inner) => supports_traversal_value(*inner, table, allow_owner, path),
+        Ty::Union(elements) => elements
+            .iter()
+            .all(|&inner| supports_traversal_value(inner, table, allow_owner, path)),
+        Ty::Tuple(elements) => {
+            !elements.is_empty()
+                && elements
+                    .iter()
+                    .all(|&inner| supports_traversal_value(inner, table, false, path))
+        }
+        Ty::Struct(def) => table.get_struct_fields(*def).is_some_and(|fields| {
+            !fields.is_empty()
+                && fields
+                    .iter()
+                    .all(|&(_, inner)| supports_traversal_value(inner, table, false, path))
+        }),
+        Ty::Enum(def) => table.get_enum_variants(*def).is_some_and(|variants| {
+            variants.iter().all(|&(_, variant)| {
+                table.get_variant_fields(variant).is_none_or(|fields| {
+                    fields
+                        .iter()
+                        .all(|&(_, inner)| supports_traversal_value(inner, table, false, path))
+                })
+            })
+        }),
+        _ => false,
+    };
+    path.remove(&ty);
+    valid
 }
 
 /// Checks a method call on `List[T]`.

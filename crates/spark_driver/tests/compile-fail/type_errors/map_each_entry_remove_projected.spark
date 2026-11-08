@@ -1,0 +1,10 @@
+struct Box {
+    counts: Map[Int, Int]!,
+}
+
+fn main(): Int {
+    counts: Map[Int, Int]! = {}
+    box: Box! = Box { counts: counts }
+    box.counts.remove(1)
+    return 0
+}

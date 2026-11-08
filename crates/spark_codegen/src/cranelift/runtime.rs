@@ -104,6 +104,10 @@ pub struct RuntimeStubs {
     pub map_new: FuncId,
     /// `__spark_map_insert`
     pub map_insert: FuncId,
+    /// `__spark_map_next`
+    pub map_next: FuncId,
+    /// `__spark_invalid_collection_visitor`
+    pub invalid_collection_visitor: FuncId,
     /// `__spark_map_get`
     pub map_get: FuncId,
     /// `__spark_map_rc_dec`
@@ -263,6 +267,13 @@ impl RuntimeStubs {
             // Map
             map_new: declare_abi(module, &abi::MAP_NEW, ptr_type, call_conv),
             map_insert: declare_abi(module, &abi::MAP_INSERT, ptr_type, call_conv),
+            map_next: declare_abi(module, &abi::MAP_NEXT, ptr_type, call_conv),
+            invalid_collection_visitor: declare_abi(
+                module,
+                &abi::INVALID_COLLECTION_VISITOR,
+                ptr_type,
+                call_conv,
+            ),
             map_get: declare_abi(module, &abi::MAP_GET, ptr_type, call_conv),
             map_rc_dec: declare_abi(module, &abi::MAP_RC_DEC, ptr_type, call_conv),
             map_cow: declare_abi(module, &abi::MAP_COW, ptr_type, call_conv),

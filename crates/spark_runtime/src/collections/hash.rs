@@ -146,6 +146,20 @@ pub(super) unsafe fn rehash_occupied_slots(
     }
 }
 
+/// Returns the first occupied slot at or after the cursor.
+///
+/// # Safety
+///
+/// `hashes` must point to a valid hash buffer of `cap` u64 values when `cap` is nonzero.
+pub(super) unsafe fn next_occupied_slot(
+    hashes: *const u64,
+    cap: usize,
+    start: u64,
+) -> Option<usize> {
+    let start = usize::try_from(start).ok()?;
+    (start..cap).find(|&index| is_occupied(unsafe { *hashes.add(index) }))
+}
+
 /// Calls `visit` once for every occupied slot.
 ///
 /// # Safety

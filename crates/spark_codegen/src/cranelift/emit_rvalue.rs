@@ -249,6 +249,7 @@ fn emit_constant<M: Module>(
                     .or_else(|| ecx.func_ids.get(def_id).copied())
             };
 
+            // TAG [SPARK-120]
             // Always produce a fat pointer (fn_ptr, env_ptr) in a stack slot.
             // For builtins without a func_id, store (null, null) — the call
             // path intercepts builtins before the fat pointer is used.

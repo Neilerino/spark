@@ -8,6 +8,7 @@ pub mod drop_glue;
 pub mod emit_rvalue;
 pub mod emit_stmt;
 pub mod emit_term;
+mod emit_traversal;
 pub mod runtime;
 pub mod types;
 

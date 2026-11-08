@@ -1,0 +1,7 @@
+async fn show(key: Int, count: Int): Void {}
+
+fn main(): Int {
+    counts: Map[Int, Int] = {}
+    counts.eachEntry(show)
+    return 0
+}

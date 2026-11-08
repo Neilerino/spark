@@ -111,7 +111,7 @@ pub fn check(input: BorrowInput) -> BorrowOutput {
         let live = liveness::compute_liveness(func, &borrow_facts);
         let regs = regions::compute_regions(&borrow_facts, &live);
         check::check_borrows(func, &borrow_facts, &regs, &mut diagnostics);
-        check::check_set_mutation_loans(
+        check::check_hash_collection_mutation_loans(
             func,
             &borrow_facts,
             &regs,

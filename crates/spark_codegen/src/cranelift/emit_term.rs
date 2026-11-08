@@ -152,6 +152,7 @@ fn emit_call<M: Module>(
     // a `Constant::FunctionRef(def_id)`, so we resolve the DefId from the MIR.
     if let Some(callee_def_id) = ctx.mir_func.resolve_callee_def_id(func) {
         if let Some(info) = ecx.definitions.get(callee_def_id) {
+            // TAG [SPARK-119]
             if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::PRINT {
                 emit_builtin_print(ctx, args, target, ecx, module);
                 return;
@@ -1378,6 +1379,24 @@ fn emit_builtin_method<M: Module>(
         spark_mir::Operand::Constant(_) => ctx.builder.ins().iconst(ctx.ptr_type, 0),
     };
 
+    if let (kw::EACH_ENTRY, Ty::Map(key, value), [_, Operand::Copy(visitor)]) =
+        (method_name, stripped_ty, args)
+    {
+        let visitor = emit_rvalue::emit_place_read(ctx, visitor, table, module);
+        super::emit_traversal::emit_traversal(
+            ctx,
+            ctx.stubs.map_next,
+            recv_ptr,
+            visitor,
+            &[*key, *value],
+            destination,
+            module,
+        );
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    }
+
     // Helper: get the recv local for write-back after COW
     let recv_local = match &args[0] {
         spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place)
@@ -1445,7 +1464,7 @@ fn emit_builtin_method<M: Module>(
         };
         let address = args.get(1).and_then(|arg| {
             if matches!(stripped_ty, Ty::Set(_)) {
-                borrowed_set_element_addr(ctx, arg, table, module)
+                borrowed_collection_element_addr(ctx, arg, table, module)
             } else {
                 let value = emit_rvalue::emit_operand(ctx, arg, ecx, module)?;
                 Some(emit_rvalue::store_scalar_to_temp(
@@ -1511,28 +1530,18 @@ fn emit_builtin_method<M: Module>(
                     }
                 }
             }
-            // Set.remove(item)
-            (Ty::Set(_), kw::REMOVE) => {
-                if let Some(elem_addr) = args
+            (collection @ (Ty::Set(_) | Ty::Map(..)), kw::REMOVE) => {
+                let stub = if matches!(collection, Ty::Set(_)) {
+                    ctx.stubs.set_remove
+                } else {
+                    ctx.stubs.map_remove
+                };
+                if let Some(address) = args
                     .get(1)
-                    .and_then(|arg| borrowed_set_element_addr(ctx, arg, table, module))
+                    .and_then(|arg| borrowed_collection_element_addr(ctx, arg, table, module))
                 {
-                    let func_ref =
-                        module.declare_func_in_func(ctx.stubs.set_remove, ctx.builder.func);
-                    ctx.builder.ins().call(func_ref, &[cow_ptr, elem_addr]);
-                }
-            }
-            // Map.remove(key)
-            (Ty::Map(k, _), _) if method_name == kw::REMOVE => {
-                let key_ty = *k;
-                if let Some(arg) = args.get(1) {
-                    if let Some(key_addr) =
-                        emit_rvalue::emit_operand_addr(ctx, arg, key_ty, ecx, module)
-                    {
-                        let func_ref =
-                            module.declare_func_in_func(ctx.stubs.map_remove, ctx.builder.func);
-                        ctx.builder.ins().call(func_ref, &[cow_ptr, key_addr]);
-                    }
+                    let func_ref = module.declare_func_in_func(stub, ctx.builder.func);
+                    ctx.builder.ins().call(func_ref, &[cow_ptr, address]);
                 }
             }
             _ => {} // Unsupported combination — silently skip
@@ -1679,7 +1688,7 @@ fn emit_extern_call<M: Module>(
     ctx.builder.ins().jump(target_block, &[]);
 }
 
-fn borrowed_set_element_addr<M: Module>(
+fn borrowed_collection_element_addr<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operand: &Operand,
     table: &TypeTable,
@@ -1775,7 +1784,7 @@ fn emit_direct_call_sret<M: Module>(
 /// `func_val` is the address of the fat pointer (a stack slot address).
 /// We load `fn_ptr` from offset 0 and `env_ptr` from offset `ptr_size`,
 /// then call `fn_ptr(env_ptr, arg1, arg2, ...)`.
-fn emit_indirect_call<M: Module>(
+pub(super) fn emit_indirect_call<M: Module>(
     ctx: &mut FunctionContext<'_>,
     func_val: Option<Value>,
     arg_vals: &[Value],

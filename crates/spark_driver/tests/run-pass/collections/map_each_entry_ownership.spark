@@ -1,0 +1,55 @@
+link "union_probe"
+
+alias MaybeList = List[Int]?
+
+extern fn probe_string_rc(value: Ref[String]): Int
+extern fn probe_list_rc(value: Ref[List[Int]]): Int
+extern fn probe_map_rc(value: Ref[Map[String, MaybeList]]): Int
+
+fn receiver(entries: Map[String, MaybeList]): Map[String, MaybeList] {
+    print("receiver")
+    return entries
+}
+
+fn make_visitor(values: List[Int]): (String, MaybeList): Void {
+    print("visitor")
+    return fn(key: String, payload: MaybeList): Void {
+        payload to {
+            items: List[Int] -> print(items[0] ?? -1),
+            Null -> print(0)
+        }
+        print(key.len())
+        print(values[0] ?? -1)
+    }
+}
+
+fn interrupted(entries: Map[String, MaybeList], absent: Int?): Int? {
+    receiver(entries).eachEntry({
+        value: Int = absent!
+        make_visitor([value])
+    })
+    return 0
+}
+
+fn main(): Int {
+    suffix: String = "ne"
+    key: String = "o{suffix}"
+    values: List[Int] = [9]
+    entries: Map[String, MaybeList]! = {}
+    print("empty")
+    receiver(entries).eachEntry(make_visitor(values))
+    entries[key] = values
+    keyBefore: Int = probe_string_rc(key)
+    listBefore: Int = probe_list_rc(values)
+    mapBefore: Int = probe_map_rc(entries)
+    receiver(entries).eachEntry(make_visitor(values))
+    print(probe_string_rc(key) - keyBefore)
+    print(probe_list_rc(values) - listBefore)
+    print(probe_map_rc(entries) - mapBefore)
+    entries[key] = Null
+    receiver(entries).eachEntry(make_visitor(values))
+    absent: Int? = Null
+    print(interrupted(entries, absent) ?? 99)
+    print(probe_map_rc(entries) - mapBefore)
+    return 0
+}

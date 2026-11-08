@@ -1,0 +1,8 @@
+extern fn visit(key: Int, count: Int): Void
+
+fn main(): Int {
+    counts: Map[Int, Int] = {1: 2}
+    aliasVisitor: (Int, Int): Void = visit
+    counts.eachEntry(aliasVisitor)
+    return 0
+}

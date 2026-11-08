@@ -1,0 +1,7 @@
+fn show(key: Int, count: Int): Void {}
+
+fn main(): Int {
+    counts: Map[UInt8, Int] = {}
+    counts.eachEntry(show)
+    return 0
+}

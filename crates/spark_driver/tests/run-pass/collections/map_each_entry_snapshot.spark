@@ -1,0 +1,32 @@
+fn show(key: Int, count: Int): Void {
+    print(key * 1000 + count)
+}
+
+fn main(): Int {
+    counts: Map[Int, Int]! = {}
+    counts.eachEntry(show)
+    i: Int! = 0
+    loop {
+        if i == 32 { break }
+        counts[i] = i + 1
+        i += 1
+    }
+    counts[2] = 100
+    counts.remove(7)
+    counts.eachEntry(fn(key: Int, count: Int): Void {
+        counts.remove(key)
+        if counts.contains(key) {
+            print(-1)
+            return
+        }
+        show(key, count)
+    })
+    print(counts.len())
+    one: Map[Int, Int]! = {1: 9}
+    one.eachEntry({
+        one.remove(1)
+        show
+    })
+    print(one.len())
+    return 0
+}

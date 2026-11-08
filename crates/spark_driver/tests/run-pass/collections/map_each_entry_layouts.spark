@@ -1,0 +1,16 @@
+fn show(key: UInt8, value: Tup[Int, Int]): Void {
+    print(key as Int)
+    print(value.0)
+    print(value.1)
+}
+
+fn visit(entries: Ref[Map[UInt8, Tup[Int, Int]]]): Void {
+    entries.eachEntry(show)
+}
+
+fn main(): Int {
+    key: UInt8 = 255 as UInt8
+    pairs: Map[UInt8, Tup[Int, Int]] = {key: (42, 7)}
+    visit(pairs)
+    return 0
+}

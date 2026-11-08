@@ -1,0 +1,5 @@
+fn main(): Int {
+    counts: Map[Int, Int] = {}
+    counts.eachEntry()
+    return 0
+}

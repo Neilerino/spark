@@ -1,0 +1,7 @@
+fn show(key: Int, value: Tup[String, Int]): Void {}
+
+fn main(): Int {
+    counts: Map[Int, Tup[String, Int]] = {}
+    counts.eachEntry(show)
+    return 0
+}
