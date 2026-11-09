@@ -1,3 +1,5 @@
+// TAG [SPARK-114]
+
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_intern::Symbol;
 use spark_resolve::DefId;
@@ -18,6 +20,7 @@ pub(super) enum Slot {
     Member(TypeId),
     Optional,
     Deref,
+    ResidualDeref,
     Capture(usize, TypeId),
     Tail,
 }
@@ -309,7 +312,7 @@ pub(super) fn child_type(ty: TypeId, slot: &Slot, table: &TypeTable) -> Option<T
             Slot::Element,
         )
         | (Ty::Optional(inner), Slot::Optional)
-        | (Ty::Ref { inner, .. }, Slot::Deref) => Some(*inner),
+        | (Ty::Ref { inner, .. }, Slot::Deref | Slot::ResidualDeref) => Some(*inner),
         (Ty::Map(key, _), Slot::Key) => Some(*key),
         (Ty::Map(_, value), Slot::Value) => Some(*value),
         (Ty::Union(members), Slot::Member(member)) if members.contains(member) => Some(*member),

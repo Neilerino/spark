@@ -5,7 +5,7 @@
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_mir::BlockId;
 
-use super::address::{Dependency, Endpoint, Intent, Selector};
+use super::address::{Dependency, DerefKind, Endpoint, Intent, Selector};
 use super::aliases::{Port, View};
 use super::demand::{Coordinate, Storage};
 use super::{Flow, Path, Point, State, Value};
@@ -70,6 +70,14 @@ pub(super) fn owned_path(path: &[super::Slot]) -> bool {
         .all(|slot| matches!(slot, super::Slot::Field(_) | super::Slot::Tuple(_)))
 }
 
+#[derive(Default)]
+struct WriteTargets {
+    all: rustc_hash::FxHashSet<Coordinate>,
+    physical: rustc_hash::FxHashSet<Coordinate>,
+    exact: rustc_hash::FxHashSet<Coordinate>,
+    unknown: bool,
+}
+
 impl Flow<'_> {
     pub(super) fn store_references(
         &mut self,
@@ -78,38 +86,9 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
-        let mut destinations = rustc_hash::FxHashSet::default();
-        let mut exact = rustc_hash::FxHashSet::default();
-        for endpoint in &metadata.endpoints {
-            match endpoint {
-                Endpoint::Frame {
-                    function,
-                    local,
-                    location,
-                    ..
-                } if *function == self.function.def_id => {
-                    destinations.insert(Coordinate {
-                        storage: Storage::Cell(*local),
-                        path: location.clone(),
-                    });
-                }
-                Endpoint::Input(selector) => {
-                    if let Some((view, exact_view)) = self.external_target(selector) {
-                        let coordinate = Coordinate {
-                            storage: Storage::External(view.root),
-                            path: view.path,
-                        };
-                        if exact_view {
-                            exact.insert(coordinate.clone());
-                        }
-                        destinations.insert(coordinate);
-                    }
-                }
-                Endpoint::Frame { .. } => {}
-            }
-        }
-        let unique = destinations.len() == 1 && metadata.opaque.is_empty();
-        for destination in destinations {
+        let targets = self.write_targets(metadata);
+        let unique = targets.physical.len() == 1 && !targets.unknown;
+        for destination in targets.all {
             let Coordinate { storage, path } = &destination;
             let (root, mut current) = match storage {
                 Storage::External(port) => (
@@ -123,7 +102,7 @@ impl Flow<'_> {
             let strong = unique
                 && match storage {
                     Storage::Cell(_) => owned_path(path),
-                    Storage::External(_) => exact.contains(&destination),
+                    Storage::External(_) => targets.exact.contains(&destination),
                     Storage::Logical(_) => false,
                 };
             self.record_path_store(point, destination.clone(), value, strong);
@@ -143,8 +122,10 @@ impl Flow<'_> {
                         root: port.clone(),
                         path: path.clone(),
                     };
-                    self.written_inputs.insert(view.clone());
-                    state.modified_views.insert(view.clone());
+                    if targets.physical.contains(&destination) {
+                        self.written_inputs.insert(view.clone());
+                        state.modified_views.insert(view.clone());
+                    }
                     if strong {
                         state.external_defined.insert(view);
                     }
@@ -172,6 +153,82 @@ impl Flow<'_> {
                 }
             }
         }
+    }
+
+    fn write_targets(&self, metadata: &super::value::Leaf) -> WriteTargets {
+        let mut targets = WriteTargets {
+            unknown: !metadata.opaque.is_empty(),
+            ..Default::default()
+        };
+        for endpoint in &metadata.endpoints {
+            match endpoint {
+                Endpoint::Frame {
+                    function,
+                    local,
+                    location,
+                    ..
+                } if *function == self.function.def_id => {
+                    let coordinate = Coordinate {
+                        storage: Storage::Cell(*local),
+                        path: location.clone(),
+                    };
+                    targets.physical.insert(coordinate.clone());
+                    targets.all.insert(coordinate);
+                }
+                Endpoint::Input(selector) => {
+                    for (view, exact_view) in self.external_targets(selector) {
+                        let coordinate = Coordinate {
+                            storage: Storage::External(view.root.clone()),
+                            path: view.path.clone(),
+                        };
+                        if exact_view {
+                            targets.exact.insert(coordinate.clone());
+                        }
+                        targets.physical.insert(coordinate.clone());
+                        targets.all.insert(coordinate);
+                        if !view.root.exact() {
+                            for peer in self.residual_peers(&view.root) {
+                                targets.all.insert(Coordinate {
+                                    storage: Storage::External(peer),
+                                    path: view.path.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                Endpoint::Frame { .. } => targets.unknown = true,
+            }
+        }
+        targets
+    }
+
+    pub(super) fn external_targets(&self, selector: &Selector) -> Vec<(View, bool)> {
+        let Some((view, exact)) = self.external_target(selector) else {
+            return Vec::new();
+        };
+        if view.root.exact() {
+            return vec![(view, exact)];
+        }
+        let family = self.family(&view.root);
+        let residual_only = matches!(&selector.intent, Intent::Address(payload) if payload.kind == DerefKind::Residual);
+        let single =
+            family.roots.len() == 1 && !family.residual && !residual_only && owned_path(&view.path);
+        let mut targets = Vec::new();
+        if !residual_only {
+            targets.extend(family.roots.into_iter().map(|root| {
+                (
+                    View {
+                        root,
+                        path: view.path.clone(),
+                    },
+                    single,
+                )
+            }));
+        }
+        if family.residual {
+            targets.push((view, false));
+        }
+        targets
     }
 
     pub(super) fn external_target(&self, selector: &Selector) -> Option<(View, bool)> {

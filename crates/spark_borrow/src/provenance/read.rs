@@ -1,3 +1,5 @@
+// TAG [SPARK-114]
+
 //! Address resolution and the pointee accesses performed by MIR reads.
 
 use rustc_hash::FxHashSet;
@@ -235,13 +237,14 @@ impl Flow<'_> {
         ty: TypeId,
         state: &State,
     ) -> Value {
-        use super::address::{Dependency, Intent, Selector, TypedPath};
+        use super::address::{DerefKind, Intent, Selector, TypedPath};
         let source_ty = self.function.locals[selector.input.index()].ty;
         let (selection, payload) = match &selector.intent {
             Intent::Address(payload) => (selector.selection.clone(), payload.clone()),
             Intent::Value => (
                 selector.selection.clone(),
                 TypedPath {
+                    kind: DerefKind::All,
                     pointee: ty,
                     projection: Vec::new(),
                 },
@@ -251,13 +254,14 @@ impl Flow<'_> {
                     source_ty,
                     [
                         selector.selection.clone(),
-                        vec![Slot::Deref],
+                        vec![payload.kind.slot()],
                         payload.projection.clone(),
                     ]
                     .concat(),
                     self.table,
                 ),
                 TypedPath {
+                    kind: DerefKind::All,
                     pointee: ty,
                     projection: Vec::new(),
                 },
@@ -265,11 +269,37 @@ impl Flow<'_> {
         };
         let address = Selector {
             input: selector.input,
-            selection: selection.clone(),
-            intent: Intent::Address(payload.clone()),
+            selection,
+            intent: Intent::Address(payload),
             expected: Some(ty),
         };
-        let (stored, covered) = self.external_contents(&address, state);
+        let mut result = Value::default();
+        for (view, _) in self.external_targets(&address) {
+            let mut address = view.root.selector();
+            if let Intent::Address(payload) = &mut address.intent {
+                payload.projection = view.path;
+                if !view.root.exact() {
+                    payload.kind = DerefKind::Residual;
+                }
+            }
+            result.join(&self.symbolic_cell_pointee(&address, ty, state));
+        }
+        result
+    }
+
+    fn symbolic_cell_pointee(
+        &self,
+        address: &super::address::Selector,
+        ty: TypeId,
+        state: &State,
+    ) -> Value {
+        use super::address::{Dependency, Intent, Selector, TypedPath};
+        let Intent::Address(payload) = &address.intent else {
+            return Value::default();
+        };
+        let source_ty = self.function.locals[address.input.index()].ty;
+        let selection = &address.selection;
+        let (stored, covered) = self.external_contents(address, state);
         if covered.iter().any(Vec::is_empty) {
             return stored;
         }
@@ -277,13 +307,13 @@ impl Flow<'_> {
             source_ty,
             [
                 selection.clone(),
-                vec![Slot::Deref],
+                vec![payload.kind.slot()],
                 payload.projection.clone(),
             ]
             .concat(),
             self.table,
         );
-        let mut result = value::inputs(ty, selector.input, source_ty, &prefix, self.table);
+        let mut result = value::inputs(ty, address.input, source_ty, &prefix, self.table);
         result
             .leaves
             .retain(|(path, _), _| !covered.iter().any(|prefix| path.starts_with(prefix)));
@@ -293,10 +323,11 @@ impl Flow<'_> {
         for ((path, _), leaf) in &mut result.leaves {
             leaf.dependencies.clear();
             leaf.dependencies.insert(Dependency::InputValue(Selector {
-                input: selector.input,
+                input: address.input,
                 selection: selection.clone(),
                 expected: Some(self.selected_type(ty, path)),
                 intent: Intent::Payload(TypedPath {
+                    kind: payload.kind,
                     pointee: payload.pointee,
                     projection: value::normalize(
                         payload.pointee,

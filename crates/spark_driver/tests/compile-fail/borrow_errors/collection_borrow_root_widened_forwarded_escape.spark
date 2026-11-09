@@ -1,0 +1,34 @@
+fn middle(out: Ref[Map[String, Ref[Int]]]!, readers: List[Ref[Map[String, Ref[Int]]]], value: Ref[Int]): Map[String, Ref[Int]] { return leaf(out, readers, value) }
+fn relay(out: Ref[Map[String, Ref[Int]]]!, readers: List[Ref[Map[String, Ref[Int]]]], value: Ref[Int]): Map[String, Ref[Int]] { return middle(out, readers, value) }
+fn leaf(out: Ref[Map[String, Ref[Int]]]!, readers: List[Ref[Map[String, Ref[Int]]]], value: Ref[Int]): Map[String, Ref[Int]] {
+    next: Map[String, Ref[Int]] = {"one": value}
+    out = next
+    empty: Map[String, Ref[Int]] = {}
+    readers[0] to {
+        reader: Ref[Map[String, Ref[Int]]] -> {
+            snapshot: Map[String, Ref[Int]] = reader
+            return snapshot
+        },
+        Null -> { return empty }
+    }
+    return empty
+}
+fn produce(safe: Ref[Int], value: Int, shared: Bool): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {"one": safe}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    reader: Ref[Map[String, Ref[Int]]] = target
+    separate: Map[String, Ref[Int]] = {"one": safe}
+    disjoint: Ref[Map[String, Ref[Int]]] = separate
+    readers: List[Ref[Map[String, Ref[Int]]]] = if shared { [reader] } else { [disjoint] }
+    borrowed: Ref[Int] = value
+    return relay(target, readers, borrowed)
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    same: Map[String, Ref[Int]] = produce(borrowed, 7, true)
+    same["one"] to { value: Ref[Int] -> print(value), Null -> print(0) }
+    distinct: Map[String, Ref[Int]] = produce(borrowed, 7, false)
+    distinct["one"] to { value: Ref[Int] -> print(value), Null -> print(0) }
+    return 0
+}

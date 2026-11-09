@@ -1,3 +1,5 @@
+// TAG [SPARK-114]
+
 //! Direct function summaries use the same slot transfer engine as diagnostics.
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -6,7 +8,7 @@ use spark_mir::{BlockId, Local, Mir, MirFunction, Operand, Terminator};
 use spark_resolve::DefId;
 use spark_types::{TypeId, TypeTable};
 
-use super::address::{Dependency, Endpoint, Intent, Selector};
+use super::address::{Dependency, DerefKind, Endpoint, Intent, Selector};
 use super::aliases::{Aliases, Key, Port, View};
 
 use super::{
@@ -48,7 +50,7 @@ impl Summary {
 pub(super) struct Context<'a> {
     mir: &'a Mir,
     summaries: &'a Summaries,
-    ports: &'a Ports,
+    pub(super) ports: &'a Ports,
 }
 
 pub(super) struct CallOutcome {
@@ -63,6 +65,7 @@ struct CallActuals<'a> {
     ty: TypeId,
     point: Point,
     state: &'a State,
+    aliases: Option<&'a Aliases>,
 }
 
 type Summaries = FxHashMap<Key, Summary>;
@@ -165,15 +168,14 @@ impl Flow<'_> {
             return;
         }
         for view in &summary.written_inputs {
-            if view.root.exact()
-                && !value::inputs(
-                    view.root.pointee,
-                    view.root.input,
-                    view.root.pointee,
-                    &[],
-                    self.table,
-                )
-                .is_empty()
+            if !value::inputs(
+                view.root.pointee,
+                view.root.input,
+                view.root.pointee,
+                &[],
+                self.table,
+            )
+            .is_empty()
                 && !ports.contains(&view.root)
             {
                 ports.push(view.root.clone());
@@ -186,9 +188,8 @@ impl Flow<'_> {
                 Dependency::Address(Endpoint::Frame { .. }) => continue,
             };
             if let Some(port) = Port::from_selector(selector, self.function, self.table) {
-                if port.exact()
-                    && !value::inputs(port.pointee, port.input, port.pointee, &[], self.table)
-                        .is_empty()
+                if !value::inputs(port.pointee, port.input, port.pointee, &[], self.table)
+                    .is_empty()
                     && !ports.contains(&port)
                 {
                     ports.push(port);
@@ -213,6 +214,7 @@ impl Flow<'_> {
             ty,
             point,
             state,
+            aliases: None,
         };
         let targets = callee.callees.get(&Vec::new());
         let mut outcomes = Vec::new();
@@ -234,7 +236,7 @@ impl Flow<'_> {
                     (port.clone(), self.reference_locations(&input, port.pointee))
                 })
                 .collect();
-            for aliases in Aliases::call_variants(roots, self.table, &locations) {
+            for aliases in Aliases::call_variants(roots, self.table, &locations, &self.aliases) {
                 let key = Key {
                     function: *def,
                     aliases,
@@ -242,6 +244,10 @@ impl Flow<'_> {
                 let Some(summary) = context.summaries.get(&key) else {
                     self.requests.insert(key);
                     continue;
+                };
+                let actuals = CallActuals {
+                    aliases: Some(&key.aliases),
+                    ..actuals
                 };
                 self.observe(summary, function, actuals);
                 self.observe_writes(summary, function, actuals);
@@ -267,11 +273,14 @@ impl Flow<'_> {
         actuals: CallActuals<'_>,
     ) {
         for view in &summary.written_inputs {
-            let input = self.port_input(&view.root, function, actuals);
+            let mut input = self.port_input(&view.root, function, actuals);
+            if !view.root.exact() {
+                input = self.residual_reference(&input, &view.root, function, actuals);
+            }
             let targets = self.project_reference(&input, view.root.pointee, &view.path);
             for endpoint in targets.endpoints {
                 if let Endpoint::Input(selector) = endpoint {
-                    if let Some((view, _)) = self.external_target(&selector) {
+                    for (view, _) in self.external_targets(&selector) {
                         self.written_inputs.insert(view);
                     }
                 }
@@ -285,7 +294,9 @@ impl Flow<'_> {
             source,
             function.locals[port.input.index()].ty,
             &port.selection,
-            actuals.state,
+            port.input,
+            function,
+            actuals,
         )
     }
 
@@ -319,7 +330,10 @@ impl Flow<'_> {
             );
             let mut targets = super::value::Leaf::default();
             for member in aliases.members(&modified.root) {
-                let input = self.port_input(&member, function, actuals);
+                let mut input = self.port_input(&member, function, actuals);
+                if !member.exact() {
+                    input = self.residual_reference(&input, &member, function, actuals);
+                }
                 targets.join(&self.project_reference(&input, member.pointee, &modified.path));
             }
             let mut value = bound;
@@ -338,6 +352,7 @@ impl Flow<'_> {
             ty,
             point,
             state,
+            ..
         } = actuals;
         let mut origins = callee.origins();
         for arg in arguments {
@@ -434,7 +449,13 @@ impl Flow<'_> {
                 .map(|port| self.aliases.representative(&port))
                 .collect();
             for port in ports {
-                let value = self.symbolic_pointee(&port.selector(), port.pointee, &state);
+                let mut selector = port.selector();
+                if !port.exact() {
+                    if let Intent::Address(payload) = &mut selector.intent {
+                        payload.kind = DerefKind::Residual;
+                    }
+                }
+                let value = self.symbolic_pointee(&selector, port.pointee, &state);
                 summary
                     .memory
                     .entry(port.clone())
@@ -587,7 +608,14 @@ impl Flow<'_> {
     ) -> Value {
         let source = Self::actual_input(selector.input, function, actuals);
         let source_ty = function.locals[selector.input.index()].ty;
-        let mut selected = self.select_input(source, source_ty, &selector.selection, actuals.state);
+        let mut selected = self.select_input(
+            source,
+            source_ty,
+            &selector.selection,
+            selector.input,
+            function,
+            actuals,
+        );
         let expected = match &selector.intent {
             Intent::Address(payload) | Intent::Payload(payload) => Some(payload.pointee),
             Intent::Value => selector.expected.and_then(|ty| {
@@ -613,6 +641,16 @@ impl Flow<'_> {
                 expected,
                 actuals.state,
             );
+        }
+        if let Intent::Address(payload) | Intent::Payload(payload) = &selector.intent {
+            if payload.kind == DerefKind::Residual {
+                let port = Port {
+                    input: selector.input,
+                    selection: selector.selection.clone(),
+                    pointee: payload.pointee,
+                };
+                selected = self.residual_reference(&selected, &port, function, actuals);
+            }
         }
         if let Intent::Address(payload) = &selector.intent {
             return self.bind_reference(&selected, payload.pointee, &payload.projection, actuals);
@@ -647,6 +685,9 @@ impl Flow<'_> {
         projection: &Path,
         actuals: CallActuals<'_>,
     ) -> Value {
+        if selected.is_empty() {
+            return Value::default();
+        }
         let mut accesses = Accesses::default();
         accesses.observe_reference(selected, None, projection, AccessKind::Address);
         self.record_accesses(actuals.point, accesses, actuals.state);
@@ -660,19 +701,126 @@ impl Flow<'_> {
         result
     }
 
-    fn select_input(&self, mut value: Value, mut ty: TypeId, path: &Path, state: &State) -> Value {
-        for slot in path {
+    fn select_input(
+        &self,
+        mut value: Value,
+        source_ty: TypeId,
+        path: &Path,
+        input: Local,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> Value {
+        let mut ty = source_ty;
+        for (index, slot) in path.iter().enumerate() {
             if *slot == Slot::Tail {
                 break;
             }
-            value = if *slot == Slot::Deref {
-                self.dereference(&value, ty, state)
-            } else {
-                value.project(slot)
+            value = match slot {
+                Slot::Deref => self.dereference(&value, ty, actuals.state),
+                Slot::ResidualDeref => {
+                    let port = Port {
+                        input,
+                        selection: path[..index].to_vec(),
+                        pointee: child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR),
+                    };
+                    let selected = self.residual_reference(&value, &port, function, actuals);
+                    self.dereference(&selected, ty, actuals.state)
+                }
+                _ => value.project(slot),
             };
             ty = child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR);
         }
         value
+    }
+
+    fn residual_reference(
+        &self,
+        value: &Value,
+        port: &Port,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> Value {
+        let mut selected = self.expand_reference(value, port.pointee);
+        let Some(aliases) = actuals.aliases else {
+            return selected;
+        };
+        let ports = self
+            .program
+            .map(|context| context.ports[&function.def_id].as_slice())
+            .unwrap_or_default();
+        let mut excluded = FxHashSet::default();
+        for root in aliases.family(port, ports, self.table).excluded {
+            let input = self.port_input(&root, function, actuals);
+            if let Some(locations) = self.reference_locations(&input, root.pointee) {
+                if locations.len() == 1 {
+                    excluded.extend(
+                        locations
+                            .into_iter()
+                            .filter(super::aliases::Location::unique),
+                    );
+                }
+            }
+        }
+        selected.leaves.retain(|(_, origin), leaf| {
+            leaf.endpoints.retain(|endpoint| {
+                let pointer = Value::reference(origin.clone()).with_metadata(&super::value::Leaf {
+                    endpoints: std::iter::once(endpoint.clone()).collect(),
+                    ..Default::default()
+                });
+                self.reference_locations(&pointer, port.pointee)
+                    .is_none_or(|locations| {
+                        locations.len() != 1
+                            || !locations.iter().all(|location| excluded.contains(location))
+                    })
+            });
+            !leaf.endpoints.is_empty()
+                || !leaf.opaque.is_empty()
+                || leaf
+                    .dependencies
+                    .iter()
+                    .any(|dependency| matches!(dependency, Dependency::InputValue(_)))
+        });
+        selected
+            .sources
+            .retain(|key, _| selected.leaves.contains_key(key));
+        selected
+    }
+
+    fn expand_reference(&self, value: &Value, ty: TypeId) -> Value {
+        let mut result = Value::default();
+        for (key @ (path, _), leaf) in &value.leaves {
+            if !path.is_empty() && *path != [Slot::Tail] {
+                continue;
+            }
+            let mut one = Value::default();
+            one.leaves.insert(key.clone(), leaf.clone());
+            let mut metadata = self.project_reference(&one, ty, &Vec::new());
+            let endpoints = std::mem::take(&mut metadata.endpoints);
+            for endpoint in endpoints {
+                match endpoint {
+                    Endpoint::Input(selector) => {
+                        for (view, _) in self.external_targets(&selector) {
+                            let mut selected = view.root.selector();
+                            if let Intent::Address(payload) = &mut selected.intent {
+                                payload.projection = view.path;
+                                if !view.root.exact() {
+                                    payload.kind = DerefKind::Residual;
+                                }
+                            }
+                            metadata.endpoints.insert(Endpoint::Input(selected));
+                        }
+                    }
+                    frame @ Endpoint::Frame { .. } => {
+                        metadata.endpoints.insert(frame);
+                    }
+                }
+            }
+            result.leaves.insert(key.clone(), metadata);
+            if let Some(sources) = value.sources.get(key) {
+                result.sources.insert(key.clone(), sources.clone());
+            }
+        }
+        result
     }
 }
 
@@ -724,3 +872,6 @@ mod tests;
 
 #[cfg(test)]
 mod write_tests;
+
+#[cfg(test)]
+mod family_tests;
