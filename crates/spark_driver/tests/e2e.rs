@@ -1710,6 +1710,84 @@ fn collection_borrow_allows_source_replacement_after_last_carrier_clear() {
 }
 
 #[test]
+fn collection_borrow_external_store_rejects_callee_local_references() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_external_store.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 1, "{args:?}: {}", result.stderr);
+        assert!(
+            result
+                .stderr
+                .contains("stored value contains a reference to local storage"),
+            "{args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_external_store_preserves_incoming_references() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_external_input_store.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "7\n", "{args:?}");
+    }
+}
+
+#[test]
+fn collection_borrow_external_store_clear_preserves_copied_payloads() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_external_store_cleared.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "0\n", "{args:?}");
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_external_joined_clear.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 0,
+            "joined clear {args:?}: {}",
+            result.stderr
+        );
+        assert_eq!(result.stdout, "0\n", "joined clear {args:?}");
+        for (fixture, message) in [
+            (
+                "compile-fail/borrow_errors/collection_borrow_external_partial_replacement.spark",
+                "returned value contains a reference to local storage",
+            ),
+            (
+                "compile-fail/borrow_errors/collection_borrow_external_snapshot_escape.spark",
+                "returned value contains a reference to local storage",
+            ),
+            (
+                "compile-fail/borrow_errors/collection_borrow_external_early_exit.spark",
+                "stored value contains a reference to local storage",
+            ),
+            (
+                "compile-fail/borrow_errors/collection_borrow_external_live_source_write.spark",
+                "cannot write to a borrowed collection",
+            ),
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains(message),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
 fn collection_borrow_loops_preserve_occurrence_lifetimes() {
     for args in [&[][..], &["--no-opt"][..]] {
         let negative = build_spark_with_args(

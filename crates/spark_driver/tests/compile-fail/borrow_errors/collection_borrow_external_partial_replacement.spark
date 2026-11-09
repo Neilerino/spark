@@ -1,0 +1,21 @@
+fn choose(out: Ref[Map[String, Ref[Int]]]!, value: Ref[Int], change: Bool): Map[String, Ref[Int]] {
+    if change {
+        next: Map[String, Ref[Int]] = {"one": value}
+        out = next
+    }
+    result: Map[String, Ref[Int]] = out
+    return result
+}
+fn produce(safe: Ref[Int]): Map[String, Ref[Int]] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    initial: Map[String, Ref[Int]]! = {"one": borrowed}
+    return choose(initial, safe, false)
+}
+fn main(): Int {
+    safe: Int = 9
+    incoming: Ref[Int] = safe
+    result: Map[String, Ref[Int]] = produce(incoming)
+    print(result.len())
+    return 0
+}
