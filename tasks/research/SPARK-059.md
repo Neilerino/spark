@@ -1,6 +1,6 @@
 # SPARK-059 — Package Management & FFI Interop Design
 
-## Status: Open
+Historical design proposal. The [bundled fixtures](../../crates/spark_driver/tests/run-pass/multifile) and [compiler guide](../../docs/compiler-architecture.md) describe current implementation entry points. Track remaining design work in [NEI-48](https://linear.app/neilwaddenpersonal/issue/NEI-48).
 
 ## Problem
 

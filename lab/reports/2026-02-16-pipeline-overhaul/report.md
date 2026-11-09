@@ -1,5 +1,7 @@
 # Spark Benchmark Report — Pipeline Overhaul
 
+Historical measurements for the dated run. See the [benchmark lab](../../README.md) for current reproduction commands.
+
 ## Summary
 
 | Benchmark | Rust | Spark | Spark vs Rust |

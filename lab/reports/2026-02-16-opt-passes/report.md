@@ -1,5 +1,7 @@
 # Spark Benchmark Report — Optimization Passes
 
+Historical measurements for the dated run. See the [benchmark lab](../../README.md) for current reproduction commands.
+
 ## Summary
 
 | Benchmark | Rust | Go | Spark | Spark vs Rust |
