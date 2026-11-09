@@ -1,0 +1,35 @@
+fn identity[T](value: T): T { return value }
+fn nestedTuple(input: Ref[Int]): Tup[List[Map[String, Ref[Int]]], Map[String, Ref[Int]]?] {
+    entries: Map[String, Ref[Int]] = {"x": input}
+    optional: Map[String, Ref[Int]]? = entries
+    return ([entries], optional)
+}
+struct Node { children: List[Node], payload: Ref[Map[String, Ref[Int]]] }
+fn good(input: Ref[Int], fallback: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
+ entries: Map[String, Ref[Int]] = {"x": input}
+ entriesRef: Ref[Map[String, Ref[Int]]] = entries
+ leaf: Node = Node { children: [], payload: entriesRef }
+ middle: Node = Node { children: [leaf], payload: fallback }
+ root: Node = Node { children: [middle], payload: fallback }
+ view: Ref[Map[String, Ref[Int]]] = root.children[0] to { node: Node -> node.children[0] to { inner: Node -> inner.payload, Null -> fallback }, Null -> fallback }
+ copied: Map[String, Ref[Int]] = view
+ return copied
+}
+fn main(): Int {
+    value: Int = 7
+    input: Ref[Int] = value
+    fallback: Map[String, Ref[Int]] = {"x": input}
+    fallbackView: Ref[Map[String, Ref[Int]]] = fallback
+    result: Map[String, Ref[Int]] = good(input, fallbackView)
+    result["x"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    pair: Tup[List[Map[String, Ref[Int]]], Map[String, Ref[Int]]?] = identity(nestedTuple(input))
+    pair.0[0] to {
+        row: Map[String, Ref[Int]] -> row["x"] to { found: Ref[Int] -> print(found), Null -> print(99) },
+        Null -> print(99)
+    }
+    pair.1 to {
+        row: Map[String, Ref[Int]] -> row["x"] to { found: Ref[Int] -> print(found), Null -> print(99) },
+        Null -> print(99)
+    }
+    return 0
+}
