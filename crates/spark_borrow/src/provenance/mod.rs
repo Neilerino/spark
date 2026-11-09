@@ -1,6 +1,7 @@
 //! Value-slot provenance for references carried across MIR control flow.
 
 mod address;
+mod aliases;
 mod demand;
 mod effects;
 mod read;
@@ -105,6 +106,9 @@ struct Flow<'a> {
     table: &'a TypeTable,
     entries: Vec<Option<State>>,
     program: Option<effects::Context<'a>>,
+    aliases: aliases::Aliases,
+    requests: FxHashSet<aliases::Key>,
+    written_inputs: FxHashSet<Local>,
     accesses: FxHashMap<Point, Accesses>,
     transfers: FxHashMap<Point, demand::Transfer>,
     invalid_reads: FxHashSet<(Point, Point, Origin)>,
@@ -134,6 +138,9 @@ impl<'a> Flow<'a> {
             function,
             table,
             program,
+            aliases: aliases::Aliases::default(),
+            requests: FxHashSet::default(),
+            written_inputs: FxHashSet::default(),
             accesses: FxHashMap::default(),
             transfers: FxHashMap::default(),
             invalid_reads: FxHashSet::default(),

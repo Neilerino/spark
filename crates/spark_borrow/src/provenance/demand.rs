@@ -606,15 +606,21 @@ mod tests {
         let read = Point::new(BlockId(1), 2);
         let replace_other = Point::new(BlockId(1), 1);
         assert!(
-            regions[&caller_id][0].points.contains(&read),
+            regions[&caller_id]
+                .iter()
+                .all(|context| context[0].points.contains(&read)),
             "selected field must protect its actual source"
         );
         assert!(
-            !regions[&caller_id][1].points.contains(&read),
+            regions[&caller_id]
+                .iter()
+                .all(|context| !context[1].points.contains(&read)),
             "another field sharing the synthetic call origin must not extend this parent"
         );
         assert!(
-            !regions[&caller_id][1].points.contains(&replace_other),
+            regions[&caller_id]
+                .iter()
+                .all(|context| !context[1].points.contains(&replace_other)),
             "unused field must not prevent replacing its source"
         );
         assert_eq!(facts.loans.len(), 2);
@@ -804,9 +810,9 @@ mod tests {
         let regions = super::super::effects::analyze_program(&mir, &table, &mut diagnostics);
         assert!(!diagnostics.has_errors());
         assert!(
-            regions[&caller_id][0]
-                .points
-                .contains(&Point::new(BlockId(1), 1)),
+            regions[&caller_id]
+                .iter()
+                .all(|context| context[0].points.contains(&Point::new(BlockId(1), 1))),
             "source parent must stay live between opaque payload copy and its later read"
         );
     }

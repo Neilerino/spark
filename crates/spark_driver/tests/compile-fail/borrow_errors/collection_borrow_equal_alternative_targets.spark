@@ -1,0 +1,21 @@
+fn clear(out: Ref[Map[String, Ref[Int]]]!, reader: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
+    empty: Map[String, Ref[Int]] = {}
+    out = empty
+    return reader
+}
+fn produce(left: Bool, right: Bool): Map[String, Ref[Int]] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    first: Map[String, Ref[Int]]! = {"one": borrowed}
+    second: Map[String, Ref[Int]]! = {"one": borrowed}
+    firstRef: Ref[Map[String, Ref[Int]]]! = first
+    secondRef: Ref[Map[String, Ref[Int]]]! = second
+    out: Ref[Map[String, Ref[Int]]]! = if left { firstRef } else { secondRef }
+    reader: Ref[Map[String, Ref[Int]]] = if right { firstRef } else { secondRef }
+    return clear(out, reader)
+}
+fn main(): Int {
+    entries: Map[String, Ref[Int]] = produce(false, true)
+    print(entries.len())
+    return 0
+}

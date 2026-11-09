@@ -104,9 +104,10 @@ fn pending_memory_summary_is_not_a_returning_empty_clear() {
         functions: std::collections::HashMap::from([(helper.def_id, helper)]),
     };
     let facts = crate::facts::extract_facts(&caller);
+    let ports = FxHashMap::from_iter([(DefId::new(9800), Vec::new())]);
     for normal_return in [false, true] {
         let summaries = FxHashMap::from_iter([(
-            DefId::new(9800),
+            Key::distinct(DefId::new(9800)),
             Summary {
                 normal_return,
                 memory: FxHashMap::from_iter([(Local(1), Value::default())]),
@@ -120,6 +121,7 @@ fn pending_memory_summary_is_not_a_returning_empty_clear() {
             Some(Context {
                 mir: &mir,
                 summaries: &summaries,
+                ports: &ports,
             }),
         );
         flow.solve(&facts);
@@ -216,4 +218,127 @@ fn empty_optional_write_footprints_reach_later_return_blocks() {
     let summary = flow.summary();
     assert!(summary.normal_return);
     assert!(summary.modified.contains(&Local(1)), "a possible empty write is a footprint even without new borrowed payload or a definite-write mask");
+}
+
+#[test]
+fn unused_reference_inputs_do_not_enumerate_alias_partitions() {
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let reference = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let string = table.intern(Ty::String);
+    let map = table.intern(Ty::Map(string, reference));
+    let map_ref = table.intern(Ty::Ref {
+        inner: map,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let void = table.intern(Ty::Void);
+    let def = DefId::new(9811);
+    let function = MirFunction {
+        def_id: def,
+        param_count: 20,
+        return_type: void,
+        locals: std::iter::once(void)
+            .chain(std::iter::repeat_n(map_ref, 20))
+            .enumerate()
+            .map(|(index, ty)| LocalDecl {
+                local: Local(index as u32),
+                ty,
+                name: None,
+                is_user_variable: false,
+                mutable: false,
+                span: Span::DUMMY,
+            })
+            .collect(),
+        blocks: vec![BasicBlock {
+            statements: vec![],
+            terminator: Terminator::Return,
+            is_cleanup: false,
+        }],
+        captures: vec![],
+        is_async: false,
+        span: Span::DUMMY,
+    };
+    let facts = FxHashMap::from_iter([(def, crate::facts::extract_facts(&function))]);
+    let mir = Mir {
+        functions: std::collections::HashMap::from([(def, function)]),
+    };
+    let (summaries, ports) = infer_summaries(&mir, &table, &facts);
+    assert_eq!(
+        summaries.len(),
+        1,
+        "unused signature roots must not trigger Bell-number context growth"
+    );
+    assert!(ports[&def].is_empty());
+    assert!(summaries[&Key::distinct(def)].normal_return);
+}
+
+#[test]
+fn readonly_observed_inputs_do_not_enumerate_alias_partitions() {
+    use spark_mir::Projection;
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let reference = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let string = table.intern(Ty::String);
+    let map = table.intern(Ty::Map(string, reference));
+    let map_ref = table.intern(Ty::Ref {
+        inner: map,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let void = table.intern(Ty::Void);
+    let def = DefId::new(9812);
+    let span = Span::DUMMY;
+    let function = MirFunction {
+        def_id: def,
+        param_count: 4,
+        return_type: void,
+        locals: [void, map_ref, map_ref, map_ref, map_ref, map]
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| LocalDecl {
+                local: Local(index as u32),
+                ty,
+                name: None,
+                is_user_variable: false,
+                mutable: false,
+                span,
+            })
+            .collect(),
+        blocks: vec![BasicBlock {
+            statements: (1..=4)
+                .map(|index| Statement::Assign {
+                    place: Place::from_local(Local(5)),
+                    rvalue: Rvalue::Use(Operand::Copy(Place {
+                        local: Local(index),
+                        projections: vec![Projection::Deref],
+                    })),
+                    span,
+                })
+                .collect(),
+            terminator: Terminator::Return,
+            is_cleanup: false,
+        }],
+        captures: vec![],
+        is_async: false,
+        span,
+    };
+    let facts = FxHashMap::from_iter([(def, crate::facts::extract_facts(&function))]);
+    let mir = Mir {
+        functions: std::collections::HashMap::from([(def, function)]),
+    };
+    let (summaries, _) = infer_summaries(&mir, &table, &facts);
+    assert_eq!(
+        summaries.len(),
+        1,
+        "alias equality cannot affect entry-state reads without writes"
+    );
 }

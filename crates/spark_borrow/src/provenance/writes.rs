@@ -35,7 +35,7 @@ impl Flow<'_> {
                 Endpoint::Input(selector) => {
                     destinations.insert(Coordinate {
                         bank: Bank::External,
-                        local: selector.input,
+                        local: self.aliases.representative(selector.input),
                         path: self.external_path(selector),
                     });
                 }
@@ -69,6 +69,7 @@ impl Flow<'_> {
             current.sources.clear();
             match bank {
                 Bank::External => {
+                    self.written_inputs.insert(*local);
                     if strong {
                         state.external_defined.retain(|(input, stored)| {
                             input != local || !super::storage::prefix(path, stored)
@@ -116,18 +117,20 @@ impl Flow<'_> {
 
     pub(super) fn external_contents(&self, selector: &Selector, state: &State) -> (Value, bool) {
         let path = self.external_path(selector);
+        let input = self.aliases.representative(selector.input);
         let mut value = state
             .external
-            .get(&selector.input)
+            .get(&input)
             .cloned()
             .unwrap_or_default()
-            .sourced(Bank::External, selector.input);
+            .sourced(Bank::External, input);
         for slot in &path {
             value = value.project(slot);
         }
-        let complete = state.external_defined.iter().any(|(local, prefix)| {
-            *local == selector.input && super::storage::prefix(prefix, &path)
-        });
+        let complete = state
+            .external_defined
+            .iter()
+            .any(|(local, prefix)| *local == input && super::storage::prefix(prefix, &path));
         (value, complete)
     }
 
