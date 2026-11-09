@@ -1620,6 +1620,19 @@ fn captured_hash_writes_balance_invocation_owners_and_preserve_snapshots() {
 }
 
 #[test]
+fn captured_environment_owners_balance_across_invocations() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_closure_rc(const void *const *value) {\n\
+             return value[1] ? *(const size_t *)value[1] : 0;\n\
+         }\n\
+         int64_t probe_list_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/lambdas/captured_environment_ownership.spark"),
+        "1\n1\n0\n1\n0\n1\n9\n0\n1\n0\n1\n0\n1\n7\n0\n3\n0\n7\n0\n2\n1\n0",
+    );
+}
+
+#[test]
 fn closure_capture_mutable_list() {
     let fixture = "run-pass/lambdas/closure_capture_mutable_list.spark";
     for args in [&[][..], &["--no-opt"][..]] {
