@@ -1,0 +1,4 @@
+fn main(): Int {
+    values: List[Null] = [Null]
+    return values.len()
+}
