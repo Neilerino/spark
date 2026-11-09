@@ -2018,6 +2018,45 @@ fn pipeline_first_input_rejects_unsupported_reference_coercions() {
 }
 
 #[test]
+fn pipeline_first_input_balances_borrowed_value_owners() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\nint64_t probe_list_rc(const void *const *value) { return *(const size_t *)*value; }\nint64_t probe_string_rc(const void *const *value) { return *(const size_t *)*value; }\n",
+        include_str!("run-pass/to/pipeline_first_ownership.spark"),
+        "3\n3\n0\n1\n3\n0\n7\n0\n0\n9\n-1\n1\n1\n0",
+    );
+}
+
+#[test]
+fn pipeline_first_input_rejects_aliasing_implicit_mutable_borrows() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "compile-fail/borrow_errors/pipeline_alias_mutable_input.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 1, "{args:?}: {}", result.stderr);
+        assert!(
+            result
+                .stderr
+                .contains("cannot borrow value as mutable more than once"),
+            "{args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
+fn pipeline_borrowed_scalar_writes_reach_the_original_local() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/to/pipeline_borrowed_scalar.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout, "10\n10\n13\n10\n255\ntrue\ntrue\n10\n10\n5\n5\n8\n5\n9\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
 fn pipeline_first_input_matches_call_reference_coercions() {
     for args in [&[][..], &["--no-opt"][..]] {
         let result = run_spark_with_args("run-pass/to/pipeline_first_input.spark", args);

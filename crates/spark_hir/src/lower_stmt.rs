@@ -111,7 +111,7 @@ pub(crate) fn lower_stmt(stmt: &Stmt, ctx: &mut LowerCtx<'_>) -> HirStmt {
             let mut value_hir = lower_expr(value, ctx);
 
             let target_inner = strip_mutable(target_hir.ty, table);
-            let value_ty = value_hir.ty;
+            let value_ty = strip_mutable(value_hir.ty, table);
 
             // Deref-store: target is Ref[T], value is T → write through the ref
             if let Ty::Ref { inner, .. } = table.resolve(target_inner) {
@@ -128,7 +128,7 @@ pub(crate) fn lower_stmt(stmt: &Stmt, ctx: &mut LowerCtx<'_>) -> HirStmt {
             // Auto-deref value: target is T, value is Ref[T]
             let target_stripped = strip_mutable(target_hir.ty, table);
             if !matches!(table.resolve(target_stripped), Ty::Ref { .. }) {
-                if let Ty::Ref { inner, .. } = table.resolve(value_hir.ty) {
+                if let Ty::Ref { inner, .. } = table.resolve(strip_mutable(value_hir.ty, table)) {
                     let inner_ty = *inner;
                     value_hir = HirExpr::new(
                         HirExprKind::Deref(Box::new(value_hir)),

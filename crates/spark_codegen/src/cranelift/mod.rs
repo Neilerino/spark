@@ -704,7 +704,7 @@ impl CraneliftBackend {
         // Initialize return place for scalars with a default value.
         let ret_ty = mir_func.return_type;
         if !abi::is_zero_sized(ret_ty, table) {
-            if let Some((_, clif_ty)) = fctx.local_var(Local::RETURN_PLACE) {
+            if let Some(clif_ty) = fctx.local_scalar_type(Local::RETURN_PLACE) {
                 let f32_ty = cranelift_codegen::ir::types::F32;
                 let f64_ty = cranelift_codegen::ir::types::F64;
                 let zero = match clif_ty {

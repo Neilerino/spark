@@ -94,6 +94,23 @@ pub struct MirFunction {
 }
 
 impl MirFunction {
+    // TAG [SPARK-129]
+    /// Locals that may be written indirectly through a reference.
+    #[must_use]
+    pub fn address_taken_locals(&self) -> rustc_hash::FxHashSet<Local> {
+        self.blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter_map(|statement| match statement {
+                Statement::Assign {
+                    rvalue: Rvalue::Ref { place, .. },
+                    ..
+                } => Some(place.local),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Resolves the [`DefId`] of a callee from a function call operand.
     ///
     /// Handles two cases:

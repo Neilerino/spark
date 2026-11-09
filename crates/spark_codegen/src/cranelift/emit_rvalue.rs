@@ -382,7 +382,9 @@ pub(super) fn emit_place_addr<M: Module>(
     module: &mut M,
 ) -> (Value, TypeId) {
     let mut addr = match ctx.local_storage(place.local) {
-        LocalStorage::StackSlot(slot, _) => ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0),
+        LocalStorage::StackSlot(slot, _) | LocalStorage::ScalarSlot(slot, _) => {
+            ctx.builder.ins().stack_addr(ctx.ptr_type, slot, 0)
+        }
         LocalStorage::Var(_, _) => {
             // For scalar locals stored in registers, we spill to a
             // temporary stack slot so we can take their address.

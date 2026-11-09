@@ -263,15 +263,14 @@ fn emit_drop<M: Module>(
     table: &TypeTable,
     module: &mut M,
 ) {
-    let local = place.local;
-    let ty_id = ctx.local_type_id(local);
+    let ty_id = emit_rvalue::resolve_place_type(ctx, place, table);
 
     // Only droppable types need a dec call.
     if !spark_drop::needs_drop(ty_id, table) {
         return;
     }
 
-    let ptr_val = ctx.read_local(local);
+    let ptr_val = emit_rvalue::emit_place_read(ctx, place, table, module);
     let ptr_type = ctx.ptr_type;
     let stubs = ctx.stubs;
 

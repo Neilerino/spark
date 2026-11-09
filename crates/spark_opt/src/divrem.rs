@@ -7,7 +7,7 @@ use spark_span::Span;
 use spark_types::{IntWidth, Ty, TypeId, TypeTable};
 
 pub fn reduce_signed_divrem(func: &mut MirFunction, table: &TypeTable) -> bool {
-    let borrowed = super::address_taken_locals(func);
+    let borrowed = func.address_taken_locals();
 
     let mut changed = false;
     for block in &mut func.blocks {

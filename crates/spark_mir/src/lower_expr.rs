@@ -733,7 +733,7 @@ fn lower_call<'a>(
         && !fb.is_def_local(func_local)
         && !fb.owns_local(func_local)
         && spark_drop::needs_drop(fb.local_type(func_local), type_table);
-    let scoped = tagged_params.is_some() || temporary_callee;
+    let scoped = spark_call || temporary_callee;
     if scoped {
         fb.push_scope();
         if temporary_callee {
@@ -781,12 +781,13 @@ fn lower_call<'a>(
         } else {
             local
         };
-        let operand = if builtin_sort && !fb.is_def_local(local) && !fb.owns_local(local) {
-            Operand::Move(Place::from_local(local))
-        } else {
-            owned_aggregate_operand(local, fb, type_table)
-        };
+        let operand =
+            call_argument_operand(fb, local, arg.span, type_table, spark_call, builtin_sort);
         arg_operands.push(operand);
+    }
+
+    if spark_call {
+        fb.transfer_argument_drops(&arg_operands);
     }
 
     // Async functions execute synchronously when called directly (not via spawn).
@@ -1228,16 +1229,35 @@ fn stage_value(
     staged
 }
 
-fn owned_aggregate_operand(local: Local, fb: &FunctionBuilder, type_table: &TypeTable) -> Operand {
+fn call_argument_operand(
+    fb: &mut FunctionBuilder,
+    local: Local,
+    span: spark_span::Span,
+    type_table: &TypeTable,
+    spark_call: bool,
+    builtin_sort: bool,
+) -> Operand {
+    // Owned values need exit cleanup; reference operands retain their loan identity.
+    let local = if spark_call
+        && spark_drop::needs_drop(fb.local_type(local), type_table)
+        && (fb.is_def_local(local) || !fb.current_scope_owns(local))
+    {
+        stage_value(fb, local, fb.local_type(local), None, span, type_table)
+    } else {
+        local
+    };
     let place = Place::from_local(local);
+    if spark_call && fb.current_scope_owns(local) {
+        return Operand::Move(place);
+    }
     let ty = fb.local_type(local);
     if !fb.is_def_local(local)
         && !fb.owns_local(local)
-        && matches!(
-            type_table.resolve(unwrap_type_wrappers(ty, type_table)),
-            Ty::Union(_) | Ty::Optional(_) | Ty::Tuple(_)
-        )
-        && spark_drop::needs_drop(ty, type_table)
+        && (builtin_sort
+            || (matches!(
+                type_table.resolve(unwrap_type_wrappers(ty, type_table)),
+                Ty::Union(_) | Ty::Optional(_) | Ty::Tuple(_)
+            ) && spark_drop::needs_drop(ty, type_table)))
     {
         Operand::Move(place)
     } else {

@@ -156,53 +156,54 @@ fn lower_assignment(
     type_table: &TypeTable,
     defs: &DefinitionTable,
 ) {
+    // TAG [SPARK-129]: stage the new owner before releasing an aliased destination.
+    fb.push_scope();
     let val_local = lower_expr(value, fb, mir, type_table, defs);
-    let place = lower_place(target, fb, mir, type_table, defs);
-
-    // Check if the destination needs union/optional wrapping.
-    // For simple local targets, compare the local's type with the
-    // value's type — if they differ (e.g. assigning `Int` to `Int?!`),
-    // use union wrapping just like Let bindings do.
-    let dest_ty = if place.projections.is_empty() {
-        Some(fb.local_type(place.local))
-    } else {
-        None
-    };
-    if let Some(dest_ty) = dest_ty {
-        if place.local == val_local {
-            return;
-        }
-        if spark_drop::needs_drop(dest_ty, type_table) {
-            fb.push_stmt(Statement::Drop {
-                place: place.clone(),
-                span: value.span,
+    if fb.is_terminated() || matches!(type_table.resolve(value.ty), Ty::Never) {
+        if !fb.is_terminated() {
+            fb.terminate(Terminator::Goto {
+                target: fb.current_block(),
             });
         }
+        fb.pop_finished_scope();
+        return;
     }
-    let needs_wrap = dest_ty.is_some_and(|dt| {
-        let dt_stripped = strip_mutable(dt, type_table);
-        let val_ty = value.ty;
-        dt_stripped != val_ty
-            && (matches!(
-                type_table.resolve(dt_stripped),
-                Ty::Optional(_) | Ty::Union(_)
-            ))
-    });
-
-    if needs_wrap {
-        emit_assign_with_union_wrap(fb, place.local, val_local, type_table, value.span);
+    let place = lower_place(target, fb, mir, type_table, defs);
+    if fb.is_terminated() {
+        fb.pop_finished_scope();
+        return;
+    }
+    let dest_ty = if place.projections.is_empty() {
+        if place.local == val_local {
+            fb.pop_finished_scope();
+            return;
+        }
+        fb.local_type(place.local)
     } else {
-        let operand = if fb.is_def_local(val_local) {
-            Operand::Copy(Place::from_local(val_local))
-        } else {
-            Operand::Move(Place::from_local(val_local))
-        };
-        fb.push_stmt(Statement::Assign {
-            place,
-            rvalue: Rvalue::Use(operand),
+        target.ty
+    };
+    let Some(staged) = stage_collection_value(fb, val_local, dest_ty, value.span, type_table)
+    else {
+        mir.diagnostics.push(
+            Diagnostic::error("assignment has incompatible storage after lowering").with_label(
+                Label::primary(value.span, "value does not match the destination"),
+            ),
+        );
+        fb.pop_scope_drops(None, value.span);
+        return;
+    };
+    if spark_drop::needs_drop(dest_ty, type_table) {
+        fb.push_stmt(Statement::Drop {
+            place: place.clone(),
             span: value.span,
         });
     }
+    fb.push_stmt(Statement::Assign {
+        place,
+        rvalue: Rvalue::Use(Operand::Move(Place::from_local(staged))),
+        span: value.span,
+    });
+    fb.pop_finished_scope();
 }
 
 fn lower_store_operand(

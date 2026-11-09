@@ -126,23 +126,6 @@ pub fn optimize(input: OptInput) -> OptOutput {
     }
 }
 
-/// Locals that may be written indirectly through a reference.
-fn address_taken_locals(func: &MirFunction) -> rustc_hash::FxHashSet<spark_mir::Local> {
-    use spark_mir::{Rvalue, Statement};
-
-    func.blocks
-        .iter()
-        .flat_map(|block| &block.statements)
-        .filter_map(|statement| match statement {
-            Statement::Assign {
-                rvalue: Rvalue::Ref { place, .. },
-                ..
-            } => Some(place.local),
-            _ => None,
-        })
-        .collect()
-}
-
 /// Runs all passes on a single function, with two fixed iterations.
 fn optimize_function(func: &mut MirFunction, table: &TypeTable) {
     let changed = run_passes(func, table);

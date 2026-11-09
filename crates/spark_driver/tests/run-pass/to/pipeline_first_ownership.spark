@@ -1,0 +1,47 @@
+link "union_probe"
+extern fn probe_list_rc(value: Ref[List[Int]]): Int
+extern fn probe_string_rc(value: Ref[String]): Int
+fn ownedLen(values: List[Int]): Int { return values.len() }
+fn borrowedLen(values: Ref[List[Int]]): Int { return values.len() }
+fn replace(values: Ref[List[Int]]!): Void { values = [9] }
+fn replaceSame(values: Ref[List[Int]]!, other: List[Int]): Void { values = other }
+fn replaceOptional(value: Ref[String?]!, text: String): Void { value = text }
+fn clearOptional(value: Ref[String?]!): Void { value = Null }
+fn second(values: List[Int], offset: Int): Int { return values.len() + offset }
+fn exitWhileArgument(values: Ref[List[Int]]): Int {
+    answer: Int = values to second{offset: return 7}
+    return answer
+}
+fn main(): Int {
+    values: List[Int] = [3, 1, 2]
+    borrowed: Ref[List[Int]] = values
+    before: Int = probe_list_rc(values)
+    print(borrowed to ownedLen)
+    print(values to borrowedLen)
+    print(probe_list_rc(values) - before)
+    {
+        sorted: List[Int] = borrowed to sort
+        print(sorted[0] ?? 0)
+        print(values[0] ?? 0)
+    }
+    print(probe_list_rc(values) - before)
+    print(exitWhileArgument(borrowed))
+    print(probe_list_rc(values) - before)
+    variable: List[Int]! = values
+    sharedBefore: Int = probe_list_rc(values)
+    variable to replaceSame{other: values}
+    print(probe_list_rc(values) - sharedBefore)
+    variable to replace
+    print(variable[0] ?? 0)
+    print(probe_list_rc(values) - sharedBefore)
+    print(probe_list_rc(variable))
+    seed: Int = 1
+    text: String = "value-{seed}"
+    textBefore: Int = probe_string_rc(text)
+    tagged: String?! = text
+    tagged to replaceOptional{text: text}
+    print(probe_string_rc(text) - textBefore)
+    tagged to clearOptional
+    print(probe_string_rc(text) - textBefore)
+    return 0
+}
