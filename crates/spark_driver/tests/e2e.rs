@@ -4383,3 +4383,28 @@ fn transitive_path_deps() {
         "stdout mismatch for transitive_deps project"
     );
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_keeps_each_callback_target_with_its_own_captures() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/collections/collection_borrow_target_owned_captures.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "5\n1\n", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_target_owned_capture_read.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}

@@ -696,9 +696,10 @@ impl Flow<'_> {
                 .cloned()
                 .unwrap_or_default()
         } else if local.0 > function.param_count {
-            actuals
-                .callee
-                .capture(local.index() - function.param_count as usize - 1)
+            actuals.callee.capture(
+                function.def_id,
+                local.index() - function.param_count as usize - 1,
+            )
         } else {
             Value::default()
         }

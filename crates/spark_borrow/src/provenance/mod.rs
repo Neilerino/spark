@@ -448,8 +448,8 @@ impl<'a> Flow<'a> {
                         Slot::Member(*member_ty)
                     }
                 }
-                AggregateKind::Closure { .. } => {
-                    Slot::Capture(index, operand_type(operand, self.function))
+                AggregateKind::Closure { func_def_id } => {
+                    Slot::Capture(*func_def_id, index, operand_type(operand, self.function))
                 }
                 AggregateKind::Channel => continue,
             };
