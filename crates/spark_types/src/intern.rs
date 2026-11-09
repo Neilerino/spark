@@ -39,7 +39,7 @@ impl TypeInterner {
         };
         // Index 0 is always Error
         let error_id = interner.intern_unchecked(Ty::Error);
-        debug_assert!(error_id == TypeId::ERROR);
+        debug_assert_eq!(error_id, TypeId::ERROR);
         interner
     }
 

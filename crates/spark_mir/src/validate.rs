@@ -266,53 +266,20 @@ fn check_rvalue(
         | Rvalue::RangeLen {
             start, end, step, ..
         } => {
-            check_operand(
-                start,
-                num_locals,
-                func_id,
-                block_id,
-                stmt_idx,
-                "range.start",
-                errors,
-            );
-            check_operand(
-                end,
-                num_locals,
-                func_id,
-                block_id,
-                stmt_idx,
-                "range.end",
-                errors,
-            );
-            check_operand(
-                step,
-                num_locals,
-                func_id,
-                block_id,
-                stmt_idx,
-                "range.step",
-                errors,
-            );
+            for (operand, role) in [
+                (start, "range.start"),
+                (end, "range.end"),
+                (step, "range.step"),
+            ] {
+                check_operand(
+                    operand, num_locals, func_id, block_id, stmt_idx, role, errors,
+                );
+            }
         }
         Rvalue::CollectionGetOptional { collection, index } => {
-            check_place(
-                collection,
-                num_locals,
-                func_id,
-                block_id,
-                stmt_idx,
-                "lookup.collection",
-                errors,
-            );
-            check_place(
-                index,
-                num_locals,
-                func_id,
-                block_id,
-                stmt_idx,
-                "lookup.index",
-                errors,
-            );
+            for (place, role) in [(collection, "lookup.collection"), (index, "lookup.index")] {
+                check_place(place, num_locals, func_id, block_id, stmt_idx, role, errors);
+            }
         }
     }
 }

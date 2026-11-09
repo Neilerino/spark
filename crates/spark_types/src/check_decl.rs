@@ -451,55 +451,65 @@ fn validate_interface_methods(
             );
         }
 
-        // Skip type-level comparison for generic methods.
-        if iface_method.has_generics {
-            continue;
+        if !iface_method.has_generics {
+            validate_interface_method_types(
+                iface_name,
+                iface_method,
+                binding_method,
+                binding_params,
+                ctx,
+            );
         }
+    }
+}
 
-        // Check return type mismatch.
-        let binding_ret = lower_type_expr(&binding_method.ret_type, ctx);
-        if !binding_ret.is_error()
-            && !iface_method.ret_type.is_error()
-            && binding_ret != iface_method.ret_type
+fn validate_interface_method_types(
+    iface_name: spark_intern::Symbol,
+    iface_method: &InterfaceMethodInfo,
+    binding_method: &FunctionDef,
+    binding_params: &[spark_ast::FnParam],
+    ctx: &mut TypeCheckCtx<'_>,
+) {
+    let binding_ret = lower_type_expr(&binding_method.ret_type, ctx);
+    if !binding_ret.is_error()
+        && !iface_method.ret_type.is_error()
+        && binding_ret != iface_method.ret_type
+    {
+        ctx.diagnostics.push(
+            Diagnostic::error(format!(
+                "method `{}` returns `{}`, but interface `{iface_name}` expects `{}`",
+                iface_method.name,
+                type_name(binding_ret, ctx.table, ctx.definitions),
+                type_name(iface_method.ret_type, ctx.table, ctx.definitions)
+            ))
+            .with_label(Label::primary(
+                binding_method.ret_type.span,
+                "wrong return type",
+            ))
+            .with_label(Label::secondary(
+                iface_method.span,
+                "interface method defined here",
+            )),
+        );
+    }
+
+    for (param, &iface_param_ty) in binding_params.iter().zip(&iface_method.param_types) {
+        let binding_param_ty = lower_type_expr(&param.ty, ctx);
+        if !binding_param_ty.is_error()
+            && !iface_param_ty.is_error()
+            && binding_param_ty != iface_param_ty
         {
             ctx.diagnostics.push(
                 Diagnostic::error(format!(
-                    "method `{}` returns `{}`, but interface `{iface_name}` expects `{}`",
+                    "parameter `{}` of method `{}` has type `{}`, but interface `{iface_name}` expects `{}`",
+                    param.name.name,
                     iface_method.name,
-                    type_name(binding_ret, ctx.table, ctx.definitions),
-                    type_name(iface_method.ret_type, ctx.table, ctx.definitions)
+                    type_name(binding_param_ty, ctx.table, ctx.definitions),
+                    type_name(iface_param_ty, ctx.table, ctx.definitions)
                 ))
-                .with_label(Label::primary(
-                    binding_method.ret_type.span,
-                    "wrong return type",
-                ))
-                .with_label(Label::secondary(
-                    iface_method.span,
-                    "interface method defined here",
-                )),
+                .with_label(Label::primary(param.ty.span, "wrong parameter type"))
+                .with_label(Label::secondary(iface_method.span, "interface method defined here")),
             );
-        }
-
-        // Check parameter type mismatches.
-        for (i, param) in binding_params.iter().enumerate() {
-            let binding_param_ty = lower_type_expr(&param.ty, ctx);
-            let iface_param_ty = iface_method.param_types[i];
-            if !binding_param_ty.is_error()
-                && !iface_param_ty.is_error()
-                && binding_param_ty != iface_param_ty
-            {
-                ctx.diagnostics.push(
-                    Diagnostic::error(format!(
-                        "parameter `{}` of method `{}` has type `{}`, but interface `{iface_name}` expects `{}`",
-                        param.name.name,
-                        iface_method.name,
-                        type_name(binding_param_ty, ctx.table, ctx.definitions),
-                        type_name(iface_param_ty, ctx.table, ctx.definitions)
-                    ))
-                    .with_label(Label::primary(param.ty.span, "wrong parameter type"))
-                    .with_label(Label::secondary(iface_method.span, "interface method defined here")),
-                );
-            }
         }
     }
 }

@@ -13,7 +13,7 @@ use crate::lower::lower_type_expr;
 use crate::{Ty, TypeId, TypeTable};
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct TextParsing {
+pub struct TextParsing {
     pub(crate) interface: DefId,
     entry: DefId,
     error: DefId,
@@ -198,7 +198,7 @@ impl TextParsing {
     }
 }
 
-pub(crate) fn protocol_for_call(callee: &Expr, ctx: &TypeCheckCtx<'_>) -> Option<TextParsing> {
+pub fn protocol_for_call(callee: &Expr, ctx: &TypeCheckCtx<'_>) -> Option<TextParsing> {
     let protocol = ctx.table.text_parsing?;
     let callee = find_callee_def_id(ungroup(callee).span, ctx.resolutions)?;
     (callee == protocol.entry).then_some(protocol)

@@ -2044,7 +2044,7 @@ fn validate_partial_each_callback(
     let func_ty = ctx.table.resolve(callee_ty).clone();
     let Ty::Function { params, ret, .. } = func_ty else {
         ctx.diagnostics.push(
-            Diagnostic::error(format!("`{label}` partial callback must be a function",))
+            Diagnostic::error(format!("`{label}` partial callback must be a function"))
                 .with_label(Label::primary(callee.span, "not a function")),
         );
         ctx.table.set_expr_type(callback_expr.id, TypeId::ERROR);
@@ -2184,7 +2184,7 @@ fn check_partial(
         // Check for duplicate binding
         if bound[pos] {
             ctx.diagnostics.push(
-                Diagnostic::error(format!("parameter `{}` is already bound", name.as_str(),))
+                Diagnostic::error(format!("parameter `{}` is already bound", name.as_str()))
                     .with_label(Label::primary(arg.name.span, "duplicate binding")),
             );
             continue;

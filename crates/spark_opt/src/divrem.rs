@@ -6,7 +6,7 @@ use spark_mir::{Constant, Local, LocalDecl, MirFunction, Operand, Place, Rvalue,
 use spark_span::Span;
 use spark_types::{IntWidth, Ty, TypeId, TypeTable};
 
-pub(crate) fn reduce_signed_divrem(func: &mut MirFunction, table: &TypeTable) -> bool {
+pub fn reduce_signed_divrem(func: &mut MirFunction, table: &TypeTable) -> bool {
     let borrowed = super::address_taken_locals(func);
 
     let mut changed = false;
