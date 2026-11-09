@@ -13,7 +13,7 @@ use rustc_hash::FxHashMap;
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_resolve::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visibility};
 use spark_span::Span;
-use spark_types::check_expr::collection_cast_preserves_layout;
+use spark_types::check_expr::{cast_kind, CastKind};
 use spark_types::substitute::{substitute_mut, SubstMap};
 use spark_types::{mangle_type, Ty, TypeId, TypeTable};
 
@@ -241,7 +241,8 @@ fn substitute_rvalues(
     diagnostics: &mut Diagnostics,
 ) {
     for block in &mut func.blocks {
-        for stmt in &mut block.statements {
+        let mut diverging_cast = None;
+        for (index, stmt) in block.statements.iter_mut().enumerate() {
             let Statement::Assign { rvalue, span, .. } = stmt else {
                 continue;
             };
@@ -250,14 +251,18 @@ fn substitute_rvalues(
                     *target_ty = substitute_mut(*target_ty, subst, table);
                     if let Some(source) = operand_local(operand) {
                         let source_ty = func.locals[source.index()].ty;
-                        if !collection_cast_preserves_layout(source_ty, *target_ty, table) {
-                            diagnostics.push(
-                                Diagnostic::error("cast would change collection storage type")
-                                    .with_label(Label::primary(
-                                        *span,
-                                        "invalid after specialization",
-                                    )),
-                            );
+                        match cast_kind(source_ty, *target_ty, table) {
+                            Ok(CastKind::Diverging) => {
+                                diverging_cast = Some(index);
+                                break;
+                            }
+                            Ok(CastKind::Identity) => *rvalue = Rvalue::Use(operand.clone()),
+                            Ok(CastKind::Numeric | CastKind::Deferred) => {}
+                            Err(message) => {
+                                diagnostics.push(Diagnostic::error(message).with_label(
+                                    Label::primary(*span, "invalid after specialization"),
+                                ));
+                            }
                         }
                     }
                 }
@@ -280,6 +285,10 @@ fn substitute_rvalues(
                 }
                 _ => {}
             }
+        }
+        if let Some(index) = diverging_cast {
+            block.statements.truncate(index);
+            block.terminator = Terminator::Unreachable;
         }
     }
 }

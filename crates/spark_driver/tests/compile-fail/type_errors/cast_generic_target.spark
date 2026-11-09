@@ -1,0 +1,8 @@
+fn convert[T](value: Int, witness: T): T {
+    return value as T
+}
+fn main(): Int {
+    forged: String = convert(123, "witness")
+    print(forged)
+    return 0
+}

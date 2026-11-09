@@ -1,0 +1,11 @@
+fn leak(unused: Ref[List[Int], a]): Ref[List[Int], a] {
+    owned: List[Int] = [1]
+    local: Ref[List[Int]] = owned
+    return local as Ref[List[Int]]
+}
+fn main(): Int {
+    values: List[Int] = [7]
+    leaked: Ref[List[Int]] = leak(values)
+    print(leaked.len())
+    return 0
+}

@@ -1,0 +1,6 @@
+fn convert[T](value: T): Int {
+    return value as Int
+}
+fn main(): Int {
+    return convert("invalid")
+}

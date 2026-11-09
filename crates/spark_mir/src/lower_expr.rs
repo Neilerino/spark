@@ -441,9 +441,15 @@ pub fn lower_expr(
             let temp = fb.fresh_temp(expr.ty, expr.span);
             fb.push_assign(
                 Place::from_local(temp),
-                Rvalue::Cast {
-                    operand: Operand::Copy(Place::from_local(operand_local)),
-                    target_ty: *target_ty,
+                if spark_types::check_expr::cast_kind(inner.ty, *target_ty, type_table)
+                    == Ok(spark_types::check_expr::CastKind::Identity)
+                {
+                    Rvalue::Use(Operand::Copy(Place::from_local(operand_local)))
+                } else {
+                    Rvalue::Cast {
+                        operand: Operand::Copy(Place::from_local(operand_local)),
+                        target_ty: *target_ty,
+                    }
                 },
                 expr.span,
             );
@@ -723,15 +729,15 @@ fn lower_call<'a>(
     let mut arg_operands = Vec::with_capacity(args.size_hint().0);
     for (index, arg) in args.enumerate() {
         let local = lower_expr(arg, fb, mir, type_table, defs);
-        if tagged_params.is_some()
-            && (fb.is_terminated() || matches!(type_table.resolve(arg.ty), Ty::Never))
-        {
+        if fb.is_terminated() || matches!(type_table.resolve(arg.ty), Ty::Never) {
             if !fb.is_terminated() {
                 fb.terminate(Terminator::Goto {
                     target: fb.current_block(),
                 });
             }
-            fb.pop_finished_scope();
+            if tagged_params.is_some() {
+                fb.pop_finished_scope();
+            }
             return void_temp(fb, expr);
         }
         let param = tagged_params

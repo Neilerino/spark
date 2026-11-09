@@ -1,0 +1,6 @@
+fn upgrade(value: List[Ref[List[Int]]]): List[Ref[List[Int]]!] {
+    return value as List[Ref[List[Int]]!]
+}
+fn main(): Int {
+    return 0
+}
