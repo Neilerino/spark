@@ -539,7 +539,7 @@ fn is_placeholder_type(ty: &spark_ast::TypeExpr) -> bool {
 }
 
 /// Returns `true` if the type contains any `Ty::Param` (generic type parameter).
-fn type_involves_param(ty: TypeId, table: &crate::table::TypeTable) -> bool {
+pub(crate) fn type_involves_param(ty: TypeId, table: &crate::table::TypeTable) -> bool {
     if ty.is_error() {
         return false;
     }

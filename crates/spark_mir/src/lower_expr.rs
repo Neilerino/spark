@@ -429,6 +429,15 @@ pub fn lower_expr(
             target_ty,
         } => {
             let operand_local = lower_expr(inner, fb, mir, type_table, defs);
+            // NOTE [SPARK-113] A diverging operand never produces a value to cast.
+            if matches!(type_table.resolve(inner.ty), Ty::Never) {
+                if !fb.is_terminated() {
+                    fb.terminate(Terminator::Goto {
+                        target: fb.current_block(),
+                    });
+                }
+                return void_temp(fb, expr);
+            }
             let temp = fb.fresh_temp(expr.ty, expr.span);
             fb.push_assign(
                 Place::from_local(temp),
@@ -1620,6 +1629,9 @@ fn lower_return(
 ) -> Local {
     let val_local = if let Some(val_expr) = value {
         let val = lower_expr(val_expr, fb, mir, type_table, defs);
+        if fb.is_terminated() {
+            return val;
+        }
         emit_assign_with_union_wrap(fb, Local::RETURN_PLACE, val, type_table, val_expr.span);
         Some(val)
     } else {

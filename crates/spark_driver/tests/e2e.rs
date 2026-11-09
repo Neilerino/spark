@@ -281,6 +281,30 @@ fn hello_world() {
 }
 
 #[test]
+fn casts_reject_forged_pointers_and_changed_tags() {
+    for fixture in [
+        "compile-fail/type_errors/cast_forged_string.spark",
+        "compile-fail/type_errors/cast_forged_tag.spark",
+        "compile-fail/type_errors/cast_erased_tag.spark",
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains("unsupported cast"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn casts_allow_diverging_operands() {
+    assert_builds_in_both_modes("build-pass/cast_diverging_operand.spark");
+}
+
+#[test]
 fn arithmetic() {
     assert_output("run-pass/basics/arithmetic.spark", "15\n5\n50\n2");
 }
@@ -1778,8 +1802,13 @@ fn tagged_call_arguments_diagnose_unrepresentable_conversions() {
 
 #[test]
 fn tagged_call_arguments_allow_diverging_expressions() {
+    assert_builds_in_both_modes("build-pass/tagged_call_diverging_argument.spark");
+}
+
+fn assert_builds_in_both_modes(fixture: &str) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/build-pass/tagged_call_diverging_argument.spark");
+        .join("tests")
+        .join(fixture);
     let dir = tempfile::tempdir().expect("create build output directory");
     let spark = Path::new(env!("CARGO_BIN_EXE_spark"));
     for args in [&[][..], &["--no-opt"][..]] {
@@ -1794,7 +1823,7 @@ fn tagged_call_arguments_allow_diverging_expressions() {
                 spark.parent().expect("driver directory"),
             )
             .output()
-            .expect("build diverging argument fixture");
+            .expect("build fixture");
         assert!(
             result.status.success(),
             "{args:?}: {}",

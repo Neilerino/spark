@@ -1,0 +1,11 @@
+fn stop(): Never {
+    return loop {}
+}
+
+fn main(): Int {
+    return stop() as Int
+}
+
+fn arithmetic(): Int {
+    return (stop() as Int) + 1
+}

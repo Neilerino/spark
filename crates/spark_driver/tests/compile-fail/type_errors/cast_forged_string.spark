@@ -1,0 +1,7 @@
+fn main(): Int {
+    source: Map[String, Int] = {"a": 1}
+    key: String = 123 as String
+    value: Int? = source[key]
+    if value is Null { print("missing") }
+    return 0
+}
