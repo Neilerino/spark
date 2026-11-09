@@ -7,7 +7,7 @@ use spark_resolve::DefId;
 use spark_types::{TypeId, TypeTable};
 
 use super::address::{Dependency, Endpoint, Intent, Selector};
-use super::aliases::{Aliases, Key, Port};
+use super::aliases::{Aliases, Key, Port, View};
 
 use super::{
     child_type, value, AccessKind, Accesses, Flow, Origin, Origins, Path, Point, Slot, State, Value,
@@ -18,8 +18,8 @@ pub(super) struct Summary {
     returned: Value,
     normal_return: bool,
     memory: FxHashMap<Port, Value>,
-    modified: FxHashSet<Port>,
-    written_inputs: FxHashSet<Port>,
+    modified: FxHashSet<View>,
+    written_inputs: FxHashSet<View>,
     observed: Accesses,
 }
 
@@ -164,6 +164,21 @@ impl Flow<'_> {
         if summary.written_inputs.is_empty() {
             return;
         }
+        for view in &summary.written_inputs {
+            if view.root.exact()
+                && !value::inputs(
+                    view.root.pointee,
+                    view.root.input,
+                    view.root.pointee,
+                    &[],
+                    self.table,
+                )
+                .is_empty()
+                && !ports.contains(&view.root)
+            {
+                ports.push(view.root.clone());
+            }
+        }
         for access in &summary.observed {
             let selector = match &access.target {
                 Dependency::InputValue(selector)
@@ -251,14 +266,13 @@ impl Flow<'_> {
         function: &MirFunction,
         actuals: CallActuals<'_>,
     ) {
-        for port in &summary.written_inputs {
-            let input = self.port_input(port, function, actuals);
-            let targets = self.project_reference(&input, port.pointee, &Vec::new());
+        for view in &summary.written_inputs {
+            let input = self.port_input(&view.root, function, actuals);
+            let targets = self.project_reference(&input, view.root.pointee, &view.path);
             for endpoint in targets.endpoints {
                 if let Endpoint::Input(selector) = endpoint {
-                    if let Some(port) = Port::from_selector(&selector, self.function, self.table) {
-                        self.written_inputs
-                            .insert(self.aliases.representative(&port));
+                    if let Some((view, _)) = self.external_target(&selector) {
+                        self.written_inputs.insert(view);
                     }
                 }
             }
@@ -284,25 +298,35 @@ impl Flow<'_> {
     ) -> CallOutcome {
         let returned = self.bind(&summary.returned, function, actuals);
         let mut memory = Vec::new();
-        for port in &summary.modified {
-            let Some(snapshot) = summary.memory.get(port) else {
+        for modified in &summary.modified {
+            if summary.modified.iter().any(|other| {
+                other != modified
+                    && other.root == modified.root
+                    && modified.path.starts_with(&other.path)
+            }) {
+                continue;
+            }
+            let Some(snapshot) = summary.memory.get(&modified.root) else {
                 continue;
             };
-            let inner = port.pointee;
-            let mut target = super::value::Leaf::default();
-            for member in aliases.members(port) {
-                let input = self.port_input(&member, function, actuals);
-                target.join(&self.project_reference(&input, inner, &Vec::new()));
-            }
-            let value = self.bind(
+            let bound = self.bind(
                 snapshot,
                 function,
                 CallActuals {
-                    ty: inner,
+                    ty: modified.root.pointee,
                     ..actuals
                 },
             );
-            memory.push((target, value));
+            let mut targets = super::value::Leaf::default();
+            for member in aliases.members(&modified.root) {
+                let input = self.port_input(&member, function, actuals);
+                targets.join(&self.project_reference(&input, member.pointee, &modified.path));
+            }
+            let mut value = bound;
+            for slot in &modified.path {
+                value = value.project(slot);
+            }
+            memory.push((targets, value));
         }
         CallOutcome { returned, memory }
     }
@@ -393,7 +417,7 @@ impl Flow<'_> {
                 .program
                 .map(|context| context.ports[&self.function.def_id].clone())
                 .unwrap_or_default();
-            ports.extend(self.written_inputs.iter().cloned());
+            ports.extend(self.written_inputs.iter().map(|view| view.root.clone()));
             for declaration in self
                 .function
                 .locals
@@ -416,9 +440,13 @@ impl Flow<'_> {
                     .entry(port.clone())
                     .or_default()
                     .join(&export_value(&value, self.function.def_id));
-                if state.modified_ports.contains(&port) {
-                    summary.modified.insert(port);
-                }
+                summary.modified.extend(
+                    state
+                        .modified_views
+                        .iter()
+                        .filter(|view| view.root == port)
+                        .cloned(),
+                );
             }
         }
         for access in self.accesses.values().flatten() {

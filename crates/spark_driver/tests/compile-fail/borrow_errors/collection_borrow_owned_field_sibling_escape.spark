@@ -1,0 +1,18 @@
+struct Pair { left: Map[String, Ref[Int]]!, right: Map[String, Ref[Int]]! }
+fn fillThenClearLeft(pair: Ref[Pair]!): Void {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    next: Map[String, Ref[Int]] = {"one": borrowed}
+    pair.left = next
+    pair.right = next
+    empty: Map[String, Ref[Int]] = {}
+    pair.left = empty
+}
+fn main(): Int {
+    empty: Map[String, Ref[Int]] = {}
+    pair: Pair! = Pair { left: empty, right: empty }
+    view: Ref[Pair]! = pair
+    fillThenClearLeft(view)
+    print(pair.right.len())
+    return 0
+}

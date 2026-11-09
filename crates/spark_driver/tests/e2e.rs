@@ -2150,6 +2150,102 @@ fn collection_borrow_rebinding_holder_preserves_old_pointee_storage() {
 }
 
 #[test]
+fn collection_borrow_owned_field_borrows_preserve_copied_values() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let fixture = "run-pass/collections/collection_borrow_parent_field_borrowed_copy.spark";
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "9\n", "{fixture} {args:?}");
+    }
+}
+
+#[test]
+fn collection_borrow_owned_field_clear_releases_stored_local_references() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_owned_field_clear.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 0,
+            "owned-field clear {args:?}: {}",
+            result.stderr
+        );
+        assert_eq!(result.stdout, "0\n", "owned-field clear {args:?}");
+    }
+}
+
+#[test]
+fn collection_borrow_owned_field_updates_preserve_helpers_siblings_and_cfg_paths() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, output) in [
+            (
+                "run-pass/collections/collection_borrow_owned_field_helper_clear.spark",
+                "0\n0\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_owned_field_preserves_sibling.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_owned_field_cfg_clear.spark",
+                "0\n0\n",
+            ),
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, output, "{fixture} {args:?}");
+        }
+        for (fixture, message) in [
+            ("compile-fail/borrow_errors/collection_borrow_owned_field_escape.spark", "stored value contains a reference to local storage"),
+            ("compile-fail/borrow_errors/collection_borrow_owned_field_snapshot_before_clear.spark", "returned value contains a reference to local storage"),
+            ("compile-fail/borrow_errors/collection_borrow_owned_field_sibling_escape.spark", "stored value contains a reference to local storage"),
+            ("compile-fail/borrow_errors/collection_borrow_owned_field_partial_clear.spark", "stored value contains a reference to local storage"),
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(result.stderr.contains(message), "{fixture} {args:?}: {}", result.stderr);
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_owned_subfield_writes_preserve_demand_and_generic_layouts() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, output) in [
+            (
+                "run-pass/collections/collection_borrow_owned_tuple_helper_clear.spark",
+                "0\n9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_owned_field_cleared_demand.spark",
+                "0\n",
+            ),
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, output, "{fixture} {args:?}");
+        }
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_owned_field_active_demand.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 1,
+            "active field demand {args:?}: {}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("cannot write to a borrowed collection"),
+            "active field demand {args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
 fn collection_borrow_loops_preserve_occurrence_lifetimes() {
     for args in [&[][..], &["--no-opt"][..]] {
         let negative = build_spark_with_args(

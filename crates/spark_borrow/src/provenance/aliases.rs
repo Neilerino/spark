@@ -94,6 +94,21 @@ impl Port {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct View {
+    pub root: Port,
+    pub path: Path,
+}
+
+impl View {
+    pub const fn whole(root: Port) -> Self {
+        Self {
+            root,
+            path: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) struct Aliases(Vec<(Port, Port)>);
 

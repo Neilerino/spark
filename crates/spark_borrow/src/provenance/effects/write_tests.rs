@@ -111,7 +111,7 @@ fn pending_memory_summary_is_not_a_returning_empty_clear() {
             Summary {
                 normal_return,
                 memory: FxHashMap::from_iter([(Port::root(Local(1), map), Value::default())]),
-                modified: FxHashSet::from_iter([Port::root(Local(1), map)]),
+                modified: FxHashSet::from_iter([View::whole(Port::root(Local(1), map))]),
                 ..Summary::default()
             },
         )]);
@@ -217,7 +217,7 @@ fn empty_optional_write_footprints_reach_later_return_blocks() {
     flow.solve(&crate::facts::extract_facts(&function));
     let summary = flow.summary();
     assert!(summary.normal_return);
-    assert!(summary.modified.contains(&Port::root(Local(1), map)), "a possible empty write is a footprint even without new borrowed payload or a definite-write mask");
+    assert!(summary.modified.contains(&View::whole(Port::root(Local(1), map))), "a possible empty write is a footprint even without new borrowed payload or a definite-write mask");
 }
 
 #[test]
@@ -439,10 +439,95 @@ fn field_write_footprints_are_separate_within_one_input() {
         selection: vec![Slot::Tuple(1)],
         pointee: map,
     };
-    assert_eq!(summary.modified, FxHashSet::from_iter([written.clone()]));
+    assert_eq!(
+        summary.modified,
+        FxHashSet::from_iter([View::whole(written.clone())])
+    );
     assert!(summary.memory.contains_key(&written));
     assert!(
-        !summary.modified.contains(&untouched),
+        !summary.modified.contains(&View::whole(untouched)),
         "writing one field must not manufacture a write to its sibling"
     );
+}
+
+#[test]
+fn owned_field_write_footprints_do_not_install_untouched_siblings() {
+    use spark_mir::Projection;
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let reference = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let string = table.intern(Ty::String);
+    let map = table.intern(Ty::Map(string, reference));
+    let pair = table.intern(Ty::Tuple(vec![map, map]));
+    let writable = table.intern(Ty::Ref {
+        inner: pair,
+        mutable: true,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let span = Span::DUMMY;
+    let function = MirFunction {
+        def_id: DefId::new(9821),
+        param_count: 2,
+        return_type: map,
+        locals: [map, writable, map]
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| LocalDecl {
+                local: Local(index as u32),
+                ty,
+                name: None,
+                is_user_variable: false,
+                mutable: true,
+                span,
+            })
+            .collect(),
+        blocks: vec![BasicBlock {
+            statements: vec![
+                Statement::Assign {
+                    place: Place {
+                        local: Local(1),
+                        projections: vec![
+                            Projection::Deref,
+                            Projection::Field(spark_intern::sym("0")),
+                        ],
+                    },
+                    rvalue: Rvalue::Use(Operand::Copy(Place::from_local(Local(2)))),
+                    span,
+                },
+                Statement::Assign {
+                    place: Place::from_local(Local(0)),
+                    rvalue: Rvalue::Use(Operand::Copy(Place {
+                        local: Local(1),
+                        projections: vec![
+                            Projection::Deref,
+                            Projection::Field(spark_intern::sym("1")),
+                        ],
+                    })),
+                    span,
+                },
+            ],
+            terminator: Terminator::Return,
+            is_cleanup: false,
+        }],
+        captures: vec![],
+        is_async: false,
+        span,
+    };
+    let mut flow = Flow::new(&function, &table, None);
+    flow.solve(&crate::facts::extract_facts(&function));
+    let summary = flow.summary();
+    let root = Port::root(Local(1), pair);
+    assert_eq!(
+        summary.modified,
+        FxHashSet::from_iter([View {
+            root: root.clone(),
+            path: vec![Slot::Tuple(0)]
+        }])
+    );
+    assert_eq!(summary.written_inputs, summary.modified);
+    assert!(summary.memory.contains_key(&root));
 }
