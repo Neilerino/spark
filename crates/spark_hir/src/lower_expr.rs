@@ -991,6 +991,13 @@ fn lower_pipeline_apply(
     let callee = HirExpr::new(HirExprKind::Local(func_def_id), func_ty, operation.span);
 
     let param_types = extract_param_types(func_ty, ctx.table);
+    // TAG [SPARK-129]
+    let inner_hir = if let Some(&param_ty) = param_types.first() {
+        let span = inner_hir.span;
+        coerce_ref(inner_hir, param_ty, span, ctx.table)
+    } else {
+        inner_hir
+    };
     let mut call_args = vec![inner_hir];
     for (i, arg) in args.iter().enumerate() {
         let mut arg_hir = lower_expr(&arg.value, ctx);

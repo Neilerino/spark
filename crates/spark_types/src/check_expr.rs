@@ -3703,6 +3703,13 @@ fn check_pipeline_apply(
                     arg_span,
                 ));
             }
+        } else if is_mutable_ref_param(param_ty, ctx.table)
+            && !matches!(ctx.table.resolve(arg_ty), Ty::Mutable(_))
+        {
+            // TAG [SPARK-129]: pipeline inputs follow the ordinary call contract.
+            let arg_span = if i == 0 { span } else { args[i - 1].value.span };
+            ctx.diagnostics
+                .push(diagnostics::mutable_ref_required(arg_span));
         }
     }
 

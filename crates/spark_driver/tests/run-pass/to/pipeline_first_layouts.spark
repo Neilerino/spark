@@ -1,0 +1,25 @@
+fn optional(value: Int?): Int { return value ?? 9 }
+fn main(): Int {
+    narrow: List[UInt8] = [255 as UInt8, 1 as UInt8, 128 as UInt8]
+    ordered: List[UInt8] = narrow to sort
+    ordered each (value: UInt8): Void { print(value as Int) }
+    reversed: List[UInt8] = narrow to reverse
+    print((reversed[0] ?? (0 as UInt8)) as Int)
+    taken: List[UInt8] = narrow to take{count: 2}
+    print(taken.len())
+    floating: List[Float] = [2.5, -1.0]
+    sortedFloat: List[Float] = floating to sort
+    print((sortedFloat[0] ?? 0.0) == -1.0)
+    words: List[String] = ["b", "a"]
+    sortedWords: List[String] = words to sort
+    print((sortedWords[0] ?? "missing") == "a")
+    numbers: List[Int] = [4, 2, 3]
+    borrowed: Ref[List[Int]] = numbers
+    reversedBorrow: List[Int] = borrowed to reverse
+    takenBorrow: List[Int] = borrowed to take{count: 2}
+    print(reversedBorrow[0] ?? 0)
+    print(takenBorrow.len())
+    print(7 to optional)
+    print(Null to optional)
+    return 0
+}
