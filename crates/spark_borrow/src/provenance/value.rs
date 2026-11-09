@@ -3,6 +3,7 @@ use spark_intern::Symbol;
 use spark_resolve::DefId;
 use spark_types::{Ty, TypeId, TypeTable};
 
+use super::address::{Dependency, Endpoint, Intent, OpaqueSite, Selector};
 use super::demand::{Atom, Bank, Coordinate, Sources};
 use super::{Origin, Origins};
 
@@ -24,28 +25,63 @@ pub(super) enum Slot {
 pub(super) type Path = Vec<Slot>;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Leaf {
+    pub parents: Origins,
+    pub endpoints: FxHashSet<Endpoint>,
+    pub dependencies: FxHashSet<Dependency>,
+    pub opaque: FxHashSet<OpaqueSite>,
+}
+
+impl Leaf {
+    pub fn join(&mut self, other: &Self) -> bool {
+        let before = (
+            self.parents.len(),
+            self.endpoints.len(),
+            self.dependencies.len(),
+            self.opaque.len(),
+        );
+        self.parents.extend(other.parents.iter().cloned());
+        self.endpoints.extend(other.endpoints.iter().cloned());
+        self.dependencies.extend(other.dependencies.iter().cloned());
+        self.opaque.extend(other.opaque.iter().copied());
+        before
+            != (
+                self.parents.len(),
+                self.endpoints.len(),
+                self.dependencies.len(),
+                self.opaque.len(),
+            )
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Value {
-    pub slots: FxHashMap<Path, Origins>,
+    pub leaves: FxHashMap<(Path, Origin), Leaf>,
     pub sources: Sources,
-    pub support: FxHashMap<(Path, Origin), Origins>,
     pub callees: FxHashMap<Path, FxHashSet<DefId>>,
 }
 
 impl Value {
     pub fn reference(origin: Origin) -> Self {
         let mut value = Self::default();
-        value.insert(Vec::new(), std::iter::once(origin).collect());
+        value.insert(&[], std::iter::once(origin).collect());
         value
     }
 
-    pub fn insert(&mut self, path: Path, origins: Origins) {
-        if !origins.is_empty() {
-            self.slots.entry(path).or_default().extend(origins);
+    pub fn insert(&mut self, path: &[Slot], origins: Origins) {
+        for origin in origins {
+            self.leaves.entry((path.to_vec(), origin)).or_default();
         }
     }
 
+    pub fn insert_leaf(&mut self, path: Path, origin: Origin, leaf: &Leaf) {
+        self.leaves.entry((path, origin)).or_default().join(leaf);
+    }
+
     pub fn insert_sourced(&mut self, path: Path, origin: Origin, sources: super::demand::Demand) {
-        self.insert(path.clone(), std::iter::once(origin.clone()).collect());
+        self.leaves
+            .entry((path.clone(), origin.clone()))
+            .or_default();
         if !sources.is_empty() {
             self.sources
                 .entry((path, origin))
@@ -55,26 +91,10 @@ impl Value {
     }
 
     pub fn insert_addresses(&mut self, path: &[Slot], selected: &Self) {
-        let origins = selected.addresses();
-        self.insert(path.to_vec(), origins.clone());
-        for ((source_path, origin), parents) in &selected.support {
-            if origins.contains(origin) && (source_path.is_empty() || *source_path == [Slot::Tail])
-            {
-                self.support
-                    .entry((path.to_vec(), origin.clone()))
-                    .or_default()
-                    .extend(parents.iter().cloned());
-            }
-        }
-        for ((source_path, origin), sources) in &selected.sources {
-            if origins.contains(origin) && (source_path.is_empty() || *source_path == [Slot::Tail])
-            {
-                self.sources
-                    .entry((path.to_vec(), origin.clone()))
-                    .or_default()
-                    .extend(sources.iter().cloned());
-            }
-        }
+        let selected = selected.map_borrows(|source| {
+            (source.is_empty() || source == [Slot::Tail]).then(|| path.to_vec())
+        });
+        self.join(&selected);
     }
 
     pub fn all_sources(&self) -> super::demand::Demand {
@@ -83,17 +103,9 @@ impl Value {
 
     pub fn join(&mut self, other: &Self) -> bool {
         let mut changed = false;
-        for (path, origins) in &other.slots {
-            let entry = self.slots.entry(path.clone()).or_default();
-            let before = entry.len();
-            entry.extend(origins.iter().cloned());
-            changed |= before != entry.len();
-        }
-        for (key, parents) in &other.support {
-            let entry = self.support.entry(key.clone()).or_default();
-            let before = entry.len();
-            entry.extend(parents.iter().cloned());
-            changed |= before != entry.len();
+        for (key, leaf) in &other.leaves {
+            let exists = self.leaves.contains_key(key);
+            changed |= self.leaves.entry(key.clone()).or_default().join(leaf) || !exists;
         }
         for (key, sources) in &other.sources {
             let entry = self.sources.entry(key.clone()).or_default();
@@ -112,20 +124,18 @@ impl Value {
 
     pub fn sourced(mut self, bank: Bank, local: spark_mir::Local) -> Self {
         self.sources.clear();
-        for (path, origins) in &self.slots {
-            for origin in origins {
-                self.sources
-                    .entry((path.clone(), origin.clone()))
-                    .or_default()
-                    .insert(Atom {
-                        coordinate: Coordinate {
-                            bank,
-                            local,
-                            path: path.clone(),
-                        },
-                        origin: origin.clone(),
-                    });
-            }
+        for (path, origin) in self.leaves.keys() {
+            self.sources
+                .entry((path.clone(), origin.clone()))
+                .or_default()
+                .insert(Atom {
+                    coordinate: Coordinate {
+                        bank,
+                        local,
+                        path: path.clone(),
+                    },
+                    origin: origin.clone(),
+                });
         }
         self
     }
@@ -139,7 +149,7 @@ impl Value {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.slots.is_empty() && self.callees.is_empty()
+        self.leaves.is_empty() && self.callees.is_empty()
     }
 
     pub fn capture(&self, index: usize) -> Self {
@@ -165,7 +175,10 @@ impl Value {
     }
 
     pub fn origins(&self) -> Origins {
-        self.slots.values().flatten().cloned().collect()
+        self.leaves
+            .keys()
+            .map(|(_, origin)| origin.clone())
+            .collect()
     }
 
     pub fn address_sources(&self) -> super::demand::Demand {
@@ -178,34 +191,39 @@ impl Value {
 
     pub fn address_support(&self) -> Origins {
         let mut result = self.addresses();
-        for ((path, _), parents) in &self.support {
+        for ((path, _), leaf) in &self.leaves {
             if path.is_empty() || *path == [Slot::Tail] {
-                result.extend(parents.iter().cloned());
+                result.extend(leaf.parents.iter().cloned());
             }
         }
         result
     }
 
+    #[cfg(test)]
     pub fn with_address_support(mut self, parents: &Origins) -> Self {
-        for origin in self.addresses() {
-            self.support
-                .entry((Vec::new(), origin))
-                .or_default()
-                .extend(parents.iter().cloned());
+        for ((path, _), leaf) in &mut self.leaves {
+            if path.is_empty() || *path == [Slot::Tail] {
+                leaf.parents.extend(parents.iter().cloned());
+            }
+        }
+        self
+    }
+
+    pub fn with_metadata(mut self, metadata: &Leaf) -> Self {
+        for ((path, _), leaf) in &mut self.leaves {
+            if path.is_empty() || *path == [Slot::Tail] {
+                leaf.join(metadata);
+            }
         }
         self
     }
 
     pub fn addresses(&self) -> Origins {
-        let mut origins = self.slots.get(&Vec::new()).cloned().unwrap_or_default();
-        origins.extend(
-            self.slots
-                .get(&vec![Slot::Tail])
-                .into_iter()
-                .flatten()
-                .cloned(),
-        );
-        origins
+        self.leaves
+            .keys()
+            .filter(|(path, _)| path.is_empty() || *path == [Slot::Tail])
+            .map(|(_, origin)| origin.clone())
+            .collect()
     }
 
     pub fn project(&self, slot: &Slot) -> Self {
@@ -248,7 +266,7 @@ impl Value {
         });
         for (path, callees) in &self.callees {
             let mut prefixed = prefix.to_vec();
-            prefixed.extend(path.iter().cloned());
+            prefixed.extend_from_slice(path);
             result
                 .callees
                 .entry(normalize(ty, prefixed, table))
@@ -260,9 +278,9 @@ impl Value {
 
     fn map_borrows(&self, select: impl Fn(&[Slot]) -> Option<Path>) -> Self {
         let mut result = Self::default();
-        for (path, origins) in &self.slots {
+        for ((path, origin), leaf) in &self.leaves {
             if let Some(path) = select(path) {
-                result.insert(path, origins.clone());
+                result.insert_leaf(path, origin.clone(), leaf);
             }
         }
         for ((path, origin), sources) in &self.sources {
@@ -272,15 +290,6 @@ impl Value {
                     .entry((path, origin.clone()))
                     .or_default()
                     .extend(sources.iter().cloned());
-            }
-        }
-        for ((path, origin), parents) in &self.support {
-            if let Some(path) = select(path) {
-                result
-                    .support
-                    .entry((path, origin.clone()))
-                    .or_default()
-                    .extend(parents.iter().cloned());
             }
         }
         result
@@ -374,14 +383,18 @@ pub(super) fn inputs(
         &mut |path| {
             let mut source = prefix.to_vec();
             source.extend(path.iter().cloned());
-            value.insert(
-                path,
-                std::iter::once(Origin::Input {
-                    local,
-                    path: normalize(source_ty, source, table),
-                })
-                .collect(),
-            );
+            let selection = normalize(source_ty, source, table);
+            let origin = Origin::Input {
+                local,
+                path: selection.clone(),
+            };
+            let leaf = value.leaves.entry((path, origin)).or_default();
+            leaf.dependencies.insert(Dependency::InputValue(Selector {
+                input: local,
+                selection,
+                intent: Intent::Value,
+                expected: None,
+            }));
         },
     );
     value
@@ -394,32 +407,26 @@ pub(super) fn tainted(ty: TypeId, origins: &Origins, table: &TypeTable) -> Value
         &mut Vec::new(),
         &mut FxHashSet::default(),
         table,
-        &mut |path| value.insert(path, origins.clone()),
+        &mut |path| value.insert(&path, origins.clone()),
     );
     value
 }
 
 pub(super) fn tainted_from(ty: TypeId, source: &Value, table: &TypeTable) -> Value {
     let mut result = tainted(ty, &source.origins(), table);
-    for (path, origins) in &result.slots {
-        for origin in origins {
-            for ((_, candidate), parents) in &source.support {
-                if origin == candidate {
-                    result
-                        .support
-                        .entry((path.clone(), origin.clone()))
-                        .or_default()
-                        .extend(parents.iter().cloned());
-                }
+    for ((path, origin), leaf) in &mut result.leaves {
+        for ((_, candidate), metadata) in &source.leaves {
+            if origin == candidate {
+                leaf.join(metadata);
             }
-            for ((_, candidate), sources) in &source.sources {
-                if origin == candidate {
-                    result
-                        .sources
-                        .entry((path.clone(), origin.clone()))
-                        .or_default()
-                        .extend(sources.iter().cloned());
-                }
+        }
+        for ((_, candidate), sources) in &source.sources {
+            if origin == candidate {
+                result
+                    .sources
+                    .entry((path.clone(), origin.clone()))
+                    .or_default()
+                    .extend(sources.iter().cloned());
             }
         }
     }
@@ -553,7 +560,7 @@ mod tests {
         .into_iter()
         .collect();
         let mut value = Value::default();
-        value.insert(vec![Slot::Field(borrow_field)], origins.clone());
+        value.insert(&[Slot::Field(borrow_field)], origins.clone());
         for _ in 0..100 {
             value = value.prefixed(Slot::Element, children, &table).prefixed(
                 Slot::Field(child_field),
@@ -561,7 +568,7 @@ mod tests {
                 &table,
             );
             assert_eq!(value.origins(), origins);
-            assert!(value.slots.keys().all(|path| path.len() <= 3));
+            assert!(value.leaves.keys().all(|(path, _)| path.len() <= 3));
         }
         assert_eq!(
             value
@@ -570,6 +577,58 @@ mod tests {
                 .project(&Slot::Field(borrow_field))
                 .origins(),
             origins
+        );
+    }
+    #[test]
+    fn state_join_reports_endpoint_growth_without_new_origins_or_parents() {
+        use super::super::{address::Endpoint, State};
+        use spark_mir::Local;
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let owner_id = DefId::new(9700);
+        let owner = table.intern(Ty::Struct(owner_id));
+        let left = spark_intern::sym("left");
+        let right = spark_intern::sym("right");
+        table.set_struct_fields(owner_id, vec![(left, int), (right, int)]);
+        let root = Point::new(BlockId(0), 0);
+        let derived = Origin::Loan(Point::new(BlockId(0), 1));
+        let value = |field| {
+            Value::reference(derived.clone()).with_metadata(&Leaf {
+                parents: std::iter::once(Origin::Loan(root)).collect(),
+                endpoints: std::iter::once(Endpoint::Frame {
+                    function: DefId::new(9701),
+                    root,
+                    local: Local(1),
+                    root_ty: owner,
+                    pointee: int,
+                    location: vec![Slot::Field(field)],
+                })
+                .collect(),
+                ..Default::default()
+            })
+        };
+        let mut current = State::default();
+        current.set(Local(2), value(left));
+        let mut arriving = State::default();
+        arriving.set(Local(2), value(right));
+        assert!(
+            current.join(&arriving),
+            "endpoint-only growth must reschedule CFG successors"
+        );
+        assert!(
+            !current.join(&arriving),
+            "the joined endpoint state must reach a fixed point"
+        );
+        assert_eq!(
+            current
+                .value(Local(2))
+                .leaves
+                .values()
+                .next()
+                .unwrap()
+                .endpoints
+                .len(),
+            2
         );
     }
 }
