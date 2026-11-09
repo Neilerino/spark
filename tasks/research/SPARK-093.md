@@ -1,6 +1,6 @@
 # SPARK-093 — Fast text parsing with a small, predictable API
 
-Research date: 2026-11-07. Implementation ticket: [NEI-91](https://linear.app/neilwaddenpersonal/issue/NEI-91). Spark checkout: `7bc2d05`. This is a recommendation and feasibility study; the APIs below are proposed.
+Research date: 2026-11-07. Implementation ticket: [NEI-91](https://linear.app/neilwaddenpersonal/issue/NEI-91). Spark checkout: `7bc2d05`. This historical feasibility study records the prototype and the design alternatives. The [language reference](../../docs/lang-spec.md#text-and-input) documents the shipped text API.
 
 ## Recommendation
 

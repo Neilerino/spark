@@ -1,71 +1,25 @@
-# Spark Cross-Language Benchmark Suite ("Lab")
+# Spark benchmark lab
 
-Empirical performance comparison of **Python**, **Go**, **Rust**, and **Spark** on identical workloads, measured with [hyperfine](https://github.com/sharkdp/hyperfine).
+The [benchmark runner](run.sh) compiles equivalent programs from [benchmarks](benchmarks), compares their output, and measures runtime with Hyperfine. Each workload uses `main.py`, `main.go`, `main.rs`, and `main.spark`. Keep the programs self-contained and their stdout identical across languages.
 
-## Prerequisites
+Install `hyperfine` and the tools for the selected languages. For Spark, use the compiler and matching runtime from the [root install instructions](../README.md#install). Ensure `spark` is on `PATH`.
 
-The following must be on your `PATH`:
+From the repository root, verify the Rust and Spark implementations of Fibonacci, then run the same workload with timing.
 
-| Tool       | Install                          |
-|------------|----------------------------------|
-| `python3`  | System or `brew install python`  |
-| `go`       | `brew install go`                |
-| `rustc`    | `rustup` / `brew install rust`   |
-| `spark`    | Spark compiler (this project)    |
-| `hyperfine`| `brew install hyperfine`         |
-
-## Usage
-
-```bash
+```sh
 cd lab
-
-# Run all benchmarks
-./run.sh
-
-# Run a single benchmark
-./run.sh fibonacci
-
-# Verify outputs match across languages (no timing)
-./run.sh --verify
+./run.sh fibonacci --verify --only rust,spark
+./run.sh fibonacci --only rust,spark
 ```
 
-Results are saved to `lab/results/<benchmark>.md` as hyperfine markdown tables.
+Omit the workload name to use every benchmark. Omit `--only` to include all languages, which also requires Python and Go. The runner writes Markdown and JSON tables under `results/`. Dated reports and plots can be generated with [report.py](report.py), which uses NumPy and Matplotlib.
 
-## Benchmarks
+## Historical measurements
 
-| Benchmark        | What it tests                                   | Expected output |
-|------------------|-------------------------------------------------|-----------------|
-| `fibonacci`      | Recursive function call overhead (`fib(40)`)    | `102334155`     |
-| `prime-check`    | Tight loops, modulo, branches (primes to 2M)    | `148933`        |
-| `collatz`        | Iterative computation (Collatz lengths, 1-5M)   | `740438133`     |
-| `list-transform` | Heap allocation, collection pipelines (1M elems)| `461500000`     |
-| `parallel-sum`   | Thread spawning, parallel map (10M elements)    | `4615000000`    |
+- [Initial benchmarks](reports/2026-02-15-initial/report.md)
+- [Function calling optimizations](reports/2026-02-16-func-call-opts/report.md)
+- [Optimization passes](reports/2026-02-16-opt-passes/report.md)
+- [Pipeline overhaul](reports/2026-02-16-pipeline-overhaul/report.md)
+- [Undated Rust and Spark snapshots](reports/undated-results.md)
 
-## Adding a New Benchmark
-
-1. Create a directory under `lab/benchmarks/<name>/`
-2. Add `main.py`, `main.go`, `main.rs`, and `main.spark`
-3. Ensure all four produce **identical stdout output**
-4. Run `./run.sh <name>` to test it
-
-That's it. The runner auto-discovers benchmark directories.
-
-### Conventions
-
-- File names are always `main.<ext>`
-- Each program is self-contained (no external dependencies)
-- Programs should run for 0.5-5 seconds for stable measurements
-- All implementations must print identical output (verified before benchmarking)
-
-## Sample Results
-
-After running `./run.sh`, check `lab/results/` for tables like:
-
-| Command | Mean [s] | Min [s] | Max [s] | Relative |
-|:---|---:|---:|---:|---:|
-| `Python` | 25.123 +/- 0.456 | 24.567 | 25.789 | 100.00 |
-| `Go` | 0.456 +/- 0.012 | 0.440 | 0.472 | 55.15x |
-| `Rust` | 0.234 +/- 0.005 | 0.228 | 0.241 | 107.36x |
-| `Spark` | TBD | TBD | TBD | TBD |
-
-*(Sample values - run the suite to get real numbers for your machine.)*
+These reports describe older builds and environments. Run the lab on the compiler and machine you want to compare.
