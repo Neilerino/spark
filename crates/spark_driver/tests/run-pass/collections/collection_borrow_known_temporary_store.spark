@@ -1,0 +1,14 @@
+// TAG [SPARK-114]
+fn main(): Int {
+    entries: Map[String, Ref[Int]]! = {}
+    pointer: Ref[Map[String, Ref[Int]]] ! = entries
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    next: Map[String, Ref[Int]] = {"one": borrowed}
+    pointer = next
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    empty: Map[String, Ref[Int]] = {}
+    pointer = empty
+    print(entries.len())
+    return 0
+}

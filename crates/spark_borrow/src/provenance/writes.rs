@@ -5,7 +5,7 @@
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_mir::BlockId;
 
-use super::address::{Dependency, DerefKind, Endpoint, Intent, Selector};
+use super::address::{DerefKind, Endpoint, Intent, Selector};
 use super::aliases::{Port, View};
 use super::demand::{Coordinate, Storage};
 use super::{Flow, Path, Point, State, Value};
@@ -83,10 +83,14 @@ impl Flow<'_> {
         &mut self,
         metadata: &super::value::Leaf,
         value: &Value,
+        ty: spark_types::TypeId,
         point: Point,
         state: &mut State,
     ) {
         let targets = self.write_targets(metadata);
+        if targets.unknown {
+            self.record_unproven_store(point, ty, value);
+        }
         let unique = targets.physical.len() == 1 && !targets.unknown;
         for destination in targets.all {
             let Coordinate { storage, path } = &destination;
@@ -262,6 +266,39 @@ impl Flow<'_> {
         (value, state.external_defined.relative(&view))
     }
 
+    pub(super) fn record_unproven_store(
+        &mut self,
+        point: Point,
+        ty: spark_types::TypeId,
+        value: &Value,
+    ) {
+        if value.leaves.is_empty() {
+            return;
+        }
+        self.unproven_stores
+            .entry((point, ty))
+            .or_default()
+            .join(value);
+        self.transfers
+            .entry(point)
+            .or_default()
+            .seeds
+            .extend(value.all_sources());
+    }
+
+    pub(super) fn report_unproven_stores(&self, diagnostics: &mut Diagnostics) {
+        let mut reported = rustc_hash::FxHashSet::default();
+        for ((point, _), value) in &self.unproven_stores {
+            for root in value.frame_sources(self.function.def_id) {
+                if reported.insert((*point, root)) {
+                    diagnostics.push(Diagnostic::error("cannot store a reference to local storage through an unproven destination")
+                        .with_label(Label::primary(crate::errors::span_for_point(*point, self.function), "this write may retain the borrowed value"))
+                        .with_label(Label::secondary(crate::errors::span_for_point(root, self.function), "borrowed storage belongs to this function")));
+                }
+            }
+        }
+    }
+
     pub(super) fn report_external_stores(
         &self,
         state: &State,
@@ -270,29 +307,23 @@ impl Flow<'_> {
     ) {
         let mut reported = rustc_hash::FxHashSet::default();
         for value in state.external.values() {
-            for leaf in value.leaves.values() {
-                for endpoint in leaf
-                    .endpoints
-                    .iter()
-                    .chain(leaf.dependencies.iter().filter_map(|dependency| {
-                        if let Dependency::Address(endpoint) = dependency {
-                            Some(endpoint)
-                        } else {
-                            None
-                        }
-                    }))
-                {
-                    if let Endpoint::Frame { function, root, .. } = endpoint {
-                        if *function == self.function.def_id && reported.insert(*root) {
-                            let exit = Point::new(
-                                block,
-                                self.function.blocks[block.index()].statements.len() as u32,
-                            );
-                            diagnostics.push(Diagnostic::error("stored value contains a reference to local storage")
-                                .with_label(Label::primary(crate::errors::span_for_point(exit, self.function), "borrowed storage retains this reference when the function returns"))
-                                .with_label(Label::secondary(crate::errors::span_for_point(*root, self.function), "borrowed storage belongs to this function")));
-                        }
-                    }
+            for root in value.frame_sources(self.function.def_id) {
+                if reported.insert(root) {
+                    let exit = Point::new(
+                        block,
+                        self.function.blocks[block.index()].statements.len() as u32,
+                    );
+                    diagnostics.push(
+                        Diagnostic::error("stored value contains a reference to local storage")
+                            .with_label(Label::primary(
+                                crate::errors::span_for_point(exit, self.function),
+                                "borrowed storage retains this reference when the function returns",
+                            ))
+                            .with_label(Label::secondary(
+                                crate::errors::span_for_point(root, self.function),
+                                "borrowed storage belongs to this function",
+                            )),
+                    );
                 }
             }
         }
@@ -408,7 +439,7 @@ mod tests {
                 state.consume(Local(1));
             }
             let mut flow = Flow::new(&function, &table, None);
-            flow.store_references(&targets, &value, point, &mut state);
+            flow.store_references(&targets, &value, reference, point, &mut state);
             assert_eq!(state.value(Local(1)).is_empty(), consumed);
             assert_eq!(state.live.contains(&Local(1)), !consumed);
             assert_eq!(state.cell(Local(1)), value);

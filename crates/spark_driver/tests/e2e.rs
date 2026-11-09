@@ -38,7 +38,7 @@
 //! └── ui/             # Error message snapshots (future use)
 //! ```
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -2544,6 +2544,81 @@ fn collection_borrow_nonreturning_family_calls_preserve_prefix_reads() {
     }
 }
 
+fn assert_native_borrow_error_fixture(native: &str, fixture: &str, message: &str) {
+    let (_dir, source) = prepare_native_fixture(native, fixture);
+    let spark = Path::new(env!("CARGO_BIN_EXE_spark"));
+    for args in [&[][..], &["--no-opt"][..]] {
+        let output = Command::new(spark)
+            .args(["build", "--single-file"])
+            .args(args)
+            .arg(&source)
+            .arg("-o")
+            .arg(source.with_extension("program"))
+            .env(
+                "SPARK_RUNTIME_DIR",
+                spark.parent().expect("driver directory"),
+            )
+            .output()
+            .expect("build native borrow fixture");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "native borrow error {args:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains(message),
+            "native borrow error {args:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_unproven_destinations_reject_local_references() {
+    let native = "void *opaque_map(void *slot) { return slot; }\n";
+    for fixture in [
+        include_str!("compile-fail/borrow_errors/collection_borrow_opaque_store.spark"),
+        include_str!("compile-fail/borrow_errors/collection_borrow_opaque_imported_memory.spark"),
+        include_str!("compile-fail/borrow_errors/collection_borrow_opaque_forwarded_source.spark"),
+        include_str!("compile-fail/borrow_errors/collection_borrow_opaque_recursive_source.spark"),
+        include_str!(
+            "compile-fail/borrow_errors/collection_borrow_opaque_before_state_source.spark"
+        ),
+        include_str!(
+            "compile-fail/borrow_errors/collection_borrow_opaque_snapshot_after_clear.spark"
+        ),
+        include_str!("compile-fail/borrow_errors/collection_borrow_opaque_mixed_destination.spark"),
+        include_str!("compile-fail/borrow_errors/collection_borrow_opaque_borrowed_callback.spark"),
+        include_str!("compile-fail/borrow_errors/collection_borrow_opaque_nonreturn_prefix.spark"),
+        include_str!(
+            "compile-fail/borrow_errors/collection_borrow_opaque_imported_nonreturn.spark"
+        ),
+    ] {
+        assert_native_borrow_error_fixture(native, fixture, "unproven destination");
+    }
+    for fixture in [
+        include_str!("run-pass/collections/collection_borrow_opaque_owned_values.spark"),
+        include_str!("run-pass/collections/collection_borrow_opaque_borrowed_for_call.spark"),
+        include_str!("run-pass/collections/collection_borrow_opaque_imported_owned_callback.spark"),
+        include_str!("run-pass/collections/collection_borrow_opaque_mixed_owned_values.spark"),
+        include_str!("run-pass/collections/collection_borrow_opaque_owned_callback.spark"),
+    ] {
+        assert_native_ownership_fixture(native, fixture, "7");
+    }
+    for args in [&[][..], &["--no-opt"][..]] {
+        let known = run_spark_with_args(
+            "run-pass/collections/collection_borrow_known_temporary_store.spark",
+            args,
+        );
+        assert_eq!(
+            known.exit_code, 0,
+            "known temporary store {args:?}: {}",
+            known.stderr
+        );
+        assert_eq!(known.stdout, "7\n0\n", "known temporary store {args:?}");
+    }
+}
+
 #[test]
 fn collection_borrow_loops_preserve_occurrence_lifetimes() {
     for args in [&[][..], &["--no-opt"][..]] {
@@ -3746,10 +3821,10 @@ fn target_directed_parse_supports_mutable_bindings() {
     }
 }
 
-fn assert_native_ownership_fixture(native: &str, fixture: &str, expected: &str) {
-    let dir = tempfile::tempdir().expect("create ownership probe directory");
+fn prepare_native_fixture(native: &str, fixture: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("create native fixture directory");
     let probe = dir.path().join("probe.c");
-    std::fs::write(&probe, native).expect("write native ownership probe");
+    std::fs::write(&probe, native).expect("write native fixture source");
     for (tool, args) in [
         ("cc", &["-c", "probe.c", "-o", "probe.o"][..]),
         ("ar", &["rcs", "libunion_probe.a", "probe.o"][..]),
@@ -3758,7 +3833,7 @@ fn assert_native_ownership_fixture(native: &str, fixture: &str, expected: &str) 
             .args(args)
             .current_dir(dir.path())
             .output()
-            .expect("build reference count probe");
+            .expect("build native fixture library");
         assert!(
             result.status.success(),
             "{tool}: {}",
@@ -3774,8 +3849,13 @@ fn assert_native_ownership_fixture(native: &str, fixture: &str, expected: &str) 
             &format!("link \"union_probe\" from \"{}\"", dir.path().display()),
         ),
     )
-    .expect("write ownership fixture");
+    .expect("write native Spark fixture");
 
+    (dir, source)
+}
+
+fn assert_native_ownership_fixture(native: &str, fixture: &str, expected: &str) {
+    let (_dir, source) = prepare_native_fixture(native, fixture);
     let spark = Path::new(env!("CARGO_BIN_EXE_spark"));
     for args in [&[][..], &["--no-opt"][..]] {
         let result = Command::new(spark)

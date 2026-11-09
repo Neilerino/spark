@@ -23,6 +23,7 @@ pub(super) struct Summary {
     modified: FxHashSet<View>,
     written_inputs: FxHashSet<View>,
     observed: Accesses,
+    unproven_stores: FxHashMap<TypeId, Value>,
 }
 
 impl Summary {
@@ -32,6 +33,9 @@ impl Summary {
         self.normal_return |= other.normal_return;
         for (local, value) in &other.memory {
             changed |= self.memory.entry(local.clone()).or_default().join(value);
+        }
+        for (ty, value) in &other.unproven_stores {
+            changed |= self.unproven_stores.entry(*ty).or_default().join(value);
         }
         let before = self.modified.len();
         self.modified.extend(other.modified.iter().cloned());
@@ -55,7 +59,13 @@ pub(super) struct Context<'a> {
 
 pub(super) struct CallOutcome {
     pub returned: Value,
-    pub memory: Vec<(super::value::Leaf, Value)>,
+    pub memory: Vec<MemoryWrite>,
+}
+
+pub(super) struct MemoryWrite {
+    pub target: super::value::Leaf,
+    pub ty: TypeId,
+    pub value: Value,
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +105,7 @@ pub fn analyze_program(
         flow.solve(&facts[&key.function]);
         flow.report_returns(&facts[&key.function], diagnostics);
         flow.report_reads(diagnostics);
+        flow.report_unproven_stores(diagnostics);
         regions
             .entry(key.function)
             .or_default()
@@ -251,6 +262,10 @@ impl Flow<'_> {
                 };
                 self.observe(summary, function, actuals);
                 self.observe_writes(summary, function, actuals);
+                for (ty, value) in &summary.unproven_stores {
+                    let bound = self.bind(value, function, CallActuals { ty: *ty, ..actuals });
+                    self.record_unproven_store(point, *ty, &bound);
+                }
                 if !summary.normal_return {
                     continue;
                 }
@@ -340,7 +355,11 @@ impl Flow<'_> {
             for slot in &modified.path {
                 value = value.project(slot);
             }
-            memory.push((targets, value));
+            memory.push(MemoryWrite {
+                target: targets,
+                ty: self.selected_type(modified.root.pointee, &modified.path),
+                value,
+            });
         }
         CallOutcome { returned, memory }
     }
@@ -469,6 +488,13 @@ impl Flow<'_> {
                         .cloned(),
                 );
             }
+        }
+        for ((_, ty), value) in &self.unproven_stores {
+            summary
+                .unproven_stores
+                .entry(*ty)
+                .or_default()
+                .join(&export_value(value, self.function.def_id));
         }
         for access in self.accesses.values().flatten() {
             let selector = match &access.target {
@@ -875,3 +901,6 @@ mod write_tests;
 
 #[cfg(test)]
 mod family_tests;
+
+#[cfg(test)]
+mod unproven_tests;

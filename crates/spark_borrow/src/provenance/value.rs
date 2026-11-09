@@ -65,6 +65,31 @@ pub(super) struct Value {
 }
 
 impl Value {
+    pub fn frame_sources(&self, function: DefId) -> impl Iterator<Item = super::Point> + '_ {
+        self.leaves
+            .values()
+            .flat_map(|leaf| {
+                leaf.endpoints
+                    .iter()
+                    .chain(
+                        leaf.dependencies
+                            .iter()
+                            .filter_map(|dependency| match dependency {
+                                Dependency::Address(endpoint) => Some(endpoint),
+                                Dependency::InputValue(_) => None,
+                            }),
+                    )
+            })
+            .filter_map(move |endpoint| match endpoint {
+                Endpoint::Frame {
+                    function: owner,
+                    root,
+                    ..
+                } if *owner == function => Some(*root),
+                Endpoint::Frame { .. } | Endpoint::Input(_) => None,
+            })
+    }
+
     pub fn reference(origin: Origin) -> Self {
         let mut value = Self::default();
         value.insert(&[], std::iter::once(origin).collect());

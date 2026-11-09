@@ -1,0 +1,16 @@
+// TAG [SPARK-114]
+
+link "union_probe"
+extern fn opaque_map(target: Ref[Map[String, Ref[Int]]]!): Ref[Map[String, Ref[Int]]]!
+fn inspect(target: Ref[Map[String, Ref[Int]]]!) : Void {
+    pointer: Ref[Map[String, Ref[Int]]]! = opaque_map(target)
+}
+fn main(): Int {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    entries: Map[String, Ref[Int]]! = {"one": borrowed}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    inspect(target)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    return 0
+}

@@ -823,7 +823,13 @@ mod tests {
             let mut flow = Flow::new(&function, &table, None);
             flow.aliases = aliases;
             let mut state = super::super::State::default();
-            flow.store_references(&metadata, &Value::default(), point, &mut state);
+            flow.store_references(
+                &metadata,
+                &Value::default(),
+                family.pointee,
+                point,
+                &mut state,
+            );
             assert_eq!(!flow.transfers[&point].definitions.is_empty(), strong);
             let mut coverage = super::super::writes::Coverage::default();
             if strong {
