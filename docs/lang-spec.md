@@ -49,7 +49,7 @@ Use `value as Target` for these explicit conversions:
 | --- | --- |
 | Integer → integer | Narrowing keeps the low bits. Widening sign-extends a signed source and zero-extends an unsigned source. Same-width casts preserve bits. |
 | Integer → float | Converts the numeric value using the source signedness. |
-| Float → integer | Truncates toward zero and saturates to the target range. |
+| Float → integer | Truncates toward zero and saturates to the target range. NaN converts to zero. |
 | Float → float | Converts between `Float32` and `Float64`. |
 | `Bool` → integer | `false` becomes zero and `true` becomes one, including 8-bit targets. |
 | `Byte` ↔ `UInt8` | Preserves the byte value. |

@@ -20,5 +20,16 @@ fn main(): Int {
     print(((-200.0) as Int8) as Int)
     byte: Byte = (255 as UInt8) as Byte
     print((byte as UInt8) as Int)
+    print((70000.0 as UInt16) as Int)
+    print(((-70000.0) as Int16) as Int)
+    print(((250.75 as Float32) as UInt8) as Int)
+    print((((-2.75) as Float32) as Int16) as Int)
+    nan: Float = 0.0 / 0.0
+    positiveInfinity: Float = 1.0 / 0.0
+    negativeInfinity: Float = (-1.0) / 0.0
+    print((nan as Int8) as Int)
+    print((positiveInfinity as UInt16) as Int)
+    print((negativeInfinity as Int8) as Int)
+    print((negativeInfinity as UInt8) as Int)
     return 0
 }

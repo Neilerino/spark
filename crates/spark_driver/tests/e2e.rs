@@ -342,7 +342,7 @@ fn casts_preserve_numeric_width_signedness_and_representation() {
         assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
         assert_eq!(
             result.stdout.trim(),
-            "1\n0\n-1\n255\n1\n-1\n255\n65535\n-1\n-2\n255\n7\n-7\n255\n0\n127\n-128\n255",
+            "1\n0\n-1\n255\n1\n-1\n255\n65535\n-1\n-2\n255\n7\n-7\n255\n0\n127\n-128\n255\n65535\n-32768\n250\n-2\n0\n65535\n-128\n0",
             "{args:?}"
         );
     }

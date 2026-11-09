@@ -1613,88 +1613,11 @@ fn emit_cast<M: Module>(
 ) -> Option<Value> {
     let val = emit_operand(ctx, operand, ecx, module)?;
     let src_ty = operand_type(operand, ctx, ecx.table);
-    let result = convert_scalar(ctx, val, src_ty, target_ty, ecx.table);
+    let result = super::emit_cast::convert_scalar(ctx, val, src_ty, target_ty, ecx.table);
     if result.is_none() {
         diagnostics.error("unsupported cast reached native lowering");
     }
     result
-}
-
-fn convert_scalar(
-    ctx: &mut FunctionContext<'_>,
-    val: Value,
-    src_ty: TypeId,
-    target_ty: TypeId,
-    table: &TypeTable,
-) -> Option<Value> {
-    let (_, src) = clif_types::unwrap_mutable(src_ty, table);
-    let (_, tgt) = clif_types::unwrap_mutable(target_ty, table);
-
-    let result = match (src, tgt) {
-        // Int → Int casts
-        (Ty::Int(src_w), Ty::Int(tgt_w)) => {
-            let src_size = clif_types::int_width_bytes(*src_w);
-            let tgt_size = clif_types::int_width_bytes(*tgt_w);
-            let tgt_clif = clif_types::int_width_to_clif(*tgt_w);
-
-            match tgt_size.cmp(&src_size) {
-                std::cmp::Ordering::Less => ctx.builder.ins().ireduce(tgt_clif, val),
-                std::cmp::Ordering::Greater => {
-                    if abi::int_is_signed(*src_w) {
-                        ctx.builder.ins().sextend(tgt_clif, val)
-                    } else {
-                        ctx.builder.ins().uextend(tgt_clif, val)
-                    }
-                }
-                std::cmp::Ordering::Equal => val,
-            }
-        }
-
-        // Int → Float
-        (Ty::Int(w), Ty::Float(fw)) => {
-            let float_ty = match fw {
-                FloatWidth::F32 => types::F32,
-                FloatWidth::F64 => types::F64,
-            };
-            if abi::int_is_signed(*w) {
-                ctx.builder.ins().fcvt_from_sint(float_ty, val)
-            } else {
-                ctx.builder.ins().fcvt_from_uint(float_ty, val)
-            }
-        }
-
-        // Float → Int
-        (Ty::Float(_), Ty::Int(w)) => {
-            let int_ty = clif_types::int_width_to_clif(*w);
-            if abi::int_is_signed(*w) {
-                ctx.builder.ins().fcvt_to_sint_sat(int_ty, val)
-            } else {
-                ctx.builder.ins().fcvt_to_uint_sat(int_ty, val)
-            }
-        }
-
-        // Float → Float
-        (Ty::Float(FloatWidth::F32), Ty::Float(FloatWidth::F64)) => {
-            ctx.builder.ins().fpromote(types::F64, val)
-        }
-        (Ty::Float(FloatWidth::F64), Ty::Float(FloatWidth::F32)) => {
-            ctx.builder.ins().fdemote(types::F32, val)
-        }
-
-        // Bool → Int
-        (Ty::Bool, Ty::Int(w)) => {
-            let int_ty = clif_types::int_width_to_clif(*w);
-            if int_ty == types::I8 {
-                val
-            } else {
-                ctx.builder.ins().uextend(int_ty, val)
-            }
-        }
-        (Ty::Byte, Ty::Int(IntWidth::U8)) | (Ty::Int(IntWidth::U8), Ty::Byte) => val,
-        (Ty::Float(a), Ty::Float(b)) if a == b => val,
-        _ => return None,
-    };
-    Some(result)
 }
 
 /// Determines the type of an operand.
