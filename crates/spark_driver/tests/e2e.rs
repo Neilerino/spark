@@ -1584,6 +1584,42 @@ fn closure_capture_list() {
 }
 
 #[test]
+fn captured_list_writes_preserve_snapshots_across_calls() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/lambdas/captured_list_writes.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout, "4\n3\n4\n3\n2\n3\n2\n3\n2\n3\n3\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn captured_list_writes_balance_invocation_owners() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_list_rc(const void *const *slot) { return *(const size_t *)*slot; }\n\
+         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/lambdas/captured_list_ownership.spark"),
+        "2\n0\n2\n2\n0\n1\n0\n0\n0",
+    );
+}
+
+#[test]
+fn captured_hash_writes_balance_invocation_owners_and_preserve_snapshots() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         static int64_t count(const void *const *slot) { return *(const size_t *)*slot; }\n\
+         int64_t probe_map_rc(const void *const *slot) { return count(slot); }\n\
+         int64_t probe_set_rc(const void *const *slot) { return count(slot); }\n\
+         int64_t probe_string_rc(const void *const *slot) { return count(slot); }\n",
+        include_str!("run-pass/lambdas/captured_hash_ownership.spark"),
+        "0\ntrue\n2\n0\ntrue\n0\n2\n0\n0\n0\n1\ntrue\n1\nfalse\n0\n0\n0\n0\n0\n0",
+    );
+}
+
+#[test]
 fn closure_capture_mutable_list() {
     let fixture = "run-pass/lambdas/closure_capture_mutable_list.spark";
     for args in [&[][..], &["--no-opt"][..]] {

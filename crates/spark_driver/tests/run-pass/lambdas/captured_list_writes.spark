@@ -1,0 +1,30 @@
+fn main(): Int {
+    items: List[Int]! = [1, 2, 3]
+    appendOne: (): Void = fn(): Void {
+        items.append(4)
+        print(items.len())
+    }
+    appendOne()
+    print(items.len())
+    appendOne()
+    print(items.len())
+    removeOne: (): Void = fn(): Void {
+        items.remove(0)
+        print(items.len())
+    }
+    removeOne()
+    print(items.len())
+    removeOne()
+    print(items.len())
+    replacement: List[Int] = [8, 9]
+    replace: (Bool): Void = fn(early: Bool): Void {
+        items = replacement
+        if early { return }
+        print(items.len())
+    }
+    replace(false)
+    print(items.len())
+    replace(true)
+    print(items.len())
+    return 0
+}

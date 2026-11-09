@@ -1411,6 +1411,7 @@ fn emit_builtin_method<M: Module>(
         }
     };
 
+    // FIXME [SPARK-139]: Mutating Ref receivers need pointee access and write-back.
     let (_, stripped_ty) = clif_types::unwrap_mutable(recv_ty_id, table);
 
     // Read the receiver pointer (no rc_inc — we're operating on it, not copying).
@@ -1573,17 +1574,15 @@ fn emit_builtin_method<M: Module>(
                     ctx.builder.ins().call(func_ref, &[cow_ptr, elem_addr]);
                 }
             }
-            // Map.remove(key)
-            (Ty::Map(k, _), _) if method_name == kw::REMOVE => {
-                let key_ty = *k;
-                if let Some(arg) = args.get(1) {
-                    if let Some(key_addr) =
-                        emit_rvalue::emit_operand_addr(ctx, arg, key_ty, ecx, module)
-                    {
-                        let func_ref =
-                            module.declare_func_in_func(ctx.stubs.map_remove, ctx.builder.func);
-                        ctx.builder.ins().call(func_ref, &[cow_ptr, key_addr]);
-                    }
+            // TAG [SPARK-115] Removal borrows its key rather than consuming an owner.
+            (Ty::Map(..), kw::REMOVE) => {
+                if let Some(key_addr) = args
+                    .get(1)
+                    .and_then(|arg| borrowed_element_addr(ctx, arg, table, module))
+                {
+                    let func_ref =
+                        module.declare_func_in_func(ctx.stubs.map_remove, ctx.builder.func);
+                    ctx.builder.ins().call(func_ref, &[cow_ptr, key_addr]);
                 }
             }
             _ => {} // Unsupported combination — silently skip

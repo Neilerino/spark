@@ -973,7 +973,8 @@ fn lower_method_call(
     let membership = builtin
         && method == kw::CONTAINS
         && matches!(receiver_ty, Ty::List(_) | Ty::Map(..) | Ty::Set(_));
-    let scoped = set_method || snapshot || borrowed_len || membership;
+    let borrowed_map_remove = builtin && method == kw::REMOVE && matches!(receiver_ty, Ty::Map(..));
+    let scoped = set_method || snapshot || borrowed_len || membership || borrowed_map_remove;
     if scoped {
         fb.push_scope();
     }
@@ -1011,8 +1012,9 @@ fn lower_method_call(
             return void_temp(fb, expr);
         }
         let place = Place::from_local(local);
-        let temporary =
-            (set_method || membership) && !fb.is_def_local(local) && !fb.owns_local(local);
+        let temporary = (set_method || membership || borrowed_map_remove)
+            && !fb.is_def_local(local)
+            && !fb.owns_local(local);
         let operand = if temporary && method == kw::ADD {
             Operand::Move(place)
         } else {
