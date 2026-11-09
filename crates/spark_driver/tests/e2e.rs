@@ -300,8 +300,45 @@ fn casts_reject_forged_pointers_and_changed_tags() {
 }
 
 #[test]
+fn casts_validate_specialized_types_and_preserve_borrows() {
+    for (fixture, diagnostic) in [
+        ("type_errors/cast_generic_source.spark", "unsupported cast"),
+        ("type_errors/cast_generic_target.spark", "unsupported cast"),
+        ("type_errors/cast_ref_strength.spark", "unsupported cast"),
+        (
+            "type_errors/cast_nested_ref_strength.spark",
+            "unsupported cast",
+        ),
+        (
+            "borrow_errors/cast_ref_escape.spark",
+            "cannot return reference to local variable",
+        ),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(&format!("compile-fail/{fixture}"), args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains(diagnostic),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn casts_support_generic_numeric_and_borrow_identity() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/generics/cast_specialized.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "4\n7\nretained\n3\n255", "{args:?}");
+    }
+}
+
+#[test]
 fn casts_allow_diverging_operands() {
     assert_builds_in_both_modes("build-pass/cast_diverging_operand.spark");
+    assert_builds_in_both_modes("build-pass/cast_generic_diverging.spark");
 }
 
 #[test]

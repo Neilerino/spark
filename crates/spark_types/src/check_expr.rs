@@ -1871,7 +1871,7 @@ fn check_cast(actual: TypeId, target: TypeId, span: Span, ctx: &mut TypeCheckCtx
     if matches!(ctx.table.resolve(actual), Ty::Never) {
         return target;
     }
-    let Some(message) = cast_error(actual, target, ctx.table) else {
+    let Some(message) = cast_kind(actual, target, ctx.table).err() else {
         return target;
     };
 
@@ -1885,32 +1885,100 @@ fn check_cast(actual: TypeId, target: TypeId, span: Span, ctx: &mut TypeCheckCtx
     TypeId::ERROR
 }
 
-fn cast_error(actual: TypeId, target: TypeId, table: &TypeTable) -> Option<&'static str> {
-    if let Some(preserves_layout) = collection_cast_layout(actual, target, table) {
-        return (!preserves_layout).then_some("cast would change collection storage type");
+/// Representation required by an explicit cast.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CastKind {
+    /// The value and its borrow provenance are unchanged.
+    Identity,
+    /// A scalar numeric conversion is required.
+    Numeric,
+    /// Generic parameters must be substituted before validation.
+    Deferred,
+    /// No operand value can reach this conversion.
+    Diverging,
+}
+
+/// Classifies supported casts, preserving reference qualifiers and collection storage.
+///
+/// Deferred casts must be classified again after generic specialization.
+///
+/// # Errors
+/// Returns a diagnostic message when the cast cannot preserve a supported representation.
+pub fn cast_kind(
+    actual: TypeId,
+    target: TypeId,
+    table: &TypeTable,
+) -> Result<CastKind, &'static str> {
+    if matches!(table.resolve(actual), Ty::Never) {
+        return Ok(CastKind::Diverging);
+    }
+    if !reference_qualifiers_match(actual, target, table) {
+        return Err("unsupported cast");
     }
     let actual = strip_mutable(actual, table);
     let target = strip_mutable(target, table);
+    if actual == target {
+        return Ok(CastKind::Identity);
+    }
     let source = table.resolve(actual);
     let destination = table.resolve(target);
-    // NOTE [SPARK-113] A native no-op cast is valid only when the representations agree.
-    let supported = actual == target
-        || (source.is_numeric() && destination.is_numeric())
-        || matches!(
-            (source, destination),
-            (Ty::Bool, Ty::Int(_))
-                | (Ty::Byte, Ty::Int(IntWidth::U8))
-                | (Ty::Int(IntWidth::U8), Ty::Byte)
-        )
-        || crate::check_decl::type_involves_param(actual, table)
-        || crate::check_decl::type_involves_param(target, table);
-    (!supported).then_some("unsupported cast")
+    if crate::check_decl::type_involves_param(actual, table)
+        || crate::check_decl::type_involves_param(target, table)
+    {
+        return Ok(CastKind::Deferred);
+    }
+    if let Some(preserves_layout) = collection_cast_layout(actual, target, table) {
+        return if preserves_layout {
+            Ok(CastKind::Identity)
+        } else {
+            Err("cast would change collection storage type")
+        };
+    }
+    if source.is_numeric() && destination.is_numeric()
+        || matches!((source, destination), (Ty::Bool, Ty::Int(_)))
+    {
+        return Ok(CastKind::Numeric);
+    }
+    if matches!(
+        (source, destination),
+        (Ty::Byte, Ty::Int(IntWidth::U8)) | (Ty::Int(IntWidth::U8), Ty::Byte)
+    ) {
+        return Ok(CastKind::Numeric);
+    }
+    Err("unsupported cast")
 }
 
-/// Checks that a cast preserves collection storage through mutable and reference wrappers.
-#[must_use]
-pub fn collection_cast_preserves_layout(actual: TypeId, target: TypeId, table: &TypeTable) -> bool {
-    collection_cast_layout(actual, target, table).unwrap_or(true)
+fn reference_qualifiers_match(actual: TypeId, target: TypeId, table: &TypeTable) -> bool {
+    let source = strip_mutable(actual, table);
+    let destination = strip_mutable(target, table);
+    if matches!(table.resolve(source), Ty::Ref { .. })
+        && matches!(table.resolve(destination), Ty::Ref { .. })
+        && (source == actual) != (destination == target)
+    {
+        return false;
+    }
+    match (table.resolve(source), table.resolve(destination)) {
+        (
+            Ty::Ref {
+                inner: a,
+                mutable: am,
+                lifetime: al,
+            },
+            Ty::Ref {
+                inner: b,
+                mutable: bm,
+                lifetime: bl,
+            },
+        ) => am == bm && al == bl && reference_qualifiers_match(*a, *b, table),
+        (Ty::List(a), Ty::List(b)) | (Ty::Set(a), Ty::Set(b)) => {
+            reference_qualifiers_match(*a, *b, table)
+        }
+        (Ty::Map(ak, av), Ty::Map(bk, bv)) => {
+            reference_qualifiers_match(*ak, *bk, table)
+                && reference_qualifiers_match(*av, *bv, table)
+        }
+        _ => true,
+    }
 }
 
 fn collection_cast_layout(actual: TypeId, target: TypeId, table: &TypeTable) -> Option<bool> {

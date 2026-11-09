@@ -1,0 +1,23 @@
+fn convert[A, B](value: A, witness: B): B {
+    return value as B
+}
+fn identity[T](value: T): T {
+    return value as T
+}
+fn borrowed(value: Ref[List[Int], a]): Ref[List[Int], a] {
+    return value as Ref[List[Int], a]
+}
+fn main(): Int {
+    integer: Int = convert(4.75, 0)
+    decimal: Float = convert(7, 0.0)
+    print(integer)
+    print(decimal as Int)
+    text: String = identity("retained")
+    print(text)
+    values: List[Int] = [1, 2, 3]
+    same: Ref[List[Int]] = borrowed(values)
+    print(same.len())
+    byte: Byte = convert(255 as UInt8, (0 as UInt8) as Byte)
+    print(convert(byte, 0 as UInt8) as Int)
+    return 0
+}

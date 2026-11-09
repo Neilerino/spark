@@ -1,0 +1,10 @@
+fn forge(value: Ref[List[Int]]): Void {
+    exposed: Ref[List[Int]]! = value as Ref[List[Int]]!
+    exposed = [2]
+}
+fn main(): Int {
+    values: List[Int] = [1]
+    forge(values)
+    print(values[0] ?? 0)
+    return 0
+}
