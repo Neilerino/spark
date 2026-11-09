@@ -309,56 +309,59 @@ fn seed(
             child(Slot::Key, *key);
             child(Slot::Value, *value);
         }
-        Ty::Optional(inner) => child(Slot::Optional, *inner),
-        Ty::Union(members) => {
-            for member in members {
-                child(Slot::Member(*member), *member);
-            }
-        }
-        Ty::Tuple(fields) => {
-            for (i, ty) in fields.iter().enumerate() {
-                child(Slot::Tuple(i), *ty);
-            }
-        }
-        Ty::Struct(def) | Ty::Applied { base: def, .. } => {
-            if let Some(fields) = table.get_struct_fields(*def) {
-                for (name, _) in fields {
-                    let slot = Slot::Field(*name);
-                    if let Some(ty) = child_type(ty, &slot, table) {
-                        child(slot, ty);
-                    }
-                }
-            } else if let Some(variants) = table.get_enum_variants(*def) {
-                for (_, variant) in variants {
-                    for (i, _) in table
-                        .get_variant_fields(*variant)
-                        .into_iter()
-                        .flatten()
-                        .enumerate()
-                    {
-                        let slot = Slot::Variant(*variant, i);
-                        if let Some(ty) = child_type(ty, &slot, table) {
-                            child(slot, ty);
-                        }
-                    }
-                }
-            }
-        }
-        Ty::Enum(def) => {
-            for (_, variant) in table.get_enum_variants(*def).into_iter().flatten() {
-                for (i, (_, ty)) in table
-                    .get_variant_fields(*variant)
-                    .into_iter()
-                    .flatten()
-                    .enumerate()
-                {
-                    child(Slot::Variant(*variant, i), *ty);
-                }
+        Ty::Optional(_)
+        | Ty::Union(_)
+        | Ty::Tuple(_)
+        | Ty::Struct(_)
+        | Ty::Applied { .. }
+        | Ty::Enum(_) => {
+            for (slot, ty) in inline_slots(ty, table) {
+                child(slot, ty);
             }
         }
         _ => {}
     }
     seen.remove(&ty);
+}
+
+pub(super) fn inline_slots(ty: TypeId, table: &TypeTable) -> Vec<(Slot, TypeId)> {
+    match table.resolve(strip_mutable(ty, table)) {
+        Ty::Optional(inner) => vec![(Slot::Optional, *inner)],
+        Ty::Union(members) => members.iter().map(|ty| (Slot::Member(*ty), *ty)).collect(),
+        Ty::Tuple(fields) => fields
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| (Slot::Tuple(index), *ty))
+            .collect(),
+        Ty::Struct(def) | Ty::Applied { base: def, .. } | Ty::Enum(def) => {
+            if let Some(fields) = table.get_struct_fields(*def) {
+                return fields
+                    .iter()
+                    .filter_map(|(name, _)| {
+                        let slot = Slot::Field(*name);
+                        Some((slot.clone(), child_type(ty, &slot, table)?))
+                    })
+                    .collect();
+            }
+            table
+                .get_enum_variants(*def)
+                .into_iter()
+                .flatten()
+                .flat_map(|(_, variant)| {
+                    table
+                        .get_variant_fields(*variant)
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                        .filter_map(move |(index, _)| {
+                            let slot = Slot::Variant(*variant, index);
+                            Some((slot.clone(), child_type(ty, &slot, table)?))
+                        })
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]

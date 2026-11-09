@@ -1,6 +1,8 @@
 //! Value-slot provenance for references carried across MIR control flow.
 
 mod effects;
+mod read;
+mod storage;
 mod value;
 
 use std::collections::VecDeque;
@@ -8,13 +10,14 @@ use std::collections::VecDeque;
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_mir::{
-    AggregateKind, BlockId, Constant, Local, MirFunction, Operand, Place, Projection, Rvalue,
-    Statement, Terminator,
+    AggregateKind, BlockId, Local, MirFunction, Operand, Place, Projection, Rvalue, Statement,
+    Terminator,
 };
 use spark_resolve::DefId;
 use spark_types::{Ty, TypeId, TypeTable};
 
 use crate::facts::{BorrowFacts, Point};
+use read::{Access, AccessKind, Accesses};
 use value::{child_type, strip_mutable, Path, Slot, Value};
 
 // TAG [SPARK-114]
@@ -29,25 +32,51 @@ enum Origin {
 }
 type Origins = FxHashSet<Origin>;
 #[derive(Clone, Debug, Default)]
-struct State(FxHashMap<Local, Value>);
+struct State {
+    values: FxHashMap<Local, Value>,
+    cells: FxHashMap<Local, Value>,
+    invalidated: FxHashMap<(Local, Path), FxHashSet<Point>>,
+}
 
 impl State {
     fn value(&self, local: Local) -> Value {
-        self.0.get(&local).cloned().unwrap_or_default()
+        self.values.get(&local).cloned().unwrap_or_default()
+    }
+
+    fn cell(&self, local: Local) -> Value {
+        self.cells.get(&local).cloned().unwrap_or_default()
     }
 
     fn set(&mut self, local: Local, value: Value) {
+        Self::set_value(&mut self.cells, local, value.clone());
+        Self::set_value(&mut self.values, local, value);
+    }
+
+    fn set_value(values: &mut FxHashMap<Local, Value>, local: Local, value: Value) {
         if value.is_empty() {
-            self.0.remove(&local);
+            values.remove(&local);
         } else {
-            self.0.insert(local, value);
+            values.insert(local, value);
         }
+    }
+
+    fn consume(&mut self, local: Local) {
+        self.values.remove(&local);
     }
 
     fn join(&mut self, other: &Self) -> bool {
         let mut changed = false;
-        for (local, value) in &other.0 {
-            changed |= self.0.entry(*local).or_default().join(value);
+        for (local, value) in &other.values {
+            changed |= self.values.entry(*local).or_default().join(value);
+        }
+        for (local, value) in &other.cells {
+            changed |= self.cells.entry(*local).or_default().join(value);
+        }
+        for (storage, points) in &other.invalidated {
+            let entry = self.invalidated.entry(storage.clone()).or_default();
+            let before = entry.len();
+            entry.extend(points);
+            changed |= before != entry.len();
         }
         changed
     }
@@ -74,6 +103,9 @@ struct Flow<'a> {
     unproven: FxHashMap<Point, Origins>,
     changed: bool,
     program: Option<effects::Context<'a>>,
+    accesses: FxHashMap<Point, Accesses>,
+    readers: FxHashSet<BlockId>,
+    invalid_reads: FxHashSet<(Point, Point, Origin)>,
 }
 
 pub use effects::check_program_returns;
@@ -103,6 +135,9 @@ impl<'a> Flow<'a> {
             unproven: FxHashMap::default(),
             changed: false,
             program,
+            accesses: FxHashMap::default(),
+            readers: FxHashSet::default(),
+            invalid_reads: FxHashSet::default(),
             entries: vec![None; function.blocks.len()],
         }
     }
@@ -160,7 +195,11 @@ impl<'a> Flow<'a> {
                 for (index, entry) in self.entries.iter().enumerate() {
                     let block = BlockId(index as u32);
                     if entry.is_some()
-                        && block_reads_loan_graph(&self.function.blocks[index])
+                        && (self.readers.contains(&block)
+                            || matches!(
+                                self.function.blocks[index].terminator,
+                                Terminator::Call { .. }
+                            ))
                         && queued.insert(block)
                     {
                         pending.push_back(block);
@@ -176,20 +215,34 @@ impl<'a> Flow<'a> {
             let point = Point::new(block, index as u32);
             self.transfer_statement(statement, point, state);
         }
-        if let Terminator::Call {
-            func,
-            args,
-            destination,
-            ..
-        } = &body.terminator
-        {
-            let point = Point::new(block, body.statements.len() as u32);
-            let ty = self.place_type(destination);
-            let result = self.call_result(func, args, ty, point, state);
-            for arg in args {
-                consume(arg, state);
+        let point = Point::new(block, body.statements.len() as u32);
+        match &body.terminator {
+            Terminator::Call {
+                func,
+                args,
+                destination,
+                ..
+            } => {
+                let ty = self.place_type(destination);
+                let mut accesses = Accesses::default();
+                self.read_operand(func, state, &mut accesses);
+                for argument in args {
+                    self.read_operand(argument, state, &mut accesses);
+                }
+                self.record_accesses(point, accesses, state);
+                let result = self.call_result(func, args, ty, point, state);
+                for arg in args {
+                    consume(arg, state);
+                }
+                self.store(destination, result, state);
             }
-            self.store(destination, result, state);
+            Terminator::SwitchInt { discriminant, .. } => {
+                let mut accesses = Accesses::default();
+                self.read_operand(discriminant, state, &mut accesses);
+                self.record_accesses(point, accesses, state);
+                consume(discriminant, state);
+            }
+            Terminator::Goto { .. } | Terminator::Return | Terminator::Unreachable => {}
         }
     }
 
@@ -221,44 +274,82 @@ impl<'a> Flow<'a> {
                 let mut current = state.value(*root);
                 current.join(&stored);
                 state.set(*root, current);
-                state.set(*value, Value::default());
+                state.consume(*value);
             }
-            Statement::Drop { place, .. } if place.projections.is_empty() => {
-                state.set(place.local, Value::default());
+            Statement::Drop { place, .. } => {
+                self.invalidate(place, point, state);
+                if place.projections.is_empty() {
+                    state.consume(place.local);
+                }
             }
-            Statement::Drop { .. } | Statement::Nop => {}
+            Statement::Nop => {}
         }
     }
 
     fn rvalue(&mut self, rvalue: &Rvalue, ty: TypeId, point: Point, state: &State) -> Value {
-        match rvalue {
-            Rvalue::Use(operand) => self.operand(operand, state),
+        let mut accesses = Accesses::default();
+        let value = match rvalue {
+            Rvalue::Use(operand) => self.read_operand(operand, state, &mut accesses),
             Rvalue::Ref { place, .. } => {
                 let targets = self.reference_targets(place, state);
                 let entry = self.loans.entry(point).or_default();
                 let before = entry.len();
                 entry.extend(targets);
                 self.changed |= before != entry.len();
+                accesses.insert(Access {
+                    origin: Origin::Loan(point),
+                    selection: Vec::new(),
+                    kind: AccessKind::Address,
+                });
                 Value::reference(Origin::Loan(point))
             }
-            Rvalue::Aggregate(kind, operands) => self.aggregate(kind, operands, ty, state),
+            Rvalue::Aggregate(kind, operands) => {
+                self.aggregate(kind, operands, ty, state, &mut accesses)
+            }
             Rvalue::Cast { operand, .. } => {
-                let origins = self.operand(operand, state).origins();
+                let origins = self.read_operand(operand, state, &mut accesses).origins();
                 value::tainted(ty, &origins, self.table)
             }
-            Rvalue::CollectionGetOptional { collection, .. } => {
+            Rvalue::CollectionGetOptional { collection, index } => {
+                self.read_access(index, state, AccessKind::Value, &mut accesses);
                 let slot = index_slot(self.place_type(collection), self.table);
-                self.read(collection, state)
+                self.read_access(collection, state, AccessKind::Value, &mut accesses)
                     .project(&slot)
                     .prefixed(Slot::Optional, ty, self.table)
             }
-            Rvalue::BinaryOp(..)
-            | Rvalue::UnaryOp(..)
-            | Rvalue::Discriminant(_)
-            | Rvalue::StringInterp(_)
-            | Rvalue::ListRange { .. }
-            | Rvalue::RangeLen { .. } => Value::default(),
-        }
+            Rvalue::BinaryOp(_, left, right) => {
+                self.read_operand(left, state, &mut accesses);
+                self.read_operand(right, state, &mut accesses);
+                Value::default()
+            }
+            Rvalue::UnaryOp(_, operand) => {
+                self.read_operand(operand, state, &mut accesses);
+                Value::default()
+            }
+            Rvalue::Discriminant(place) => {
+                self.read_access(place, state, AccessKind::Address, &mut accesses);
+                Value::default()
+            }
+            Rvalue::StringInterp(operands) => {
+                for operand in operands {
+                    self.read_operand(operand, state, &mut accesses);
+                }
+                Value::default()
+            }
+            Rvalue::ListRange {
+                start, end, step, ..
+            }
+            | Rvalue::RangeLen {
+                start, end, step, ..
+            } => {
+                for operand in [start, end, step] {
+                    self.read_operand(operand, state, &mut accesses);
+                }
+                Value::default()
+            }
+        };
+        self.record_accesses(point, accesses, state);
+        value
     }
 
     fn aggregate(
@@ -267,6 +358,7 @@ impl<'a> Flow<'a> {
         operands: &[Operand],
         ty: TypeId,
         state: &State,
+        accesses: &mut Accesses,
     ) -> Value {
         let mut result = if let AggregateKind::Closure { func_def_id } = kind {
             Value::function(*func_def_id)
@@ -309,213 +401,20 @@ impl<'a> Flow<'a> {
                 }
                 AggregateKind::Channel => continue,
             };
-            result.join(&self.operand(operand, state).prefixed(slot, ty, self.table));
+            result.join(
+                &self
+                    .read_operand(operand, state, accesses)
+                    .prefixed(slot, ty, self.table),
+            );
         }
         result
-    }
-
-    fn operand(&self, operand: &Operand, state: &State) -> Value {
-        match operand {
-            Operand::Copy(place) | Operand::Move(place) => self.read(place, state),
-            Operand::Constant(Constant::FunctionRef(def)) => Value::function(*def),
-            Operand::Constant(_) => Value::default(),
-        }
-    }
-
-    fn read(&self, place: &Place, state: &State) -> Value {
-        let mut value = state.value(place.local);
-        let mut ty = self.function.locals[place.local.index()].ty;
-        for projection in &place.projections {
-            let slot = projection_slot(projection, ty, self.table);
-            value = if slot == Slot::Deref {
-                self.dereference(&value, ty, state, &mut FxHashSet::default())
-            } else {
-                value.project(&slot)
-            };
-            ty = child_type(ty, &slot, self.table).unwrap_or(TypeId::ERROR);
-        }
-        value
-    }
-
-    fn dereference(
-        &self,
-        value: &Value,
-        ty: TypeId,
-        state: &State,
-        visited: &mut FxHashSet<Origin>,
-    ) -> Value {
-        let inner = child_type(ty, &Slot::Deref, self.table).unwrap_or(TypeId::ERROR);
-        let mut result = Value::default();
-        for origin in value.addresses() {
-            result.join(&self.pointee(&origin, inner, state, visited));
-        }
-        result
-    }
-
-    fn pointee(
-        &self,
-        origin: &Origin,
-        ty: TypeId,
-        state: &State,
-        visited: &mut FxHashSet<Origin>,
-    ) -> Value {
-        if !visited.insert(origin.clone()) {
-            return Value::default();
-        }
-        let mut result = Value::default();
-        match origin {
-            Origin::Loan(point) => {
-                for target in self.loans.get(point).into_iter().flatten() {
-                    result.join(&self.target_value(target, ty, state, visited));
-                }
-            }
-            Origin::Frame { function, point } if *function == self.function.def_id => {
-                for target in self.loans.get(point).into_iter().flatten() {
-                    result.join(&self.target_value(target, ty, state, visited));
-                }
-            }
-            Origin::Frame { .. } | Origin::Opaque { .. } => {
-                result = value::tainted(ty, &std::iter::once(origin.clone()).collect(), self.table);
-            }
-            Origin::Input { local, path } => {
-                let mut path = path.clone();
-                path.push(Slot::Deref);
-                result = value::inputs(
-                    ty,
-                    *local,
-                    self.function.locals[local.index()].ty,
-                    &path,
-                    self.table,
-                );
-            }
-            Origin::InputAddress { local, path } => {
-                result = value::inputs(
-                    ty,
-                    *local,
-                    self.function.locals[local.index()].ty,
-                    path,
-                    self.table,
-                );
-            }
-            Origin::Unproven(point) => {
-                let mut origins = self.unproven.get(point).cloned().unwrap_or_default();
-                origins.insert(origin.clone());
-                result = value::tainted(ty, &origins, self.table);
-            }
-        }
-        visited.remove(origin);
-        result
-    }
-
-    fn target_value(
-        &self,
-        target: &Target,
-        ty: TypeId,
-        state: &State,
-        visited: &mut FxHashSet<Origin>,
-    ) -> Value {
-        let result = match target {
-            Target::Frame { local, path } => self.project_path(
-                state.value(*local),
-                self.function.locals[local.index()].ty,
-                path,
-                state,
-                visited,
-            ),
-            Target::Through { origin, ty, path } => {
-                let value = self.pointee(origin, *ty, state, visited);
-                self.project_path(value, *ty, path, state, visited)
-            }
-        };
-        if matches!(target, Target::Frame { path, .. } | Target::Through { path, .. } if path.contains(&Slot::Tail))
-        {
-            value::tainted(ty, &result.origins(), self.table)
-        } else {
-            result
-        }
-    }
-
-    fn project_path(
-        &self,
-        mut value: Value,
-        mut ty: TypeId,
-        path: &Path,
-        state: &State,
-        visited: &mut FxHashSet<Origin>,
-    ) -> Value {
-        for slot in path {
-            if *slot == Slot::Tail {
-                return value;
-            }
-            value = if *slot == Slot::Deref {
-                self.dereference(&value, ty, state, visited)
-            } else {
-                value.project(slot)
-            };
-            ty = child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR);
-        }
-        value
-    }
-
-    fn reference_targets(&self, place: &Place, state: &State) -> FxHashSet<Target> {
-        place
-            .projections
-            .iter()
-            .rposition(|p| matches!(p, Projection::Deref))
-            .map_or_else(
-                || {
-                    let (path, _) = self.projection_path(
-                        self.function.locals[place.local.index()].ty,
-                        &place.projections,
-                    );
-                    std::iter::once(Target::Frame {
-                        local: place.local,
-                        path,
-                    })
-                    .collect()
-                },
-                |index| {
-                    let prefix = Place {
-                        local: place.local,
-                        projections: place.projections[..index].to_vec(),
-                    };
-                    let reference = self.read(&prefix, state);
-                    let ty = child_type(self.place_type(&prefix), &Slot::Deref, self.table)
-                        .unwrap_or(TypeId::ERROR);
-                    let (path, _) = self.projection_path(ty, &place.projections[index + 1..]);
-                    reference
-                        .addresses()
-                        .into_iter()
-                        .map(|origin| Target::Through {
-                            origin,
-                            ty,
-                            path: path.clone(),
-                        })
-                        .collect()
-                },
-            )
-    }
-
-    fn projection_path(&self, mut ty: TypeId, projections: &[Projection]) -> (Path, TypeId) {
-        let mut path = Vec::new();
-        for projection in projections {
-            let slot = projection_slot(projection, ty, self.table);
-            ty = child_type(ty, &slot, self.table).unwrap_or(TypeId::ERROR);
-            path.push(slot);
-        }
-        (path, ty)
-    }
-
-    fn place_type(&self, place: &Place) -> TypeId {
-        self.projection_path(
-            self.function.locals[place.local.index()].ty,
-            &place.projections,
-        )
-        .1
     }
 
     fn store(&self, place: &Place, value: Value, state: &mut State) {
         if place.projections.is_empty() {
+            state
+                .invalidated
+                .retain(|(local, _), _| *local != place.local);
             state.set(place.local, value);
             return;
         }
@@ -523,12 +422,15 @@ impl<'a> Flow<'a> {
             self.function.locals[place.local.index()].ty,
             &place.projections,
         );
+        state.invalidated.retain(|(local, invalid), _| {
+            *local != place.local || !storage::prefix(&path, invalid)
+        });
         let value = value.prefixed_path(
             &path,
             self.function.locals[place.local.index()].ty,
             self.table,
         );
-        let mut current = state.value(place.local);
+        let mut current = state.cell(place.local);
         current.join(&value);
         state.set(place.local, current);
     }
@@ -630,7 +532,7 @@ impl<'a> Flow<'a> {
 fn consume(operand: &Operand, state: &mut State) {
     if let Operand::Move(place) = operand {
         if place.projections.is_empty() {
-            state.set(place.local, Value::default());
+            state.consume(place.local);
         }
     }
 }
@@ -684,44 +586,4 @@ fn projection_slot(projection: &Projection, ty: TypeId, table: &TypeTable) -> Sl
         }
         Projection::EnumField { variant, index } => Slot::Variant(*variant, *index as usize),
     }
-}
-
-fn operand_dereferences(operand: &Operand) -> bool {
-    match operand {
-        Operand::Copy(place) | Operand::Move(place) => place
-            .projections
-            .iter()
-            .any(|projection| matches!(projection, Projection::Deref)),
-        Operand::Constant(_) => false,
-    }
-}
-
-fn block_reads_loan_graph(block: &spark_mir::BasicBlock) -> bool {
-    let statements = block.statements.iter().any(|statement| match statement {
-        Statement::Assign { rvalue, .. } => match rvalue {
-            Rvalue::Use(operand) | Rvalue::Cast { operand, .. } | Rvalue::UnaryOp(_, operand) => {
-                operand_dereferences(operand)
-            }
-            Rvalue::Aggregate(_, operands) | Rvalue::StringInterp(operands) => {
-                operands.iter().any(operand_dereferences)
-            }
-            Rvalue::Ref { place, .. } | Rvalue::Discriminant(place) => place
-                .projections
-                .iter()
-                .any(|projection| matches!(projection, Projection::Deref)),
-            Rvalue::CollectionGetOptional { collection, index } => {
-                [collection, index].iter().any(|place| {
-                    place
-                        .projections
-                        .iter()
-                        .any(|projection| matches!(projection, Projection::Deref))
-                })
-            }
-            _ => false,
-        },
-        _ => false,
-    });
-    statements
-        // Callee summaries can dereference an input without a Deref projection at the call site.
-        || matches!(&block.terminator, Terminator::Call { .. })
 }

@@ -1542,6 +1542,7 @@ fn collection_borrow_rejects_local_and_parameter_storage_escape() {
         "struct_return",
         "generic_struct_return",
         "recursive_deref_return",
+        "recursive_helper_return",
         "nested_tuple_list_return",
         "nested_tuple_optional_return",
     ] {
@@ -1586,6 +1587,50 @@ fn collection_borrow_recursive_carriers_preserve_payload_lifetimes() {
         );
         assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
         assert_eq!(result.stdout, "7\n7\n7\n", "{args:?}");
+    }
+}
+
+#[test]
+fn collection_borrow_rejects_owner_drop_before_payload_read() {
+    for fixture in [
+        "owner_drop_before_read",
+        "owner_drop_in_helper",
+        "owner_drop_retained_copy",
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let fixture = format!("compile-fail/borrow_errors/collection_borrow_{fixture}.spark");
+            let result = build_spark_with_args(&fixture, args);
+            assert_eq!(result.exit_code, 1, "{args:?}: {}", result.stderr);
+            assert!(
+                result
+                    .stderr
+                    .contains("borrowed value does not live long enough"),
+                "{args:?}: {}",
+                result.stderr
+            );
+            assert!(
+                !result.stderr.contains("codegen error"),
+                "{args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_allows_dead_payloads_without_pointee_reads() {
+    for (fixture, expected) in [
+        ("dead_payload_drop", "1\n"),
+        ("owned_snapshot", "seven\nkept\n"),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(
+                &format!("run-pass/collections/collection_borrow_{fixture}.spark"),
+                args,
+            );
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, expected, "{fixture} {args:?}");
+        }
     }
 }
 

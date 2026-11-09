@@ -1,0 +1,12 @@
+fn ignore(entries: Map[String, Ref[String]]): Void {}
+fn main(): Int {
+    entries: Map[String, Ref[String]]! = {}
+    if true {
+        text: String = "seven"
+        borrowed: Ref[String] = text
+        entries = {"one": borrowed}
+    }
+    ignore(entries)
+    print(entries.len())
+    return 0
+}

@@ -11,6 +11,9 @@ fn good(input: Ref[Int], fallback: Ref[Map[String, Ref[Int]]]): Map[String, Ref[
  leaf: Node = Node { children: [], payload: entriesRef }
  middle: Node = Node { children: [leaf], payload: fallback }
  root: Node = Node { children: [middle], payload: fallback }
+ return extract(root, fallback)
+}
+fn extract(root: Node, fallback: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
  view: Ref[Map[String, Ref[Int]]] = root.children[0] to { node: Node -> node.children[0] to { inner: Node -> inner.payload, Null -> fallback }, Null -> fallback }
  copied: Map[String, Ref[Int]] = view
  return copied
