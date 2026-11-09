@@ -1,0 +1,5 @@
+fn main(): Int {
+    value: Int? = 1 as Int?
+    print(value ?? 0)
+    return 0
+}

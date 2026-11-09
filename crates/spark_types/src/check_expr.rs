@@ -19,7 +19,7 @@ use crate::diagnostics;
 use crate::display::display_type as type_name;
 use crate::lower::lower_type_expr;
 use crate::table::TypeTable;
-use crate::ty::{LifetimeId, Ty, TypeId};
+use crate::ty::{IntWidth, LifetimeId, Ty, TypeId};
 
 /// Type-checks an expression and returns its type.
 ///
@@ -1868,24 +1868,52 @@ fn check_cast(actual: TypeId, target: TypeId, span: Span, ctx: &mut TypeCheckCtx
     if actual.is_error() || target.is_error() {
         return TypeId::ERROR;
     }
-    if collection_cast_preserves_layout(actual, target, ctx.table) {
+    if matches!(ctx.table.resolve(actual), Ty::Never) {
         return target;
     }
+    let Some(message) = cast_error(actual, target, ctx.table) else {
+        return target;
+    };
 
     let actual = type_name(actual, ctx.table, ctx.definitions);
     let target = type_name(target, ctx.table, ctx.definitions);
-    ctx.diagnostics.push(
-        Diagnostic::error("cast would change collection storage type").with_label(Label::primary(
+    ctx.diagnostics
+        .push(Diagnostic::error(message).with_label(Label::primary(
             span,
             format!("cannot cast `{actual}` to `{target}`"),
-        )),
-    );
+        )));
     TypeId::ERROR
+}
+
+fn cast_error(actual: TypeId, target: TypeId, table: &TypeTable) -> Option<&'static str> {
+    if let Some(preserves_layout) = collection_cast_layout(actual, target, table) {
+        return (!preserves_layout).then_some("cast would change collection storage type");
+    }
+    let actual = strip_mutable(actual, table);
+    let target = strip_mutable(target, table);
+    let source = table.resolve(actual);
+    let destination = table.resolve(target);
+    // NOTE [SPARK-113] A native no-op cast is valid only when the representations agree.
+    let supported = actual == target
+        || (source.is_numeric() && destination.is_numeric())
+        || matches!(
+            (source, destination),
+            (Ty::Bool, Ty::Int(_))
+                | (Ty::Byte, Ty::Int(IntWidth::U8))
+                | (Ty::Int(IntWidth::U8), Ty::Byte)
+        )
+        || crate::check_decl::type_involves_param(actual, table)
+        || crate::check_decl::type_involves_param(target, table);
+    (!supported).then_some("unsupported cast")
 }
 
 /// Checks that a cast preserves collection storage through mutable and reference wrappers.
 #[must_use]
 pub fn collection_cast_preserves_layout(actual: TypeId, target: TypeId, table: &TypeTable) -> bool {
+    collection_cast_layout(actual, target, table).unwrap_or(true)
+}
+
+fn collection_cast_layout(actual: TypeId, target: TypeId, table: &TypeTable) -> Option<bool> {
     let (actual_base, actual_depth) = reference_base(actual, table);
     let (target_base, target_depth) = reference_base(target, table);
     let actual_ty = table.resolve(actual_base);
@@ -1893,9 +1921,10 @@ pub fn collection_cast_preserves_layout(actual: TypeId, target: TypeId, table: &
     let involves_collection = [actual_ty, target_ty]
         .iter()
         .any(|ty| matches!(ty, Ty::List(_) | Ty::Map(_, _) | Ty::Set(_)));
-    !involves_collection
-        || (actual_depth == target_depth
-            && collection_layout_matches(actual_ty, target_ty, table).unwrap_or(false))
+    involves_collection.then(|| {
+        actual_depth == target_depth
+            && collection_layout_matches(actual_ty, target_ty, table).unwrap_or(false)
+    })
 }
 
 fn reference_base(mut ty: TypeId, table: &TypeTable) -> (TypeId, usize) {
