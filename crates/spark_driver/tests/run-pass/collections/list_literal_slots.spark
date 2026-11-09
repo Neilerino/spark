@@ -1,0 +1,30 @@
+alias Payload = Int | String
+fn main(): Int {
+    values: List[Int?] = [42, Null]
+    values each (value: Int?): Void { print(value ?? -1) }
+    payloads: List[Payload] = [7, "text"]
+    payloads each (value: Payload): Void {
+        print(value to { number: Int -> number, text: String -> text.len() })
+    }
+    exact: Int? = 8
+    nested: List[List[Int?]] = [[1, Null], [exact]]
+    nested each (inner: List[Int?]): Void {
+        inner each (value: Int?): Void { print(value ?? -2) }
+    }
+    current: Int! = 10
+    snapshots: List[Int?] = [current, {
+        current = 11
+        current
+    }, current]
+    snapshots each (value: Int?): Void { print(value ?? -3) }
+    print(total(values))
+    original: List[Int] = [4, 5]
+    borrowed: Ref[List[Int]] = original
+    copied: List[List[Int]] = [borrowed]
+    print(copied.len())
+    return 0
+}
+
+fn total(values: List[Int?]): Int {
+    return values reduce 0 (sum: Int, value: Int?): Int { sum + (value ?? 0) }
+}

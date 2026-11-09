@@ -316,8 +316,18 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
             }
         }
 
+        // TAG [SPARK-112]
         ExprKind::List(elems) => {
-            HirExprKind::ListLit(elems.iter().map(|e| lower_expr(e, ctx)).collect())
+            let Ty::List(slot) = ctx.table.resolve(expr_type(expr.id, ctx.table)) else {
+                return HirExprKind::Error;
+            };
+            let slot = *slot;
+            HirExprKind::ListLit(
+                elems
+                    .iter()
+                    .map(|e| lower_collection_value(e, slot, ctx))
+                    .collect(),
+            )
         }
 
         ExprKind::Map(entries) => {

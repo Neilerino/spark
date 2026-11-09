@@ -1097,20 +1097,19 @@ fn lower_list(
     type_table: &TypeTable,
     defs: &DefinitionTable,
 ) -> Local {
-    let operands: Vec<Operand> = elems
-        .iter()
-        .map(|e| {
-            let local = lower_expr(e, fb, mir, type_table, defs);
-            owned_aggregate_operand(local, fb, type_table)
-        })
-        .collect();
-    let temp = fb.fresh_temp(expr.ty, expr.span);
-    fb.push_assign(
-        Place::from_local(temp),
-        Rvalue::Aggregate(AggregateKind::List, operands),
-        expr.span,
-    );
-    temp
+    // TAG [SPARK-112]
+    let Ty::List(slot) = type_table.resolve(expr.ty) else {
+        return void_temp(fb, expr);
+    };
+    lower_staged_collection(
+        elems.iter().map(|element| (element, *slot)),
+        AggregateKind::List,
+        expr,
+        fb,
+        mir,
+        type_table,
+        defs,
+    )
 }
 
 fn lower_map_literal(
@@ -1156,6 +1155,7 @@ fn lower_staged_collection<'a>(
         let Some(staged) = stage_collection_value(fb, source, slot_ty, slot.span, type_table)
         else {
             let message = match kind {
+                AggregateKind::List => "list element has incompatible storage after lowering",
                 AggregateKind::Map => "map entry has incompatible storage after lowering",
                 AggregateKind::Set => "set element has incompatible storage after lowering",
                 _ => "tuple field has incompatible storage after lowering",
