@@ -1,0 +1,21 @@
+link "union_probe"
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn consume(seed: Int, value: String | Int): Void {
+    value to {
+        text: String -> print(seed + text.len()),
+        number: Int -> print(seed + number)
+    }
+}
+fn main(): Int {
+    suffix: String = "payload"
+    text: String = "{suffix}-value"
+    callback: (Int): Void = consume{value: text}
+    before: Int = probe_string_rc(text)
+    callback(1)
+    print(probe_string_rc(text) - before)
+    callback(2)
+    print(probe_string_rc(text) - before)
+    print(text)
+    return 0
+}

@@ -1,0 +1,55 @@
+alias Payload = Int | String
+
+fn add(value: Int, base: Int?): Int {
+    return value + (base ?? 0)
+}
+fn selected(seed: Int, value: Payload): Int {
+    return value to {
+        number: Int -> seed + number,
+        text: String -> seed + text.len()
+    }
+}
+fn nested(seed: Int, value: Payload?): Int {
+    if value is Null { return seed }
+    return value to {
+        number: Int -> seed + number,
+        text: String -> seed + text.len()
+    }
+}
+fn count(seed: Int, values: Ref[List[Int]]): Int {
+    return seed + values.len()
+}
+fn main(): Int {
+    offset: (Int): Int = add{base: 3}
+    print(offset(99))
+    empty: (Int): Int = add{base: Null}
+    print(empty(7))
+    present: Int? = 2
+    exact: (Int): Int = add{base: present}
+    print(exact(8))
+    text: String = "abc"
+    stringBound: (Int): Int = selected{value: text}
+    integerBound: (Int): Int = selected{value: 42}
+    print(stringBound(1))
+    print(stringBound(2))
+    print(integerBound(1))
+    tagged: Payload = text
+    exactUnion: (Int): Int = selected{value: tagged}
+    print(exactUnion(4))
+    taggedOptional: Payload? = tagged
+    exactNested: (Int): Int = nested{value: taggedOptional}
+    print(exactNested(5))
+    nestedBound: (Int): Int = nested{value: text}
+    print(nestedBound(3))
+    values: List[Int] = [1, 2, 3]
+    refBound: (Int): Int = count{values: values}
+    print(refBound(1))
+    print(values.len())
+    reference: Ref[List[Int]] = values
+    exactRef: (Int): Int = count{values: reference}
+    print(exactRef(2))
+    unboundOptional: (Int?): Int = add{value: 10}
+    print(unboundOptional(5))
+    print(unboundOptional(Null))
+    return 0
+}

@@ -1,0 +1,6 @@
+fn consume(seed: Int, value: Ref[Int]?): Void {}
+fn main(): Int {
+    callback: (Int): Void = consume{value: 7}
+    callback(1)
+    return 0
+}

@@ -1638,6 +1638,46 @@ fn map_partial() {
 }
 
 #[test]
+fn standalone_partial_preserves_argument_layouts() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/partial/argument_layouts.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout, "102\n7\n10\n4\n5\n43\n7\n8\n6\n4\n3\n5\n15\n10\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn standalone_partial_balances_tagged_argument_owners() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/partial/tagged_ownership.spark"),
+        "14\n0\n15\n0\npayload-value",
+    );
+}
+
+#[test]
+fn standalone_partial_diagnoses_unsupported_tagged_reference_coercion() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "compile-fail/type_errors/partial_tagged_reference.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 1, "{args:?}: {}", result.stderr);
+        assert!(
+            result
+                .stderr
+                .contains("cannot materialize tagged call argument"),
+            "{args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
 fn standalone_partial() {
     assert_output(
         "run-pass/partial/standalone_partial.spark",
