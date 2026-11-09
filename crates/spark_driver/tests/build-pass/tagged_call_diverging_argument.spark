@@ -1,0 +1,12 @@
+fn stop(): Never {
+    return loop {}
+}
+
+fn consume(value: Int | String): Void {
+    print(99)
+}
+
+fn main(): Int {
+    consume(stop())
+    return 0
+}

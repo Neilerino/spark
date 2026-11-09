@@ -1,6 +1,16 @@
 link "union_probe"
 extern fn probe_string_rc(value: Ref[String]): Int
 
+alias Value = Int | String
+
+fn consumeNested(value: Value?): Void {
+    if value is Null { return }
+    value to {
+        text: String -> print(text.len()),
+        Int -> print(0)
+    }
+}
+
 fn consume(value: String | Int, second: Int): Void {
     value to {
         text: String -> print(text.len() + second),
@@ -20,6 +30,8 @@ fn main(): Int {
     consume(text, 3)
     print(probe_string_rc(text) - before)
     print(early(text))
+    print(probe_string_rc(text) - before)
+    consumeNested(text)
     print(probe_string_rc(text) - before)
     return 0
 }

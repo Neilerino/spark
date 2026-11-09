@@ -1,0 +1,14 @@
+alias A = Int?
+alias B = Int | String
+
+fn render(value: A | B): Int {
+    return value to {
+        a: A -> 1,
+        b: B -> 2
+    }
+}
+
+fn main(): Int {
+    print(render(7))
+    return 0
+}

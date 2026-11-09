@@ -1729,7 +1729,7 @@ fn tagged_call_arguments_cover_specialized_functions_and_methods() {
     for args in [&[][..], &["--no-opt"][..]] {
         let result = run_spark_with_args("run-pass/to/tagged_call_paths.spark", args);
         assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
-        assert_eq!(result.stdout, "45\n2\n4\n");
+        assert_eq!(result.stdout, "45\n8\n2\n4\n");
     }
 }
 
@@ -1739,8 +1739,68 @@ fn tagged_call_arguments_release_staged_payloads() {
         "#include <stddef.h>\n#include <stdint.h>\n\
          int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
         include_str!("run-pass/to/tagged_call_ownership.spark"),
-        "13\n0\n7\n0",
+        "13\n0\n7\n0\n10\n0",
     );
+}
+
+#[test]
+fn tagged_call_arguments_widen_into_nested_layouts() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/to/nested_tagged_call_arguments.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "7\n10\n-1\n11\n11\n");
+    }
+}
+
+#[test]
+fn tagged_call_arguments_diagnose_unrepresentable_conversions() {
+    for (fixture, diagnostic) in [
+        (
+            "compile-fail/type_errors/tagged_call_unsupported_member_coercion.spark",
+            "cannot materialize tagged call argument",
+        ),
+        (
+            "compile-fail/type_errors/tagged_call_ambiguous_member.spark",
+            "ambiguous tagged call argument",
+        ),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains(diagnostic),
+                "{args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn tagged_call_arguments_allow_diverging_expressions() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/build-pass/tagged_call_diverging_argument.spark");
+    let dir = tempfile::tempdir().expect("create build output directory");
+    let spark = Path::new(env!("CARGO_BIN_EXE_spark"));
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = Command::new(spark)
+            .args(["build", "--single-file"])
+            .args(args)
+            .arg(&fixture)
+            .arg("-o")
+            .arg(dir.path().join("diverging"))
+            .env(
+                "SPARK_RUNTIME_DIR",
+                spark.parent().expect("driver directory"),
+            )
+            .output()
+            .expect("build diverging argument fixture");
+        assert!(
+            result.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
 }
 
 #[test]
