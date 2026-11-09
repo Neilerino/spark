@@ -36,7 +36,7 @@ This prints `9`. `print` is available without an import. The entry point is `mai
 | `Bool` | `true` or `false`. |
 | `Char`, `String` | A Unicode scalar and immutable UTF-8 text, respectively. |
 | `Tup[A, B]` | A tuple, with `.0` and `.1` denoting its first two fields. |
-| `A \| B`, `T?` | A union and an optional. `T?` is equivalent to `T \| Null`. |
+| `A \| B`, `T?` | A union and an optional. Both `T?` and `T \| Null` can represent absence, but the compiler treats them as distinct types for call compatibility. See [NEI-132](https://linear.app/neilwaddenpersonal/issue/NEI-132). |
 | `Ref[T]` | A borrowed value. See [References](#references). |
 
 Use `+`, `-`, `*`, `/`, and `%` for integer arithmetic. Signed division truncates toward zero, and the remainder has the dividend's sign when nonzero. Comparisons return `Bool`. Strings compare by contents, and supported tuples compare field by field. Use `and`, `or`, and `not` for Boolean operations. Both operands of `and` and `or` are evaluated, so use nested `if` blocks when a second operation depends on the first condition. Use `as` for supported conversions and `is` to test the active member of a union. See the [integer arithmetic](../crates/spark_driver/tests/run-pass/basics/signed_division_remainder.spark) and [tuple equality](../crates/spark_driver/tests/run-pass/collections/tuple_value_equality.spark) fixtures.
@@ -74,7 +74,7 @@ This prints `42`. The annotated success type selects a parser for `Int`. That pa
 
 ## Text and input
 
-Use `spark.io.readFile` for local files. It returns a `String`. Check `spark.io.lastError()` after the call to distinguish a read failure from an empty file. `spark.sys.args()` supplies the process arguments, including the executable name. The [file-to-answer fixture](../crates/spark_driver/tests/run-pass/parsing/sum_file_lines.spark) reads an input path, parses each line, and reports a malformed row. Pass the path after `--` when running it.
+Import `readFile` and `lastError` from `spark.io` to read a local file. `readFile(path)` returns a `String`. Check `lastError()` after the call to distinguish a read failure from an empty file. Import `args` from `spark.sys` to get the process arguments, including the executable name. The [file-to-answer fixture](../crates/spark_driver/tests/run-pass/parsing/sum_file_lines.spark) reads an input path, parses each line, and reports a malformed row. Pass the path after `--` when running it.
 
 | Operation | Result |
 | --- | --- |
