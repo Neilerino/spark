@@ -336,6 +336,54 @@ fn casts_support_generic_numeric_and_borrow_identity() {
 }
 
 #[test]
+fn casts_preserve_numeric_width_signedness_and_representation() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/basics/numeric_casts.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout.trim(),
+            "1\n0\n-1\n255\n1\n-1\n255\n65535\n-1\n-2\n255\n7\n-7\n255\n0\n127\n-128\n255\n65535\n-32768\n250\n-2\n0\n65535\n-128\n0",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn casts_only_emit_concrete_reachable_specializations() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, expected) in [
+            ("cast_unused_template", "hello"),
+            ("cast_nested_specialization", "3\n7\n9\n6\n8\n4\n42"),
+        ] {
+            let result = run_spark_with_args(&format!("run-pass/generics/{fixture}.spark"), args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout.trim(), expected, "{fixture} {args:?}");
+        }
+        let result = run_spark_with_args(
+            "compile-fail/type_errors/cast_nested_generic_invalid.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 1, "{args:?}: {}", result.stderr);
+        assert!(
+            result.stderr.contains("unsupported cast")
+                && result.stderr.contains("invalid after specialization"),
+            "{args:?}: {}",
+            result.stderr
+        );
+        let result = run_spark_with_args(
+            "compile-fail/type_errors/generic_expanding_recursion.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 1, "{args:?}: {}", result.stderr);
+        assert!(
+            result.stderr.contains("type-changing generic recursion"),
+            "{args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
 fn casts_allow_diverging_operands() {
     assert_builds_in_both_modes("build-pass/cast_diverging_operand.spark");
     assert_builds_in_both_modes("build-pass/cast_generic_diverging.spark");

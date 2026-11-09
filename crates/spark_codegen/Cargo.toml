@@ -26,6 +26,7 @@ target-lexicon = { workspace = true }
 object = { workspace = true }
 
 [dev-dependencies]
+cranelift-codegen = { workspace = true, features = ["x86", "arm64"] }
 spark_lexer = { workspace = true }
 spark_parser = { workspace = true }
 spark_modules = { workspace = true }

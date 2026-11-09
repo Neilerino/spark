@@ -1,0 +1,35 @@
+fn main(): Int {
+    tiny: Int8 = true as Int8
+    unsignedTiny: UInt8 = false as UInt8
+    print(tiny as Int)
+    print(unsignedTiny as Int)
+    print(((-1) as Int8) as Int)
+    print((255 as UInt8) as Int)
+    print((257 as UInt8) as Int)
+    print((255 as Int8) as Int)
+    print(((255 as UInt8) as Int16) as Int)
+    print((((-1) as Int8) as UInt16) as Int)
+    print(((-1) as UInt64) as Int)
+    print(((-2) as Float) as Int)
+    print(((255 as UInt8) as Float) as Int)
+    print(((7.5 as Float32) as Float64) as Int)
+    print(((-7.75) as Int))
+    print((300.0 as UInt8) as Int)
+    print(((-3.0) as UInt8) as Int)
+    print((200.0 as Int8) as Int)
+    print(((-200.0) as Int8) as Int)
+    byte: Byte = (255 as UInt8) as Byte
+    print((byte as UInt8) as Int)
+    print((70000.0 as UInt16) as Int)
+    print(((-70000.0) as Int16) as Int)
+    print(((250.75 as Float32) as UInt8) as Int)
+    print((((-2.75) as Float32) as Int16) as Int)
+    nan: Float = 0.0 / 0.0
+    positiveInfinity: Float = 1.0 / 0.0
+    negativeInfinity: Float = (-1.0) / 0.0
+    print((nan as Int8) as Int)
+    print((positiveInfinity as UInt16) as Int)
+    print((negativeInfinity as Int8) as Int)
+    print((negativeInfinity as UInt8) as Int)
+    return 0
+}

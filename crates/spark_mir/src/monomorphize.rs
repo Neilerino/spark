@@ -9,69 +9,55 @@
 //! 5. Rewrites call sites to target monomorphized functions.
 //! 6. Removes original generic function bodies from the MIR.
 
+use std::collections::VecDeque;
+
 use rustc_hash::FxHashMap;
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_resolve::{DefId, DefinitionInfo, DefinitionKind, DefinitionTable, Visibility};
 use spark_span::Span;
 use spark_types::check_expr::{cast_kind, CastKind};
-use spark_types::substitute::{substitute_mut, SubstMap};
+use spark_types::substitute::{substitute_mut, type_involves_param, SubstMap};
 use spark_types::{mangle_type, Ty, TypeId, TypeTable};
 
 use crate::mir::{
     AggregateKind, Constant, Mir, MirFunction, Operand, Projection, Rvalue, Statement, Terminator,
 };
 
-/// Runs monomorphization on the MIR.
-///
-/// Clones generic function bodies with concrete type substitutions,
-/// rewrites call sites, and removes uninstantiated generic originals.
-#[allow(clippy::too_many_lines)]
+/// Specializes reachable generic calls and removes generic templates from native MIR.
 pub fn monomorphize(
     mir: &mut Mir,
     table: &mut TypeTable,
     definitions: &mut DefinitionTable,
     diagnostics: &mut Diagnostics,
 ) {
-    if table.mono_instances().is_empty() {
-        return;
+    let templates = mir
+        .functions
+        .extract_if(|def, _| {
+            table
+                .get_generic_params(*def)
+                .is_some_and(|params| !params.is_empty())
+        })
+        .collect();
+    let calls = table.mono_instances().clone();
+    let mut specializer = Specializer {
+        table,
+        definitions,
+        diagnostics,
+        templates,
+        calls,
+        instances: FxHashMap::default(),
+        pending: VecDeque::new(),
+    };
+    for function in mir.functions.values_mut() {
+        specializer.rewrite_calls(function, &SubstMap::default(), &[]);
     }
-
-    // Phase 1: Collect and deduplicate mono instances.
-    //
-    // Each mono_instance maps call_span → (callee_def_id, subst_map).
-    // We deduplicate by (callee_def_id, type_args) so the same generic
-    // function instantiated with the same types only gets one copy.
-    let mut instance_map: FxHashMap<(DefId, Vec<TypeId>), DefId> = FxHashMap::default();
-    let mut mono_requests: Vec<(DefId, Vec<TypeId>, SubstMap)> = Vec::new();
-
-    for (def_id, subst) in table.mono_instances().values() {
-        let params = table
-            .get_generic_params(*def_id)
-            .map(<[_]>::to_vec)
-            .unwrap_or_default();
-        let type_args: Vec<TypeId> = params.iter().map(|p| subst[p]).collect();
-        let key = (*def_id, type_args.clone());
-        if let std::collections::hash_map::Entry::Vacant(e) = instance_map.entry(key) {
-            // Placeholder DefId — will be filled in phase 2.
-            e.insert(DefId::DUMMY);
-            mono_requests.push((*def_id, type_args, subst.clone()));
-        }
-    }
-
-    // Phase 2: Create monomorphized function copies.
-    let mut new_functions: Vec<(DefId, MirFunction)> = Vec::new();
-
-    for (original_def_id, type_args, subst) in &mono_requests {
-        let Some(source_fn) = mir.functions.get(original_def_id) else {
-            continue;
-        };
-        let mut mono_fn = source_fn.clone();
-
-        // Substitute all TypeIds in locals.
-        for local in &mut mono_fn.locals {
-            local.ty = substitute_mut(local.ty, subst, table);
-            if let Some(slot) = unsupported_hash_slot(local.ty, table) {
-                diagnostics.push(
+    while let Some(request) = specializer.pending.pop_front() {
+        let mut function = specializer.templates[&request.original].clone();
+        function.def_id = request.specialized;
+        for local in &mut function.locals {
+            local.ty = substitute_mut(local.ty, &request.subst, specializer.table);
+            if let Some(slot) = unsupported_hash_slot(local.ty, specializer.table) {
+                specializer.diagnostics.push(
                     Diagnostic::error(format!("unsupported {slot} type")).with_label(
                         Label::primary(
                             local.span,
@@ -81,64 +67,153 @@ pub fn monomorphize(
                 );
             }
         }
-        // Substitute the return type.
-        mono_fn.return_type = substitute_mut(mono_fn.return_type, subst, table);
-
-        // Substitute TypeIds in rvalues (casts, etc.).
-        substitute_rvalues(&mut mono_fn, subst, table, diagnostics);
-        validate_specialized_comparisons(&mono_fn, table, definitions, diagnostics);
-
-        // Allocate a fresh DefId for this monomorphized function.
-        let original_name = definitions
-            .get(*original_def_id)
-            .map_or_else(|| spark_intern::sym("__mono"), |info| info.name);
-        let mangled_name = mangle_name(original_name, type_args, table);
-        let mono_def_id = definitions.insert(DefinitionInfo::new(
-            DefinitionKind::Function,
-            mangled_name,
-            mono_fn.span,
-            Visibility::Private,
-            spark_modules::ModulePath::root(),
-        ));
-        mono_fn.def_id = mono_def_id;
-
-        instance_map.insert((*original_def_id, type_args.clone()), mono_def_id);
-        new_functions.push((mono_def_id, mono_fn));
+        for (_, ty) in &mut function.captures {
+            *ty = substitute_mut(*ty, &request.subst, specializer.table);
+        }
+        function.return_type =
+            substitute_mut(function.return_type, &request.subst, specializer.table);
+        substitute_rvalues(
+            &mut function,
+            &request.subst,
+            specializer.table,
+            specializer.diagnostics,
+        );
+        validate_specialized_comparisons(
+            &function,
+            specializer.table,
+            specializer.definitions,
+            specializer.diagnostics,
+        );
+        specializer.rewrite_calls(&mut function, &request.subst, &request.ancestors);
+        mir.functions.insert(request.specialized, function);
     }
+}
 
-    // Insert monomorphized functions into the MIR.
-    for (def_id, func) in new_functions {
-        mir.functions.insert(def_id, func);
-    }
+struct Specialization {
+    original: DefId,
+    specialized: DefId,
+    subst: SubstMap,
+    ancestors: Vec<DefId>,
+}
 
-    // Phase 3: Build a call-site rewrite map (call_span → mono_def_id).
-    let mut call_rewrites: FxHashMap<Span, DefId> = FxHashMap::default();
-    for (span, (def_id, subst)) in table.mono_instances() {
-        let params = table
-            .get_generic_params(*def_id)
-            .map(<[_]>::to_vec)
-            .unwrap_or_default();
-        let type_args: Vec<TypeId> = params.iter().map(|p| subst[p]).collect();
-        let key = (*def_id, type_args);
-        if let Some(&mono_def_id) = instance_map.get(&key) {
-            if !mono_def_id.is_dummy() {
-                call_rewrites.insert(*span, mono_def_id);
+struct Specializer<'a> {
+    table: &'a mut TypeTable,
+    definitions: &'a mut DefinitionTable,
+    diagnostics: &'a mut Diagnostics,
+    templates: FxHashMap<DefId, MirFunction>,
+    calls: FxHashMap<Span, (DefId, SubstMap)>,
+    instances: FxHashMap<(DefId, Vec<TypeId>), DefId>,
+    pending: VecDeque<Specialization>,
+}
+
+impl Specializer<'_> {
+    fn rewrite_calls(&mut self, function: &mut MirFunction, subst: &SubstMap, ancestors: &[DefId]) {
+        let mut rewrites = FxHashMap::default();
+        for block in &function.blocks {
+            let Terminator::Call { span, .. } = &block.terminator else {
+                continue;
+            };
+            let Some((callee, callee_subst)) = self.calls.get(span).cloned() else {
+                continue;
+            };
+            if !self.templates.contains_key(&callee) {
+                continue;
+            }
+            let depends_on_caller = callee_subst
+                .values()
+                .any(|ty| type_involves_param(*ty, self.table));
+            let callee_subst = callee_subst
+                .into_iter()
+                .map(|(param, ty)| (param, substitute_mut(ty, subst, self.table)))
+                .collect();
+            if let Some(specialized) =
+                self.request(callee, callee_subst, ancestors, depends_on_caller, *span)
+            {
+                rewrites.insert(*span, specialized);
+            }
+        }
+        rewrite_calls(function, &rewrites);
+        for block in &mut function.blocks {
+            for statement in &mut block.statements {
+                let Statement::Assign { rvalue, span, .. } = statement else {
+                    continue;
+                };
+                let (Rvalue::Use(Operand::Constant(Constant::FunctionRef(def)))
+                | Rvalue::Aggregate(AggregateKind::Closure { func_def_id: def }, _)) = rvalue
+                else {
+                    continue;
+                };
+                if self.templates.contains_key(def)
+                    && self
+                        .definitions
+                        .get(*def)
+                        .is_some_and(|info| info.kind == DefinitionKind::Lambda)
+                {
+                    if let Some(specialized) =
+                        self.request(*def, subst.clone(), ancestors, true, *span)
+                    {
+                        *def = specialized;
+                    }
+                }
             }
         }
     }
 
-    // Rewrite call sites in all functions.
-    let def_ids: Vec<DefId> = mir.functions.keys().copied().collect();
-    for def_id in def_ids {
-        if let Some(func) = mir.functions.get_mut(&def_id) {
-            rewrite_calls(func, &call_rewrites);
+    fn request(
+        &mut self,
+        original: DefId,
+        subst: SubstMap,
+        ancestors: &[DefId],
+        depends_on_caller: bool,
+        span: Span,
+    ) -> Option<DefId> {
+        let params = self.table.get_generic_params(original)?;
+        let type_args: Option<Vec<TypeId>> = params.iter().map(|p| subst.get(p).copied()).collect();
+        let Some(type_args) =
+            type_args.filter(|args| !args.iter().any(|ty| type_involves_param(*ty, self.table)))
+        else {
+            self.diagnostics.push(
+                Diagnostic::error("generic call remains unresolved after specialization")
+                    .with_label(Label::primary(span, "concrete type arguments required")),
+            );
+            return None;
+        };
+        let key = (original, type_args);
+        if let Some(&specialized) = self.instances.get(&key) {
+            return Some(specialized);
         }
-    }
-
-    // Phase 4: Remove original generic functions (they contain Ty::Param).
-    let generic_def_ids: Vec<DefId> = mono_requests.iter().map(|(d, _, _)| *d).collect();
-    for def_id in generic_def_ids {
-        mir.functions.remove(&def_id);
+        // FIXME [SPARK-138]: Distinguish finite parameter transformations from expanding recursion.
+        if depends_on_caller && ancestors.contains(&original) {
+            self.diagnostics.push(
+                Diagnostic::error("type-changing generic recursion is unsupported").with_label(
+                    Label::primary(span, "recursive instantiation changes type arguments"),
+                ),
+            );
+            return None;
+        }
+        let template = &self.templates[&original];
+        let (original_name, kind) = self.definitions.get(original).map_or_else(
+            || (spark_intern::sym("__mono"), DefinitionKind::Function),
+            |info| (info.name, info.kind.clone()),
+        );
+        let name = mangle_name(original_name, &key.1, self.table);
+        let specialized = self.definitions.insert(DefinitionInfo::new(
+            kind,
+            name,
+            template.span,
+            Visibility::Private,
+            spark_modules::ModulePath::root(),
+        ));
+        self.instances.insert(key, specialized);
+        let mut ancestors = ancestors.to_vec();
+        ancestors.push(original);
+        self.pending.push_back(Specialization {
+            original,
+            specialized,
+            subst,
+            ancestors,
+        });
+        Some(specialized)
     }
 }
 
@@ -257,7 +332,14 @@ fn substitute_rvalues(
                                 break;
                             }
                             Ok(CastKind::Identity) => *rvalue = Rvalue::Use(operand.clone()),
-                            Ok(CastKind::Numeric | CastKind::Deferred) => {}
+                            Ok(CastKind::Numeric) => {}
+                            Ok(CastKind::Deferred) => diagnostics.push(
+                                Diagnostic::error("cast remains unresolved after specialization")
+                                    .with_label(Label::primary(
+                                        *span,
+                                        "concrete cast types required",
+                                    )),
+                            ),
                             Err(message) => {
                                 diagnostics.push(Diagnostic::error(message).with_label(
                                     Label::primary(*span, "invalid after specialization"),
@@ -394,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn monomorphize_identity_function() {
+    fn unreachable_generic_template_is_removed() {
         let mut table = TypeTable::new();
         let mut definitions = DefinitionTable::new();
 
@@ -478,25 +560,10 @@ mod tests {
             "Generic function should be removed after monomorphization"
         );
 
-        // Should have exactly one monomorphized function.
-        assert_eq!(
-            mir.functions.len(),
-            1,
-            "Expected one monomorphized function"
+        assert!(
+            mir.functions.is_empty(),
+            "Unreachable templates must not be instantiated"
         );
-
-        let mono_fn = mir.functions.values().next().unwrap();
-        // All locals should have concrete types (not Ty::Param).
-        for local in &mono_fn.locals {
-            let ty = table.resolve(local.ty);
-            assert!(
-                !matches!(ty, Ty::Param(_)),
-                "Local {} still has Ty::Param after monomorphization",
-                local.local
-            );
-        }
-        // Return type should be Int.
-        assert_eq!(mono_fn.return_type, int_ty);
     }
 
     #[test]

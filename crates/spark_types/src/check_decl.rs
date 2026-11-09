@@ -15,6 +15,7 @@ use spark_diagnostics::{Diagnostic, Label};
 use crate::ctx::TypeCheckCtx;
 use crate::display::display_type as type_name;
 use crate::lower::lower_type_expr;
+use crate::substitute::type_involves_param;
 use crate::table::InterfaceMethodInfo;
 use crate::ty::{Constraint, Ty, TypeId};
 
@@ -534,32 +535,6 @@ fn is_placeholder_type(ty: &spark_ast::TypeExpr) -> bool {
                 && path.is_simple()
                 && path.segments[0].name == spark_intern::kw::UNDERSCORE
         }
-        _ => false,
-    }
-}
-
-/// Returns `true` if the type contains any `Ty::Param` (generic type parameter).
-pub(crate) fn type_involves_param(ty: TypeId, table: &crate::table::TypeTable) -> bool {
-    if ty.is_error() {
-        return false;
-    }
-    match table.resolve(ty) {
-        Ty::Param(_) => true,
-        Ty::Optional(inner)
-        | Ty::Mutable(inner)
-        | Ty::List(inner)
-        | Ty::Set(inner)
-        | Ty::Future { inner }
-        | Ty::Channel { inner }
-        | Ty::Ref { inner, .. } => type_involves_param(*inner, table),
-        Ty::Map(k, v) => type_involves_param(*k, table) || type_involves_param(*v, table),
-        Ty::Tuple(elems) => elems.iter().any(|e| type_involves_param(*e, table)),
-        Ty::Union(members) => members.iter().any(|m| type_involves_param(*m, table)),
-        Ty::Function { params, ret, .. } => {
-            params.iter().any(|p| type_involves_param(*p, table))
-                || type_involves_param(*ret, table)
-        }
-        Ty::Applied { args, .. } => args.iter().any(|a| type_involves_param(*a, table)),
         _ => false,
     }
 }

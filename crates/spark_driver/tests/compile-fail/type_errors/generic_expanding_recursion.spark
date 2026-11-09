@@ -1,0 +1,6 @@
+fn recur[T](value: T): Int {
+    return recur([value])
+}
+fn main(): Int {
+    return recur(1)
+}

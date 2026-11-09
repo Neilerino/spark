@@ -1,12 +1,8 @@
 //! Lambda lifting pass.
 //!
-//! Extracts non-capturing lambda expressions into top-level [`HirFunction`]s.
-//! Each `HirExprKind::Lambda` is replaced with `HirExprKind::Local(def_id)`
-//! pointing at the lifted function, so downstream phases (MIR, codegen) treat
-//! it as a regular function reference.
-//!
-//! Capturing closures are **not** supported in this pass — they require
-//! environment allocation and a modified calling convention (Phase 2).
+//! Extracts lambdas into top-level [`HirFunction`]s and replaces each expression
+//! with a function reference or closure construction. Lifted functions inherit
+//! enclosing generic parameters so MIR can specialize their bodies and captures.
 
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_modules::ModulePath;
@@ -38,10 +34,16 @@ pub fn lift_lambdas(
         table,
         counter: 0,
         diagnostics,
+        generic_params: Vec::new(),
     };
 
     for def_id in func_ids {
         if let Some(func) = hir.functions.get_mut(&def_id) {
+            lifter.generic_params = lifter
+                .table
+                .get_generic_params(def_id)
+                .unwrap_or_default()
+                .to_vec();
             lifter.visit_expr_mut(&mut func.body);
         }
     }
@@ -65,6 +67,7 @@ struct LambdaLifter<'a> {
     counter: u32,
     /// Diagnostic sink for errors (e.g. thread-safety violations).
     diagnostics: &'a mut Diagnostics,
+    generic_params: Vec<DefId>,
 }
 
 impl HirMutVisitor for LambdaLifter<'_> {
@@ -93,6 +96,10 @@ impl HirMutVisitor for LambdaLifter<'_> {
 
                 // Register the function type for this DefId in the type table.
                 self.table.set_def_type(def_id, expr.ty);
+                if !self.generic_params.is_empty() {
+                    self.table
+                        .set_generic_params(def_id, self.generic_params.clone());
+                }
 
                 // Collect free variables (captures) from the lambda body.
                 let captures = collect_captures(&body, &params, self.definitions);
@@ -143,6 +150,7 @@ impl HirMutVisitor for LambdaLifter<'_> {
                 self.table,
                 &mut self.counter,
                 self.diagnostics,
+                &self.generic_params,
             );
         }
 
@@ -211,6 +219,7 @@ impl HirVisitor for CaptureCollector<'_> {
             }
             // Lambda nodes inside a lambda body are already lifted by depth-first walk.
             HirExprKind::Lambda { .. } => {}
+            // FIXME [SPARK-137]: Capture values required only by nested closure environments.
             _ => walk_expr(self, expr),
         }
     }
@@ -286,6 +295,7 @@ fn lift_spawn_body(
     table: &mut TypeTable,
     counter: &mut u32,
     diagnostics: &mut Diagnostics,
+    generic_params: &[DefId],
 ) {
     // Take ownership of the Spawn's inner expression.
     let old_kind = std::mem::replace(&mut expr.kind, HirExprKind::Error);
@@ -320,6 +330,9 @@ fn lift_spawn_body(
     ));
 
     table.set_def_type(def_id, closure_ty);
+    if !generic_params.is_empty() {
+        table.set_generic_params(def_id, generic_params.to_vec());
+    }
 
     // Collect captures from the body (no params to exclude).
     let captures = collect_captures(&body, &[], definitions);

@@ -5,6 +5,7 @@
 
 pub mod context;
 pub mod drop_glue;
+mod emit_cast;
 mod emit_equality;
 mod emit_iterable;
 pub mod emit_rvalue;
@@ -738,6 +739,9 @@ impl CraneliftBackend {
             // Emit statements.
             for stmt in &mir_block.statements {
                 emit_stmt::emit_statement(&mut fctx, stmt, &ecx, &mut self.module, diagnostics);
+                if diagnostics.has_errors() {
+                    return;
+                }
             }
 
             // Emit terminator.

@@ -1,0 +1,18 @@
+fn convert[T](value: T): Int {
+    return value as Int
+}
+fn unusedWrapper[T](value: T): Int {
+    return convert(value)
+}
+fn unusedClosure[T](value: T): Int {
+    callback: (T): Int = (item: T): Int { return item as Int }
+    return callback(value)
+}
+fn unusedClosureCall[T](value: T): Int {
+    callback: (T): Int = (item: T): Int { return convert(item) }
+    return callback(value)
+}
+fn main(): Int {
+    print("hello")
+    return 0
+}
