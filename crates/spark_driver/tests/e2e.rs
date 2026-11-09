@@ -1678,6 +1678,38 @@ fn collection_borrow_allows_mutation_after_last_carrier_is_cleared() {
 }
 
 #[test]
+fn collection_borrow_source_replacement_requires_the_carrier_to_be_dead() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "compile-fail/borrow_errors/collection_borrow_live_source_replacement.spark",
+            "compile-fail/borrow_errors/collection_borrow_live_scalar_replacement.spark",
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains("cannot assign to a borrowed value"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_allows_source_replacement_after_last_carrier_clear() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/collections/collection_borrow_cleared_source_replacement.spark",
+            "run-pass/collections/collection_borrow_cleared_scalar_replacement.spark",
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout.trim(), "9", "{fixture} {args:?}");
+        }
+    }
+}
+
+#[test]
 fn collection_borrow_loops_preserve_occurrence_lifetimes() {
     for args in [&[][..], &["--no-opt"][..]] {
         let negative = build_spark_with_args(
