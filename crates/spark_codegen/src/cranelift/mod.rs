@@ -738,6 +738,9 @@ impl CraneliftBackend {
             // Emit statements.
             for stmt in &mir_block.statements {
                 emit_stmt::emit_statement(&mut fctx, stmt, &ecx, &mut self.module, diagnostics);
+                if diagnostics.has_errors() {
+                    return;
+                }
             }
 
             // Emit terminator.

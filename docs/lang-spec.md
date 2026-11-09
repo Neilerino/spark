@@ -43,6 +43,21 @@ Use `+`, `-`, `*`, `/`, and `%` for integer arithmetic. Signed division truncate
 
 Integer bitwise operators are `&`, `|`, `^`, `~`, `<<`, and `>>`. Tuples use `(first, second)` for construction. `Null` represents absence and `Never` describes a result that cannot return.
 
+Use `value as Target` for these explicit conversions:
+
+| Source and target | Behavior |
+| --- | --- |
+| Integer → integer | Narrowing keeps the low bits. Widening sign-extends a signed source and zero-extends an unsigned source. Same-width casts preserve bits. |
+| Integer → float | Converts the numeric value using the source signedness. |
+| Float → integer | Truncates toward zero and saturates to the target range. |
+| Float → float | Converts between `Float32` and `Float64`. |
+| `Bool` → integer | `false` becomes zero and `true` becomes one, including 8-bit targets. |
+| `Byte` ↔ `UInt8` | Preserves the byte value. |
+| Same type | Preserves the value and any borrow provenance. |
+| Collections with compatible storage | Preserves the original element descriptor. Changing element representation is rejected. |
+
+Casts cannot grant reference mutability or change a reference lifetime. Unsupported pairs fail at the cast expression, including inside generic functions once their types become concrete. Use [text and input](#text-and-input) for text conversion and `to` matching for union narrowing. See the [numeric cast fixture](../crates/spark_driver/tests/run-pass/basics/numeric_casts.spark) for boundary examples.
+
 ## Control flow and errors
 
 Use `if` and `else` for branching. `loop` repeats its body until `break` or `return`, and `continue` starts the next iteration.

@@ -336,6 +336,19 @@ fn casts_support_generic_numeric_and_borrow_identity() {
 }
 
 #[test]
+fn casts_preserve_numeric_width_signedness_and_representation() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/basics/numeric_casts.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout.trim(),
+            "1\n0\n-1\n255\n1\n-1\n255\n65535\n-1\n-2\n255\n7\n-7\n255\n0\n127\n-128\n255",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
 fn casts_allow_diverging_operands() {
     assert_builds_in_both_modes("build-pass/cast_diverging_operand.spark");
     assert_builds_in_both_modes("build-pass/cast_generic_diverging.spark");

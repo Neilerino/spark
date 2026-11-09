@@ -90,10 +90,7 @@ pub fn emit_rvalue<M: Module>(
         Rvalue::Discriminant(place) => Some(emit_discriminant(ctx, place, ecx.table, module)),
 
         Rvalue::Cast { operand, target_ty } => {
-            let val = emit_operand(ctx, operand, ecx, module)?;
-            // Determine source type from the operand.
-            let src_ty = operand_type(operand, ctx, ecx.table);
-            Some(emit_cast(ctx, val, src_ty, *target_ty, ecx.table))
+            emit_cast(ctx, operand, *target_ty, ecx, module, diagnostics)
         }
 
         Rvalue::StringInterp(operands) => emit_string_interp(ctx, operands, ecx, module),
@@ -1606,17 +1603,34 @@ fn emit_discriminant<M: Module>(
 }
 
 /// Emits a type cast.
-fn emit_cast(
+fn emit_cast<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    operand: &Operand,
+    target_ty: TypeId,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+    diagnostics: &mut Diagnostics,
+) -> Option<Value> {
+    let val = emit_operand(ctx, operand, ecx, module)?;
+    let src_ty = operand_type(operand, ctx, ecx.table);
+    let result = convert_scalar(ctx, val, src_ty, target_ty, ecx.table);
+    if result.is_none() {
+        diagnostics.error("unsupported cast reached native lowering");
+    }
+    result
+}
+
+fn convert_scalar(
     ctx: &mut FunctionContext<'_>,
     val: Value,
     src_ty: TypeId,
     target_ty: TypeId,
     table: &TypeTable,
-) -> Value {
+) -> Option<Value> {
     let (_, src) = clif_types::unwrap_mutable(src_ty, table);
     let (_, tgt) = clif_types::unwrap_mutable(target_ty, table);
 
-    match (src, tgt) {
+    let result = match (src, tgt) {
         // Int → Int casts
         (Ty::Int(src_w), Ty::Int(tgt_w)) => {
             let src_size = clif_types::int_width_bytes(*src_w);
@@ -1670,12 +1684,17 @@ fn emit_cast(
         // Bool → Int
         (Ty::Bool, Ty::Int(w)) => {
             let int_ty = clif_types::int_width_to_clif(*w);
-            ctx.builder.ins().uextend(int_ty, val)
+            if int_ty == types::I8 {
+                val
+            } else {
+                ctx.builder.ins().uextend(int_ty, val)
+            }
         }
-
-        // Default: no-op cast
-        _ => val,
-    }
+        (Ty::Byte, Ty::Int(IntWidth::U8)) | (Ty::Int(IntWidth::U8), Ty::Byte) => val,
+        (Ty::Float(a), Ty::Float(b)) if a == b => val,
+        _ => return None,
+    };
+    Some(result)
 }
 
 /// Determines the type of an operand.
