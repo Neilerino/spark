@@ -1,0 +1,23 @@
+struct Formatter { offset: Int }
+interface Format {
+    fn render(value: Int | String): Int
+}
+Formatter binds Format {
+    fn render(self: Formatter, value: Int | String): Int {
+        return value to {
+            count: Int -> count + self.offset,
+            text: String -> text.len() + self.offset
+        }
+    }
+}
+fn pick[T](fallback: T, value: T?): T {
+    return value ?? fallback
+}
+
+fn main(): Int {
+    f: Formatter = Formatter { offset: 3 }
+    print(f.render(42))
+    print(pick(1, 2))
+    print(pick(4, Null))
+    return 0
+}

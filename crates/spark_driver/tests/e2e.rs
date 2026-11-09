@@ -1725,6 +1725,25 @@ fn tagged_call_arguments_match_the_declared_layout() {
 }
 
 #[test]
+fn tagged_call_arguments_cover_specialized_functions_and_methods() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/to/tagged_call_paths.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "45\n2\n4\n");
+    }
+}
+
+#[test]
+fn tagged_call_arguments_release_staged_payloads() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_string_rc(const void *const *slot) { return *(const size_t *)*slot; }\n",
+        include_str!("run-pass/to/tagged_call_ownership.spark"),
+        "13\n0\n7\n0",
+    );
+}
+
+#[test]
 fn to_union_inside_each() {
     assert_output("run-pass/to/to_union_inside_each.spark", "test\nhello");
 }

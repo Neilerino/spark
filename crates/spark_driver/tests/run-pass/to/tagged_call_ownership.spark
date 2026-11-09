@@ -1,0 +1,25 @@
+link "union_probe"
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn consume(value: String | Int, second: Int): Void {
+    value to {
+        text: String -> print(text.len() + second),
+        Int -> print(second)
+    }
+}
+
+fn early(text: Ref[String]): Int {
+    consume(text, { return 7 })
+    return 0
+}
+
+fn main(): Int {
+    suffix: String = "owned"
+    text: String = "text-{suffix}"
+    before: Int = probe_string_rc(text)
+    consume(text, 3)
+    print(probe_string_rc(text) - before)
+    print(early(text))
+    print(probe_string_rc(text) - before)
+    return 0
+}

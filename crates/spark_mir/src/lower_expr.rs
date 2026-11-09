@@ -3,6 +3,8 @@
 //! Every expression is lowered into a [`Local`] that holds its result.
 //! Control flow expressions (if, loop, match) create new basic blocks.
 
+use std::borrow::Cow;
+
 use rustc_hash::FxHashMap;
 use spark_diagnostics::{Diagnostic, Label};
 use spark_hir::{HirExpr, HirExprKind, HirLiteral};
@@ -202,14 +204,28 @@ pub fn lower_expr(
 
         // ── Calls ────────────────────────────────────────────────
         HirExprKind::Call { callee, args } => {
-            lower_call(callee, args, expr, fb, mir, type_table, defs)
+            lower_call(callee, args.iter(), expr, fb, mir, type_table, defs)
         }
 
         HirExprKind::MethodCall {
             receiver,
             method,
             args,
-        } => lower_method_call(receiver, *method, args, expr, fb, mir, type_table, defs),
+        } => {
+            if let Some(callee) = tagged_method_callee(expr.span, type_table, defs) {
+                lower_call(
+                    &callee,
+                    std::iter::once(receiver.as_ref()).chain(args),
+                    expr,
+                    fb,
+                    mir,
+                    type_table,
+                    defs,
+                )
+            } else {
+                lower_method_call(receiver, *method, args, expr, fb, mir, type_table, defs)
+            }
+        }
 
         // ── Constructors ─────────────────────────────────────────
         HirExprKind::StructInit { def_id, fields } => {
@@ -664,9 +680,9 @@ fn lower_literal(lit: &HirLiteral, expr: &HirExpr, fb: &mut FunctionBuilder) -> 
 }
 
 /// Lowers a function call (Call terminator + continuation block).
-fn lower_call(
+fn lower_call<'a>(
     callee: &HirExpr,
-    args: &[HirExpr],
+    args: impl Iterator<Item = &'a HirExpr>,
     expr: &HirExpr,
     fb: &mut FunctionBuilder,
     mir: &mut MirBuilder<'_>,
@@ -685,32 +701,25 @@ fn lower_call(
             DefinitionKind::BuiltinFunction | DefinitionKind::ExternFunction
         )
     });
-    let tagged_params = match type_table.resolve(unwrap_type_wrappers(callee.ty, type_table)) {
-        Ty::Function { params, .. }
-            if spark_call
-                && params.iter().any(|param| {
-                    matches!(
-                        type_table.resolve(unwrap_type_wrappers(*param, type_table)),
-                        Ty::Union(_) | Ty::Optional(_)
-                    )
-                }) =>
-        {
-            Some(params.as_slice())
-        }
-        _ => None,
+    let tagged_params = if spark_call {
+        call_parameter_types(callee.ty, expr.span, type_table)
+            .filter(|params| takes_tagged_arguments(params, type_table))
+    } else {
+        None
     };
     let func_local = lower_expr(callee, fb, mir, type_table, defs);
     if tagged_params.is_some() {
         fb.push_scope();
     }
-    let mut arg_operands = Vec::with_capacity(args.len());
-    for (index, arg) in args.iter().enumerate() {
+    let mut arg_operands = Vec::with_capacity(args.size_hint().0);
+    for (index, arg) in args.enumerate() {
         let local = lower_expr(arg, fb, mir, type_table, defs);
         if tagged_params.is_some() && fb.is_terminated() {
             fb.pop_finished_scope();
             return void_temp(fb, expr);
         }
         let injection = tagged_params
+            .as_deref()
             .and_then(|params| params.get(index))
             .and_then(|&param| {
                 match collection_value_coercion(fb.local_type(local), param, type_table) {
@@ -758,6 +767,36 @@ fn lower_call(
         fb.pop_scope_drops(None, expr.span);
     }
     dest
+}
+
+fn call_parameter_types(
+    callee_ty: TypeId,
+    span: spark_span::Span,
+    table: &TypeTable,
+) -> Option<Cow<'_, [TypeId]>> {
+    let Ty::Function { params, .. } = table.resolve(unwrap_type_wrappers(callee_ty, table)) else {
+        return None;
+    };
+    // NOTE [SPARK-111] Checking interns the parameter types for each generic
+    // call, so MIR can use the recorded specialization before building arguments.
+    let Some((_, subst)) = table.mono_instances().get(&span) else {
+        return Some(Cow::Borrowed(params));
+    };
+    Some(Cow::Owned(
+        params
+            .iter()
+            .map(|&param| spark_types::substitute::substitute(param, subst, table))
+            .collect(),
+    ))
+}
+
+fn takes_tagged_arguments(params: &[TypeId], table: &TypeTable) -> bool {
+    params.iter().any(|&param| {
+        matches!(
+            table.resolve(unwrap_type_wrappers(param, table)),
+            Ty::Union(_) | Ty::Optional(_)
+        )
+    })
 }
 
 /// Lowers a method call. Method calls are desugared into regular calls
@@ -874,6 +913,22 @@ fn lower_method_call(
         fb.pop_scope_drops(None, expr.span);
     }
     dest
+}
+
+fn tagged_method_callee(
+    span: spark_span::Span,
+    table: &TypeTable,
+    defs: &DefinitionTable,
+) -> Option<HirExpr> {
+    let method = table.get_method_resolution(span)?;
+    let definition = defs.get(method)?;
+    if !matches!(definition.kind, DefinitionKind::BindingMethod(_)) {
+        return None;
+    }
+    let ty = table.get_def_type(method)?;
+    let params = call_parameter_types(ty, span, table)?;
+    takes_tagged_arguments(&params, table)
+        .then(|| HirExpr::new(HirExprKind::Local(method), ty, span))
 }
 
 fn is_set_binding(receiver: &HirExpr, fb: &FunctionBuilder, table: &TypeTable) -> bool {
