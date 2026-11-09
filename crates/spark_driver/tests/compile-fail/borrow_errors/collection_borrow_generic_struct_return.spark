@@ -1,0 +1,6 @@
+struct Box[T] { value: T }
+fn produce(): List[Box[Ref[Int]]] {
+    local: Int = 7
+    return [Box[Ref[Int]] { value: local }]
+}
+fn main(): Int { return 0 }

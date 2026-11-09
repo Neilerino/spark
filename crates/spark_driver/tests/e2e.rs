@@ -1493,6 +1493,42 @@ int64_t first_string_rc(const List *const *slot) { return first(slot); }
 }
 
 #[test]
+fn struct_field_reference_coercions_follow_declared_types() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/references/struct_field_reference_coercions.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout, "7\n7\n7\n7\n7\nkept\n7\n7\ngeneric-kept\nbinding-kept\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn struct_field_reference_coercions_reject_incompatible_types() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = build_spark_with_args(
+            "compile-fail/type_errors/struct_field_reference_incompatible.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 1, "{args:?}: {}", result.stderr);
+        assert!(
+            result.stderr.contains("field `value` type mismatch"),
+            "{args:?}: {}",
+            result.stderr
+        );
+        assert!(
+            !result.stderr.contains("codegen error"),
+            "{args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
 fn collection_borrow_rejects_local_and_parameter_storage_escape() {
     for fixture in [
         "literal_return",
@@ -1503,6 +1539,8 @@ fn collection_borrow_rejects_local_and_parameter_storage_escape() {
         "loop_return",
         "helper_return",
         "recursive_return",
+        "struct_return",
+        "generic_struct_return",
     ] {
         for args in [&[][..], &["--no-opt"][..]] {
             let fixture = format!("compile-fail/borrow_errors/collection_borrow_{fixture}.spark");
