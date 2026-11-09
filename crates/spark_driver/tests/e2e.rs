@@ -1428,6 +1428,46 @@ fn list_literal_rejects_incompatible_elements() {
 }
 
 #[test]
+fn list_literal_rejects_zero_sized_elements() {
+    for fixture in ["list_literal_zero_sized", "list_literal_zero_sized_generic"] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result =
+                run_spark_with_args(&format!("compile-fail/type_errors/{fixture}.spark"), args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains("list element type has no storage"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+            assert!(
+                !result.stderr.contains("codegen error"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn list_literal_balances_element_ownership() {
+    assert_native_ownership_fixture(
+        r#"#include <stddef.h>
+#include <stdint.h>
+typedef struct { size_t rc; void *desc; void *data; size_t len; size_t cap; } List;
+static int64_t count(const void *const *slot) { return *(const size_t *)*slot; }
+static int64_t first(const List *const *slot) { return **(const size_t *const *)(*slot)->data; }
+int64_t probe_string_rc(const void *const *slot) { return count(slot); }
+int64_t probe_list_rc(const void *const *slot) { return count(slot); }
+int64_t first_map_rc(const List *const *slot) { return first(slot); }
+int64_t first_list_rc(const List *const *slot) { return first(slot); }
+int64_t first_string_rc(const List *const *slot) { return first(slot); }
+"#,
+        include_str!("run-pass/collections/list_literal_ownership.spark"),
+        "1\n1\n1\n2\n2\n4\n0\n0\n4\n6\n0\n0\n0\n7\n0\n8\n0",
+    );
+}
+
+#[test]
 fn map_literal_empty_uses_expected_type() {
     let fixture = "run-pass/collections/map_literal_empty.spark";
     for args in [&[][..], &["--no-opt"][..]] {

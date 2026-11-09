@@ -1,0 +1,7 @@
+fn singleton[T](value: T): List[T] {
+    return [value]
+}
+fn main(): Int {
+    values: List[Null] = singleton(Null)
+    return values.len()
+}

@@ -774,6 +774,53 @@ impl CraneliftBackend {
     }
 }
 
+// TAG [SPARK-112]: validate concrete layouts before any native function is emitted.
+fn validate_collection_layouts(
+    mir: &Mir,
+    table: &TypeTable,
+    ptr_size: u32,
+    diagnostics: &mut Diagnostics,
+) {
+    use spark_mir::{AggregateKind, Rvalue, Statement};
+    let mut layouts = crate::layout::LayoutCache::new(ptr_size);
+    for function in mir.functions.values() {
+        for block in &function.blocks {
+            for statement in &block.statements {
+                let Statement::Assign {
+                    place,
+                    rvalue: Rvalue::Aggregate(kind, operands),
+                    span,
+                } = statement
+                else {
+                    continue;
+                };
+                if operands.is_empty() {
+                    continue;
+                }
+                let ty = function.locals[place.local.index()].ty;
+                let (_, ty) = types::unwrap_mutable(ty, table);
+                let (slot, message) = match (kind, ty) {
+                    (AggregateKind::List, Ty::List(element)) => {
+                        (*element, "list element type has no storage")
+                    }
+                    (AggregateKind::Map, Ty::Map(_, value)) => {
+                        (*value, "map value type has no storage")
+                    }
+                    _ => continue,
+                };
+                if layouts.layout_of(slot, table).size == 0 {
+                    diagnostics.push(spark_diagnostics::Diagnostic::error(message).with_label(
+                        spark_diagnostics::Label::primary(
+                            *span,
+                            "use a type with a stored representation",
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+}
+
 impl CodegenBackend for CraneliftBackend {
     fn compile(
         mut self,
@@ -783,6 +830,16 @@ impl CodegenBackend for CraneliftBackend {
         poll_fn_map: &FxHashMap<DefId, spark_mir::async_transform::PollFnInfo>,
         diagnostics: &mut Diagnostics,
     ) -> Vec<u8> {
+        validate_collection_layouts(
+            mir,
+            table,
+            self.module.target_config().pointer_type().bytes(),
+            diagnostics,
+        );
+        if diagnostics.has_errors() {
+            return Vec::new();
+        }
+
         // Phase 0: Declare runtime stubs.
         let call_conv = self.module.isa().default_call_conv();
         let stubs = runtime::RuntimeStubs::declare_all(&mut self.module, call_conv);

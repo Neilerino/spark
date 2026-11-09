@@ -770,6 +770,20 @@ fn check_list_literal(
             ctx,
         );
     }
+    if let (Some(slot), Some(first)) = (slot, elements.first()) {
+        if matches!(
+            ctx.table.resolve(strip_mutable(slot, ctx.table)),
+            Ty::Null | Ty::Void | Ty::Never
+        ) {
+            ctx.diagnostics.push(
+                Diagnostic::error("list element type has no storage").with_label(Label::primary(
+                    first.span,
+                    "use an element type with a stored representation",
+                )),
+            );
+            valid = false;
+        }
+    }
     if valid {
         ctx.table.intern(Ty::List(slot.unwrap_or(TypeId::ERROR)))
     } else {

@@ -1,0 +1,61 @@
+link "union_probe"
+alias Payload = Int | String
+extern fn probe_string_rc(value: Ref[String]): Int
+extern fn probe_list_rc(value: Ref[List[Int]]): Int
+extern fn first_map_rc(values: Ref[List[Map[String, Int]]]): Int
+extern fn first_list_rc(values: Ref[List[List[Int]]]): Int
+extern fn first_string_rc(values: Ref[List[String]]): Int
+
+fn copied(value: String): String { return value }
+fn returned(text: String): Int {
+    values: List[String] = [copied(text), return 7]
+    return values.len()
+}
+fn interrupted(text: String, absent: Int?): Int? {
+    values: List[String] = [copied(text), {
+        present: Int = absent!
+        text
+    }]
+    return values.len()
+}
+fn main(): Int {
+    seed: Int = 9
+    text: String = "owned-{seed}"
+    original: List[Int] = [1, 2]
+    textBefore: Int = probe_string_rc(text)
+    listBefore: Int = probe_list_rc(original)
+    {
+        maps: List[Map[String, Int]] = [{"a": 1}]
+        lists: List[List[Int]] = [[3, 4]]
+        strings: List[String] = ["fresh-{seed}"]
+        print(first_map_rc(maps))
+        print(first_list_rc(lists))
+        print(first_string_rc(strings))
+    }
+    {
+        strings: List[String] = [text, copied(text)]
+        lists: List[List[Int]] = [original, original]
+        print(probe_string_rc(text) - textBefore)
+        print(probe_list_rc(original) - listBefore)
+        print(strings.len() + lists.len())
+    }
+    print(probe_string_rc(text) - textBefore)
+    print(probe_list_rc(original) - listBefore)
+    {
+        optional: List[String?] = [text, Null, copied(text)]
+        tagged: List[Payload] = [text, 7, copied(text)]
+        print(probe_string_rc(text) - textBefore)
+        print(optional.len() + tagged.len())
+    }
+    print(probe_string_rc(text) - textBefore)
+    { [text, copied(text)] }
+    { [original, original] }
+    print(probe_string_rc(text) - textBefore)
+    print(probe_list_rc(original) - listBefore)
+    print(returned(text))
+    print(probe_string_rc(text) - textBefore)
+    absent: Int? = Null
+    print(interrupted(text, absent) ?? 8)
+    print(probe_string_rc(text) - textBefore)
+    return 0
+}
