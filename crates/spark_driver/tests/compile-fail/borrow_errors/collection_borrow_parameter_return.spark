@@ -1,0 +1,5 @@
+fn produce(value: Int): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]] = {"one": value}
+    return entries
+}
+fn main(): Int { return 0 }

@@ -131,7 +131,7 @@ pub fn emit_aliasing_call_args(
 
 /// Returns the span for a given program point.
 #[allow(clippy::cast_possible_truncation)]
-fn span_for_point(point: Point, func: &MirFunction) -> Span {
+pub(crate) fn span_for_point(point: Point, func: &MirFunction) -> Span {
     let block_idx = point.block.index();
     if block_idx >= func.blocks.len() {
         return func.span;

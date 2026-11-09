@@ -89,6 +89,31 @@ fn run_spark_with_args(fixture: &str, args: &[&str]) -> SparkOutput {
     }
 }
 
+fn build_spark_with_args(fixture: &str, args: &[&str]) -> SparkOutput {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join(fixture);
+    let dir = tempfile::tempdir().expect("create build output directory");
+    let spark = Path::new(env!("CARGO_BIN_EXE_spark"));
+    let output = Command::new(spark)
+        .args(["build", "--single-file"])
+        .args(args)
+        .arg(&fixture)
+        .arg("-o")
+        .arg(dir.path().join("program"))
+        .env(
+            "SPARK_RUNTIME_DIR",
+            spark.parent().expect("driver directory"),
+        )
+        .output()
+        .expect("build fixture");
+    SparkOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into(),
+        stderr: String::from_utf8_lossy(&output.stderr).into(),
+        exit_code: output.status.code().unwrap_or(-1),
+    }
+}
+
 /// Runs `spark run <project/main.spark>` for multi-file project tests.
 ///
 /// Projects live under `tests/run-pass/multifile/<name>/` and are self-contained
@@ -1468,6 +1493,50 @@ int64_t first_string_rc(const List *const *slot) { return first(slot); }
 }
 
 #[test]
+fn collection_borrow_rejects_local_and_parameter_storage_escape() {
+    for fixture in [
+        "literal_return",
+        "explicit_return",
+        "parameter_return",
+        "copy_survives_overwrite",
+        "branch_return",
+        "loop_return",
+        "helper_return",
+        "recursive_return",
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let fixture = format!("compile-fail/borrow_errors/collection_borrow_{fixture}.spark");
+            let result = build_spark_with_args(&fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result
+                    .stderr
+                    .contains("returned value contains a reference to local storage"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+            assert!(
+                !result.stderr.contains("codegen error"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_preserves_live_local_and_input_references() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_same_scope.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "7\n7\n7\n7\n7\n7\n7\n", "{args:?}");
+    }
+}
+
+#[test]
 fn map_literal_empty_uses_expected_type() {
     let fixture = "run-pass/collections/map_literal_empty.spark";
     for args in [&[][..], &["--no-opt"][..]] {
@@ -2148,29 +2217,9 @@ fn tagged_call_arguments_allow_diverging_expressions() {
 }
 
 fn assert_builds_in_both_modes(fixture: &str) {
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join(fixture);
-    let dir = tempfile::tempdir().expect("create build output directory");
-    let spark = Path::new(env!("CARGO_BIN_EXE_spark"));
     for args in [&[][..], &["--no-opt"][..]] {
-        let result = Command::new(spark)
-            .args(["build", "--single-file"])
-            .args(args)
-            .arg(&fixture)
-            .arg("-o")
-            .arg(dir.path().join("diverging"))
-            .env(
-                "SPARK_RUNTIME_DIR",
-                spark.parent().expect("driver directory"),
-            )
-            .output()
-            .expect("build fixture");
-        assert!(
-            result.status.success(),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
+        let result = build_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
     }
 }
 

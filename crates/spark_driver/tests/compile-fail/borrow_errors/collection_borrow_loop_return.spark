@@ -1,0 +1,13 @@
+fn produce(input: Ref[Int], times: Int): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {"one": input}
+    index: Int! = 0
+    loop {
+        if index >= times { break }
+        value: Int = 7
+    borrowed: Ref[Int] = value
+        entries = {"one": borrowed}
+        index = index + 1
+    }
+    return entries
+}
+fn main(): Int { return 0 }

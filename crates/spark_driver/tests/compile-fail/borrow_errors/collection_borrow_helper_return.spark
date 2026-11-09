@@ -1,0 +1,11 @@
+fn copyEntries(source: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
+    copied: Map[String, Ref[Int]] = source
+    return copied
+}
+fn produce(): Map[String, Ref[Int]] {
+    local: Int = 7
+    entries: Map[String, Ref[Int]] = {"one": local}
+    view: Ref[Map[String, Ref[Int]]] = entries
+    return copyEntries(view)
+}
+fn main(): Int { return 0 }

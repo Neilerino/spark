@@ -10,7 +10,7 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
-use spark_mir::{Local, MirFunction, Operand, Place, Projection, Rvalue, Statement, Terminator};
+use spark_mir::{Local, MirFunction, Operand, Place, Projection, Statement, Terminator};
 use spark_types::{Ty, TypeId, TypeTable};
 
 use crate::errors;
@@ -29,7 +29,6 @@ pub fn check_borrows(
     check_use_after_move(func, facts, diagnostics);
     check_borrow_of_moved(func, facts, diagnostics);
     check_mutation_through_immutable_ref(func, facts, diagnostics);
-    check_dangling_returns(func, facts, diagnostics);
     check_aliasing_call_args(func, facts, diagnostics);
 }
 
@@ -55,7 +54,7 @@ pub fn check_indexed_write_storage(
     }
 }
 
-fn can_carry_borrowed_reference(
+pub(crate) fn can_carry_borrowed_reference(
     ty: TypeId,
     table: &TypeTable,
     seen: &mut FxHashSet<TypeId>,
@@ -465,71 +464,6 @@ fn check_mutation_through_immutable_ref(
     }
 }
 
-/// Checks for returning a reference to a local variable.
-///
-/// A function that returns `Ref[T]` must not return a reference to a local
-/// variable, because the local's storage is freed when the function returns.
-/// References to function parameters are allowed (they outlive the callee).
-fn check_dangling_returns(
-    func: &MirFunction,
-    facts: &BorrowFacts,
-    diagnostics: &mut spark_diagnostics::Diagnostics,
-) {
-    if facts.loans.is_empty() {
-        return;
-    }
-
-    // Build a reverse assignment chain: destination -> [sources].
-    // Tracks `dest = Copy(src)` and `dest = Move(src)` assignments.
-    // A destination may have multiple sources (different return paths).
-    let mut sources_of: FxHashMap<Local, Vec<Local>> = FxHashMap::default();
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            if let Statement::Assign { place, rvalue, .. } = stmt {
-                if place.projections.is_empty() {
-                    if let Rvalue::Use(Operand::Copy(src) | Operand::Move(src)) = rvalue {
-                        if src.projections.is_empty() {
-                            sources_of.entry(place.local).or_default().push(src.local);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Build loan lookup by ref_local.
-    let loan_by_ref_local: FxHashMap<Local, &Loan> = facts
-        .loans
-        .iter()
-        .map(|loan| (loan.ref_local, loan))
-        .collect();
-
-    // Trace backwards from _0 (return place) through the assignment chain.
-    // If we find a local that holds a loan borrowing a non-parameter local,
-    // that's a dangling reference.
-    let mut worklist = vec![Local::RETURN_PLACE];
-    let mut visited = FxHashSet::default();
-    while let Some(current) = worklist.pop() {
-        if !visited.insert(current) {
-            continue;
-        }
-        if let Some(loan) = loan_by_ref_local.get(&current) {
-            let borrowed_local = loan.place.local;
-            // Parameters are locals 1..=param_count. Locals above that are
-            // function-scoped variables whose storage dies on return.
-            if borrowed_local.0 > func.param_count && borrowed_local != Local::RETURN_PLACE {
-                errors::emit_dangling_return(diagnostics, loan, func);
-                return;
-            }
-        }
-        if let Some(srcs) = sources_of.get(&current) {
-            for &src in srcs {
-                worklist.push(src);
-            }
-        }
-    }
-}
-
 /// Checks for aliasing mutable references at call sites.
 ///
 /// If the same mutable-ref-holding local appears in two or more argument
@@ -738,6 +672,7 @@ mod tests {
         let liveness = compute_liveness(func, &facts);
         let regions = compute_regions(&facts, &liveness);
         let mut diagnostics = Diagnostics::new();
+        crate::provenance::check_returns(func, &TypeTable::new(), &facts, &mut diagnostics);
         check_borrows(func, &facts, &regions, &mut diagnostics);
         diagnostics
     }
@@ -1940,9 +1875,9 @@ mod tests {
     }
 
     #[test]
-    fn return_ref_to_param_ok() {
+    fn return_ref_to_by_value_parameter_error() {
         // fn f(x: Int): Ref[Int] { _2 = Ref(_1); _0 = Copy(_2); return }
-        // Returning a reference to parameter `x` — should be allowed.
+        // The parameter slot belongs to this activation, just like a local.
         let func = MirFunction {
             def_id: DefId::new(0),
             param_count: 1,
@@ -1999,8 +1934,8 @@ mod tests {
 
         let diags = check_func(&func);
         assert!(
-            !diags.has_errors(),
-            "Returning a reference to a parameter should be allowed: {:?}",
+            diags.has_errors(),
+            "Returning a reference to a by-value parameter must fail: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }

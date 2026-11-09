@@ -1,0 +1,49 @@
+fn forwardA(input: Ref[Int], depth: Int): Map[String, Ref[Int]] {
+    if depth == 0 { return {"one": input} }
+    return forwardB(input, depth - 1)
+}
+fn forwardB(input: Ref[Int], depth: Int): Map[String, Ref[Int]] {
+    return forwardA(input, depth)
+}
+fn copyEntries(source: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
+    copied: Map[String, Ref[Int]] = source
+    return copied
+}
+fn forwardedCopy(input: Ref[Int]): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]] = {"one": input}
+    view: Ref[Map[String, Ref[Int]]] = entries
+    return copyEntries(view)
+}
+fn replaced(input: Ref[Int]): Map[String, Ref[Int]] {
+    value: Int = 11
+    entries: Map[String, Ref[Int]]! = {"one": value}
+    entries = {"one": input}
+    return entries
+}
+fn snapshot(): Int {
+    value: Int = 7
+    entries: Map[String, Ref[Int]] = {"one": value}
+    return entries["one"] to { found: Ref[Int] -> found + 0, Null -> 99 }
+}
+fn forward(value: Ref[Int]): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]] = {"one": value}
+    return entries
+}
+fn main(): Int {
+    value: Int = 7
+    explicit: Ref[Int] = value
+    implicitEntries: Map[String, Ref[Int]] = {"one": value}
+    explicitEntries: Map[String, Ref[Int]] = {"one": explicit}
+    forwarded: Map[String, Ref[Int]] = forward(explicit)
+    implicitEntries["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    explicitEntries["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    forwarded["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    overwritten: Map[String, Ref[Int]] = replaced(explicit)
+    overwritten["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    print(snapshot())
+    copied: Map[String, Ref[Int]] = forwardedCopy(explicit)
+    copied["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    recursive: Map[String, Ref[Int]] = forwardA(explicit, 2)
+    recursive["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}
