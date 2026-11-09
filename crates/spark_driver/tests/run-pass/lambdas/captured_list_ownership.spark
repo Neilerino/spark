@@ -1,0 +1,37 @@
+link "union_probe"
+extern fn probe_list_rc(values: Ref[List[String]]): Int
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn main(): Int {
+    suffix: String = "owned"
+    text: String = "text-{suffix}"
+    items: List[String]! = [text]
+    replacement: List[String] = [text, text]
+    append: (): Void = fn(): Void {
+        items.append(text)
+        print(items.len())
+    }
+    remove: (): Void = fn(): Void {
+        items.remove(0)
+        print(items.len())
+    }
+    replace: (Bool): Void = fn(early: Bool): Void {
+        items = replacement
+        if early { return }
+        print(items.len())
+    }
+    itemsBefore: Int = probe_list_rc(items)
+    replacementBefore: Int = probe_list_rc(replacement)
+    textBefore: Int = probe_string_rc(text)
+    append()
+    remove()
+    replace(false)
+    append()
+    remove()
+    replace(true)
+    print(items.len())
+    print(probe_list_rc(items) - itemsBefore)
+    print(probe_list_rc(replacement) - replacementBefore)
+    print(probe_string_rc(text) - textBefore)
+    return 0
+}

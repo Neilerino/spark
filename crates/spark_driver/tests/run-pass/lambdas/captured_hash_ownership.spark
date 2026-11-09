@@ -1,0 +1,78 @@
+link "union_probe"
+extern fn probe_map_rc(value: Ref[Map[String, String]]): Int
+extern fn probe_set_rc(value: Ref[Set[String]]): Int
+extern fn probe_string_rc(value: Ref[String]): Int
+
+fn copiedKey(value: String): String {
+    return value
+}
+fn main(): Int {
+    suffix: String = "owned"
+    text: String = "text-{suffix}"
+    other: String = "other-{suffix}"
+    values: Map[String, String]! = {text: text}
+    replacementMap: Map[String, String] = {text: other}
+    seen: Set[String]! = {text}
+    replacementSet: Set[String] = {other}
+    removeMap: (): Void = fn(): Void {
+        values.remove(text)
+        print(values.len())
+    }
+    removeTemporaryMap: (): Void = fn(): Void {
+        values.remove(copiedKey(text))
+        print(values.len())
+    }
+    exitDuringKey: (): Void = fn(): Void {
+        values.remove(({ return }) as String)
+        print(99)
+    }
+    replaceMap: (Bool): Void = fn(early: Bool): Void {
+        values = replacementMap
+        if early { return }
+        print((values[text] ?? "missing") == other)
+    }
+    addSet: (): Void = fn(): Void {
+        seen.add(other)
+        print(seen.len())
+    }
+    removeSet: (): Void = fn(): Void {
+        seen.remove(text)
+        print(seen.len())
+    }
+    replaceSet: (Bool): Void = fn(early: Bool): Void {
+        seen = replacementSet
+        if early { return }
+        print(seen.contains(other))
+    }
+    valuesBefore: Int = probe_map_rc(values)
+    replacementMapBefore: Int = probe_map_rc(replacementMap)
+    seenBefore: Int = probe_set_rc(seen)
+    replacementSetBefore: Int = probe_set_rc(replacementSet)
+    textBefore: Int = probe_string_rc(text)
+    otherBefore: Int = probe_string_rc(other)
+    removeMap()
+    replaceMap(false)
+    addSet()
+    removeSet()
+    replaceSet(false)
+    removeMap()
+    replaceMap(true)
+    addSet()
+    removeSet()
+    replaceSet(true)
+    removeTemporaryMap()
+    removeTemporaryMap()
+    exitDuringKey()
+    exitDuringKey()
+    print(values.len())
+    print((values[text] ?? "missing") == text)
+    print(seen.len())
+    print(seen.contains(other))
+    print(probe_map_rc(values) - valuesBefore)
+    print(probe_map_rc(replacementMap) - replacementMapBefore)
+    print(probe_set_rc(seen) - seenBefore)
+    print(probe_set_rc(replacementSet) - replacementSetBefore)
+    print(probe_string_rc(text) - textBefore)
+    print(probe_string_rc(other) - otherBefore)
+    return 0
+}
