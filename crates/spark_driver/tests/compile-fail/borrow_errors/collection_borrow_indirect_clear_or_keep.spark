@@ -1,0 +1,18 @@
+fn clear(out: Ref[Map[String, Ref[List[Int]]]]!): Void {
+    empty: Map[String, Ref[List[Int]]] = {}
+    out = empty
+}
+fn keep(out: Ref[Map[String, Ref[List[Int]]]]!): Void {}
+fn exercise(flag: Bool): Void {
+    source: List[Int]! = [1]
+    borrowed: Ref[List[Int]] = source
+    entries: Map[String, Ref[List[Int]]]! = {"one": borrowed}
+    source[0] = 9
+    writer: (Ref[Map[String, Ref[List[Int]]]]!): Void = if flag { clear } else { keep }
+    writer(entries)
+    entries["one"] to { found: Ref[List[Int]] -> print(found.len()), Null -> print(0) }
+}
+fn main(): Int {
+    exercise(false)
+    return 0
+}
