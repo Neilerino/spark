@@ -1,0 +1,5 @@
+fn main(): Int {
+    narrow: Int8 = 1
+    values: List[Int] = [2, narrow]
+    return 0
+}

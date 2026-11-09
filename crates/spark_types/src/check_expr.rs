@@ -307,27 +307,7 @@ fn check_expr_inner(
         }
 
         // === Collections ===
-        ExprKind::List(elems) => {
-            let expected_elem = extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
-                Ty::List(elem) => Some(*elem),
-                _ => None,
-            });
-
-            if elems.is_empty() {
-                ctx.table
-                    .intern(Ty::List(expected_elem.unwrap_or(TypeId::ERROR)))
-            } else {
-                let first_ty = check_expr_expected(&elems[0], ctx, current_fn_ret, expected_elem);
-                for elem in &elems[1..] {
-                    let _ = check_expr_expected(elem, ctx, current_fn_ret, expected_elem);
-                }
-                ctx.table.intern(Ty::List(resolve_with_expected(
-                    first_ty,
-                    expected_elem,
-                    ctx.table,
-                )))
-            }
-        }
+        ExprKind::List(elems) => check_list_literal(elems, ctx, current_fn_ret, expected_ty),
 
         ExprKind::Map(entries) => check_map_literal(entries, ctx, current_fn_ret, expected_ty),
 
@@ -764,6 +744,62 @@ fn check_index_access(
     }
 }
 
+// TAG [SPARK-112]
+fn check_list_literal(
+    elements: &[Expr],
+    ctx: &mut TypeCheckCtx<'_>,
+    current_fn_ret: Option<TypeId>,
+    expected_ty: Option<TypeId>,
+) -> TypeId {
+    let mut slot = extract_expected_elem(expected_ty, ctx.table, |ty| match ty {
+        Ty::List(element) => Some(*element),
+        _ => None,
+    });
+    let mut valid = true;
+    for element in elements {
+        let actual = check_expr_expected(element, ctx, current_fn_ret, slot);
+        if matches!(ctx.table.resolve(actual), Ty::Never) {
+            continue;
+        }
+        let expected = *slot.get_or_insert_with(|| strip_mutable(actual, ctx.table));
+        valid &= check_collection_value(
+            actual,
+            expected,
+            element.span,
+            "list element type mismatch",
+            ctx,
+        );
+    }
+    if valid {
+        ctx.table.intern(Ty::List(slot.unwrap_or(TypeId::ERROR)))
+    } else {
+        TypeId::ERROR
+    }
+}
+
+fn check_collection_value(
+    actual: TypeId,
+    slot: TypeId,
+    span: Span,
+    message: &str,
+    ctx: &mut TypeCheckCtx<'_>,
+) -> bool {
+    if actual.is_error() || slot.is_error() {
+        return false;
+    }
+    if collection_value_coercion(actual, slot, ctx.table).is_some() {
+        return true;
+    }
+    let expected = type_name(slot, ctx.table, ctx.definitions);
+    let actual = type_name(actual, ctx.table, ctx.definitions);
+    ctx.diagnostics
+        .push(Diagnostic::error(message).with_label(Label::primary(
+            span,
+            format!("expected `{expected}`, found `{actual}`"),
+        )));
+    false
+}
+
 fn check_map_literal(
     entries: &[spark_ast::MapEntry],
     ctx: &mut TypeCheckCtx<'_>,
@@ -791,20 +827,13 @@ fn check_map_literal(
             continue;
         }
         let slot = *value_slot.get_or_insert(value);
-        if value.is_error() || slot.is_error() {
-            valid = false;
-        } else if collection_value_coercion(value, slot, ctx.table).is_none() {
-            let expected = type_name(slot, ctx.table, ctx.definitions);
-            let actual = type_name(value, ctx.table, ctx.definitions);
-            ctx.diagnostics
-                .push(
-                    Diagnostic::error("map value type mismatch").with_label(Label::primary(
-                        entry.value.span,
-                        format!("expected `{expected}`, found `{actual}`"),
-                    )),
-                );
-            valid = false;
-        }
+        valid &= check_collection_value(
+            value,
+            slot,
+            entry.value.span,
+            "map value type mismatch",
+            ctx,
+        );
     }
 
     let key = key_slot.unwrap_or(TypeId::ERROR);
@@ -2024,14 +2053,6 @@ fn collection_slot_matches(actual: TypeId, expected: TypeId, table: &TypeTable) 
     actual.is_error()
         || expected.is_error()
         || strip_mutable(actual, table) == strip_mutable(expected, table)
-}
-
-/// If `expected` is `Some` and compatible with `inferred`, use `expected`; otherwise use `inferred`.
-fn resolve_with_expected(inferred: TypeId, expected: Option<TypeId>, table: &TypeTable) -> TypeId {
-    match expected {
-        Some(exp) if is_compatible(inferred, exp, table) => exp,
-        _ => inferred,
-    }
 }
 
 /// Extracts an inner type from an expected collection type after stripping mutability.

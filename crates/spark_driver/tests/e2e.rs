@@ -1390,6 +1390,44 @@ fn map_lookup_retags_nested_coalesced_payloads() {
 }
 
 #[test]
+fn list_literal_preserves_declared_slot_layouts() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/collections/list_literal_slots.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout, "42\n-1\n7\n4\n1\n-2\n8\n10\n11\n11\n42\n1\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn list_literal_rejects_incompatible_elements() {
+    for fixture in [
+        "list_literal_wrong_first",
+        "list_literal_wrong_later",
+        "list_literal_inferred",
+        "list_literal_width",
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result =
+                run_spark_with_args(&format!("compile-fail/type_errors/{fixture}.spark"), args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains("list element type mismatch"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+            assert!(
+                !result.stderr.contains("codegen error"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
 fn map_literal_empty_uses_expected_type() {
     let fixture = "run-pass/collections/map_literal_empty.spark";
     for args in [&[][..], &["--no-opt"][..]] {
