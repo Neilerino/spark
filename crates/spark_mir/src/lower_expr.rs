@@ -714,7 +714,14 @@ fn lower_call<'a>(
     let mut arg_operands = Vec::with_capacity(args.size_hint().0);
     for (index, arg) in args.enumerate() {
         let local = lower_expr(arg, fb, mir, type_table, defs);
-        if tagged_params.is_some() && fb.is_terminated() {
+        if tagged_params.is_some()
+            && (fb.is_terminated() || matches!(type_table.resolve(arg.ty), Ty::Never))
+        {
+            if !fb.is_terminated() {
+                fb.terminate(Terminator::Goto {
+                    target: fb.current_block(),
+                });
+            }
             fb.pop_finished_scope();
             return void_temp(fb, expr);
         }

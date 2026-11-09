@@ -1777,6 +1777,33 @@ fn tagged_call_arguments_diagnose_unrepresentable_conversions() {
 }
 
 #[test]
+fn tagged_call_arguments_allow_diverging_expressions() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/build-pass/tagged_call_diverging_argument.spark");
+    let dir = tempfile::tempdir().expect("create build output directory");
+    let spark = Path::new(env!("CARGO_BIN_EXE_spark"));
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = Command::new(spark)
+            .args(["build", "--single-file"])
+            .args(args)
+            .arg(&fixture)
+            .arg("-o")
+            .arg(dir.path().join("diverging"))
+            .env(
+                "SPARK_RUNTIME_DIR",
+                spark.parent().expect("driver directory"),
+            )
+            .output()
+            .expect("build diverging argument fixture");
+        assert!(
+            result.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+#[test]
 fn to_union_inside_each() {
     assert_output("run-pass/to/to_union_inside_each.spark", "test\nhello");
 }
