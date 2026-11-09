@@ -2363,6 +2363,188 @@ fn collection_borrow_widened_effects_preserve_forwarding_snapshots_and_residual_
 }
 
 #[test]
+fn collection_borrow_families_preserve_disjoint_bridges_and_source_demand() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, output) in [
+            (
+                "run-pass/collections/collection_borrow_family_bridge_disjoint.spark",
+                "1\n9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_family_bridge_incoming.spark",
+                "1\n7\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_family_write_cleared_demand.spark",
+                "0\n9\n",
+            ),
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, output, "{fixture} {args:?}");
+        }
+        for (fixture, message) in [
+            (
+                "compile-fail/borrow_errors/collection_borrow_family_bridge_escape.spark",
+                "returned value contains a reference to local storage",
+            ),
+            (
+                "compile-fail/borrow_errors/collection_borrow_family_write_active_demand.spark",
+                "cannot write to a borrowed collection",
+            ),
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains(message),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_families_preserve_generic_map_and_recursive_effects() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/collections/collection_borrow_family_generic_disjoint.spark",
+            "run-pass/collections/collection_borrow_family_map_value_disjoint.spark",
+            "run-pass/collections/collection_borrow_family_recursive_disjoint.spark",
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, "9\n", "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/collection_borrow_family_generic_escape.spark",
+            "compile-fail/borrow_errors/collection_borrow_family_map_value_escape.spark",
+            "compile-fail/borrow_errors/collection_borrow_family_recursive_escape.spark",
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result
+                    .stderr
+                    .contains("returned value contains a reference to local storage"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_family_loops_keep_distinct_targets_after_one_root_is_cleared() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, output) in [
+            (
+                "run-pass/collections/collection_borrow_family_loop_clear.spark",
+                "0\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_family_loop_other_incoming.spark",
+                "7\n",
+            ),
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, output, "{fixture} {args:?}");
+        }
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_family_loop_other_escape.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 1,
+            "uncleared loop target {args:?}: {}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("returned value contains a reference to local storage"),
+            "uncleared loop target {args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_recursive_tails_preserve_family_targets() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, output) in [
+            (
+                "run-pass/collections/collection_borrow_family_tail_disjoint.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_family_tail_shared_incoming.spark",
+                "7\n",
+            ),
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, output, "{fixture} {args:?}");
+        }
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_family_tail_shared_escape.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 1,
+            "recursive tail escape {args:?}: {}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("returned value contains a reference to local storage"),
+            "recursive tail escape {args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_nonreturning_family_calls_preserve_prefix_reads() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let invalid = build_spark_with_args("compile-fail/borrow_errors/collection_borrow_family_nonreturn_prefix_invalid_owner.spark", args);
+        assert_eq!(
+            invalid.exit_code, 1,
+            "invalidated prefix owner {args:?}: {}",
+            invalid.stderr
+        );
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "invalidated prefix owner {args:?}: {}",
+            invalid.stderr
+        );
+        let live = build_spark_with_args(
+            "run-pass/collections/collection_borrow_family_nonreturn_prefix_live_owner.spark",
+            args,
+        );
+        assert_eq!(
+            live.exit_code, 0,
+            "live nonreturning owner {args:?}: {}",
+            live.stderr
+        );
+        let recursive = run_spark_with_args(
+            "run-pass/collections/collection_borrow_family_recursive_prefix_live_owner.spark",
+            args,
+        );
+        assert_eq!(
+            recursive.exit_code, 0,
+            "live recursive owner {args:?}: {}",
+            recursive.stderr
+        );
+        assert_eq!(recursive.stdout, "5\n5\n", "live recursive owner {args:?}");
+    }
+}
+
+#[test]
 fn collection_borrow_loops_preserve_occurrence_lifetimes() {
     for args in [&[][..], &["--no-opt"][..]] {
         let negative = build_spark_with_args(
