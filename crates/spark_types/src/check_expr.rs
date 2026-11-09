@@ -1922,8 +1922,8 @@ pub fn cast_kind(
     }
     let source = table.resolve(actual);
     let destination = table.resolve(target);
-    if crate::check_decl::type_involves_param(actual, table)
-        || crate::check_decl::type_involves_param(target, table)
+    if crate::substitute::type_involves_param(actual, table)
+        || crate::substitute::type_involves_param(target, table)
     {
         return Ok(CastKind::Deferred);
     }

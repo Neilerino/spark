@@ -1,0 +1,32 @@
+fn convert[T](value: T): Int {
+    return value as Int
+}
+fn outer[T](value: T): Int {
+    return convert(value)
+}
+fn recursive[T](value: T, count: Int): Int {
+    if count == 0 { return convert(value) }
+    return recursive(value, count - 1)
+}
+fn closure[T](value: T): Int {
+    callback: (T): Int = (item: T): Int { return item as Int }
+    return callback(value)
+}
+fn captured[T](value: T): Int {
+    callback: (): Int = fn(): Int { return convert(value) }
+    return callback()
+}
+fn finite[T](value: T, remaining: Int): Int {
+    if remaining == 0 { return 42 }
+    return finite(1, 0)
+}
+fn main(): Int {
+    print(outer(3.75))
+    print(outer(7))
+    print(recursive(9.5, 2))
+    print(closure(6.5))
+    print(closure(8))
+    print(captured(4.75))
+    print(finite("start", 1))
+    return 0
+}

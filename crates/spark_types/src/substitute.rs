@@ -12,6 +12,33 @@ use crate::ty::{Ty, TypeId};
 /// A mapping from generic parameter `DefId`s to concrete `TypeId`s.
 pub type SubstMap = FxHashMap<DefId, TypeId>;
 
+/// Returns `true` if the type contains any `Ty::Param` (generic type parameter).
+#[must_use]
+pub fn type_involves_param(ty: TypeId, table: &TypeTable) -> bool {
+    if ty.is_error() {
+        return false;
+    }
+    match table.resolve(ty) {
+        Ty::Param(_) => true,
+        Ty::Optional(inner)
+        | Ty::Mutable(inner)
+        | Ty::List(inner)
+        | Ty::Set(inner)
+        | Ty::Future { inner }
+        | Ty::Channel { inner }
+        | Ty::Ref { inner, .. } => type_involves_param(*inner, table),
+        Ty::Map(k, v) => type_involves_param(*k, table) || type_involves_param(*v, table),
+        Ty::Tuple(elems) => elems.iter().any(|e| type_involves_param(*e, table)),
+        Ty::Union(members) => members.iter().any(|m| type_involves_param(*m, table)),
+        Ty::Function { params, ret, .. } => {
+            params.iter().any(|p| type_involves_param(*p, table))
+                || type_involves_param(*ret, table)
+        }
+        Ty::Applied { args, .. } => args.iter().any(|a| type_involves_param(*a, table)),
+        _ => false,
+    }
+}
+
 /// Builds a substitution map from parallel slices of param `DefId`s and arg `TypeId`s.
 ///
 /// If lengths differ, only the minimum-length prefix is mapped.

@@ -1,0 +1,9 @@
+fn convert[T](value: T): Int {
+    return value as Int
+}
+fn outer[T](value: T): Int {
+    return convert(value)
+}
+fn main(): Int {
+    return outer("unsafe")
+}
