@@ -673,21 +673,65 @@ fn lower_call(
     type_table: &TypeTable,
     defs: &DefinitionTable,
 ) -> Local {
-    let builtin_sort = matches!(callee.kind, HirExprKind::Local(def) if defs.get(def).is_some_and(
-        |info| info.kind == DefinitionKind::BuiltinFunction && info.name == kw::SORT
-    ));
+    let definition = match callee.kind {
+        HirExprKind::Local(def) => defs.get(def),
+        _ => None,
+    };
+    let builtin_sort = definition
+        .is_some_and(|info| info.kind == DefinitionKind::BuiltinFunction && info.name == kw::SORT);
+    let spark_call = !definition.is_some_and(|info| {
+        matches!(
+            info.kind,
+            DefinitionKind::BuiltinFunction | DefinitionKind::ExternFunction
+        )
+    });
+    let tagged_params = match type_table.resolve(unwrap_type_wrappers(callee.ty, type_table)) {
+        Ty::Function { params, .. }
+            if spark_call
+                && params.iter().any(|param| {
+                    matches!(
+                        type_table.resolve(unwrap_type_wrappers(*param, type_table)),
+                        Ty::Union(_) | Ty::Optional(_)
+                    )
+                }) =>
+        {
+            Some(params.as_slice())
+        }
+        _ => None,
+    };
     let func_local = lower_expr(callee, fb, mir, type_table, defs);
-    let arg_operands: Vec<Operand> = args
-        .iter()
-        .map(|a| {
-            let local = lower_expr(a, fb, mir, type_table, defs);
-            if builtin_sort && !fb.is_def_local(local) && !fb.owns_local(local) {
-                Operand::Move(Place::from_local(local))
-            } else {
-                owned_aggregate_operand(local, fb, type_table)
-            }
-        })
-        .collect();
+    if tagged_params.is_some() {
+        fb.push_scope();
+    }
+    let mut arg_operands = Vec::with_capacity(args.len());
+    for (index, arg) in args.iter().enumerate() {
+        let local = lower_expr(arg, fb, mir, type_table, defs);
+        if tagged_params.is_some() && fb.is_terminated() {
+            fb.pop_finished_scope();
+            return void_temp(fb, expr);
+        }
+        let injection = tagged_params
+            .and_then(|params| params.get(index))
+            .and_then(|&param| {
+                match collection_value_coercion(fb.local_type(local), param, type_table) {
+                    Some(CollectionValueCoercion::Tagged(member)) => Some((param, member)),
+                    _ => None,
+                }
+            });
+        let local = if let Some((param, member)) = injection {
+            // NOTE [SPARK-111] Builtins use operand types directly. Spark
+            // callees read tagged storage in their declared parameter layout.
+            stage_value(fb, local, param, Some(member), arg.span, type_table)
+        } else {
+            local
+        };
+        let operand = if builtin_sort && !fb.is_def_local(local) && !fb.owns_local(local) {
+            Operand::Move(Place::from_local(local))
+        } else {
+            owned_aggregate_operand(local, fb, type_table)
+        };
+        arg_operands.push(operand);
+    }
 
     // Async functions execute synchronously when called directly (not via spawn).
     // The type system says they return Future[T], but at runtime they return T.
@@ -710,6 +754,9 @@ fn lower_call(
     });
 
     fb.switch_to(cont);
+    if tagged_params.is_some() {
+        fb.pop_scope_drops(None, expr.span);
+    }
     dest
 }
 
@@ -941,29 +988,44 @@ pub(crate) fn stage_collection_value(
     span: spark_span::Span,
     type_table: &TypeTable,
 ) -> Option<Local> {
+    let member = match collection_value_coercion(fb.local_type(source), slot_ty, type_table)? {
+        CollectionValueCoercion::Tagged(member) => Some(member),
+        CollectionValueCoercion::Identity => None,
+        CollectionValueCoercion::Reference => return None,
+    };
+    Some(stage_value(fb, source, slot_ty, member, span, type_table))
+}
+
+fn stage_value(
+    fb: &mut FunctionBuilder,
+    source: Local,
+    slot_ty: TypeId,
+    member: Option<TypeId>,
+    span: spark_span::Span,
+    type_table: &TypeTable,
+) -> Local {
     let place = Place::from_local(source);
     let operand = if fb.is_def_local(source) || fb.owns_local(source) {
         Operand::Copy(place)
     } else {
         Operand::Move(place)
     };
-    let rvalue = match collection_value_coercion(fb.local_type(source), slot_ty, type_table)? {
-        CollectionValueCoercion::Tagged(member_ty) => Rvalue::Aggregate(
+    let rvalue = match member {
+        Some(member_ty) => Rvalue::Aggregate(
             AggregateKind::Union {
                 union_ty: unwrap_type_wrappers(slot_ty, type_table),
                 member_ty,
             },
             vec![operand],
         ),
-        CollectionValueCoercion::Identity => Rvalue::Use(operand),
-        CollectionValueCoercion::Reference => return None,
+        None => Rvalue::Use(operand),
     };
     let staged = fb.fresh_temp(slot_ty, span);
     fb.push_assign(Place::from_local(staged), rvalue, span);
     if spark_drop::needs_drop(slot_ty, type_table) {
         fb.register_drop(staged);
     }
-    Some(staged)
+    staged
 }
 
 fn owned_aggregate_operand(local: Local, fb: &FunctionBuilder, type_table: &TypeTable) -> Operand {

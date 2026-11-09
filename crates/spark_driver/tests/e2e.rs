@@ -1715,6 +1715,16 @@ fn to_take_string() {
 }
 
 #[test]
+fn tagged_call_arguments_match_the_declared_layout() {
+    let fixture = "run-pass/to/tagged_call_arguments.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(fixture, args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "absent\n42\ntext-owned\n7\n7\n13\n-1\n");
+    }
+}
+
+#[test]
 fn to_union_inside_each() {
     assert_output("run-pass/to/to_union_inside_each.spark", "test\nhello");
 }

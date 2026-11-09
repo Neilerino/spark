@@ -1,0 +1,29 @@
+fn identity(value: Int | String | Null): Int | String | Null {
+    return value
+}
+
+fn show(value: Int | String | Null): Void {
+    value to {
+        count: Int -> print(count),
+        text: String -> print(text),
+        Null -> print("absent")
+    }
+}
+
+fn showOptional(value: Int?): Void {
+    print(value ?? -1)
+}
+
+fn main(): Int {
+    missing: Int | String | Null = identity(Null)
+    show(missing)
+    show(42)
+    suffix: String = "owned"
+    show("text-{suffix}")
+    pretyped: Int | String | Null = 7
+    show(pretyped)
+    show(pretyped)
+    showOptional(13)
+    showOptional(Null)
+    return 0
+}
