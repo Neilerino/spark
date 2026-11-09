@@ -2024,6 +2024,132 @@ fn collection_borrow_alias_contexts_preserve_prefix_writes_and_distinct_diagnost
 }
 
 #[test]
+fn collection_borrow_nested_reference_inputs_preserve_alias_relations() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, output) in [
+            (
+                "run-pass/collections/collection_borrow_disjoint_holder_slot.spark",
+                "1\n9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_disjoint_pair_slots.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_disjoint_tuple_slots.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_disjoint_capture_slots.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_disjoint_nested_capture_slots.spark",
+                "9\n",
+            ),
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, output, "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/collection_borrow_unknown_alias_member_write.spark",
+            "compile-fail/borrow_errors/collection_borrow_shared_pair_slots.spark",
+            "compile-fail/borrow_errors/collection_borrow_shared_tuple_slots.spark",
+            "compile-fail/borrow_errors/collection_borrow_shared_capture_slots.spark",
+            "compile-fail/borrow_errors/collection_borrow_shared_nested_capture_slots.spark",
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result
+                    .stderr
+                    .contains("returned value contains a reference to local storage"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_nested_snapshots_separate_pointer_values_from_pointee_payloads() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_holder_snapshot_after_clear.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 0,
+            "holder snapshot {args:?}: {}",
+            result.stderr
+        );
+        assert_eq!(result.stdout, "0\n", "holder snapshot {args:?}");
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_map_snapshot_before_clear.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 1,
+            "map snapshot {args:?}: {}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("returned value contains a reference to local storage"),
+            "map snapshot {args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_rebinding_holder_preserves_old_pointee_storage() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_rebound_holder_keeps_old_map.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 1,
+            "retained old map {args:?}: {}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("stored value contains a reference to local storage"),
+            "retained old map {args:?}: {}",
+            result.stderr
+        );
+        let demand = build_spark_with_args("compile-fail/borrow_errors/collection_borrow_rebound_holder_preserves_old_demand.spark", args);
+        assert_eq!(
+            demand.exit_code, 1,
+            "old pointee demand {args:?}: {}",
+            demand.stderr
+        );
+        assert!(
+            demand
+                .stderr
+                .contains("cannot write to a borrowed collection"),
+            "old pointee demand {args:?}: {}",
+            demand.stderr
+        );
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_cleared_map_before_holder_rebind.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 0,
+            "cleared old map {args:?}: {}",
+            result.stderr
+        );
+        assert_eq!(result.stdout, "0\n", "cleared old map {args:?}");
+    }
+}
+
+#[test]
 fn collection_borrow_loops_preserve_occurrence_lifetimes() {
     for args in [&[][..], &["--no-opt"][..]] {
         let negative = build_spark_with_args(

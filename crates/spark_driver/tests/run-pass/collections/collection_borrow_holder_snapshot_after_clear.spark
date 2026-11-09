@@ -1,0 +1,22 @@
+struct Holder { target: Ref[Map[String, Ref[Int]]]! }
+fn work(holder: Ref[Holder]!, value: Ref[Int]): Holder {
+    next: Map[String, Ref[Int]] = {"one": value}
+    holder.target = next
+    snapshot: Holder = holder
+    empty: Map[String, Ref[Int]] = {}
+    holder.target = empty
+    return snapshot
+}
+fn produce(target: Ref[Map[String, Ref[Int]]]!, value: Int): Holder {
+    holder: Holder! = Holder { target: target }
+    view: Ref[Holder]! = holder
+    borrowed: Ref[Int] = value
+    return work(view, borrowed)
+}
+fn main(): Int {
+    entries: Map[String, Ref[Int]]! = {}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    result: Holder = produce(target, 7)
+    print(result.target.len())
+    return 0
+}

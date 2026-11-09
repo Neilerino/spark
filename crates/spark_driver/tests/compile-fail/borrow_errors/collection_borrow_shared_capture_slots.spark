@@ -1,0 +1,20 @@
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    left: Map[String, Ref[Int]]! = {"one": safe}
+    right: Map[String, Ref[Int]] = {"one": safe}
+    leftRef: Ref[Map[String, Ref[Int]]]! = left
+    rightRef: Ref[Map[String, Ref[Int]]] = leftRef
+    borrowed: Ref[Int] = value
+    next: Map[String, Ref[Int]] = {"one": borrowed}
+    write: (): Map[String, Ref[Int]] = fn(): Map[String, Ref[Int]] {
+        leftRef = next
+        return rightRef
+    }
+    return write()
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    result: Map[String, Ref[Int]] = produce(borrowed, 7)
+    result["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

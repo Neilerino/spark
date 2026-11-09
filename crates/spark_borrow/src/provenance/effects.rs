@@ -7,7 +7,7 @@ use spark_resolve::DefId;
 use spark_types::{TypeId, TypeTable};
 
 use super::address::{Dependency, Endpoint, Intent, Selector};
-use super::aliases::{Aliases, Key};
+use super::aliases::{Aliases, Key, Port};
 
 use super::{
     child_type, value, AccessKind, Accesses, Flow, Origin, Origins, Path, Point, Slot, State, Value,
@@ -17,9 +17,9 @@ use super::{
 pub(super) struct Summary {
     returned: Value,
     normal_return: bool,
-    memory: FxHashMap<Local, Value>,
-    modified: FxHashSet<Local>,
-    written_inputs: FxHashSet<Local>,
+    memory: FxHashMap<Port, Value>,
+    modified: FxHashSet<Port>,
+    written_inputs: FxHashSet<Port>,
     observed: Accesses,
 }
 
@@ -29,14 +29,14 @@ impl Summary {
         changed |= !self.normal_return && other.normal_return;
         self.normal_return |= other.normal_return;
         for (local, value) in &other.memory {
-            changed |= self.memory.entry(*local).or_default().join(value);
+            changed |= self.memory.entry(local.clone()).or_default().join(value);
         }
         let before = self.modified.len();
-        self.modified.extend(other.modified.iter().copied());
+        self.modified.extend(other.modified.iter().cloned());
         changed |= before != self.modified.len();
         let before = self.written_inputs.len();
         self.written_inputs
-            .extend(other.written_inputs.iter().copied());
+            .extend(other.written_inputs.iter().cloned());
         changed |= before != self.written_inputs.len();
         let before = self.observed.len();
         self.observed.extend(other.observed.iter().cloned());
@@ -66,7 +66,7 @@ struct CallActuals<'a> {
 }
 
 type Summaries = FxHashMap<Key, Summary>;
-type Ports = FxHashMap<DefId, Vec<Local>>;
+type Ports = FxHashMap<DefId, Vec<Port>>;
 
 pub fn analyze_program(
     mir: &Mir,
@@ -127,12 +127,7 @@ fn infer_summaries(
             flow.aliases = key.aliases.clone();
             flow.solve(&facts[&key.function]);
             let summary = flow.summary();
-            discover_ports(
-                function,
-                &summary,
-                table,
-                discovered.entry(key.function).or_default(),
-            );
+            flow.discover_ports(&summary, discovered.entry(key.function).or_default());
             changed |= next.entry(key.clone()).or_default().join(&summary);
             requests.extend(flow.requests);
         }
@@ -164,35 +159,29 @@ fn infer_summaries(
     }
 }
 
-fn discover_ports(
-    function: &MirFunction,
-    summary: &Summary,
-    table: &TypeTable,
-    ports: &mut Vec<Local>,
-) {
-    if summary.written_inputs.is_empty() {
-        return;
-    }
-    for access in &summary.observed {
-        let selector = match &access.target {
-            Dependency::InputValue(selector) | Dependency::Address(Endpoint::Input(selector)) => {
-                selector
-            }
-            Dependency::Address(Endpoint::Frame { .. }) => continue,
-        };
-        let root = function.locals[selector.input.index()].ty;
-        if let Some(inner) = child_type(root, &Slot::Deref, table) {
-            if !value::inputs(inner, selector.input, inner, &[], table).is_empty()
-                && !ports.contains(&selector.input)
-            {
-                ports.push(selector.input);
+impl Flow<'_> {
+    fn discover_ports(&self, summary: &Summary, ports: &mut Vec<Port>) {
+        if summary.written_inputs.is_empty() {
+            return;
+        }
+        for access in &summary.observed {
+            let selector = match &access.target {
+                Dependency::InputValue(selector)
+                | Dependency::Address(Endpoint::Input(selector)) => selector,
+                Dependency::Address(Endpoint::Frame { .. }) => continue,
+            };
+            if let Some(port) = Port::from_selector(selector, self.function, self.table) {
+                if port.exact()
+                    && !value::inputs(port.pointee, port.input, port.pointee, &[], self.table)
+                        .is_empty()
+                    && !ports.contains(&port)
+                {
+                    ports.push(port);
+                }
             }
         }
     }
-    ports.sort_unstable_by_key(|local| local.0);
-}
 
-impl Flow<'_> {
     pub(super) fn call_result(
         &mut self,
         func: &Operand,
@@ -225,15 +214,12 @@ impl Flow<'_> {
             let roots = &context.ports[def];
             let locations = roots
                 .iter()
-                .map(|local| {
-                    let input = Self::actual_input(*local, function, actuals);
-                    let inner =
-                        child_type(function.locals[local.index()].ty, &Slot::Deref, self.table)
-                            .unwrap_or(TypeId::ERROR);
-                    (*local, self.reference_locations(&input, inner))
+                .map(|port| {
+                    let input = self.port_input(port, function, actuals);
+                    (port.clone(), self.reference_locations(&input, port.pointee))
                 })
                 .collect();
-            for aliases in Aliases::call_variants(function, roots, self.table, &locations) {
+            for aliases in Aliases::call_variants(roots, self.table, &locations) {
                 let key = Key {
                     function: *def,
                     aliases,
@@ -265,20 +251,28 @@ impl Flow<'_> {
         function: &MirFunction,
         actuals: CallActuals<'_>,
     ) {
-        for local in &summary.written_inputs {
-            let root = function.locals[local.index()].ty;
-            let Some(inner) = child_type(root, &Slot::Deref, self.table) else {
-                continue;
-            };
-            let input = Self::actual_input(*local, function, actuals);
-            let targets = self.project_reference(&input, inner, &Vec::new());
+        for port in &summary.written_inputs {
+            let input = self.port_input(port, function, actuals);
+            let targets = self.project_reference(&input, port.pointee, &Vec::new());
             for endpoint in targets.endpoints {
                 if let Endpoint::Input(selector) = endpoint {
-                    self.written_inputs
-                        .insert(self.aliases.representative(selector.input));
+                    if let Some(port) = Port::from_selector(&selector, self.function, self.table) {
+                        self.written_inputs
+                            .insert(self.aliases.representative(&port));
+                    }
                 }
             }
         }
+    }
+
+    fn port_input(&self, port: &Port, function: &MirFunction, actuals: CallActuals<'_>) -> Value {
+        let source = Self::actual_input(port.input, function, actuals);
+        self.select_input(
+            source,
+            function.locals[port.input.index()].ty,
+            &port.selection,
+            actuals.state,
+        )
     }
 
     fn bind_outcome(
@@ -290,15 +284,14 @@ impl Flow<'_> {
     ) -> CallOutcome {
         let returned = self.bind(&summary.returned, function, actuals);
         let mut memory = Vec::new();
-        for local in &summary.modified {
-            let Some(snapshot) = summary.memory.get(local) else {
+        for port in &summary.modified {
+            let Some(snapshot) = summary.memory.get(port) else {
                 continue;
             };
-            let root = function.locals[local.index()].ty;
-            let inner = child_type(root, &Slot::Deref, self.table).unwrap_or(TypeId::ERROR);
+            let inner = port.pointee;
             let mut target = super::value::Leaf::default();
-            for member in aliases.members(*local) {
-                let input = Self::actual_input(member, function, actuals);
+            for member in aliases.members(port) {
+                let input = self.port_input(&member, function, actuals);
                 target.join(&self.project_reference(&input, inner, &Vec::new()));
             }
             let value = self.bind(
@@ -396,6 +389,11 @@ impl Flow<'_> {
                 &state.value(Local::RETURN_PLACE),
                 self.function.def_id,
             ));
+            let mut ports = self
+                .program
+                .map(|context| context.ports[&self.function.def_id].clone())
+                .unwrap_or_default();
+            ports.extend(self.written_inputs.iter().cloned());
             for declaration in self
                 .function
                 .locals
@@ -403,23 +401,23 @@ impl Flow<'_> {
                 .skip(1)
                 .take(self.function.param_count as usize + self.function.captures.len())
             {
-                let Some(inner) = child_type(declaration.ty, &Slot::Deref, self.table) else {
-                    continue;
-                };
-                let selector = Selector {
-                    input: declaration.local,
-                    selection: Vec::new(),
-                    intent: Intent::Value,
-                    expected: Some(declaration.ty),
-                };
-                let value = self.symbolic_pointee(&selector, inner, &state);
+                if let Some(inner) = child_type(declaration.ty, &Slot::Deref, self.table) {
+                    ports.push(Port::root(declaration.local, inner));
+                }
+            }
+            let ports: FxHashSet<_> = ports
+                .into_iter()
+                .map(|port| self.aliases.representative(&port))
+                .collect();
+            for port in ports {
+                let value = self.symbolic_pointee(&port.selector(), port.pointee, &state);
                 summary
                     .memory
-                    .entry(declaration.local)
+                    .entry(port.clone())
                     .or_default()
                     .join(&export_value(&value, self.function.def_id));
-                if state.external.contains_key(&declaration.local) {
-                    summary.modified.insert(declaration.local);
+                if state.modified_ports.contains(&port) {
+                    summary.modified.insert(port);
                 }
             }
         }

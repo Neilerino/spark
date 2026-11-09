@@ -6,8 +6,9 @@ use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_mir::BlockId;
 
 use super::address::{Dependency, Endpoint, Intent, Selector};
-use super::demand::{Bank, Coordinate};
-use super::{value, Flow, Path, Point, Slot, State, Value};
+use super::aliases::Port;
+use super::demand::{Coordinate, Storage};
+use super::{Flow, Path, Point, State, Value};
 
 impl Flow<'_> {
     pub(super) fn store_references(
@@ -18,6 +19,7 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         let mut destinations = rustc_hash::FxHashSet::default();
+        let mut exact = rustc_hash::FxHashSet::default();
         for endpoint in &metadata.endpoints {
             match endpoint {
                 Endpoint::Frame {
@@ -27,36 +29,44 @@ impl Flow<'_> {
                     ..
                 } if *function == self.function.def_id => {
                     destinations.insert(Coordinate {
-                        bank: Bank::Cell,
-                        local: *local,
+                        storage: Storage::Cell(*local),
                         path: location.clone(),
                     });
                 }
                 Endpoint::Input(selector) => {
-                    destinations.insert(Coordinate {
-                        bank: Bank::External,
-                        local: self.aliases.representative(selector.input),
-                        path: self.external_path(selector),
-                    });
+                    if let Some((port, path, whole)) = self.external_target(selector) {
+                        let coordinate = Coordinate {
+                            storage: Storage::External(port),
+                            path,
+                        };
+                        if whole {
+                            exact.insert(coordinate.clone());
+                        }
+                        destinations.insert(coordinate);
+                    }
                 }
                 Endpoint::Frame { .. } => {}
             }
         }
         let unique = destinations.len() == 1 && metadata.opaque.is_empty();
         for destination in destinations {
-            let Coordinate { bank, local, path } = &destination;
-            let root = self.function.locals[local.index()].ty;
+            let Coordinate { storage, path } = &destination;
+            let (root, mut current) = match storage {
+                Storage::External(port) => (
+                    port.pointee,
+                    state.external.get(port).cloned().unwrap_or_default(),
+                ),
+                Storage::Cell(local) | Storage::Logical(local) => {
+                    (self.function.locals[local.index()].ty, state.cell(*local))
+                }
+            };
             let strong = unique
-                && match bank {
-                    Bank::Cell => path.is_empty(),
-                    Bank::External => path == &[Slot::Deref],
-                    Bank::Logical => false,
+                && match storage {
+                    Storage::Cell(_) => path.is_empty(),
+                    Storage::External(_) => exact.contains(&destination),
+                    Storage::Logical(_) => false,
                 };
             self.record_path_store(point, destination.clone(), value, strong);
-            let mut current = match bank {
-                Bank::External => state.external.get(local).cloned().unwrap_or_default(),
-                Bank::Cell | Bank::Logical => state.cell(*local),
-            };
             if strong {
                 current
                     .leaves
@@ -67,25 +77,23 @@ impl Flow<'_> {
             }
             current.join(&value.prefixed_path(path, root, self.table));
             current.sources.clear();
-            match bank {
-                Bank::External => {
-                    self.written_inputs.insert(*local);
+            match storage {
+                Storage::External(port) => {
+                    self.written_inputs.insert(port.clone());
+                    state.modified_ports.insert(port.clone());
                     if strong {
-                        state.external_defined.retain(|(input, stored)| {
-                            input != local || !super::storage::prefix(path, stored)
-                        });
-                        state.external_defined.insert((*local, path.clone()));
+                        state.external_defined.insert(port.clone());
                     }
-                    state.external.insert(*local, current);
+                    state.external.insert(port.clone(), current);
                 }
-                Bank::Cell | Bank::Logical => {
+                Storage::Cell(local) | Storage::Logical(local) => {
                     State::set_value(&mut state.cells, *local, current.clone());
                     if state.live.contains(local) {
                         self.record_path_store(
                             point,
                             Coordinate {
-                                bank: Bank::Logical,
-                                ..destination.clone()
+                                storage: Storage::Logical(*local),
+                                path: path.clone(),
                             },
                             value,
                             strong,
@@ -102,36 +110,31 @@ impl Flow<'_> {
         }
     }
 
-    pub(super) fn external_path(&self, selector: &Selector) -> Path {
-        let mut path = selector.selection.clone();
-        path.push(Slot::Deref);
-        if let Intent::Address(payload) | Intent::Payload(payload) = &selector.intent {
-            path.extend(payload.projection.iter().cloned());
-        }
-        value::normalize(
-            self.function.locals[selector.input.index()].ty,
-            path,
-            self.table,
-        )
+    fn external_target(&self, selector: &Selector) -> Option<(Port, Path, bool)> {
+        let port = Port::from_selector(selector, self.function, self.table)?;
+        let representative = self.aliases.representative(&port);
+        let projection = match &selector.intent {
+            Intent::Address(payload) => payload.projection.clone(),
+            Intent::Value | Intent::Payload(_) => Vec::new(),
+        };
+        let whole = port.exact() && representative.exact() && projection.is_empty();
+        Some((representative, projection, whole))
     }
 
     pub(super) fn external_contents(&self, selector: &Selector, state: &State) -> (Value, bool) {
-        let path = self.external_path(selector);
-        let input = self.aliases.representative(selector.input);
+        let Some((port, path, _)) = self.external_target(selector) else {
+            return (Value::default(), false);
+        };
         let mut value = state
             .external
-            .get(&input)
+            .get(&port)
             .cloned()
             .unwrap_or_default()
-            .sourced(Bank::External, input);
+            .sourced(&Storage::External(port.clone()));
         for slot in &path {
             value = value.project(slot);
         }
-        let complete = state
-            .external_defined
-            .iter()
-            .any(|(local, prefix)| *local == input && super::storage::prefix(prefix, &path));
-        (value, complete)
+        (value, state.external_defined.contains(&port))
     }
 
     pub(super) fn report_external_stores(

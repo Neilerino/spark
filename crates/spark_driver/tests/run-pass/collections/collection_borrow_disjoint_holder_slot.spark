@@ -1,0 +1,27 @@
+struct Holder { target: Ref[Map[String, Ref[Int]]]! }
+fn write(out: Ref[Map[String, Ref[Int]]]!, reader: Ref[Map[String, Ref[Int]]], value: Ref[Int]): Void {
+    next: Map[String, Ref[Int]] = {"one": value}
+    out = next
+    print(reader.len())
+}
+fn relay(holder: Holder!, reader: Ref[Map[String, Ref[Int]]], value: Ref[Int]): Map[String, Ref[Int]] {
+    write(holder.target, reader, value)
+    snapshot: Map[String, Ref[Int]] = reader
+    return snapshot
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {"one": safe}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    separate: Map[String, Ref[Int]] = {"one": safe}
+    reader: Ref[Map[String, Ref[Int]]] = separate
+    holder: Holder! = Holder { target: target }
+    borrowed: Ref[Int] = value
+    return relay(holder, reader, borrowed)
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    entries: Map[String, Ref[Int]] = produce(borrowed, 7)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

@@ -1,0 +1,22 @@
+struct Pair { left: Ref[Map[String, Ref[Int]]]!, right: Ref[Map[String, Ref[Int]]] }
+fn writePair(pair: Pair!, value: Ref[Int]): Map[String, Ref[Int]] {
+    next: Map[String, Ref[Int]] = {"one": value}
+    pair.left = next
+    return pair.right
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    left: Map[String, Ref[Int]]! = {"one": safe}
+    right: Map[String, Ref[Int]] = {"one": safe}
+    leftRef: Ref[Map[String, Ref[Int]]]! = left
+    rightRef: Ref[Map[String, Ref[Int]]] = leftRef
+    pair: Pair! = Pair { left: leftRef, right: rightRef }
+    borrowed: Ref[Int] = value
+    return writePair(pair, borrowed)
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    result: Map[String, Ref[Int]] = produce(borrowed, 7)
+    result["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}
