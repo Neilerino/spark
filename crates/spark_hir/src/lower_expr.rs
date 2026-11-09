@@ -246,11 +246,26 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
                         ctx.table.resolve(strip_mutable_ty(recv_hir.ty, ctx.table)),
                         Ty::String
                     );
+                let method_params = ctx
+                    .table
+                    .get_method_resolution(expr.span)
+                    .and_then(|def| ctx.table.get_def_type(def))
+                    .map(|ty| extract_param_types(ty, ctx.table))
+                    .unwrap_or_default();
                 let args = args
                     .iter()
-                    .map(|a| {
+                    .enumerate()
+                    .map(|(index, a)| {
                         let arg = lower_expr(&a.value, ctx);
-                        if deref_string_args {
+                        // NOTE [SPARK-111] Tagged method parameters use the
+                        // referent just as ordinary by-value parameters do.
+                        let tagged = method_params.get(index + 1).is_some_and(|&param| {
+                            matches!(
+                                ctx.table.resolve(strip_mutable_ty(param, ctx.table)),
+                                Ty::Optional(_) | Ty::Union(_)
+                            )
+                        });
+                        if deref_string_args || tagged {
                             auto_deref_ref(arg, ctx.table)
                         } else {
                             arg

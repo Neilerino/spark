@@ -718,19 +718,30 @@ fn lower_call<'a>(
             fb.pop_finished_scope();
             return void_temp(fb, expr);
         }
-        let injection = tagged_params
+        let param = tagged_params
             .as_deref()
             .and_then(|params| params.get(index))
-            .and_then(|&param| {
-                match collection_value_coercion(fb.local_type(local), param, type_table) {
-                    Some(CollectionValueCoercion::Tagged(member)) => Some((param, member)),
-                    _ => None,
-                }
-            });
-        let local = if let Some((param, member)) = injection {
+            .copied()
+            .filter(|&param| tagged_argument_type(param, type_table).is_some());
+        let local = if let Some(param) = param {
             // NOTE [SPARK-111] Builtins use operand types directly. Spark
             // callees read tagged storage in their declared parameter layout.
-            stage_value(fb, local, param, Some(member), arg.span, type_table)
+            match plan_tagged_argument(fb.local_type(local), param, type_table) {
+                Ok(plan) => plan.stage(fb, local, arg.span, type_table),
+                Err(error) => {
+                    let expected = spark_types::display_type(param, type_table, defs);
+                    let found = spark_types::display_type(fb.local_type(local), type_table, defs);
+                    mir.diagnostics
+                        .push(
+                            Diagnostic::error(error.message()).with_label(Label::primary(
+                                arg.span,
+                                format!("expected `{expected}`, found `{found}`"),
+                            )),
+                        );
+                    fb.pop_scope_drops(None, expr.span);
+                    return void_temp(fb, expr);
+                }
+            }
         } else {
             local
         };
@@ -791,12 +802,108 @@ fn call_parameter_types(
 }
 
 fn takes_tagged_arguments(params: &[TypeId], table: &TypeTable) -> bool {
-    params.iter().any(|&param| {
-        matches!(
-            table.resolve(unwrap_type_wrappers(param, table)),
-            Ty::Union(_) | Ty::Optional(_)
-        )
-    })
+    params
+        .iter()
+        .any(|&param| tagged_argument_type(param, table).is_some())
+}
+
+fn tagged_argument_type(ty: TypeId, table: &TypeTable) -> Option<&Ty> {
+    match table.resolve(ty) {
+        Ty::Mutable(inner) => tagged_argument_type(*inner, table),
+        tagged @ (Ty::Union(_) | Ty::Optional(_)) => Some(tagged),
+        _ => None,
+    }
+}
+
+enum TaggedArgument {
+    Identity,
+    Inject {
+        target: TypeId,
+        member: TypeId,
+        inner: Option<Box<Self>>,
+    },
+}
+
+impl TaggedArgument {
+    fn stage(
+        self,
+        fb: &mut FunctionBuilder,
+        source: Local,
+        span: spark_span::Span,
+        table: &TypeTable,
+    ) -> Local {
+        match self {
+            Self::Identity => source,
+            Self::Inject {
+                target,
+                member,
+                inner,
+            } => {
+                let payload = inner.map_or(source, |inner| inner.stage(fb, source, span, table));
+                stage_value(fb, payload, target, Some(member), span, table)
+            }
+        }
+    }
+}
+
+enum TaggedArgumentError {
+    Unsupported,
+    Ambiguous,
+}
+
+impl TaggedArgumentError {
+    const fn message(self) -> &'static str {
+        match self {
+            Self::Unsupported => "cannot materialize tagged call argument",
+            Self::Ambiguous => "ambiguous tagged call argument",
+        }
+    }
+}
+
+fn plan_tagged_argument(
+    actual: TypeId,
+    expected: TypeId,
+    table: &TypeTable,
+) -> Result<TaggedArgument, TaggedArgumentError> {
+    use TaggedArgumentError::{Ambiguous, Unsupported};
+
+    match collection_value_coercion(actual, expected, table) {
+        Some(CollectionValueCoercion::Identity) => return Ok(TaggedArgument::Identity),
+        Some(CollectionValueCoercion::Tagged(member)) => {
+            return Ok(TaggedArgument::Inject {
+                target: expected,
+                member,
+                inner: None,
+            });
+        }
+        _ => {}
+    }
+    let members = match tagged_argument_type(expected, table) {
+        Some(Ty::Optional(inner)) => std::slice::from_ref(inner),
+        Some(Ty::Union(members)) => members,
+        _ => return Err(Unsupported),
+    };
+    let mut candidate = None;
+    for &member in members {
+        if tagged_argument_type(member, table).is_none() {
+            continue;
+        }
+        match plan_tagged_argument(actual, member, table) {
+            Err(Unsupported) => {}
+            Err(Ambiguous) => return Err(Ambiguous),
+            Ok(inner) => {
+                if candidate.is_some() {
+                    return Err(Ambiguous);
+                }
+                candidate = Some(TaggedArgument::Inject {
+                    target: expected,
+                    member,
+                    inner: Some(Box::new(inner)),
+                });
+            }
+        }
+    }
+    candidate.ok_or(Unsupported)
 }
 
 /// Lowers a method call. Method calls are desugared into regular calls

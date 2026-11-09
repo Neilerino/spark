@@ -17,6 +17,8 @@ fn pick[T](fallback: T, value: T?): T {
 fn main(): Int {
     f: Formatter = Formatter { offset: 3 }
     print(f.render(42))
+    text: Ref[String] = "owned"
+    print(f.render(text))
     print(pick(1, 2))
     print(pick(4, Null))
     return 0
