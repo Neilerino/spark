@@ -54,7 +54,12 @@ impl Flow<'_> {
                     .insert((point, drop, access.origin.clone()));
             }
         }
-        self.accesses.entry(point).or_default().extend(accesses);
+        self.transfers
+            .entry(point)
+            .or_default()
+            .seeds
+            .extend(accesses.demands.iter().cloned());
+        self.accesses.entry(point).or_default().merge(accesses);
     }
 
     fn expired_access(
@@ -334,7 +339,7 @@ mod tests {
                 functions: std::collections::HashMap::from([(function.def_id, function)]),
             };
             let mut diagnostics = Diagnostics::new();
-            super::super::check_program_returns(&mir, &table, &mut diagnostics);
+            super::super::analyze_program(&mir, &table, &mut diagnostics);
             assert_eq!(diagnostics.has_errors(), local_source);
             if local_source {
                 assert!(diagnostics.iter().any(|diagnostic| diagnostic.message
@@ -433,7 +438,7 @@ mod tests {
             functions: std::collections::HashMap::from([(function.def_id, function)]),
         };
         let mut diagnostics = Diagnostics::new();
-        super::super::check_program_returns(&mir, &table, &mut diagnostics);
+        super::super::analyze_program(&mir, &table, &mut diagnostics);
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message == "borrowed value does not live long enough"));

@@ -3,6 +3,7 @@ use spark_intern::Symbol;
 use spark_resolve::DefId;
 use spark_types::{Ty, TypeId, TypeTable};
 
+use super::demand::{Atom, Bank, Coordinate, Sources};
 use super::{Origin, Origins};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -25,6 +26,8 @@ pub(super) type Path = Vec<Slot>;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Value {
     pub slots: FxHashMap<Path, Origins>,
+    pub sources: Sources,
+    pub support: FxHashMap<(Path, Origin), Origins>,
     pub callees: FxHashMap<Path, FxHashSet<DefId>>,
 }
 
@@ -41,12 +44,61 @@ impl Value {
         }
     }
 
+    pub fn insert_sourced(&mut self, path: Path, origin: Origin, sources: super::demand::Demand) {
+        self.insert(path.clone(), std::iter::once(origin.clone()).collect());
+        if !sources.is_empty() {
+            self.sources
+                .entry((path, origin))
+                .or_default()
+                .extend(sources);
+        }
+    }
+
+    pub fn insert_addresses(&mut self, path: &[Slot], selected: &Self) {
+        let origins = selected.addresses();
+        self.insert(path.to_vec(), origins.clone());
+        for ((source_path, origin), parents) in &selected.support {
+            if origins.contains(origin) && (source_path.is_empty() || *source_path == [Slot::Tail])
+            {
+                self.support
+                    .entry((path.to_vec(), origin.clone()))
+                    .or_default()
+                    .extend(parents.iter().cloned());
+            }
+        }
+        for ((source_path, origin), sources) in &selected.sources {
+            if origins.contains(origin) && (source_path.is_empty() || *source_path == [Slot::Tail])
+            {
+                self.sources
+                    .entry((path.to_vec(), origin.clone()))
+                    .or_default()
+                    .extend(sources.iter().cloned());
+            }
+        }
+    }
+
+    pub fn all_sources(&self) -> super::demand::Demand {
+        self.sources.values().flatten().cloned().collect()
+    }
+
     pub fn join(&mut self, other: &Self) -> bool {
         let mut changed = false;
         for (path, origins) in &other.slots {
             let entry = self.slots.entry(path.clone()).or_default();
             let before = entry.len();
             entry.extend(origins.iter().cloned());
+            changed |= before != entry.len();
+        }
+        for (key, parents) in &other.support {
+            let entry = self.support.entry(key.clone()).or_default();
+            let before = entry.len();
+            entry.extend(parents.iter().cloned());
+            changed |= before != entry.len();
+        }
+        for (key, sources) in &other.sources {
+            let entry = self.sources.entry(key.clone()).or_default();
+            let before = entry.len();
+            entry.extend(sources.iter().cloned());
             changed |= before != entry.len();
         }
         for (path, callees) in &other.callees {
@@ -56,6 +108,26 @@ impl Value {
             changed |= before != entry.len();
         }
         changed
+    }
+
+    pub fn sourced(mut self, bank: Bank, local: spark_mir::Local) -> Self {
+        self.sources.clear();
+        for (path, origins) in &self.slots {
+            for origin in origins {
+                self.sources
+                    .entry((path.clone(), origin.clone()))
+                    .or_default()
+                    .insert(Atom {
+                        coordinate: Coordinate {
+                            bank,
+                            local,
+                            path: path.clone(),
+                        },
+                        origin: origin.clone(),
+                    });
+            }
+        }
+        self
     }
 
     pub fn function(def: DefId) -> Self {
@@ -71,14 +143,15 @@ impl Value {
     }
 
     pub fn capture(&self, index: usize) -> Self {
-        let mut result = Self::default();
-        for (path, origins) in &self.slots {
+        let mut result = self.map_borrows(|path| {
             if matches!(path.first(), Some(Slot::Capture(i, _)) if *i == index) {
-                result.insert(path[1..].to_vec(), origins.clone());
+                Some(path[1..].to_vec())
             } else if path.first() == Some(&Slot::Tail) {
-                result.insert(vec![Slot::Tail], origins.clone());
+                Some(vec![Slot::Tail])
+            } else {
+                None
             }
-        }
+        });
         for (path, callees) in &self.callees {
             if matches!(path.first(), Some(Slot::Capture(i, _)) if *i == index) {
                 result
@@ -95,6 +168,34 @@ impl Value {
         self.slots.values().flatten().cloned().collect()
     }
 
+    pub fn address_sources(&self) -> super::demand::Demand {
+        self.sources
+            .iter()
+            .filter(|((path, _), _)| path.is_empty() || *path == [Slot::Tail])
+            .flat_map(|(_, sources)| sources.iter().cloned())
+            .collect()
+    }
+
+    pub fn address_support(&self) -> Origins {
+        let mut result = self.addresses();
+        for ((path, _), parents) in &self.support {
+            if path.is_empty() || *path == [Slot::Tail] {
+                result.extend(parents.iter().cloned());
+            }
+        }
+        result
+    }
+
+    pub fn with_address_support(mut self, parents: &Origins) -> Self {
+        for origin in self.addresses() {
+            self.support
+                .entry((Vec::new(), origin))
+                .or_default()
+                .extend(parents.iter().cloned());
+        }
+        self
+    }
+
     pub fn addresses(&self) -> Origins {
         let mut origins = self.slots.get(&Vec::new()).cloned().unwrap_or_default();
         origins.extend(
@@ -108,14 +209,15 @@ impl Value {
     }
 
     pub fn project(&self, slot: &Slot) -> Self {
-        let mut result = Self::default();
-        for (path, origins) in &self.slots {
+        let mut result = self.map_borrows(|path| {
             if path.first() == Some(slot) {
-                result.insert(path[1..].to_vec(), origins.clone());
+                Some(path[1..].to_vec())
             } else if path.first() == Some(&Slot::Tail) {
-                result.insert(vec![Slot::Tail], origins.clone());
+                Some(vec![Slot::Tail])
+            } else {
+                None
             }
-        }
+        });
         for (path, callees) in &self.callees {
             if path.first() == Some(slot) {
                 result
@@ -139,12 +241,11 @@ impl Value {
     }
 
     pub fn prefixed_path(&self, prefix: &[Slot], ty: TypeId, table: &TypeTable) -> Self {
-        let mut result = Self::default();
-        for (path, origins) in &self.slots {
+        let mut result = self.map_borrows(|path| {
             let mut prefixed = prefix.to_vec();
-            prefixed.extend(path.iter().cloned());
-            result.insert(normalize(ty, prefixed, table), origins.clone());
-        }
+            prefixed.extend_from_slice(path);
+            Some(normalize(ty, prefixed, table))
+        });
         for (path, callees) in &self.callees {
             let mut prefixed = prefix.to_vec();
             prefixed.extend(path.iter().cloned());
@@ -153,6 +254,34 @@ impl Value {
                 .entry(normalize(ty, prefixed, table))
                 .or_default()
                 .extend(callees);
+        }
+        result
+    }
+
+    fn map_borrows(&self, select: impl Fn(&[Slot]) -> Option<Path>) -> Self {
+        let mut result = Self::default();
+        for (path, origins) in &self.slots {
+            if let Some(path) = select(path) {
+                result.insert(path, origins.clone());
+            }
+        }
+        for ((path, origin), sources) in &self.sources {
+            if let Some(path) = select(path) {
+                result
+                    .sources
+                    .entry((path, origin.clone()))
+                    .or_default()
+                    .extend(sources.iter().cloned());
+            }
+        }
+        for ((path, origin), parents) in &self.support {
+            if let Some(path) = select(path) {
+                result
+                    .support
+                    .entry((path, origin.clone()))
+                    .or_default()
+                    .extend(parents.iter().cloned());
+            }
         }
         result
     }
@@ -268,6 +397,33 @@ pub(super) fn tainted(ty: TypeId, origins: &Origins, table: &TypeTable) -> Value
         &mut |path| value.insert(path, origins.clone()),
     );
     value
+}
+
+pub(super) fn tainted_from(ty: TypeId, source: &Value, table: &TypeTable) -> Value {
+    let mut result = tainted(ty, &source.origins(), table);
+    for (path, origins) in &result.slots {
+        for origin in origins {
+            for ((_, candidate), parents) in &source.support {
+                if origin == candidate {
+                    result
+                        .support
+                        .entry((path.clone(), origin.clone()))
+                        .or_default()
+                        .extend(parents.iter().cloned());
+                }
+            }
+            for ((_, candidate), sources) in &source.sources {
+                if origin == candidate {
+                    result
+                        .sources
+                        .entry((path.clone(), origin.clone()))
+                        .or_default()
+                        .extend(sources.iter().cloned());
+                }
+            }
+        }
+    }
+    result
 }
 
 fn seed(

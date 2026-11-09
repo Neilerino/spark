@@ -18,7 +18,51 @@ pub(super) struct Access {
     pub selection: Path,
     pub kind: AccessKind,
 }
-pub(super) type Accesses = FxHashSet<Access>;
+#[derive(Clone, Debug, Default)]
+pub(super) struct Accesses {
+    events: FxHashSet<Access>,
+    pub demands: super::demand::Demand,
+}
+
+impl Accesses {
+    pub fn insert(&mut self, access: Access) {
+        self.events.insert(access);
+    }
+    pub fn iter(&self) -> std::collections::hash_set::Iter<'_, Access> {
+        self.events.iter()
+    }
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+    pub fn merge(&mut self, other: Self) {
+        self.events.extend(other.events);
+        self.demands.extend(other.demands);
+    }
+}
+
+impl Extend<Access> for Accesses {
+    fn extend<T: IntoIterator<Item = Access>>(&mut self, values: T) {
+        self.events.extend(values);
+    }
+}
+impl FromIterator<Access> for Accesses {
+    fn from_iter<T: IntoIterator<Item = Access>>(values: T) -> Self {
+        Self {
+            events: values.into_iter().collect(),
+            demands: super::demand::Demand::default(),
+        }
+    }
+}
+impl<'a> IntoIterator for &'a Accesses {
+    type Item = &'a Access;
+    type IntoIter = std::collections::hash_set::Iter<'a, Access>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.events.iter()
+    }
+}
 
 impl Flow<'_> {
     pub(super) fn operand(&self, operand: &Operand, state: &State) -> Value {
@@ -55,7 +99,9 @@ impl Flow<'_> {
         kind: AccessKind,
         accesses: &mut Accesses,
     ) -> Value {
-        let mut value = state.value(place.local);
+        let mut value = state
+            .value(place.local)
+            .sourced(super::demand::Bank::Logical, place.local);
         let mut ty = self.function.locals[place.local.index()].ty;
         for (index, projection) in place.projections.iter().enumerate() {
             let slot = projection_slot(projection, ty, self.table);
@@ -67,6 +113,7 @@ impl Flow<'_> {
                     .position(|p| matches!(p, Projection::Deref))
                     .unwrap_or(remaining.len());
                 let (selection, _) = self.projection_path(inner, &remaining[..count]);
+                accesses.demands.extend(value.address_sources());
                 for origin in value.addresses() {
                     accesses.insert(Access {
                         origin,
@@ -93,7 +140,7 @@ impl Flow<'_> {
         let inner = child_type(ty, &Slot::Deref, self.table).unwrap_or(TypeId::ERROR);
         let mut result = Value::default();
         for origin in value.addresses() {
-            result.join(&self.pointee(&origin, inner, state, visited));
+            result.join(&self.pointee(&origin, inner, value, state, visited));
         }
         result
     }
@@ -102,6 +149,7 @@ impl Flow<'_> {
         &self,
         origin: &Origin,
         ty: TypeId,
+        reference: &Value,
         state: &State,
         visited: &mut FxHashSet<Origin>,
     ) -> Value {
@@ -112,12 +160,12 @@ impl Flow<'_> {
         match origin {
             Origin::Loan(point) => {
                 for target in self.loans.get(point).into_iter().flatten() {
-                    result.join(&self.target_value(target, ty, state, visited));
+                    result.join(&self.target_value(target, ty, reference, state, visited));
                 }
             }
             Origin::Frame { function, point } if *function == self.function.def_id => {
                 for target in self.loans.get(point).into_iter().flatten() {
-                    result.join(&self.target_value(target, ty, state, visited));
+                    result.join(&self.target_value(target, ty, reference, state, visited));
                 }
             }
             Origin::Frame { .. } | Origin::Opaque { .. } => {
@@ -147,6 +195,7 @@ impl Flow<'_> {
                 let mut origins = self.unproven.get(point).cloned().unwrap_or_default();
                 origins.insert(origin.clone());
                 result = value::tainted(ty, &origins, self.table);
+                result.join(&value::tainted_from(ty, reference, self.table));
             }
         }
         visited.remove(origin);
@@ -157,25 +206,28 @@ impl Flow<'_> {
         &self,
         target: &Target,
         ty: TypeId,
+        reference: &Value,
         state: &State,
         visited: &mut FxHashSet<Origin>,
     ) -> Value {
         let result = match target {
             Target::Frame { local, path } => self.project_path(
-                state.cell(*local),
+                state
+                    .cell(*local)
+                    .sourced(super::demand::Bank::Cell, *local),
                 self.function.locals[local.index()].ty,
                 path,
                 state,
                 visited,
             ),
             Target::Through { origin, ty, path } => {
-                let value = self.pointee(origin, *ty, state, visited);
+                let value = self.pointee(origin, *ty, reference, state, visited);
                 self.project_path(value, *ty, path, state, visited)
             }
         };
         if matches!(target, Target::Frame { path, .. } | Target::Through { path, .. } if path.contains(&Slot::Tail))
         {
-            value::tainted(ty, &result.origins(), self.table)
+            value::tainted_from(ty, &result, self.table)
         } else {
             result
         }
@@ -263,45 +315,74 @@ impl Flow<'_> {
         )
         .1
     }
-    pub(super) fn tail_references(
+    pub(super) fn tail_reference_value(
         &self,
         value: Value,
         ty: TypeId,
         expected: Option<TypeId>,
         state: &State,
-    ) -> super::Origins {
-        let mut result = super::Origins::default();
+    ) -> Value {
+        let mut result = Value::default();
         let mut pending = vec![(value, ty)];
-        let mut seen = FxHashSet::default();
+        let mut seen: rustc_hash::FxHashMap<_, Value> = rustc_hash::FxHashMap::default();
         while let Some((value, ty)) = pending.pop() {
-            for (path, origins) in value.slots {
-                let selected = self.selected_type(ty, &path);
+            for (path, origins) in &value.slots {
+                let selected = self.selected_type(ty, path);
                 for origin in origins {
+                    let sources = value
+                        .sources
+                        .get(&(path.clone(), origin.clone()))
+                        .cloned()
+                        .unwrap_or_default();
+                    let parents = value
+                        .support
+                        .get(&(path.clone(), origin.clone()))
+                        .cloned()
+                        .unwrap_or_default();
                     let pointees = if let Ty::Ref { inner, .. } = self
                         .table
                         .resolve(value::strip_mutable(selected, self.table))
                     {
                         vec![*inner]
                     } else {
-                        self.pointee_types(&origin)
+                        self.pointee_types(origin)
                     };
                     if pointees.is_empty() {
-                        result.insert(origin);
+                        result
+                            .support
+                            .entry((Vec::new(), origin.clone()))
+                            .or_default()
+                            .extend(parents);
+                        result.insert_sourced(Vec::new(), origin.clone(), sources);
                         continue;
                     }
                     for pointee in pointees {
-                        if !seen.insert((origin.clone(), pointee)) {
-                            continue;
-                        }
                         if expected.is_none_or(|expected| {
                             value::strip_mutable(expected, self.table)
                                 == value::strip_mutable(pointee, self.table)
                         }) || matches!(self.table.resolve(pointee), Ty::Ref { .. })
                         {
-                            result.insert(origin.clone());
+                            result
+                                .support
+                                .entry((Vec::new(), origin.clone()))
+                                .or_default()
+                                .extend(parents.iter().cloned());
+                            result.insert_sourced(Vec::new(), origin.clone(), sources.clone());
                         }
-                        let payload =
-                            self.pointee(&origin, pointee, state, &mut FxHashSet::default());
+                        let mut reference =
+                            Value::reference(origin.clone()).with_address_support(&parents);
+                        reference.insert_sourced(Vec::new(), origin.clone(), sources.clone());
+                        let context = seen.entry((origin.clone(), pointee)).or_default();
+                        if !context.join(&reference) {
+                            continue;
+                        }
+                        let payload = self.pointee(
+                            origin,
+                            pointee,
+                            context,
+                            state,
+                            &mut FxHashSet::default(),
+                        );
                         if !payload.is_empty() {
                             pending.push((payload, pointee));
                         }
@@ -365,5 +446,235 @@ impl Flow<'_> {
                 (!ty.is_error()).then_some(ty)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::facts::Point;
+    use spark_mir::{BlockId, Local, MirFunction};
+    use spark_resolve::DefId;
+    use spark_span::Span;
+    use spark_types::{IntWidth, LifetimeId, TypeTable};
+
+    #[test]
+    fn tail_selection_joins_support_for_repeated_origins_in_different_slots() {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let reference = table.intern(Ty::Ref {
+            inner: int,
+            mutable: false,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
+        let tuple = table.intern(Ty::Tuple(vec![reference, reference]));
+        let function = MirFunction {
+            def_id: DefId::new(9200),
+            param_count: 0,
+            return_type: int,
+            locals: vec![],
+            blocks: vec![],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+        let flow = Flow::new(&function, &table, None);
+        let shared = Origin::Loan(Point::new(BlockId(0), 0));
+        let parents: Vec<_> = (1..=2)
+            .map(|index| Origin::Loan(Point::new(BlockId(0), index)))
+            .collect();
+        let mut value = Value::default();
+        for (index, parent) in parents.iter().enumerate() {
+            let contribution = Value::reference(shared.clone())
+                .with_address_support(&std::iter::once(parent.clone()).collect());
+            value.join(&contribution.prefixed(Slot::Tuple(index), tuple, &table));
+        }
+        let value = value.sourced(super::super::demand::Bank::Logical, Local(1));
+        let selected = flow.tail_reference_value(value, tuple, Some(int), &State::default());
+        assert_eq!(
+            selected.address_sources().len(),
+            2,
+            "both reaching slots contribute to the selection"
+        );
+        let support = selected.address_support();
+        for parent in parents {
+            assert!(
+                support.contains(&parent),
+                "every selected contribution retains its own parent"
+            );
+        }
+    }
+    #[test]
+    fn opaque_pointee_copy_preserves_reaching_support() {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let int_ref = table.intern(Ty::Ref {
+            inner: int,
+            mutable: false,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
+        let list = table.intern(Ty::List(int_ref));
+        let list_ref = table.intern(Ty::Ref {
+            inner: list,
+            mutable: false,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
+        let function = MirFunction {
+            def_id: DefId::new(9201),
+            param_count: 0,
+            return_type: int,
+            locals: vec![],
+            blocks: vec![],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+        let mut flow = Flow::new(&function, &table, None);
+        let opaque = Origin::Unproven(Point::new(BlockId(0), 3));
+        let child = Origin::Loan(Point::new(BlockId(0), 2));
+        let parent = Origin::Loan(Point::new(BlockId(0), 1));
+        flow.unproven
+            .insert(Point::new(BlockId(0), 3), std::iter::once(child).collect());
+        let wrapper = Value::reference(opaque)
+            .with_address_support(&std::iter::once(parent.clone()).collect())
+            .sourced(super::super::demand::Bank::Logical, Local(1));
+        let payload = flow.dereference(
+            &wrapper,
+            list_ref,
+            &State::default(),
+            &mut FxHashSet::default(),
+        );
+        assert!(
+            payload
+                .support
+                .values()
+                .any(|parents| parents.contains(&parent)),
+            "opaque copied payload must preserve parent support from this reaching wrapper"
+        );
+        assert!(
+            !payload.all_sources().is_empty(),
+            "opaque payload demand must trace back through its reaching wrapper"
+        );
+    }
+    #[test]
+    fn opaque_tail_selection_preserves_reaching_support() {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let int_ref = table.intern(Ty::Ref {
+            inner: int,
+            mutable: false,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
+        let list = table.intern(Ty::List(int_ref));
+        let list_ref = table.intern(Ty::Ref {
+            inner: list,
+            mutable: false,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
+        let function = MirFunction {
+            def_id: DefId::new(9202),
+            param_count: 0,
+            return_type: int,
+            locals: vec![],
+            blocks: vec![],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+        let mut flow = Flow::new(&function, &table, None);
+        let opaque = Origin::Unproven(Point::new(BlockId(0), 3));
+        let child = Origin::Loan(Point::new(BlockId(0), 2));
+        let parent = Origin::Loan(Point::new(BlockId(0), 1));
+        flow.unproven
+            .insert(Point::new(BlockId(0), 3), std::iter::once(child).collect());
+        let wrapper = Value::reference(opaque)
+            .with_address_support(&std::iter::once(parent.clone()).collect())
+            .sourced(super::super::demand::Bank::Logical, Local(1));
+        let selected = flow.tail_reference_value(wrapper, list_ref, Some(int), &State::default());
+        assert!(
+            selected.address_support().contains(&parent),
+            "typed opaque Tail selection must preserve parent support from its reaching wrapper"
+        );
+        assert!(
+            !selected.address_sources().is_empty(),
+            "typed opaque Tail selection must trace back through its reaching wrapper"
+        );
+    }
+    #[test]
+    fn opaque_tail_expansion_joins_distinct_reaching_contexts() {
+        use spark_mir::LocalDecl;
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let reference = |inner| Ty::Ref {
+            inner,
+            mutable: false,
+            lifetime: LifetimeId::ANONYMOUS,
+        };
+        let int_ref = table.intern(reference(int));
+        let list = table.intern(Ty::List(int_ref));
+        let list_ref = table.intern(reference(list));
+        let wrapper_ref = table.intern(reference(list_ref));
+        let tuple = table.intern(Ty::Tuple(vec![wrapper_ref, wrapper_ref]));
+        let locals = (0..=2)
+            .map(|index| LocalDecl {
+                local: Local(index),
+                ty: list_ref,
+                name: None,
+                is_user_variable: false,
+                mutable: false,
+                span: Span::DUMMY,
+            })
+            .collect();
+        let function = MirFunction {
+            def_id: DefId::new(9203),
+            param_count: 0,
+            return_type: int,
+            locals,
+            blocks: vec![],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+        let mut flow = Flow::new(&function, &table, None);
+        let opaque_site = Point::new(BlockId(0), 3);
+        let opaque = Origin::Unproven(opaque_site);
+        let child = Origin::Loan(Point::new(BlockId(0), 2));
+        flow.unproven
+            .insert(opaque_site, std::iter::once(child).collect());
+        let parents: Vec<_> = (10..=11)
+            .map(|index| Origin::Loan(Point::new(BlockId(0), index)))
+            .collect();
+        let mut state = State::default();
+        let mut value = Value::default();
+        for (index, parent) in parents.iter().enumerate() {
+            let local = Local(index as u32 + 1);
+            state.set(
+                local,
+                Value::reference(opaque.clone())
+                    .with_address_support(&std::iter::once(parent.clone()).collect()),
+            );
+            let point = Point::new(BlockId(0), index as u32 + 20);
+            flow.loans.insert(
+                point,
+                std::iter::once(Target::Frame {
+                    local,
+                    path: vec![],
+                })
+                .collect(),
+            );
+            value.join(&Value::reference(Origin::Loan(point)).prefixed(
+                Slot::Tuple(index),
+                tuple,
+                &table,
+            ));
+        }
+        let selected = flow.tail_reference_value(value, tuple, Some(int), &state);
+        let support = selected.address_support();
+        for parent in parents {
+            assert!(
+                support.contains(&parent),
+                "opaque graph expansion must preserve each distinct reaching context"
+            );
+        }
     }
 }

@@ -1,0 +1,9 @@
+fn main(): Int {
+    values: List[Int]! = [1, 2]
+    borrowed: Ref[List[Int]] = values
+    empty: Map[String, Ref[List[Int]]] = {}
+    entries: Map[String, Ref[List[Int]]]! = {"one": borrowed}
+    values[0] = 9
+    entries["one"] to { found: Ref[List[Int]] -> print(found.len()), Null -> print(99) }
+    return 0
+}

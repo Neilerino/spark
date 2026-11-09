@@ -1,5 +1,6 @@
 //! Value-slot provenance for references carried across MIR control flow.
 
+mod demand;
 mod effects;
 mod read;
 mod storage;
@@ -47,7 +48,8 @@ impl State {
         self.cells.get(&local).cloned().unwrap_or_default()
     }
 
-    fn set(&mut self, local: Local, value: Value) {
+    fn set(&mut self, local: Local, mut value: Value) {
+        value.sources.clear();
         Self::set_value(&mut self.cells, local, value.clone());
         Self::set_value(&mut self.values, local, value);
     }
@@ -104,11 +106,12 @@ struct Flow<'a> {
     changed: bool,
     program: Option<effects::Context<'a>>,
     accesses: FxHashMap<Point, Accesses>,
+    transfers: FxHashMap<Point, demand::Transfer>,
     readers: FxHashSet<BlockId>,
     invalid_reads: FxHashSet<(Point, Point, Origin)>,
 }
 
-pub use effects::check_program_returns;
+pub use effects::analyze_program;
 
 #[cfg(test)]
 pub fn check_returns(
@@ -136,6 +139,7 @@ impl<'a> Flow<'a> {
             changed: false,
             program,
             accesses: FxHashMap::default(),
+            transfers: FxHashMap::default(),
             readers: FxHashSet::default(),
             invalid_reads: FxHashSet::default(),
             entries: vec![None; function.blocks.len()],
@@ -213,9 +217,16 @@ impl<'a> Flow<'a> {
         let body = &self.function.blocks[block.index()];
         for (index, statement) in body.statements.iter().enumerate() {
             let point = Point::new(block, index as u32);
+            self.transfers.insert(point, demand::Transfer::default());
             self.transfer_statement(statement, point, state);
         }
+        self.transfer_terminator(block, state);
+    }
+
+    fn transfer_terminator(&mut self, block: BlockId, state: &mut State) {
+        let body = &self.function.blocks[block.index()];
         let point = Point::new(block, body.statements.len() as u32);
+        self.transfers.insert(point, demand::Transfer::default());
         match &body.terminator {
             Terminator::Call {
                 func,
@@ -226,21 +237,37 @@ impl<'a> Flow<'a> {
                 let ty = self.place_type(destination);
                 let mut accesses = Accesses::default();
                 self.read_operand(func, state, &mut accesses);
+                let exclusive = args.iter().any(|argument| match argument {
+                    Operand::Copy(place) | Operand::Move(place) => {
+                        let ty = self.place_type(place);
+                        matches!(self.table.resolve(strip_mutable(ty, self.table)), Ty::Ref { mutable, .. }
+                            if *mutable || matches!(self.table.resolve(ty), Ty::Mutable(_)))
+                    }
+                    Operand::Constant(_) => false,
+                });
                 for argument in args {
-                    self.read_operand(argument, state, &mut accesses);
+                    let value = self.read_operand(argument, state, &mut accesses);
+                    if exclusive {
+                        accesses.demands.extend(value.address_sources());
+                    }
                 }
                 self.record_accesses(point, accesses, state);
                 let result = self.call_result(func, args, ty, point, state);
                 for arg in args {
-                    consume(arg, state);
+                    if let Some(local) = consume(arg, state) {
+                        self.record_consumed(point, local);
+                    }
                 }
+                self.record_store(point, destination, &result);
                 self.store(destination, result, state);
             }
             Terminator::SwitchInt { discriminant, .. } => {
                 let mut accesses = Accesses::default();
                 self.read_operand(discriminant, state, &mut accesses);
                 self.record_accesses(point, accesses, state);
-                consume(discriminant, state);
+                if let Some(local) = consume(discriminant, state) {
+                    self.record_consumed(point, local);
+                }
             }
             Terminator::Goto { .. } | Terminator::Return | Terminator::Unreachable => {}
         }
@@ -250,7 +277,13 @@ impl<'a> Flow<'a> {
         match statement {
             Statement::Assign { place, rvalue, .. } => {
                 let result = self.rvalue(rvalue, self.place_type(place), point, state);
-                consume_rvalue(rvalue, state);
+                let mut accesses = Accesses::default();
+                self.read_access(place, state, AccessKind::Address, &mut accesses);
+                self.record_accesses(point, accesses, state);
+                for local in consume_rvalue(rvalue, state) {
+                    self.record_consumed(point, local);
+                }
+                self.record_store(point, place, &result);
                 self.store(place, result, state);
             }
             Statement::IndexedAssign {
@@ -275,11 +308,16 @@ impl<'a> Flow<'a> {
                 current.join(&stored);
                 state.set(*root, current);
                 state.consume(*value);
+                self.record_consumed(point, *value);
             }
             Statement::Drop { place, .. } => {
+                let mut accesses = Accesses::default();
+                self.read_access(place, state, AccessKind::Value, &mut accesses);
+                self.record_accesses(point, accesses, state);
                 self.invalidate(place, point, state);
                 if place.projections.is_empty() {
                     state.consume(place.local);
+                    self.record_consumed(point, place.local);
                 }
             }
             Statement::Nop => {}
@@ -291,6 +329,18 @@ impl<'a> Flow<'a> {
         let value = match rvalue {
             Rvalue::Use(operand) => self.read_operand(operand, state, &mut accesses),
             Rvalue::Ref { place, .. } => {
+                self.read_access(place, state, AccessKind::Address, &mut accesses);
+                let parents = place
+                    .projections
+                    .iter()
+                    .rposition(|projection| matches!(projection, Projection::Deref))
+                    .map_or_else(Origins::default, |index| {
+                        let prefix = Place {
+                            local: place.local,
+                            projections: place.projections[..index].to_vec(),
+                        };
+                        self.read(&prefix, state).address_support()
+                    });
                 let targets = self.reference_targets(place, state);
                 let entry = self.loans.entry(point).or_default();
                 let before = entry.len();
@@ -301,14 +351,14 @@ impl<'a> Flow<'a> {
                     selection: Vec::new(),
                     kind: AccessKind::Address,
                 });
-                Value::reference(Origin::Loan(point))
+                Value::reference(Origin::Loan(point)).with_address_support(&parents)
             }
             Rvalue::Aggregate(kind, operands) => {
                 self.aggregate(kind, operands, ty, state, &mut accesses)
             }
             Rvalue::Cast { operand, .. } => {
-                let origins = self.read_operand(operand, state, &mut accesses).origins();
-                value::tainted(ty, &origins, self.table)
+                let source = self.read_operand(operand, state, &mut accesses);
+                value::tainted_from(ty, &source, self.table)
             }
             Rvalue::CollectionGetOptional { collection, index } => {
                 self.read_access(index, state, AccessKind::Value, &mut accesses);
@@ -529,25 +579,26 @@ impl<'a> Flow<'a> {
     }
 }
 
-fn consume(operand: &Operand, state: &mut State) {
+fn consume(operand: &Operand, state: &mut State) -> Option<Local> {
     if let Operand::Move(place) = operand {
         if place.projections.is_empty() {
             state.consume(place.local);
+            return Some(place.local);
         }
     }
+    None
 }
 
-fn consume_rvalue(rvalue: &Rvalue, state: &mut State) {
+fn consume_rvalue(rvalue: &Rvalue, state: &mut State) -> Vec<Local> {
     match rvalue {
         Rvalue::Use(operand) | Rvalue::Cast { operand, .. } | Rvalue::UnaryOp(_, operand) => {
-            consume(operand, state);
+            consume(operand, state).into_iter().collect()
         }
-        Rvalue::Aggregate(_, operands) | Rvalue::StringInterp(operands) => {
-            for operand in operands {
-                consume(operand, state);
-            }
-        }
-        _ => {}
+        Rvalue::Aggregate(_, operands) | Rvalue::StringInterp(operands) => operands
+            .iter()
+            .filter_map(|operand| consume(operand, state))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
