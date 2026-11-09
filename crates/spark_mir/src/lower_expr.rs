@@ -722,9 +722,23 @@ fn lower_call<'a>(
     } else {
         None
     };
+    let function_reference =
+        matches!(callee.kind, HirExprKind::Local(def) if fb.lookup_def(def).is_none());
     let func_local = lower_expr(callee, fb, mir, type_table, defs);
-    if tagged_params.is_some() {
+    if fb.is_terminated() {
+        return void_temp(fb, expr);
+    }
+    // TAG [SPARK-103] Fresh callable values own their environments through this call.
+    let temporary_callee = !function_reference
+        && !fb.is_def_local(func_local)
+        && !fb.owns_local(func_local)
+        && spark_drop::needs_drop(fb.local_type(func_local), type_table);
+    let scoped = tagged_params.is_some() || temporary_callee;
+    if scoped {
         fb.push_scope();
+        if temporary_callee {
+            fb.register_drop(func_local);
+        }
     }
     let mut arg_operands = Vec::with_capacity(args.size_hint().0);
     for (index, arg) in args.enumerate() {
@@ -735,7 +749,7 @@ fn lower_call<'a>(
                     target: fb.current_block(),
                 });
             }
-            if tagged_params.is_some() {
+            if scoped {
                 fb.pop_finished_scope();
             }
             return void_temp(fb, expr);
@@ -796,7 +810,7 @@ fn lower_call<'a>(
     });
 
     fb.switch_to(cont);
-    if tagged_params.is_some() {
+    if scoped {
         fb.pop_scope_drops(None, expr.span);
     }
     dest

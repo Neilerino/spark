@@ -1,0 +1,78 @@
+link "union_probe"
+extern fn probe_closure_rc(value: Ref[(): Void]): Int
+extern fn probe_list_rc(value: Ref[List[Int]]): Int
+
+alias Value = Int | List[Int]
+alias Callback = (): Int
+
+fn invokeScalar(values: List[Int]): Int {
+    callback: (): Int = fn(): Int { return values.len() }
+    return callback()
+}
+fn invokeTagged(value: Value): Tup[Int, Int] {
+    callback: (): Tup[Int, Int] = fn(): Tup[Int, Int] {
+        return value to {
+            values: List[Int] -> (values.len(), 9),
+            Int -> (0, 0)
+        }
+    }
+    return callback()
+}
+fn invokeOptional(values: List[Int]): Int {
+    callback: Callback? = fn(): Int { return values.len() }
+    if callback is Null { return 0 }
+    return callback()
+}
+fn makeScalar(values: List[Int]): (): Int {
+    return fn(): Int { return values.len() }
+}
+fn makeAggregate(values: List[Int]): (): Tup[Int, Int] {
+    return fn(): Tup[Int, Int] { return (values.len(), 7) }
+}
+fn makeTagged(values: List[Int]): (Int?): Int {
+    return fn(value: Int?): Int { return values.len() + (value ?? 0) }
+}
+fn makeArgument(values: List[Int]): (Int): Int {
+    return fn(value: Int): Int { return values.len() + value }
+}
+fn exitBeforeInvoke(values: List[Int]): Int {
+    return makeArgument(values)({ return 7 })
+}
+fn makeMutation(values: List[Int]): (): Void {
+    items: List[Int]! = values
+    return fn(): Void {
+        items.append(2)
+        print(items.len())
+    }
+}
+fn main(): Int {
+    values: List[Int] = [1]
+    callback: (): Void = fn(): Void { print(values.len()) }
+    before: Int = probe_closure_rc(callback)
+    callback()
+    callback()
+    print(probe_closure_rc(callback) - before)
+    valuesBefore: Int = probe_list_rc(values)
+    print(invokeScalar(values))
+    print(probe_list_rc(values) - valuesBefore)
+    tagged: Tup[Int, Int] = invokeTagged(values)
+    print(tagged.0)
+    print(tagged.1)
+    print(probe_list_rc(values) - valuesBefore)
+    print(invokeOptional(values))
+    print(probe_list_rc(values) - valuesBefore)
+    print(makeScalar(values)())
+    print(probe_list_rc(values) - valuesBefore)
+    aggregate: Tup[Int, Int] = makeAggregate(values)()
+    print(aggregate.0)
+    print(aggregate.1)
+    print(probe_list_rc(values) - valuesBefore)
+    print(makeTagged(values)(2))
+    print(probe_list_rc(values) - valuesBefore)
+    print(exitBeforeInvoke(values))
+    print(probe_list_rc(values) - valuesBefore)
+    makeMutation(values)()
+    print(values.len())
+    print(probe_list_rc(values) - valuesBefore)
+    return 0
+}
