@@ -52,6 +52,8 @@ pub struct EmitCtx<'a> {
 pub enum LocalStorage {
     /// Scalar value held in a Cranelift SSA variable.
     Var(Variable, ClifType),
+    /// Scalar with a stable address shared by direct reads and references.
+    ScalarSlot(cranelift_codegen::ir::StackSlot, ClifType),
     /// Aggregate value held in a stack slot.
     StackSlot(cranelift_codegen::ir::StackSlot, u32),
     /// Zero-sized type — no storage needed.
@@ -104,6 +106,7 @@ impl<'a> FunctionContext<'a> {
         // Declare locals.
         let mut locals = Vec::with_capacity(mir_func.locals.len());
         let mut next_var = 0usize;
+        let address_taken = mir_func.address_taken_locals();
 
         for local_decl in &mir_func.locals {
             let ty_id = local_decl.ty;
@@ -112,10 +115,21 @@ impl<'a> FunctionContext<'a> {
             } else if abi::is_scalar(ty_id, table) {
                 let clif_ty =
                     clif_types::local_clif_type(ty_id, table, ptr_type).unwrap_or(types::I64);
-                let var = Variable::new(next_var);
-                next_var += 1;
-                builder.declare_var(var, clif_ty);
-                locals.push(LocalStorage::Var(var, clif_ty));
+                // TAG [SPARK-129]
+                if address_taken.contains(&local_decl.local) {
+                    let layout = layouts.layout_of(ty_id, table);
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        layout.size,
+                        u8::try_from(layout.align.trailing_zeros()).unwrap_or(0),
+                    ));
+                    locals.push(LocalStorage::ScalarSlot(slot, clif_ty));
+                } else {
+                    let var = Variable::new(next_var);
+                    next_var += 1;
+                    builder.declare_var(var, clif_ty);
+                    locals.push(LocalStorage::Var(var, clif_ty));
+                }
             } else {
                 // Aggregate — allocate a stack slot.
                 let layout = layouts.layout_of(ty_id, table);
@@ -156,6 +170,10 @@ impl<'a> FunctionContext<'a> {
     pub fn read_local(&mut self, local: Local) -> Value {
         match self.locals[local.index()] {
             LocalStorage::Var(var, _) => self.builder.use_var(var),
+            LocalStorage::ScalarSlot(slot, ty) => {
+                let addr = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
+                self.load(ty, addr, 0)
+            }
             LocalStorage::StackSlot(slot, _) => {
                 self.builder.ins().stack_addr(self.ptr_type, slot, 0)
             }
@@ -170,6 +188,10 @@ impl<'a> FunctionContext<'a> {
         match self.locals[local.index()] {
             LocalStorage::Var(var, _) => {
                 self.builder.def_var(var, val);
+            }
+            LocalStorage::ScalarSlot(slot, _) => {
+                let addr = self.builder.ins().stack_addr(self.ptr_type, slot, 0);
+                self.store(val, addr, 0);
             }
             LocalStorage::StackSlot(_, _) | LocalStorage::ZeroSized => {
                 // Aggregates and ZSTs: no scalar write needed.
@@ -213,11 +235,11 @@ impl<'a> FunctionContext<'a> {
         self.locals[local.index()]
     }
 
-    /// Look up Cranelift variable storage, returns None for non-Var locals.
+    /// Returns the native scalar type for register and addressable scalar locals.
     #[must_use]
-    pub fn local_var(&self, local: Local) -> Option<(Variable, ClifType)> {
+    pub fn local_scalar_type(&self, local: Local) -> Option<ClifType> {
         match self.locals[local.index()] {
-            LocalStorage::Var(var, ty) => Some((var, ty)),
+            LocalStorage::Var(_, ty) | LocalStorage::ScalarSlot(_, ty) => Some(ty),
             _ => None,
         }
     }

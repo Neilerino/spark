@@ -1,0 +1,54 @@
+fn setTen(value: Ref[Int]!): Void { value = 10 }
+fn add(value: Ref[Int]!, offset: Int): Void { value = value + offset }
+fn changeParameter(value: Int): Int {
+    local: Int! = value
+    local to setTen
+    return local
+}
+fn setByte(value: Ref[UInt8]!): Void { value = 255 as UInt8 }
+fn setFloat(value: Ref[Float]!): Void { value = 2.5 }
+fn setFlag(value: Ref[Bool]!): Void { value = true }
+fn parameter(value: Int!): Int {
+    value to setTen
+    return value
+}
+fn branched(seed: Int, change: Bool): Int {
+    value: Int! = seed
+    if change { value to setTen } else { value to add{offset: 2} }
+    return value
+}
+fn redirect(first: Ref[Int]!, second: Ref[Int]!): Void {
+    print(first)
+    first = second
+    print(first)
+    first = 9
+}
+fn main(): Int {
+    direct: Int! = 1
+    setTen(direct)
+    print(direct)
+    piped: Int! = 2
+    piped to setTen
+    print(piped)
+    piped to add{offset: 3}
+    print(piped)
+    print(changeParameter(4))
+    byte: UInt8! = 1 as UInt8
+    byte to setByte
+    print(byte as Int)
+    floating: Float! = 0.0
+    floating to setFloat
+    print(floating == 2.5)
+    flag: Bool! = false
+    flag to setFlag
+    print(flag)
+    print(parameter(5))
+    print(branched(3, true))
+    print(branched(3, false))
+    original: Ref[Int]! = 5
+    replacement: Ref[Int]! = 8
+    redirect(original, replacement)
+    print(original)
+    print(replacement)
+    return 0
+}

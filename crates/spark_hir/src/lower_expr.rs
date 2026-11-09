@@ -1415,7 +1415,7 @@ pub(crate) fn coerce_ref(arg: HirExpr, param_ty: TypeId, span: Span, table: &Typ
     HirExpr::new(
         HirExprKind::Borrow {
             operand: Box::new(arg),
-            mutable: *mutable,
+            mutable: *mutable || matches!(table.resolve(param_ty), Ty::Mutable(_)),
         },
         param_ty,
         span,

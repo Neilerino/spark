@@ -267,6 +267,20 @@ impl FunctionBuilder {
             .is_some_and(|scope| scope.locals_to_drop.contains(&local))
     }
 
+    /// Hands moved argument owners to the callee after argument evaluation succeeds.
+    pub(crate) fn transfer_argument_drops(&mut self, arguments: &[crate::mir::Operand]) {
+        if let Some(scope) = self.scope_stack.last_mut() {
+            scope.locals_to_drop.retain(|local| {
+                !arguments.iter().any(|argument| {
+                    matches!(argument,
+                        crate::mir::Operand::Move(place)
+                            if place.projections.is_empty() && place.local == *local
+                    )
+                })
+            });
+        }
+    }
+
     /// Pops the current scope and emits `Drop` statements for all locals
     /// registered in that scope (in reverse / LIFO order).
     ///

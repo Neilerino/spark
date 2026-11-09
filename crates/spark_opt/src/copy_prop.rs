@@ -27,7 +27,7 @@ pub fn propagate_copies(func: &mut MirFunction, table: &TypeTable) -> bool {
         .map(|d| d.local)
         .collect();
 
-    let borrowed = super::address_taken_locals(func);
+    let borrowed = func.address_taken_locals();
     for block in &mut func.blocks {
         changed |= propagate_in_block(
             &mut block.statements,

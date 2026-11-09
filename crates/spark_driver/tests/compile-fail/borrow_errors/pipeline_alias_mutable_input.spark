@@ -1,0 +1,6 @@
+fn touch(first: Ref[Int]!, second: Ref[Int]!): Void {}
+fn main(): Int {
+    value: Int! = 7
+    value to touch{second: value}
+    return 0
+}
