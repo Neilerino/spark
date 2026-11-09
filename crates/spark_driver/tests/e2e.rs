@@ -1976,6 +1976,57 @@ fn to_chain() {
 }
 
 #[test]
+fn pipeline_first_input_preserves_builtin_and_tagged_layouts() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/to/pipeline_first_layouts.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(
+            result.stdout, "1\n128\n255\n128\n2\ntrue\ntrue\n3\n2\n7\n9\n",
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn pipeline_first_input_rejects_unsupported_reference_coercions() {
+    for (fixture, diagnostic) in [
+        (
+            "pipeline_first_tagged_reference",
+            "cannot materialize tagged call argument",
+        ),
+        (
+            "pipeline_first_mutable_reference",
+            "cannot pass immutable value as mutable reference",
+        ),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result =
+                run_spark_with_args(&format!("compile-fail/type_errors/{fixture}.spark"), args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains(diagnostic),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+            assert!(
+                !result.stderr.contains("codegen error"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn pipeline_first_input_matches_call_reference_coercions() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/to/pipeline_first_input.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "1\n2\n3\n3\n3\n10\n3\n10\n", "{args:?}");
+    }
+}
+
+#[test]
 fn to_user_fn() {
     assert_output("run-pass/to/to_user_fn.spark", "11\n12\n13");
 }

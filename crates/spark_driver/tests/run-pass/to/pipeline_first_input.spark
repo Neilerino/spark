@@ -1,0 +1,21 @@
+fn ordered(values: Ref[List[Int]]): List[Int] {
+    return values to sort
+}
+fn ownedLen(values: List[Int]): Int { return values.len() }
+fn borrowedLen(values: Ref[List[Int]]): Int { return values.len() }
+fn withOffset(values: Ref[List[Int]], offset: Int): Int { return values.len() + offset }
+fn setTen(value: Ref[Int]!): Void { value = 10 }
+fn main(): Int {
+    values: List[Int] = [3, 1, 2]
+    borrowed: Ref[List[Int]] = values
+    sorted: List[Int] = ordered(borrowed)
+    sorted each (value: Int): Void { print(value) }
+    print(borrowed to ownedLen)
+    print(values to borrowedLen)
+    print(values to withOffset{offset: 7})
+    print(values[0] ?? -1)
+    mutableValue: Ref[Int]! = 7
+    mutableValue to setTen
+    print(mutableValue)
+    return 0
+}

@@ -1,0 +1,5 @@
+fn consume(value: Ref[Int]?): Void {}
+fn main(): Int {
+    7 to consume
+    return 0
+}
