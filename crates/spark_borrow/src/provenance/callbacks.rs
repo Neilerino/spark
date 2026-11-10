@@ -51,7 +51,7 @@ impl Hash for Targets {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Inputs {
-    pub slots: FxHashMap<(Local, Path, TypeId), Targets>,
+    pub slots: FxHashMap<(Local, Path, TypeId, Option<value::ReferenceCapture>), Targets>,
     pub missing: InputRole,
 }
 
@@ -91,10 +91,27 @@ impl Hash for Inputs {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct FactSource<'a> {
+    pub input: Local,
+    pub capture: Option<value::ReferenceCapture>,
+    pub prefix: &'a [Slot],
+}
+
 impl Flow<'_> {
-    fn input_seed(&self, ty: TypeId, local: Local, source_ty: TypeId, prefix: &[Slot]) -> Value {
+    fn input_seed(
+        &self,
+        ty: TypeId,
+        local: Local,
+        source_ty: TypeId,
+        prefix: &[Slot],
+        facts: Option<FactSource<'_>>,
+    ) -> Value {
         let mut result = value::inputs(ty, local, source_ty, prefix, self.table);
         apply_role(&mut result, self.callables.missing);
+        let Some(facts) = facts else {
+            return result;
+        };
         let slots: Vec<_> = result.callees.keys().cloned().collect();
         for path in slots {
             let Some(selected) = path
@@ -104,12 +121,17 @@ impl Flow<'_> {
                 continue;
             };
             let selected = value::strip_mutable(selected, self.table);
+            let fact_ty = facts
+                .capture
+                .and_then(|capture| value::child_type(capture.ty, &Slot::Deref, self.table))
+                .unwrap_or(source_ty);
             let source = value::normalize(
-                source_ty,
-                [prefix.to_vec(), path.clone()].concat(),
+                fact_ty,
+                [facts.prefix.to_vec(), path.clone()].concat(),
                 self.table,
             );
-            let Some(targets) = self.input_targets(local, &source, selected) else {
+            let Some(targets) = self.input_targets(facts.input, &source, selected, facts.capture)
+            else {
                 continue;
             };
             if !targets.unresolved
@@ -120,11 +142,32 @@ impl Flow<'_> {
                 })
             {
                 let placeholder = [path.clone(), vec![Slot::Tail]].concat();
-                result.leaves.retain(|(path, _), _| *path != placeholder);
+                result.leaves.retain(|(path, _, _), _| *path != placeholder);
             }
             result.callees.insert(path, targets);
         }
         result
+    }
+
+    fn owned_callable_location(&self, mut ty: TypeId, path: &[Slot]) -> bool {
+        for slot in path {
+            if *slot == Slot::Tail {
+                return selectors(ty, self.table)
+                    .iter()
+                    .any(|(path, _)| !path.contains(&Slot::Deref));
+            }
+            if matches!(slot, Slot::Deref | Slot::ResidualDeref) {
+                return false;
+            }
+            let Some(next) = value::child_type(ty, slot, self.table) else {
+                return false;
+            };
+            ty = next;
+        }
+        matches!(
+            self.table.resolve(value::strip_mutable(ty, self.table)),
+            Ty::Function { .. }
+        )
     }
 
     pub(super) fn callee_targets(&self, value: &Value, ty: TypeId) -> Targets {
@@ -140,14 +183,24 @@ impl Flow<'_> {
         self.tail_targets(tail, ty)
     }
 
-    fn input_targets(&self, local: Local, path: &[Slot], ty: TypeId) -> Option<Targets> {
-        if let Some(targets) = self.callables.slots.get(&(local, path.to_vec(), ty)) {
+    fn input_targets(
+        &self,
+        local: Local,
+        path: &[Slot],
+        ty: TypeId,
+        capture: Option<value::ReferenceCapture>,
+    ) -> Option<Targets> {
+        if let Some(targets) = self
+            .callables
+            .slots
+            .get(&(local, path.to_vec(), ty, capture))
+        {
             return Some(targets.clone());
         }
         let mut result = None;
         let mut longest = 0;
-        for ((input, selected, _), targets) in &self.callables.slots {
-            if *input != local {
+        for ((input, selected, _, qualifier), targets) in &self.callables.slots {
+            if *input != local || *qualifier != capture {
                 continue;
             }
             let Some(index) = selected.iter().position(|slot| *slot == Slot::Tail) else {
@@ -225,18 +278,76 @@ impl Flow<'_> {
         source_ty: TypeId,
         prefix: &[Slot],
     ) -> Value {
-        let mut result = self.input_seed(ty, local, source_ty, prefix);
-        let facts: Vec<_> = self
+        self.symbolic_input_from(
+            ty,
+            local,
+            source_ty,
+            prefix,
+            Some(FactSource {
+                input: local,
+                capture: None,
+                prefix,
+            }),
+        )
+    }
+
+    pub(super) fn symbolic_pointee_input(
+        &self,
+        ty: TypeId,
+        source_ty: TypeId,
+        prefix: &[Slot],
+        address: &super::address::Selector,
+        qualified: Option<FactSource<'_>>,
+    ) -> Value {
+        let super::address::Intent::Address(payload) = &address.intent else {
+            return self.symbolic_input(ty, address.input, source_ty, prefix);
+        };
+        let facts = if qualified.is_some() {
+            qualified
+        } else if address.capture.is_some() {
+            Some(FactSource {
+                input: address.input,
+                capture: address.capture,
+                prefix: &payload.projection,
+            })
+        } else if !prefix.contains(&Slot::Tail) {
+            Some(FactSource {
+                input: address.input,
+                capture: None,
+                prefix,
+            })
+        } else {
+            None
+        };
+        self.symbolic_input_from(ty, address.input, source_ty, prefix, facts)
+    }
+
+    fn symbolic_input_from(
+        &self,
+        ty: TypeId,
+        local: Local,
+        source_ty: TypeId,
+        prefix: &[Slot],
+        facts: Option<FactSource<'_>>,
+    ) -> Value {
+        let mut result = self.input_seed(ty, local, source_ty, prefix, facts);
+        let Some(facts) = facts else {
+            return result;
+        };
+        let entries: Vec<_> = self
             .callables
             .slots
             .iter()
-            .filter(|((input, _, _), _)| *input == local)
-            .filter_map(|((_, path, _), targets)| {
-                path.strip_prefix(prefix)
-                    .map(|relative| (path, relative, targets))
+            .filter(|((input, _, _, capture), _)| {
+                *input == facts.input && *capture == facts.capture
+            })
+            .filter_map(|((_, path, _, _), targets)| {
+                let relative = path.strip_prefix(facts.prefix)?;
+                self.owned_callable_location(ty, relative)
+                    .then_some((path, relative, targets))
             })
             .collect();
-        for (path, relative, targets) in &facts {
+        for (path, relative, targets) in &entries {
             for def in &targets.known {
                 let Some(function) = self
                     .program
@@ -246,8 +357,31 @@ impl Flow<'_> {
                 };
                 for (index, (_, capture_ty)) in function.captures.iter().enumerate() {
                     let slot = Slot::Capture(*def, index, *capture_ty);
-                    let selection = [(*path).clone(), vec![slot.clone()]].concat();
-                    let capture = self.input_seed(*capture_ty, local, source_ty, &selection);
+                    let selection =
+                        [prefix.to_vec(), relative.to_vec(), vec![slot.clone()]].concat();
+                    let fact_prefix = [(*path).clone(), vec![slot.clone()]].concat();
+                    let mut capture = self.input_seed(
+                        *capture_ty,
+                        local,
+                        source_ty,
+                        &selection,
+                        Some(FactSource {
+                            input: facts.input,
+                            capture: facts.capture,
+                            prefix: &fact_prefix,
+                        }),
+                    );
+                    if matches!(
+                        self.table
+                            .resolve(value::strip_mutable(*capture_ty, self.table)),
+                        Ty::Ref { .. }
+                    ) {
+                        capture = capture.with_reference_capture(value::ReferenceCapture {
+                            owner: *def,
+                            index,
+                            ty: *capture_ty,
+                        });
+                    }
                     result.join(&capture.prefixed_path(
                         &[relative.to_vec(), vec![slot]].concat(),
                         ty,
@@ -256,7 +390,7 @@ impl Flow<'_> {
                 }
             }
         }
-        for (_, relative, targets) in facts {
+        for (_, relative, targets) in entries {
             result.callees.insert(relative.to_vec(), targets.clone());
         }
         result
@@ -269,7 +403,7 @@ pub(super) fn callable_slots(
     table: &spark_types::TypeTable,
     targets: &Targets,
 ) {
-    for (path, _) in value.leaves.keys() {
+    for (path, _, _) in value.leaves.keys() {
         let Some((Slot::Tail, selection)) = path.split_last() else {
             continue;
         };

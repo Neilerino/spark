@@ -27,6 +27,15 @@ pub(super) enum Slot {
 
 pub(super) type Path = Vec<Slot>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct ReferenceCapture {
+    pub owner: DefId,
+    pub index: usize,
+    pub ty: TypeId,
+}
+
+pub(super) type Contribution = (Path, Origin, Option<ReferenceCapture>);
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Leaf {
     pub parents: Origins,
@@ -70,7 +79,7 @@ impl Leaf {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Value {
-    pub leaves: FxHashMap<(Path, Origin), Leaf>,
+    pub leaves: FxHashMap<Contribution, Leaf>,
     pub sources: Sources,
     pub callees: FxHashMap<Path, super::callbacks::Targets>,
 }
@@ -80,8 +89,8 @@ impl Value {
         let paths: Vec<_> = self
             .leaves
             .iter()
-            .filter(|((_, origin), leaf)| leaf.has_validation_hole(origin))
-            .map(|((path, _), _)| path.clone())
+            .filter(|((_, origin, _), leaf)| leaf.has_validation_hole(origin))
+            .map(|((path, _, _), _)| path.clone())
             .collect();
         for path in paths {
             self.insert_leaf(path, Origin::ValidationHole, &Leaf::default());
@@ -121,24 +130,63 @@ impl Value {
 
     pub fn insert(&mut self, path: &[Slot], origins: Origins) {
         for origin in origins {
-            self.leaves.entry((path.to_vec(), origin)).or_default();
+            self.leaves
+                .entry((path.to_vec(), origin, None))
+                .or_default();
         }
     }
 
     pub fn insert_leaf(&mut self, path: Path, origin: Origin, leaf: &Leaf) {
-        self.leaves.entry((path, origin)).or_default().join(leaf);
+        self.insert_contribution(path, origin, None, leaf);
+    }
+
+    pub fn insert_contribution(
+        &mut self,
+        path: Path,
+        origin: Origin,
+        capture: Option<ReferenceCapture>,
+        leaf: &Leaf,
+    ) {
+        self.leaves
+            .entry((path, origin, capture))
+            .or_default()
+            .join(leaf);
     }
 
     pub fn insert_sourced(&mut self, path: Path, origin: Origin, sources: super::demand::Demand) {
+        self.insert_source_contribution(path, origin, None, sources);
+    }
+
+    pub fn insert_source_contribution(
+        &mut self,
+        path: Path,
+        origin: Origin,
+        capture: Option<ReferenceCapture>,
+        sources: super::demand::Demand,
+    ) {
         self.leaves
-            .entry((path.clone(), origin.clone()))
+            .entry((path.clone(), origin.clone(), capture))
             .or_default();
         if !sources.is_empty() {
             self.sources
-                .entry((path, origin))
+                .entry((path, origin, capture))
                 .or_default()
                 .extend(sources);
         }
+    }
+
+    pub fn without_reference_captures(&self) -> Self {
+        let mut result = Self {
+            callees: self.callees.clone(),
+            ..Self::default()
+        };
+        for ((path, origin, _), leaf) in &self.leaves {
+            result.insert_leaf(path.clone(), origin.clone(), leaf);
+        }
+        for ((path, origin, _), sources) in &self.sources {
+            result.insert_sourced(path.clone(), origin.clone(), sources.clone());
+        }
+        result
     }
 
     pub fn insert_addresses(&mut self, path: &[Slot], selected: &Self) {
@@ -173,12 +221,12 @@ impl Value {
 
     pub fn sourced(mut self, storage: &Storage) -> Self {
         self.sources.clear();
-        for (path, origin) in self.leaves.keys() {
+        for (path, origin, capture) in self.leaves.keys() {
             if *origin == Origin::ValidationHole {
                 continue;
             }
             self.sources
-                .entry((path.clone(), origin.clone()))
+                .entry((path.clone(), origin.clone(), *capture))
                 .or_default()
                 .insert(Atom {
                     coordinate: Coordinate {
@@ -186,6 +234,7 @@ impl Value {
                         path: path.clone(),
                     },
                     origin: origin.clone(),
+                    capture: *capture,
                 });
         }
         self
@@ -201,6 +250,52 @@ impl Value {
 
     pub fn is_empty(&self) -> bool {
         self.leaves.is_empty() && self.callees.is_empty()
+    }
+
+    pub fn with_reference_capture(&self, capture: ReferenceCapture) -> Self {
+        let mut result = Self {
+            callees: self.callees.clone(),
+            ..Self::default()
+        };
+        for ((path, origin, previous), leaf) in &self.leaves {
+            let selected = if path.is_empty() || *path == [Slot::Tail] {
+                Some(capture)
+            } else {
+                *previous
+            };
+            result.insert_contribution(path.clone(), origin.clone(), selected, leaf);
+        }
+        for ((path, origin, previous), sources) in &self.sources {
+            let selected = if path.is_empty() || *path == [Slot::Tail] {
+                Some(capture)
+            } else {
+                *previous
+            };
+            result
+                .sources
+                .entry((path.clone(), origin.clone(), selected))
+                .or_default()
+                .extend(sources.iter().cloned());
+        }
+        result
+    }
+
+    pub fn select_reference_capture(&self, capture: ReferenceCapture) -> Self {
+        let mut result = Self::default();
+        for ((path, origin, selected), leaf) in &self.leaves {
+            if selected.is_none_or(|selected| selected == capture) {
+                result.insert_contribution(Vec::new(), origin.clone(), *selected, leaf);
+                if let Some(sources) = self.sources.get(&(path.clone(), origin.clone(), *selected))
+                {
+                    result
+                        .sources
+                        .entry((Vec::new(), origin.clone(), *selected))
+                        .or_default()
+                        .extend(sources.iter().cloned());
+                }
+            }
+        }
+        result
     }
 
     pub fn capture(&self, function: DefId, index: usize) -> Self {
@@ -235,21 +330,21 @@ impl Value {
     pub fn origins(&self) -> Origins {
         self.leaves
             .keys()
-            .map(|(_, origin)| origin.clone())
+            .map(|(_, origin, _)| origin.clone())
             .collect()
     }
 
     pub fn address_sources(&self) -> super::demand::Demand {
         self.sources
             .iter()
-            .filter(|((path, _), _)| path.is_empty() || *path == [Slot::Tail])
+            .filter(|((path, _, _), _)| path.is_empty() || *path == [Slot::Tail])
             .flat_map(|(_, sources)| sources.iter().cloned())
             .collect()
     }
 
     pub fn address_support(&self) -> Origins {
         let mut result = self.addresses();
-        for ((path, _), leaf) in &self.leaves {
+        for ((path, _, _), leaf) in &self.leaves {
             if path.is_empty() || *path == [Slot::Tail] {
                 result.extend(leaf.parents.iter().cloned());
             }
@@ -259,7 +354,7 @@ impl Value {
 
     #[cfg(test)]
     pub fn with_address_support(mut self, parents: &Origins) -> Self {
-        for ((path, _), leaf) in &mut self.leaves {
+        for ((path, _, _), leaf) in &mut self.leaves {
             if path.is_empty() || *path == [Slot::Tail] {
                 leaf.parents.extend(parents.iter().cloned());
             }
@@ -268,7 +363,7 @@ impl Value {
     }
 
     pub fn with_metadata(mut self, metadata: &Leaf) -> Self {
-        for ((path, _), leaf) in &mut self.leaves {
+        for ((path, _, _), leaf) in &mut self.leaves {
             if path.is_empty() || *path == [Slot::Tail] {
                 leaf.join(metadata);
             }
@@ -279,8 +374,8 @@ impl Value {
     pub fn addresses(&self) -> Origins {
         self.leaves
             .keys()
-            .filter(|(path, _)| path.is_empty() || *path == [Slot::Tail])
-            .map(|(_, origin)| origin.clone())
+            .filter(|(path, _, _)| path.is_empty() || *path == [Slot::Tail])
+            .map(|(_, origin, _)| origin.clone())
             .collect()
     }
 
@@ -336,16 +431,16 @@ impl Value {
 
     fn map_borrows(&self, select: impl Fn(&[Slot]) -> Option<Path>) -> Self {
         let mut result = Self::default();
-        for ((path, origin), leaf) in &self.leaves {
+        for ((path, origin, capture), leaf) in &self.leaves {
             if let Some(path) = select(path) {
-                result.insert_leaf(path, origin.clone(), leaf);
+                result.insert_contribution(path, origin.clone(), *capture, leaf);
             }
         }
-        for ((path, origin), sources) in &self.sources {
+        for ((path, origin, capture), sources) in &self.sources {
             if let Some(path) = select(path) {
                 result
                     .sources
-                    .entry((path, origin.clone()))
+                    .entry((path, origin.clone(), *capture))
                     .or_default()
                     .extend(sources.iter().cloned());
             }
@@ -441,6 +536,18 @@ pub(super) fn inputs(
         &mut |path| {
             let mut source = prefix.to_vec();
             source.extend(path.iter().cloned());
+            let capture = source.last().and_then(|slot| match slot {
+                Slot::Capture(owner, index, ty)
+                    if matches!(table.resolve(strip_mutable(*ty, table)), Ty::Ref { .. }) =>
+                {
+                    Some(ReferenceCapture {
+                        owner: *owner,
+                        index: *index,
+                        ty: *ty,
+                    })
+                }
+                _ => None,
+            });
             let selection = normalize(source_ty, source, table);
             let origin = Origin::Input {
                 local,
@@ -450,12 +557,13 @@ pub(super) fn inputs(
                 .iter()
                 .try_fold(ty, |ty, slot| child_type(ty, slot, table))
                 .filter(|ty| matches!(table.resolve(strip_mutable(*ty, table)), Ty::Ref { .. }));
-            let leaf = value.leaves.entry((path, origin)).or_default();
+            let leaf = value.leaves.entry((path, origin, None)).or_default();
             leaf.dependencies.insert(Dependency::InputValue(Selector {
                 input: local,
                 selection,
                 intent: Intent::Value,
                 expected,
+                capture,
             }));
         },
     );
@@ -504,31 +612,35 @@ pub(super) fn validation_hole(ty: TypeId, table: &TypeTable) -> Value {
 }
 
 pub(super) fn tainted_from(ty: TypeId, source: &Value, table: &TypeTable) -> Value {
-    let mut origins = Origins::default();
-    for ((_, origin), leaf) in &source.leaves {
-        if leaf.has_validation_hole(origin) {
+    let mut result = Value::default();
+    for ((path, origin, capture), metadata) in &source.leaves {
+        let mut origins = Origins::default();
+        if metadata.has_validation_hole(origin) {
             origins.insert(Origin::ValidationHole);
         }
-        if !leaf.is_validation_only(origin) {
+        if !metadata.is_validation_only(origin) {
             origins.insert(origin.clone());
         }
-    }
-    let mut result = tainted(ty, &origins, table);
-    for ((path, origin), leaf) in &mut result.leaves {
-        for ((_, candidate), metadata) in &source.leaves {
-            if origin == candidate {
-                leaf.join(metadata);
-            }
-        }
-        for ((_, candidate), sources) in &source.sources {
-            if origin == candidate {
-                result
+        let mut fragment = tainted(ty, &origins, table);
+        for ((target, candidate, _), mut leaf) in std::mem::take(&mut fragment.leaves) {
+            leaf.join(metadata);
+            fragment.insert_contribution(target.clone(), candidate.clone(), *capture, &leaf);
+            if let Some(sources) = source
+                .sources
+                .get(&(path.clone(), origin.clone(), *capture))
+            {
+                fragment
                     .sources
-                    .entry((path.clone(), origin.clone()))
+                    .entry((target, candidate, *capture))
                     .or_default()
                     .extend(sources.iter().cloned());
             }
         }
+        result.join(&fragment);
+    }
+    // Target-only values still need the typed callable result shape.
+    if source.leaves.is_empty() {
+        return tainted(ty, &source.origins(), table);
     }
     result
 }
@@ -668,7 +780,7 @@ mod tests {
                 &table,
             );
             assert_eq!(value.origins(), origins);
-            assert!(value.leaves.keys().all(|(path, _)| path.len() <= 3));
+            assert!(value.leaves.keys().all(|(path, _, _)| path.len() <= 3));
         }
         assert_eq!(
             value
@@ -732,3 +844,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod capture_tests;

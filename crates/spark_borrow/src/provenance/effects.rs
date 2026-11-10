@@ -82,10 +82,18 @@ struct CallActuals<'a> {
     aliases: Option<&'a Aliases>,
 }
 
+impl CallActuals<'_> {
+    fn is_cell(self, port: &Port) -> bool {
+        self.aliases
+            .map_or_else(|| port.exact(), |aliases| aliases.is_cell(port))
+    }
+}
+
 type Summaries = FxHashMap<Key, Summary>;
 type Ports = FxHashMap<DefId, Vec<Port>>;
 
 mod inference;
+mod selection;
 pub use inference::analyze_program;
 #[cfg(test)]
 use inference::infer_summaries;
@@ -239,53 +247,86 @@ impl Flow<'_> {
             .skip(1)
             .take(function.param_count as usize + function.captures.len())
         {
-            let value = Self::actual_input(decl.local, function, actuals);
-            let mut pending = super::callbacks::selectors(decl.ty, self.table);
-            let mut visited = FxHashSet::default();
-            while let Some((path, ty)) = pending.pop() {
-                let path = value::normalize(decl.ty, path, self.table);
-                if path.contains(&Slot::Tail) || !visited.insert((path.clone(), ty)) {
+            let value = self.actual_input(decl.local, function, actuals);
+            let captures: FxHashSet<_> = value
+                .leaves
+                .keys()
+                .filter_map(|(_, _, capture)| *capture)
+                .collect();
+            let mut bases = vec![(value.clone(), decl.ty, None)];
+            for capture in captures {
+                let Some(inner) = child_type(capture.ty, &Slot::Deref, self.table) else {
+                    continue;
+                };
+                if super::callbacks::selectors(inner, self.table).is_empty() {
                     continue;
                 }
-                let selected =
-                    self.select_input(value.clone(), decl.ty, &path, decl.local, function, actuals);
-                let targets = self.callee_targets(&selected, ty);
-                for def in &targets.known {
-                    let Some(target) = self
-                        .program
-                        .and_then(|context| context.mir.functions.get(def))
-                    else {
+                let pointer = value.select_reference_capture(capture);
+                bases.push((
+                    self.dereference(&pointer, capture.ty, actuals.state),
+                    inner,
+                    Some(capture),
+                ));
+            }
+            for (value, root_ty, capture) in bases {
+                let mut pending = super::callbacks::selectors(root_ty, self.table);
+                let mut visited = FxHashSet::default();
+                while let Some((path, ty)) = pending.pop() {
+                    let path = value::normalize(root_ty, path, self.table);
+                    if path.contains(&Slot::Tail) || !visited.insert((path.clone(), ty)) {
                         continue;
-                    };
-                    for (index, (_, capture_ty)) in target.captures.iter().enumerate() {
-                        for (selection, selected_ty) in
-                            super::callbacks::selectors(*capture_ty, self.table)
-                        {
-                            pending.push((
-                                [
-                                    path.clone(),
-                                    vec![Slot::Capture(*def, index, *capture_ty)],
-                                    selection,
-                                ]
-                                .concat(),
-                                selected_ty,
-                            ));
+                    }
+                    let selected = self.select_input(
+                        value.clone(),
+                        root_ty,
+                        &path,
+                        decl.local,
+                        function,
+                        actuals,
+                    );
+                    let targets = self.callee_targets(&selected, ty);
+                    for def in &targets.known {
+                        let Some(target) = self
+                            .program
+                            .and_then(|context| context.mir.functions.get(def))
+                        else {
+                            continue;
+                        };
+                        for (index, (_, capture_ty)) in target.captures.iter().enumerate() {
+                            for (selection, selected_ty) in
+                                super::callbacks::selectors(*capture_ty, self.table)
+                            {
+                                pending.push((
+                                    [
+                                        path.clone(),
+                                        vec![Slot::Capture(*def, index, *capture_ty)],
+                                        selection,
+                                    ]
+                                    .concat(),
+                                    selected_ty,
+                                ));
+                            }
                         }
                     }
+                    inputs
+                        .slots
+                        .entry((decl.local, path, ty, capture))
+                        .or_default()
+                        .join(&targets);
                 }
-                inputs
-                    .slots
-                    .entry((decl.local, path, ty))
-                    .or_default()
-                    .join(&targets);
-            }
-            for (path, targets) in value.callees {
-                let ty = self.selected_type(decl.ty, &path);
-                inputs
-                    .slots
-                    .entry((decl.local, value::normalize(decl.ty, path, self.table), ty))
-                    .or_default()
-                    .join(&targets);
+                for (path, targets) in value.callees {
+                    let ty = self.selected_type(root_ty, &path);
+                    inputs
+                        .slots
+                        .entry((
+                            decl.local,
+                            value::normalize(root_ty, path, self.table),
+                            ty,
+                            capture,
+                        ))
+                        .or_default()
+                        .join(&targets);
+                }
             }
         }
         inputs
@@ -299,7 +340,7 @@ impl Flow<'_> {
     ) {
         for view in &summary.written_inputs {
             let mut input = self.port_input(&view.root, function, actuals);
-            if !view.root.exact() {
+            if !actuals.is_cell(&view.root) {
                 input = self.residual_reference(&input, &view.root, function, actuals);
             }
             let targets = self.project_reference(&input, view.root.pointee, &view.path);
@@ -314,15 +355,7 @@ impl Flow<'_> {
     }
 
     fn port_input(&self, port: &Port, function: &MirFunction, actuals: CallActuals<'_>) -> Value {
-        let source = Self::actual_input(port.input, function, actuals);
-        self.select_input(
-            source,
-            function.locals[port.input.index()].ty,
-            &port.selection,
-            port.input,
-            function,
-            actuals,
-        )
+        self.select_input_value(&port.selector(), function, actuals)
     }
 
     fn bind_outcome(
@@ -356,7 +389,7 @@ impl Flow<'_> {
             let mut targets = super::value::Leaf::default();
             for member in aliases.members(&modified.root) {
                 let mut input = self.port_input(&member, function, actuals);
-                if !member.exact() {
+                if !aliases.is_cell(&member) {
                     input = self.residual_reference(&input, &member, function, actuals);
                 }
                 targets.join(&self.project_reference(&input, member.pointee, &modified.path));
@@ -481,7 +514,7 @@ impl Flow<'_> {
                 .collect();
             for port in ports {
                 let mut selector = port.selector();
-                if !port.exact() {
+                if !self.aliases.is_cell(&port) {
                     if let Intent::Address(payload) = &mut selector.intent {
                         payload.kind = DerefKind::Residual;
                     }
@@ -542,7 +575,7 @@ impl Flow<'_> {
             callees: summary.callees.clone(),
             ..Default::default()
         };
-        for ((path, origin), leaf) in &summary.leaves {
+        for ((path, origin, capture), leaf) in &summary.leaves {
             if leaf.has_validation_hole(origin) {
                 result.insert_leaf(
                     path.clone(),
@@ -593,7 +626,10 @@ impl Flow<'_> {
                                 selector.expected = Some(ty);
                             }
                         }
-                        let selected = self.select_selector(&selector, function, actuals);
+                        let mut selected = self.select_selector(&selector, function, actuals);
+                        if let Some(capture) = capture {
+                            selected = selected.with_reference_capture(*capture);
+                        }
                         if !leaf.opaque.is_empty() {
                             retain_selected(&selected, &mut retained, &mut retained_sources);
                         } else if path.last() == Some(&Slot::Tail) {
@@ -620,10 +656,10 @@ impl Flow<'_> {
                 } else {
                     Origin::Unproven(actuals.point)
                 };
-                result.insert_leaf(path.clone(), identity.clone(), &retained);
+                result.insert_contribution(path.clone(), identity.clone(), *capture, &retained);
                 result
                     .sources
-                    .entry((path.clone(), identity))
+                    .entry((path.clone(), identity, *capture))
                     .or_default()
                     .extend(retained_sources);
             }
@@ -651,140 +687,6 @@ impl Flow<'_> {
         self.record_accesses(actuals.point, accesses, actuals.state);
     }
 
-    fn select_selector(
-        &mut self,
-        selector: &Selector,
-        function: &MirFunction,
-        actuals: CallActuals<'_>,
-    ) -> Value {
-        let source = Self::actual_input(selector.input, function, actuals);
-        let source_ty = function.locals[selector.input.index()].ty;
-        let mut selected = self.select_input(
-            source,
-            source_ty,
-            &selector.selection,
-            selector.input,
-            function,
-            actuals,
-        );
-        let expected = match &selector.intent {
-            Intent::Address(payload) | Intent::Payload(payload) => Some(payload.pointee),
-            Intent::Value => selector.expected.and_then(|ty| {
-                if let spark_types::Ty::Ref { inner, .. } =
-                    self.table.resolve(value::strip_mutable(ty, self.table))
-                {
-                    Some(*inner)
-                } else {
-                    None
-                }
-            }),
-        };
-        if selector.selection.contains(&Slot::Tail) && expected.is_some() {
-            let prefix: Vec<_> = selector
-                .selection
-                .iter()
-                .take_while(|slot| **slot != Slot::Tail)
-                .cloned()
-                .collect();
-            selected = self.tail_reference_value(
-                selected,
-                self.selected_type(source_ty, &prefix),
-                expected,
-                actuals.state,
-            );
-        }
-        if let Intent::Address(payload) | Intent::Payload(payload) = &selector.intent {
-            if payload.kind == DerefKind::Residual {
-                let port = Port {
-                    input: selector.input,
-                    selection: selector.selection.clone(),
-                    pointee: payload.pointee,
-                };
-                selected = self.residual_reference(&selected, &port, function, actuals);
-            }
-        }
-        if let Intent::Address(payload) = &selector.intent {
-            return self.bind_reference(&selected, payload.pointee, &payload.projection, actuals);
-        }
-        if let Intent::Payload(payload) = &selector.intent {
-            let value = self.read_pointee(&selected, payload.pointee, actuals.state);
-            return self.project_path(value, payload.pointee, &payload.projection, actuals.state);
-        }
-        selected
-    }
-
-    fn actual_input(local: Local, function: &MirFunction, actuals: CallActuals<'_>) -> Value {
-        if local.0 > 0 && local.0 <= function.param_count {
-            actuals
-                .arguments
-                .get(local.index() - 1)
-                .cloned()
-                .unwrap_or_default()
-        } else if local.0 > function.param_count {
-            actuals.callee.capture(
-                function.def_id,
-                local.index() - function.param_count as usize - 1,
-            )
-        } else {
-            Value::default()
-        }
-    }
-
-    fn bind_reference(
-        &mut self,
-        selected: &Value,
-        ty: TypeId,
-        projection: &Path,
-        actuals: CallActuals<'_>,
-    ) -> Value {
-        if selected.is_empty() {
-            return Value::default();
-        }
-        let mut accesses = Accesses::default();
-        accesses.observe_reference(selected, None, projection, AccessKind::Address);
-        self.record_accesses(actuals.point, accesses, actuals.state);
-        let metadata = self.project_reference(selected, ty, projection);
-        let mut result = Value::reference(Origin::Loan(actuals.point)).with_metadata(&metadata);
-        result.insert_sourced(
-            Vec::new(),
-            Origin::Loan(actuals.point),
-            selected.address_sources(),
-        );
-        result
-    }
-
-    fn select_input(
-        &self,
-        mut value: Value,
-        source_ty: TypeId,
-        path: &Path,
-        input: Local,
-        function: &MirFunction,
-        actuals: CallActuals<'_>,
-    ) -> Value {
-        let mut ty = source_ty;
-        for (index, slot) in path.iter().enumerate() {
-            if *slot == Slot::Tail {
-                break;
-            }
-            value = match slot {
-                Slot::Deref => self.dereference(&value, ty, actuals.state),
-                Slot::ResidualDeref => {
-                    let port = Port {
-                        input,
-                        selection: path[..index].to_vec(),
-                        pointee: child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR),
-                    };
-                    let selected = self.residual_reference(&value, &port, function, actuals);
-                    self.dereference(&selected, ty, actuals.state)
-                }
-                _ => value.project(slot),
-            };
-            ty = child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR);
-        }
-        value
-    }
-
     fn residual_reference(
         &self,
         value: &Value,
@@ -794,6 +696,9 @@ impl Flow<'_> {
     ) -> Value {
         let mut selected = self.expand_reference(value, port.pointee);
         selected.materialize_validation_holes();
+        if actuals.is_cell(port) {
+            return selected;
+        }
         let Some(aliases) = actuals.aliases else {
             return selected;
         };
@@ -814,7 +719,7 @@ impl Flow<'_> {
                 }
             }
         }
-        selected.leaves.retain(|(_, origin), leaf| {
+        selected.leaves.retain(|(_, origin, _), leaf| {
             leaf.endpoints.retain(|endpoint| {
                 let pointer = Value::reference(origin.clone()).with_metadata(&super::value::Leaf {
                     endpoints: std::iter::once(endpoint.clone()).collect(),
@@ -842,7 +747,7 @@ impl Flow<'_> {
 
     fn expand_reference(&self, value: &Value, ty: TypeId) -> Value {
         let mut result = Value::default();
-        for (key @ (path, _), leaf) in &value.leaves {
+        for (key @ (path, _, _), leaf) in &value.leaves {
             if !path.is_empty() && *path != [Slot::Tail] {
                 continue;
             }
@@ -857,7 +762,7 @@ impl Flow<'_> {
                             let mut selected = view.root.selector();
                             if let Intent::Address(payload) = &mut selected.intent {
                                 payload.projection = view.path;
-                                if !view.root.exact() {
+                                if !self.aliases.is_cell(&view.root) {
                                     payload.kind = DerefKind::Residual;
                                 }
                             }
@@ -883,7 +788,7 @@ fn export_value(value: &Value, function: DefId) -> Value {
         callees: value.callees.clone(),
         ..Default::default()
     };
-    for ((path, origin), leaf) in &value.leaves {
+    for ((path, origin, capture), leaf) in &value.leaves {
         if leaf.has_validation_hole(origin) {
             result.insert_leaf(
                 path.clone(),
@@ -907,7 +812,7 @@ fn export_value(value: &Value, function: DefId) -> Value {
         };
         let mut leaf = leaf.clone();
         leaf.parents.clear();
-        result.insert_leaf(path.clone(), origin, &leaf);
+        result.insert_contribution(path.clone(), origin, *capture, &leaf);
     }
     result
 }

@@ -458,11 +458,20 @@ impl<'a> Flow<'a> {
                 }
                 AggregateKind::Channel => continue,
             };
-            result.join(
-                &self
-                    .read_operand(operand, state, accesses)
-                    .prefixed(slot, ty, self.table),
-            );
+            let mut value = self.read_operand(operand, state, accesses);
+            if let Slot::Capture(owner, index, capture_ty) = slot {
+                if matches!(
+                    self.table.resolve(strip_mutable(capture_ty, self.table)),
+                    Ty::Ref { .. }
+                ) {
+                    value = value.with_reference_capture(value::ReferenceCapture {
+                        owner,
+                        index,
+                        ty: capture_ty,
+                    });
+                }
+            }
+            result.join(&value.prefixed(slot, ty, self.table));
         }
         result
     }
@@ -534,7 +543,7 @@ impl<'a> Flow<'a> {
         let Some(loan) = facts.loans.iter().find(|loan| loan.issued_at == point) else {
             return;
         };
-        if value.leaves.keys().any(|(path, _)| path.is_empty()) {
+        if value.leaves.keys().any(|(path, _, _)| path.is_empty()) {
             crate::errors::emit_dangling_return(diagnostics, loan, self.function);
             return;
         }

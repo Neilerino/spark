@@ -1,8 +1,8 @@
 // TAG [SPARK-114]
 
 use super::{
-    Aliases, Context, DefId, Diagnostics, Flow, FxHashMap, FxHashSet, Key, Mir, Ports, Summaries,
-    Summary, TypeTable,
+    Context, DefId, Diagnostics, Flow, FxHashMap, FxHashSet, Key, Mir, Ports, Summaries, Summary,
+    TypeTable,
 };
 
 pub fn analyze_program(
@@ -73,7 +73,7 @@ pub(super) fn infer_summaries(
         }
         if discovered != ports {
             for key in next.keys() {
-                for aliases in Aliases::body_variants(
+                for aliases in key.aliases.body_variants(
                     &mir.functions[&key.function],
                     &discovered[&key.function],
                     table,

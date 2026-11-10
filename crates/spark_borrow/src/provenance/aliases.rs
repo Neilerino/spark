@@ -15,6 +15,7 @@ pub(super) struct Port {
     pub input: Local,
     pub selection: Path,
     pub pointee: TypeId,
+    pub capture: Option<super::value::ReferenceCapture>,
 }
 
 impl Port {
@@ -56,6 +57,7 @@ impl Port {
             input: selector.input,
             selection,
             pointee,
+            capture: selector.address_capture(),
         })
     }
 
@@ -64,11 +66,13 @@ impl Port {
             input,
             selection: Vec::new(),
             pointee,
+            capture: None,
         }
     }
 
     pub fn selector(&self) -> Selector {
         Selector {
+            capture: self.capture,
             input: self.input,
             selection: self.selection.clone(),
             intent: Intent::Address(TypedPath {
@@ -117,6 +121,7 @@ pub(super) struct Aliases {
     exact: Vec<(Port, Port)>,
     families: Vec<Family>,
     disjoint: Vec<(Port, Port)>,
+    single_cells: Vec<Port>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -153,6 +158,10 @@ impl Key {
 }
 
 impl Aliases {
+    pub fn is_cell(&self, port: &Port) -> bool {
+        port.exact() || self.single_cells.contains(port)
+    }
+
     pub fn representative(&self, input: &Port) -> Port {
         self.exact
             .iter()
@@ -160,7 +169,12 @@ impl Aliases {
             .unwrap_or_else(|| input.clone())
     }
 
-    pub fn body_variants(function: &MirFunction, ports: &[Port], table: &TypeTable) -> Vec<Self> {
+    pub fn body_variants(
+        &self,
+        function: &MirFunction,
+        ports: &[Port],
+        table: &TypeTable,
+    ) -> Vec<Self> {
         let exclusive = |port: &Port| {
             let ty = Port::selected_type(
                 function.locals[port.input.index()].ty,
@@ -173,9 +187,10 @@ impl Aliases {
                     spark_types::Ty::Ref { mutable: true, .. }
                 )
         };
-        let mut variants = Self::variants(ports, table, |left, right, equal| {
-            !(equal && exclusive(left) && exclusive(right))
-        });
+        let mut variants =
+            Self::variants(ports, table, &self.single_cells, |left, right, equal| {
+                !(equal && exclusive(left) && exclusive(right))
+            });
         for aliases in &mut variants {
             aliases.set_families(ports, table, None, &Self::default());
         }
@@ -188,17 +203,23 @@ impl Aliases {
         locations: &FxHashMap<Port, Option<FxHashSet<Location>>>,
         caller: &Self,
     ) -> Vec<Self> {
-        let mut variants = Self::variants(ports, table, |left, right, equal| {
-            match (&locations[left], &locations[right]) {
-                (Some(left), Some(right))
-                    if singleton(left).is_some() && singleton(right).is_some() =>
-                {
-                    equal == (left == right)
+        let single_cells: Vec<_> = ports
+            .iter()
+            .filter(|port| !port.exact() && locations[*port].as_ref().and_then(singleton).is_some())
+            .cloned()
+            .collect();
+        let mut variants =
+            Self::variants(ports, table, &single_cells, |left, right, equal| {
+                match (&locations[left], &locations[right]) {
+                    (Some(left), Some(right))
+                        if singleton(left).is_some() && singleton(right).is_some() =>
+                    {
+                        equal == (left == right)
+                    }
+                    (Some(left), Some(right)) if disjoint(left, right, caller) => !equal,
+                    _ => true,
                 }
-                (Some(left), Some(right)) if disjoint(left, right, caller) => !equal,
-                _ => true,
-            }
-        });
+            });
         for aliases in &mut variants {
             aliases.set_families(ports, table, Some(locations), caller);
         }
@@ -212,7 +233,10 @@ impl Aliases {
         locations: Option<&FxHashMap<Port, Option<FxHashSet<Location>>>>,
         caller: &Self,
     ) {
-        for port in ports.iter().filter(|port| !port.exact()) {
+        for port in ports {
+            if self.is_cell(port) {
+                continue;
+            }
             let mut family = self.universal_family(port, ports, table);
             if let Some(locations) = locations {
                 if let Some(actual) = &locations[port] {
@@ -253,7 +277,7 @@ impl Aliases {
         let mut roots = Vec::new();
         for named in ports
             .iter()
-            .filter(|named| named.exact() && compatible(port.pointee, named.pointee, table))
+            .filter(|named| self.is_cell(named) && compatible(port.pointee, named.pointee, table))
         {
             let root = self.representative(named);
             if !roots.contains(&root) {
@@ -269,6 +293,15 @@ impl Aliases {
     }
 
     pub fn family(&self, port: &Port, ports: &[Port], table: &TypeTable) -> Family {
+        if self.is_cell(port) {
+            let root = self.representative(port);
+            return Family {
+                port: port.clone(),
+                roots: vec![root.clone()],
+                excluded: vec![root],
+                residual: false,
+            };
+        }
         self.families
             .iter()
             .find(|family| &family.port == port)
@@ -277,6 +310,9 @@ impl Aliases {
     }
 
     pub fn residuals_overlap(&self, left: &Port, right: &Port) -> bool {
+        if self.is_cell(left) && self.is_cell(right) {
+            return self.representative(left) == self.representative(right);
+        }
         !self
             .disjoint
             .iter()
@@ -295,6 +331,7 @@ impl Aliases {
     fn variants(
         ports: &[Port],
         table: &TypeTable,
+        single_cells: &[Port],
         allowed: impl Fn(&Port, &Port, bool) -> bool,
     ) -> Vec<Self> {
         fn visit(
@@ -346,13 +383,25 @@ impl Aliases {
                 }
             }
         }
-        let ports: Vec<_> = ports.iter().filter(|port| port.exact()).cloned().collect();
+        let cells: Vec<_> = ports
+            .iter()
+            .filter(|port| single_cells.contains(port))
+            .cloned()
+            .collect();
+        let ports: Vec<_> = ports
+            .iter()
+            .filter(|port| port.exact() || cells.contains(port))
+            .cloned()
+            .collect();
         let mut result = Vec::new();
         visit(
             &ports,
             table,
             0,
-            &mut Self::default(),
+            &mut Self {
+                single_cells: cells,
+                ..Self::default()
+            },
             &allowed,
             &mut result,
         );
@@ -420,7 +469,7 @@ impl Flow<'_> {
             .into_iter()
             .flat_map(|context| context.ports[&self.function.def_id].iter())
             .filter(|other| {
-                !other.exact()
+                !self.aliases.is_cell(other)
                     && *other != port
                     && compatible(port.pointee, other.pointee, self.table)
                     && self.family(other).residual
@@ -460,7 +509,7 @@ impl Flow<'_> {
                 Endpoint::Input(selector) if matches!(&selector.intent, Intent::Address(payload) if payload.projection.is_empty()) =>
                 {
                     let port = Port::from_selector(selector, self.function, self.table)?;
-                    if !port.exact() {
+                    if !self.aliases.is_cell(&port) {
                         let family = self.family(&port);
                         if matches!(&selector.intent, Intent::Address(payload) if payload.kind == DerefKind::All)
                         {
@@ -596,7 +645,7 @@ mod tests {
             .map(|index| Port::root(Local(index), map))
             .collect();
         assert_eq!(
-            Aliases::body_variants(&function, &ports, &table),
+            Aliases::default().body_variants(&function, &ports, &table),
             vec![Aliases::default()]
         );
         let locations = ports
@@ -666,6 +715,7 @@ mod tests {
             span: Span::DUMMY,
         };
         let family = Port {
+            capture: None,
             input: Local(1),
             selection: vec![Slot::Element],
             pointee: map,
@@ -685,7 +735,7 @@ mod tests {
     fn family_support_preserves_many_targets_and_refines_proven_singletons() {
         let (table, function, family, root) = family_fixture();
         let ports = [family.clone(), root.clone()];
-        let body = Aliases::body_variants(&function, &ports, &table);
+        let body = Aliases::default().body_variants(&function, &ports, &table);
         assert_eq!(
             body.len(),
             1,
@@ -721,8 +771,17 @@ mod tests {
             let variants = Aliases::call_variants(&ports, &table, &locations, &Aliases::default());
             assert_eq!(variants.len(), 1);
             let support = variants[0].family(&family, &ports, &table);
-            assert_eq!(support.roots.contains(&root), overlaps);
-            assert_eq!(support.residual, residual);
+            if variants[0].is_cell(&family) {
+                assert_eq!(
+                    variants[0].representative(&family) == variants[0].representative(&root),
+                    overlaps
+                );
+                assert_eq!(support.roots, vec![variants[0].representative(&family)]);
+                assert!(!support.residual);
+            } else {
+                assert_eq!(support.roots.contains(&root), overlaps);
+                assert_eq!(support.residual, residual);
+            }
         }
     }
 
@@ -731,6 +790,7 @@ mod tests {
         let (table, _, family, _) = family_fixture();
         let ports: Vec<_> = (1..=3)
             .map(|input| Port {
+                capture: None,
                 input: Local(input),
                 ..family.clone()
             })
@@ -762,6 +822,7 @@ mod tests {
         let reference = child_type(family.pointee, &Slot::Value, &table).unwrap();
         let inner = child_type(reference, &Slot::Deref, &table).unwrap();
         let selector = Selector {
+            capture: None,
             input: family.input,
             selection: family.selection,
             intent: Intent::Payload(TypedPath {
@@ -800,10 +861,12 @@ mod tests {
     }
 
     #[test]
-    fn only_a_proven_exact_target_can_define_storage_after_a_family_write() {
+    fn only_a_proven_single_target_can_define_storage_after_a_family_write() {
         let (table, function, family, root) = family_fixture();
         let ports = [family.clone(), root.clone()];
-        let body = Aliases::body_variants(&function, &ports, &table).remove(0);
+        let body = Aliases::default()
+            .body_variants(&function, &ports, &table)
+            .remove(0);
         let locations = FxHashMap::from_iter([
             (
                 family.clone(),
@@ -835,7 +898,7 @@ mod tests {
             assert_eq!(!flow.transfers[&point].definitions.is_empty(), strong);
             let mut coverage = super::super::writes::Coverage::default();
             if strong {
-                coverage.insert(View::whole(root.clone()));
+                coverage.insert(View::whole(flow.aliases.representative(&root)));
             }
             assert_eq!(state.external_defined, coverage);
         }

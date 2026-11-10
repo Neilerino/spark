@@ -1,0 +1,31 @@
+// TAG [SPARK-114]
+
+struct CallableHolder { callback: Ref[(): Map[String, Ref[Int]]] }
+fn nest(callback: (): Map[String, Ref[Int]]): (): Map[String, Ref[Int]] {
+    return fn(): Map[String, Ref[Int]] { return callback() }
+}
+fn produce(value: Int): Map[String, Ref[Int]] {
+    borrowed: Ref[Int] = value
+    entries: Map[String, Ref[Int]] = {"one": borrowed}
+    original: (): Map[String, Ref[Int]] = fn(): Map[String, Ref[Int]] { return entries }
+    pointer: Ref[(): Map[String, Ref[Int]]] = original
+    holder: CallableHolder = CallableHolder { callback: pointer }
+    outer: Ref[CallableHolder] = holder
+    callback: (): Map[String, Ref[Int]] = fn(): Map[String, Ref[Int]] {
+        selected: CallableHolder = outer
+        pointer: Ref[(): Map[String, Ref[Int]]] = selected.callback
+        loaded: (): Map[String, Ref[Int]] = pointer
+        return loaded()
+    }
+    first: (): Map[String, Ref[Int]] = nest(callback)
+    second: (): Map[String, Ref[Int]] = nest(first)
+    third: (): Map[String, Ref[Int]] = nest(second)
+    return third()
+}
+fn main(): Int {
+    value: Int = 7
+    source: Ref[Int] = value
+    result: Map[String, Ref[Int]] = produce(value)
+    result["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    return 0
+}

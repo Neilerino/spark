@@ -35,11 +35,11 @@ fn known_and_unresolved_alternatives_survive_collection_projection() {
 #[test]
 fn callback_context_identity_is_independent_of_discovery_order() {
     let first = (
-        (Local(1), vec![Slot::Tuple(0)], TypeId::ERROR),
+        (Local(1), vec![Slot::Tuple(0)], TypeId::ERROR, None),
         Targets::function(DefId::new(9861)),
     );
     let second = (
-        (Local(2), vec![], TypeId::ERROR),
+        (Local(2), vec![], TypeId::ERROR, None),
         Targets {
             unresolved: true,
             ..Targets::default()
@@ -172,4 +172,182 @@ fn tail_target_queries_are_typed_and_exact_roots_take_precedence() {
     assert!(flow.callee_targets(&uncertain, callable).unresolved);
     let mismatched = Value::function(arity).prefixed(Slot::Tail, callable, &table);
     assert!(flow.callee_targets(&mismatched, callable).unresolved);
+}
+
+fn source_function(ty: TypeId) -> spark_mir::MirFunction {
+    spark_mir::MirFunction {
+        def_id: DefId::new(9930),
+        param_count: 1,
+        return_type: ty,
+        locals: [ty, ty]
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| spark_mir::LocalDecl {
+                local: Local(index as u32),
+                ty,
+                name: None,
+                is_user_variable: false,
+                mutable: false,
+                span: spark_span::Span::DUMMY,
+            })
+            .collect(),
+        blocks: vec![],
+        captures: vec![],
+        is_async: false,
+        span: spark_span::Span::DUMMY,
+    }
+}
+
+#[test]
+fn callable_facts_only_materialize_owned_function_locations() {
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let reference = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: spark_types::LifetimeId::ANONYMOUS,
+    });
+    let callable = table.intern(Ty::Function {
+        params: vec![],
+        ret: int,
+        is_async: false,
+    });
+    let pointer = table.intern(Ty::Ref {
+        inner: callable,
+        mutable: false,
+        lifetime: spark_types::LifetimeId::ANONYMOUS,
+    });
+    let data = table.intern(Ty::Map(int, reference));
+    let functions = table.intern(Ty::Map(int, callable));
+    let target = DefId::new(9931);
+    for (ty, path, owned) in [
+        (data, vec![], false),
+        (pointer, vec![Slot::Deref], false),
+        (functions, vec![Slot::Value], true),
+    ] {
+        let function = source_function(ty);
+        let mut flow = Flow::new(&function, &table, None);
+        flow.callables = Inputs::invocation();
+        flow.callables.slots.insert(
+            (Local(1), path.clone(), callable, None),
+            Targets::function(target),
+        );
+        let value = flow.symbolic_input(ty, Local(1), ty, &[]);
+        assert_eq!(value.callees.contains_key(&path), owned);
+        if !owned {
+            assert!(value.callees.is_empty());
+        }
+        if ty == pointer {
+            let address = super::super::address::Selector {
+                input: Local(1),
+                selection: vec![],
+                capture: None,
+                expected: Some(callable),
+                intent: super::super::address::Intent::Address(super::super::address::TypedPath {
+                    kind: super::super::address::DerefKind::All,
+                    pointee: callable,
+                    projection: vec![],
+                }),
+            };
+            let pointed =
+                flow.symbolic_pointee_input(callable, pointer, &[Slot::Deref], &address, None);
+            assert_eq!(
+                pointed.callees[&vec![]].known,
+                FxHashSet::from_iter([target])
+            );
+        }
+    }
+}
+
+#[test]
+fn widened_pointees_do_not_reuse_surrounding_function_value_targets() {
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let callable = table.intern(Ty::Function {
+        params: vec![],
+        ret: int,
+        is_async: false,
+    });
+    let function = source_function(callable);
+    let mut flow = Flow::new(&function, &table, None);
+    flow.callables = Inputs::invocation();
+    let target = DefId::new(9932);
+    flow.callables.slots.insert(
+        (Local(1), vec![Slot::Tail], callable, None),
+        Targets::function(target),
+    );
+    let owned = flow.symbolic_input(callable, Local(1), callable, &[Slot::Tail]);
+    assert_eq!(owned.callees[&vec![]].known, FxHashSet::from_iter([target]));
+    let address = super::super::address::Selector {
+        input: Local(1),
+        selection: vec![Slot::Tail],
+        capture: None,
+        expected: Some(callable),
+        intent: super::super::address::Intent::Address(super::super::address::TypedPath {
+            kind: super::super::address::DerefKind::All,
+            pointee: callable,
+            projection: vec![],
+        }),
+    };
+    let pointed = flow.symbolic_pointee_input(callable, callable, &[Slot::Tail], &address, None);
+    let targets = &pointed.callees[&vec![]];
+    assert!(targets.known.is_empty());
+    assert!(targets.unresolved && !targets.open);
+}
+
+#[test]
+fn captured_pointee_facts_do_not_collide_with_surrounding_function_facts() {
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let callable = table.intern(Ty::Function {
+        params: vec![],
+        ret: int,
+        is_async: false,
+    });
+    let pointer = table.intern(Ty::Ref {
+        inner: callable,
+        mutable: false,
+        lifetime: spark_types::LifetimeId::ANONYMOUS,
+    });
+    let capture = value::ReferenceCapture {
+        owner: DefId::new(9933),
+        index: 0,
+        ty: pointer,
+    };
+    let outer = DefId::new(9934);
+    let inner = DefId::new(9935);
+    let function = source_function(callable);
+    let mut flow = Flow::new(&function, &table, None);
+    flow.callables = Inputs::invocation();
+    flow.callables
+        .slots
+        .insert((Local(1), vec![], callable, None), Targets::function(outer));
+    flow.callables.slots.insert(
+        (Local(1), vec![], callable, Some(capture)),
+        Targets {
+            open: true,
+            ..Targets::function(inner)
+        },
+    );
+    let surrounding = flow.symbolic_input(callable, Local(1), callable, &[]);
+    assert_eq!(
+        surrounding.callees[&vec![]].known,
+        FxHashSet::from_iter([outer])
+    );
+    assert!(!surrounding.callees[&vec![]].open);
+    let address = super::super::address::Selector {
+        input: Local(1),
+        selection: vec![Slot::Tail],
+        capture: Some(capture),
+        expected: Some(callable),
+        intent: super::super::address::Intent::Address(super::super::address::TypedPath {
+            kind: super::super::address::DerefKind::All,
+            pointee: callable,
+            projection: vec![],
+        }),
+    };
+    let pointed = flow.symbolic_pointee_input(callable, callable, &[Slot::Tail], &address, None);
+    let targets = &pointed.callees[&vec![]];
+    assert_eq!(targets.known, FxHashSet::from_iter([inner]));
+    assert!(targets.open && !targets.unresolved);
 }

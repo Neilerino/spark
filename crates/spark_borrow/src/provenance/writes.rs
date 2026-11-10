@@ -113,7 +113,7 @@ impl Flow<'_> {
             if strong {
                 current
                     .leaves
-                    .retain(|(stored, _), _| !super::storage::prefix(path, stored));
+                    .retain(|(stored, _, _), _| !super::storage::prefix(path, stored));
                 current
                     .callees
                     .retain(|stored, _| !super::storage::prefix(path, stored));
@@ -190,7 +190,7 @@ impl Flow<'_> {
                         }
                         targets.physical.insert(coordinate.clone());
                         targets.all.insert(coordinate);
-                        if !view.root.exact() {
+                        if !self.aliases.is_cell(&view.root) {
                             for peer in self.residual_peers(&view.root) {
                                 targets.all.insert(Coordinate {
                                     storage: Storage::External(peer),
@@ -210,7 +210,7 @@ impl Flow<'_> {
         let Some((view, exact)) = self.external_target(selector) else {
             return Vec::new();
         };
-        if view.root.exact() {
+        if self.aliases.is_cell(&view.root) {
             return vec![(view, exact)];
         }
         let family = self.family(&view.root);
@@ -242,7 +242,9 @@ impl Flow<'_> {
             view.path.extend(payload.projection.iter().cloned());
         }
         view.path = super::value::normalize(view.root.pointee, view.path, self.table);
-        let exact = port.exact() && view.root.exact() && owned_path(&view.path);
+        let exact = self.aliases.is_cell(&port)
+            && self.aliases.is_cell(&view.root)
+            && owned_path(&view.path);
         Some((view, exact))
     }
 
@@ -339,6 +341,7 @@ mod tests {
     fn whole_owner_coverage_does_not_define_an_independent_reference_pointee() {
         let root = Port::root(Local(1), spark_types::TypeId::ERROR);
         let pointee = Port {
+            capture: None,
             selection: vec![super::super::Slot::Deref, super::super::Slot::Tuple(0)],
             ..root.clone()
         };

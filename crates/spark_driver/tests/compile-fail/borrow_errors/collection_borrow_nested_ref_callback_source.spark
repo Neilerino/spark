@@ -1,0 +1,33 @@
+// TAG [SPARK-114]
+
+fn nest(callback: (): Int): (): Int {
+    return fn(): Int { return callback() }
+}
+fn nestPointer(pointer: Ref[(): Int]): (): Int {
+    return fn(): Int {
+        callback: (): Int = pointer
+        return callback()
+    }
+}
+fn main(): Int {
+    original: (): Int = if true {
+        text: String = "seven"
+        borrowed: Ref[String] = text
+        callback: (): Int = fn(): Int { return borrowed.len() }
+        callback
+    } else {
+        fallback: (): Int = fn(): Int { return 0 }
+        fallback
+    }
+    retained: Map[Int, (): Int]! = {}
+    if true {
+        pointer: Ref[(): Int] = original
+        once: (): Int = nestPointer(pointer)
+        twice: (): Int = nest(once)
+        three: (): Int = nest(twice)
+        entries: Map[Int, (): Int] = {1: three}
+        retained = entries
+    }
+    retained[1] to { callback: (): Int -> print(callback()), Null -> print(0) }
+    return 0
+}
