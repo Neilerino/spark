@@ -1,0 +1,16 @@
+struct Holder { value: Ref[String] }
+async fn make(holder: Holder): Channel[Ref[String]] {
+    result: Channel[Ref[String]] = Channel[Ref[String]]()
+    result.send(holder.value)
+    return result
+}
+fn main(): Int {
+    text: String = " seven ".trim()
+    borrowed: Ref[String] = text
+    holder: Holder = Holder { value: borrowed }
+    pending: Future[Channel[Ref[String]]] = spawn { make(holder) }
+    selected: Channel[Ref[String]] = await pending
+    value: Ref[String] = selected.recv()
+    print(value.len())
+    return 0
+}

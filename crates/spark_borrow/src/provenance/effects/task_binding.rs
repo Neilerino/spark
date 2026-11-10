@@ -50,10 +50,10 @@ impl Flow<'_> {
                 callback: callback.clone(),
                 callback_ty: super::super::operand_type(argument, self.function),
             };
-            let facts = self.task_facts(&record, point, state, *inner);
-            self.observe_prefix(&facts.prefix, point, state);
             let (target, mut returned) =
                 super::super::tasks::birth(self.function.def_id, point, ty);
+            let facts = self.task_facts(&record, &target, point, state, *inner);
+            self.observe_prefix(&facts.prefix, point, state);
             returned.join(&callback.task_lineage());
             returned.join(&facts.returned.prefixed(Slot::Element, ty, self.table));
             return Some(TaskDispatch::Returns(vec![CallOutcome {
@@ -97,7 +97,7 @@ impl Flow<'_> {
                         handle.target.clone(),
                         record.callback_ty,
                     ));
-                let facts = self.task_facts(&record, point, state, ty);
+                let facts = self.task_facts(&record, &handle.target, point, state, ty);
                 if handle.pending {
                     self.observe_prefix(&facts.prefix, point, state);
                     queues.extend(facts.prefix.queues);
@@ -136,6 +136,7 @@ impl Flow<'_> {
     pub(in crate::provenance) fn task_facts(
         &mut self,
         record: &Record,
+        target: &Target,
         point: Point,
         state: &super::super::State,
         ty: TypeId,
@@ -148,6 +149,7 @@ impl Flow<'_> {
             ty,
             point,
             state,
+            instantiation_site: target.instantiation_site(),
             aliases: None,
         };
         let targets = self.callee_targets(callee, record.callback_ty);
@@ -238,10 +240,7 @@ impl Flow<'_> {
                 if handles.is_empty() {
                     return FxHashSet::from_iter([Handle {
                         target: Target::Unknown {
-                            site: super::super::address::OpaqueSite {
-                                function: self.function.def_id,
-                                point: actuals.point,
-                            },
+                            site: actuals.instantiation_site(self.function.def_id),
                             ty: *ty,
                         },
                         pending: true,
@@ -253,25 +252,16 @@ impl Flow<'_> {
             Target::Birth {
                 constructor, ty, ..
             } => Target::Birth {
-                site: super::super::address::OpaqueSite {
-                    function: self.function.def_id,
-                    point: actuals.point,
-                },
+                site: actuals.instantiation_site(self.function.def_id),
                 constructor: *constructor,
                 ty: *ty,
             },
             Target::Unknown { ty, .. } => Target::Unknown {
-                site: super::super::address::OpaqueSite {
-                    function: self.function.def_id,
-                    point: actuals.point,
-                },
+                site: actuals.instantiation_site(self.function.def_id),
                 ty: *ty,
             },
             Target::Validation { path, ty, .. } => Target::Validation {
-                site: super::super::address::OpaqueSite {
-                    function: self.function.def_id,
-                    point: actuals.point,
-                },
+                site: actuals.instantiation_site(self.function.def_id),
                 path: path.clone(),
                 ty: *ty,
             },

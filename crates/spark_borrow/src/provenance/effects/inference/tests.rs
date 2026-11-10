@@ -73,6 +73,159 @@ fn task_queue_writes_are_exported_even_when_the_task_never_returns() {
     }
 }
 
+#[test]
+fn task_created_queues_keep_their_identity_across_observation_points() {
+    use super::super::CallActuals;
+    use crate::{
+        facts::Point,
+        provenance::{
+            channels::{OutputStorage, Target},
+            value::child_type,
+            Slot, Value,
+        },
+    };
+    use spark_mir::BlockId;
+    let output = lower_source(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_private_returned_queue_scoped.spark"
+    )));
+    assert!(!output.diagnostics.has_errors());
+    let facts = output
+        .mir
+        .functions
+        .iter()
+        .map(|(id, function)| (*id, crate::facts::extract_facts(function)))
+        .collect();
+    let (summaries, ports, proofs) = infer_summaries_with_definitions(
+        &output.mir,
+        &output.table,
+        &facts,
+        Some(&output.definitions),
+    );
+    let context = Context {
+        mir: &output.mir,
+        summaries: &summaries,
+        ports: &ports,
+        definitions: Some(&output.definitions),
+        proofs: Some(&proofs),
+    };
+    let function = output
+        .mir
+        .functions
+        .values()
+        .find(|function| {
+            output
+                .definitions
+                .get(function.def_id)
+                .unwrap()
+                .name
+                .as_str()
+                == "main"
+        })
+        .unwrap();
+    let mut flow = Flow::new(function, &output.table, Some(context));
+    flow.solve(&facts[&function.def_id]);
+    let state = flow
+        .entries
+        .iter()
+        .flatten()
+        .find(|state| !state.tasks.is_empty())
+        .unwrap()
+        .clone();
+    let (target, record) = state.tasks.iter().next().unwrap();
+    let inner = child_type(target.ty(), &Slot::Element, &output.table).unwrap();
+    let first = flow.task_facts(record, target, Point::new(BlockId::ENTRY, 0), &state, inner);
+    let later = flow.task_facts(record, target, Point::new(BlockId::ENTRY, 1), &state, inner);
+    let targets = |value: &Value| {
+        value
+            .queues
+            .values()
+            .flatten()
+            .map(|handle| handle.target.clone())
+            .collect::<FxHashSet<_>>()
+    };
+    let first_targets = targets(&first.returned);
+    assert!(!first_targets.is_empty());
+    assert_eq!(first_targets, targets(&later.returned));
+    let site = target.instantiation_site().unwrap();
+    assert!(first_targets.iter().all(|target| matches!(target,
+        Target::Allocation { function, point, constructor: Some(constructor), .. }
+            if *function == site.function && *point == site.point
+                && constructor.role.as_ref().is_some_and(|role| role.storage == OutputStorage::Return)
+    )));
+
+    let callee = Value::default();
+    let queue = first_targets.iter().next().unwrap();
+    let earlier_point = Point::new(BlockId::ENTRY, 0);
+    let later_point = Point::new(BlockId::ENTRY, 1);
+    let actuals = CallActuals {
+        callee: &callee,
+        arguments: &[],
+        ty: inner,
+        point: earlier_point,
+        instantiation_site: None,
+        state: &state,
+        aliases: None,
+    };
+    let ordinary_earlier = flow.bind_queue_target(queue, function, actuals);
+    let ordinary_later = flow.bind_queue_target(
+        queue,
+        function,
+        CallActuals {
+            point: later_point,
+            ..actuals
+        },
+    );
+    assert_ne!(ordinary_earlier, ordinary_later);
+    let stable_later = flow.bind_queue_target(
+        queue,
+        function,
+        CallActuals {
+            point: later_point,
+            instantiation_site: Some(site),
+            ..actuals
+        },
+    );
+    assert_eq!(stable_later, first_targets);
+    let ordinary_future = flow.bind_task_target(target, function, actuals);
+    let later_future = flow.bind_task_target(
+        target,
+        function,
+        CallActuals {
+            point: later_point,
+            ..actuals
+        },
+    );
+    assert_ne!(ordinary_future, later_future);
+    let stable_future = flow.bind_task_target(
+        target,
+        function,
+        CallActuals {
+            point: later_point,
+            instantiation_site: Some(site),
+            ..actuals
+        },
+    );
+    assert_eq!(stable_future.len(), 1);
+    assert_eq!(&stable_future.iter().next().unwrap().target, target);
+
+    assert!(!first.prefix.queues.is_empty());
+    assert_eq!(
+        first
+            .prefix
+            .queues
+            .iter()
+            .map(|write| write.target.clone())
+            .collect::<FxHashSet<_>>(),
+        later
+            .prefix
+            .queues
+            .iter()
+            .map(|write| write.target.clone())
+            .collect::<FxHashSet<_>>(),
+    );
+}
+
 fn make_graph(file_id: spark_span::FileId, ast: &spark_ast::Ast) -> ModuleGraph {
     use spark_ast::Item;
     use spark_modules::{ModuleInfo, ModulePath};

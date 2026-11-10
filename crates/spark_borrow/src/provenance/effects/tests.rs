@@ -1034,6 +1034,7 @@ fn binding_a_queued_read_discovers_its_input_storage_port() {
             ty: reference,
             point: Point::new(BlockId::ENTRY, 0),
             state: &state,
+            instantiation_site: None,
             aliases: None,
         },
     );

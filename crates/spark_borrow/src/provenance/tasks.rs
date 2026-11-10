@@ -46,6 +46,15 @@ pub(super) enum Target {
 }
 
 impl Target {
+    pub const fn instantiation_site(&self) -> Option<OpaqueSite> {
+        match self {
+            Self::Birth { site, .. }
+            | Self::Unknown { site, .. }
+            | Self::Validation { site, .. } => Some(*site),
+            Self::Input { .. } => None,
+        }
+    }
+
     pub const fn ty(&self) -> TypeId {
         match self {
             Self::Input { ty, .. }
@@ -341,7 +350,7 @@ impl super::Flow<'_> {
             let Some(inner) = value::child_type(target.ty(), &Slot::Element, self.table) else {
                 continue;
             };
-            let facts = self.task_facts(&record, point, state, inner);
+            let facts = self.task_facts(&record, &target, point, state, inner);
             self.observe_prefix(&facts.prefix, point, state);
         }
         for reference in unknown {

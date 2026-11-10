@@ -82,6 +82,7 @@ fn widened_future_input_selections_keep_type_and_capture_roles_separate() {
         ty: first,
         point,
         state: &state,
+        instantiation_site: None,
         aliases: None,
     };
     let target = Target::Input {

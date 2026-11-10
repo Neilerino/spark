@@ -284,6 +284,7 @@ impl Flow<'_> {
         function: &MirFunction,
         actuals: CallActuals<'_>,
     ) -> FxHashSet<Target> {
+        let site = actuals.instantiation_site(self.function.def_id);
         match target {
             Target::Input {
                 local,
@@ -305,10 +306,7 @@ impl Flow<'_> {
                 selected.queues.get(&Vec::new()).map_or_else(
                     || {
                         FxHashSet::from_iter([Target::Unknown {
-                            site: super::super::address::OpaqueSite {
-                                function: self.function.def_id,
-                                point: actuals.point,
-                            },
+                            site,
                             ty: *ty,
                             constructor: None,
                         }])
@@ -323,8 +321,8 @@ impl Flow<'_> {
                 constructor,
             } => FxHashSet::from_iter([Target::Allocation {
                 ty: *ty,
-                function: self.function.def_id,
-                point: actuals.point,
+                function: site.function,
+                point: site.point,
                 constructor: Some(constructor.clone().unwrap_or(
                     super::super::channels::Constructor {
                         site: super::super::address::OpaqueSite {
@@ -337,27 +335,21 @@ impl Flow<'_> {
             }]),
             Target::Validation { ty, selection, .. } => {
                 FxHashSet::from_iter([Target::Validation {
-                    site: super::super::address::OpaqueSite {
-                        function: self.function.def_id,
-                        point: actuals.point,
-                    },
+                    site,
                     ty: *ty,
                     selection: selection.clone(),
                 }])
             }
             Target::Unknown {
-                site,
+                site: source_site,
                 ty,
                 constructor,
             } => FxHashSet::from_iter([Target::Unknown {
-                site: super::super::address::OpaqueSite {
-                    function: self.function.def_id,
-                    point: actuals.point,
-                },
+                site,
                 ty: *ty,
                 constructor: Some(constructor.clone().unwrap_or(
                     super::super::channels::Constructor {
-                        site: *site,
+                        site: *source_site,
                         role: None,
                     },
                 )),

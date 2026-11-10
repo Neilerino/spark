@@ -5879,3 +5879,16 @@ fn collection_borrow_future_completed_tasks_do_not_publish_again() {
         assert_eq!(result.stdout.trim(), "5\n0", "{args:?}");
     }
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_private_returned_queue_has_native_layout() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/async/future_private_returned_queue_scoped.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "5", "{args:?}");
+    }
+}
