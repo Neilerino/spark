@@ -2,6 +2,8 @@
 
 //! Direct function summaries use the same slot transfer engine as diagnostics.
 
+use crate::provenance::tasks::proofs::CallProof;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_diagnostics::Diagnostics;
 use spark_mir::{BlockId, Local, Mir, MirFunction, Operand, Terminator};
@@ -83,6 +85,7 @@ pub(super) struct Context<'a> {
     pub(super) mir: &'a Mir,
     pub(super) definitions: Option<&'a spark_resolve::DefinitionTable>,
     summaries: &'a Summaries,
+    pub(super) proofs: Option<&'a super::tasks::proofs::Proofs>,
     pub(super) ports: &'a Ports,
 }
 
@@ -91,6 +94,7 @@ pub(super) struct CallOutcome {
     pub tasks: Vec<(super::tasks::Target, super::tasks::Record)>,
     pub completed_task: Option<(Local, Value)>,
     pub clobbered_copies: Vec<Local>,
+    pub future_proof: super::tasks::proofs::CallProof,
     pub place_writes: Vec<(spark_mir::Place, Value)>,
     pub memory: Vec<MemoryWrite>,
     pub queues: Vec<super::channels::Write>,
@@ -253,7 +257,10 @@ impl Flow<'_> {
                 if !summary.normal_return {
                     continue;
                 }
-                outcomes.push(self.bind_outcome(summary, function, actuals, &key.aliases, queues));
+                let mut outcome =
+                    self.bind_outcome(summary, function, actuals, &key.aliases, queues);
+                outcome.future_proof = self.call_future_proof(&key, args, state);
+                outcomes.push(outcome);
             }
         }
         if unknown {
@@ -302,6 +309,7 @@ impl Flow<'_> {
             tasks: Vec::new(),
             completed_task: None,
             clobbered_copies: Vec::new(),
+            future_proof: CallProof::default(),
             place_writes: Vec::new(),
             returned,
             memory: Vec::new(),
@@ -487,6 +495,7 @@ impl Flow<'_> {
             tasks,
             completed_task: None,
             clobbered_copies,
+            future_proof: CallProof::default(),
             place_writes: Vec::new(),
             returned,
             memory,

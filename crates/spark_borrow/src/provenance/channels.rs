@@ -2,6 +2,7 @@
 
 //! Shared channel handles and weak payload storage.
 
+use crate::provenance::tasks::proofs::CallProof;
 use rustc_hash::FxHashSet;
 use spark_intern::kw;
 use spark_mir::{Local, Operand};
@@ -394,6 +395,7 @@ impl Flow<'_> {
             tasks: Vec::new(),
             completed_task: None,
             clobbered_copies: Vec::new(),
+            future_proof: CallProof::default(),
             place_writes: Vec::new(),
             returned,
             memory: Vec::new(),

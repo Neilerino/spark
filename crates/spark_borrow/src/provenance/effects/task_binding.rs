@@ -1,5 +1,6 @@
 // TAG [SPARK-114]
 
+use crate::provenance::tasks::proofs::CallProof;
 use spark_intern::kw;
 use spark_resolve::DefinitionKind;
 use spark_types::Ty;
@@ -59,6 +60,7 @@ impl Flow<'_> {
                 tasks: vec![(target, record)],
                 completed_task: None,
                 clobbered_copies: Vec::new(),
+                future_proof: CallProof::default(),
                 place_writes: Vec::new(),
                 memory: Vec::new(),
                 queues: Vec::new(),
@@ -82,7 +84,7 @@ impl Flow<'_> {
         if handles.is_empty() {
             return None;
         }
-        let mut returned = future.project(&Slot::Element);
+        let mut returned = future.future_result();
         let mut normal = false;
         for handle in handles {
             if let Some(record) = state.tasks.get(&handle.target) {
@@ -120,6 +122,7 @@ impl Flow<'_> {
             tasks: Vec::new(),
             completed_task,
             clobbered_copies: Vec::new(),
+            future_proof: CallProof::default(),
             place_writes: Vec::new(),
             memory: Vec::new(),
             queues: Vec::new(),

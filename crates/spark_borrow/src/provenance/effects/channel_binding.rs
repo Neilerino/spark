@@ -2,6 +2,7 @@
 
 use super::super::channels::{Handle, Target};
 use super::{CallActuals, Flow, Intent, MirFunction, Path, Selector, Value};
+use crate::provenance::tasks::proofs::CallProof;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 impl Flow<'_> {
@@ -217,6 +218,7 @@ impl Flow<'_> {
             tasks: Vec::new(),
             completed_task: None,
             clobbered_copies: Vec::new(),
+            future_proof: CallProof::default(),
             place_writes: Vec::new(),
             returned,
             memory: Vec::new(),

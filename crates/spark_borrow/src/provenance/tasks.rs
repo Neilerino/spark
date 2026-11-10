@@ -10,6 +10,7 @@ use spark_types::{Ty, TypeId, TypeTable};
 use super::{address::OpaqueSite, value, Path, Point, Slot, Value};
 
 mod identity;
+pub(super) mod proofs;
 pub(super) use identity::{Copies, Witness};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -253,7 +254,20 @@ impl super::Flow<'_> {
     }
 
     pub(super) fn complete_future(&self, local: Local, result: &Value, state: &mut super::State) {
-        for peer in state.future_copies.peers(local) {
+        self.complete_future_witness(state.future_copies.witness(local), Some(result), state);
+    }
+
+    pub(super) fn complete_future_witness(
+        &self,
+        witness: Witness,
+        result: Option<&Value>,
+        state: &mut super::State,
+    ) {
+        state.joined_inputs.extend(witness.inputs);
+        for peer in witness.peers {
+            if !state.live.contains(&peer) {
+                continue;
+            }
             let mut current = state.value(peer);
             for (path, handles) in &mut current.futures {
                 if path.is_empty() || *path == [Slot::Tail] {
@@ -271,9 +285,27 @@ impl super::Flow<'_> {
                 .sources
                 .retain(|(path, ..), _| *path != [Slot::Tail]);
             let ty = self.function.locals[peer.index()].ty;
-            current.join(&result.prefixed(Slot::Element, ty, self.table));
+            if let Some(result) = result {
+                current.join(&result.prefixed(Slot::Element, ty, self.table));
+            }
             state.set(peer, current);
         }
+    }
+
+    pub(super) fn apply_call_future_proof(
+        &self,
+        mut proof: proofs::CallProof,
+        clobbered: &[Local],
+        state: &mut super::State,
+    ) -> Option<Witness> {
+        proof.exclude(clobbered);
+        for local in clobbered {
+            state.future_copies.forget(*local);
+        }
+        for witness in proof.completed {
+            self.complete_future_witness(witness, None, state);
+        }
+        proof.returned
     }
 
     pub(super) fn observe_pending_tasks(&mut self, point: Point, state: &super::State) {
@@ -321,6 +353,16 @@ impl super::Flow<'_> {
 }
 
 impl Value {
+    pub(super) fn future_result(&self) -> Self {
+        let mut result = self.clone();
+        result.leaves.retain(|(path, ..), _| *path != [Slot::Tail]);
+        result.sources.retain(|(path, ..), _| *path != [Slot::Tail]);
+        result.futures.retain(|path, _| *path != [Slot::Tail]);
+        result.queues.retain(|path, _| *path != [Slot::Tail]);
+        result.callees.retain(|path, _| *path != [Slot::Tail]);
+        result.project(&Slot::Element)
+    }
+
     pub(super) fn with_future_capture(&self, capture: Capture) -> Self {
         let mut result = self.clone();
         for (path, handles) in &mut result.futures {
