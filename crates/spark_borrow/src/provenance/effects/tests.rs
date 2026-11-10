@@ -155,7 +155,7 @@ fn helper_binding_tracks_endpoint_growth_across_backedges() {
         functions: HashMap::from([(helper_id, helper), (caller_id, caller)]),
     };
     let mut diagnostics = Diagnostics::new();
-    analyze_program(&mir, &table, &mut diagnostics);
+    analyze_program(&mir, &table, None, &mut diagnostics);
     assert!(
         diagnostics.iter().any(|diagnostic| diagnostic.message
             == "returned value contains a reference to local storage"),
@@ -354,7 +354,7 @@ fn projected_helper_reference_case(borrow_local: bool) {
         functions: HashMap::from([(select_id, select), (copy_id, copier), (caller_id, caller)]),
     };
     let mut diagnostics = Diagnostics::new();
-    analyze_program(&mir, &table, &mut diagnostics);
+    analyze_program(&mir, &table, None, &mut diagnostics);
     assert_eq!(
         diagnostics.has_errors(),
         borrow_local,
@@ -596,7 +596,7 @@ fn projected_helper_result_case(local_result: bool, usage: HelperUse) {
         ]),
     };
     let mut diagnostics = spark_diagnostics::Diagnostics::new();
-    analyze_program(&mir, &table, &mut diagnostics);
+    analyze_program(&mir, &table, None, &mut diagnostics);
     assert_eq!(
         diagnostics.has_errors(),
         local_result,
@@ -815,7 +815,7 @@ fn projected_helper_payload_case(local_result: bool) {
         functions: HashMap::from([(select_id, select), (copy_id, copier), (caller_id, caller)]),
     };
     let mut diagnostics = Diagnostics::new();
-    analyze_program(&mir, &table, &mut diagnostics);
+    analyze_program(&mir, &table, None, &mut diagnostics);
     assert_eq!(
         diagnostics.has_errors(),
         local_result,
@@ -969,6 +969,82 @@ fn projected_opaque_result_retains_deferred_capture_dependencies() {
         functions: HashMap::from([(helper_id, helper), (caller_id, caller)]),
     };
     let mut diagnostics = Diagnostics::new();
-    analyze_program(&mir, &table, &mut diagnostics);
+    analyze_program(&mir, &table, None, &mut diagnostics);
     assert!(diagnostics.iter().any(|diagnostic| diagnostic.message.starts_with("cannot return reference to local variable")), "projecting an opaque result must retain the captured frame dependency despite its different pointee type");
+}
+
+#[test]
+fn binding_a_queued_read_discovers_its_input_storage_port() {
+    use spark_mir::LocalDecl;
+    use spark_span::Span;
+    use spark_types::{IntWidth, LifetimeId, Ty};
+
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let reference = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let channel = table.intern(Ty::Channel { inner: reference });
+    let function = MirFunction {
+        def_id: DefId::new(9905),
+        param_count: 1,
+        return_type: reference,
+        locals: [reference, channel]
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| LocalDecl {
+                local: Local(index as u32),
+                ty,
+                name: None,
+                is_user_variable: false,
+                mutable: false,
+                span: Span::DUMMY,
+            })
+            .collect(),
+        blocks: Vec::new(),
+        captures: Vec::new(),
+        is_async: false,
+        span: Span::DUMMY,
+    };
+    let mut flow = Flow::new(&function, &table, None);
+    let state = flow.initial_state();
+    let arguments = [state.value(Local(1))];
+    let callee = Value::default();
+    let selector = Selector {
+        input: Local(1),
+        selection: Vec::new(),
+        intent: Intent::Value,
+        expected: Some(reference),
+        capture: None,
+        channel_capture: None,
+        queue: Some(super::super::address::QueueSelection {
+            capture: None,
+            channel,
+            projection: Vec::new(),
+        }),
+    };
+    let selected = flow.select_selector(
+        &selector,
+        &function,
+        CallActuals {
+            callee: &callee,
+            arguments: &arguments,
+            ty: reference,
+            point: Point::new(BlockId::ENTRY, 0),
+            state: &state,
+            aliases: None,
+        },
+    );
+    assert!(!selected.is_empty());
+    let mut ports = Vec::new();
+    flow.discover_ports(&Summary::default(), &mut ports);
+    assert_eq!(ports.len(), 1);
+    assert_eq!(
+        ports[0].kind,
+        super::super::aliases::StorageKind::Channel(channel)
+    );
+    assert_eq!(ports[0].input, Local(1));
+    assert!(ports[0].selection.is_empty());
 }

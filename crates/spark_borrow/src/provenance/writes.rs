@@ -89,12 +89,29 @@ impl Flow<'_> {
     ) {
         let targets = self.write_targets(metadata);
         if targets.unknown {
-            self.record_obligation(point, super::obligations::Boundary::Store(ty), value);
+            let reachable = self.reachable_queue_payloads(value, state);
+            self.record_obligation(point, super::obligations::Boundary::Store(ty), &reachable);
+        }
+        if targets.unknown
+            || targets
+                .all
+                .iter()
+                .any(|target| matches!(target.storage, Storage::External(_)))
+        {
+            self.expose_queue_handles(value, state);
         }
         let unique = targets.physical.len() == 1 && !targets.unknown;
         for destination in targets.all {
             let Coordinate { storage, path } = &destination;
             let (root, mut current) = match storage {
+                Storage::Queue(target, ty) => (
+                    *ty,
+                    state
+                        .queues
+                        .get(&(target.clone(), *ty))
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
                 Storage::External(port) => (
                     port.pointee,
                     state.external.get(port).cloned().unwrap_or_default(),
@@ -107,7 +124,7 @@ impl Flow<'_> {
                 && match storage {
                     Storage::Cell(_) => owned_path(path),
                     Storage::External(_) => targets.exact.contains(&destination),
-                    Storage::Logical(_) => false,
+                    Storage::Logical(_) | Storage::Queue(_, _) => false,
                 };
             self.record_path_store(point, destination.clone(), value, strong);
             if strong {
@@ -117,10 +134,16 @@ impl Flow<'_> {
                 current
                     .callees
                     .retain(|stored, _| !super::storage::prefix(path, stored));
+                current
+                    .queues
+                    .retain(|stored, _| !super::storage::prefix(path, stored));
             }
             current.join(&value.prefixed_path(path, root, self.table));
             current.sources.clear();
             match storage {
+                Storage::Queue(target, ty) => {
+                    state.queues.insert((target.clone(), *ty), current);
+                }
                 Storage::External(port) => {
                     let view = View {
                         root: port.clone(),
@@ -276,6 +299,7 @@ impl Flow<'_> {
     ) {
         let mut reported = rustc_hash::FxHashSet::default();
         for value in state.external.values() {
+            let value = self.reachable_queue_payloads(value, state);
             for root in value.frame_sources(self.function.def_id) {
                 if reported.insert(root) {
                     let exit = Point::new(
@@ -341,6 +365,9 @@ mod tests {
     fn whole_owner_coverage_does_not_define_an_independent_reference_pointee() {
         let root = Port::root(Local(1), spark_types::TypeId::ERROR);
         let pointee = Port {
+            kind: crate::provenance::aliases::StorageKind::Reference,
+            channel_capture: None,
+            queue: None,
             capture: None,
             selection: vec![super::super::Slot::Deref, super::super::Slot::Tuple(0)],
             ..root.clone()

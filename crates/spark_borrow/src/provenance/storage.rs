@@ -311,7 +311,7 @@ mod tests {
                 functions: std::collections::HashMap::from([(function.def_id, function)]),
             };
             let mut diagnostics = Diagnostics::new();
-            super::super::analyze_program(&mir, &table, &mut diagnostics);
+            super::super::analyze_program(&mir, &table, None, &mut diagnostics);
             assert_eq!(diagnostics.has_errors(), local_source);
             if local_source {
                 assert!(diagnostics.iter().any(|diagnostic| diagnostic.message
@@ -410,7 +410,7 @@ mod tests {
             functions: std::collections::HashMap::from([(function.def_id, function)]),
         };
         let mut diagnostics = Diagnostics::new();
-        super::super::analyze_program(&mir, &table, &mut diagnostics);
+        super::super::analyze_program(&mir, &table, None, &mut diagnostics);
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message == "borrowed value does not live long enough"));

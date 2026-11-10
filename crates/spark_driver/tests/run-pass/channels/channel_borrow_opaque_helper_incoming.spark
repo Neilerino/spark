@@ -1,0 +1,17 @@
+// TAG [SPARK-114]
+
+link "union_probe"
+extern fn copy_channel(queue: Channel[Ref[Int]]): Channel[Ref[Int]]
+fn readQueued(queue: Channel[Ref[Int]]): Ref[Int] {
+    returned: Channel[Ref[Int]] = copy_channel(queue)
+    return returned.recv()
+}
+fn main(): Int {
+    local: Int = 9
+    borrowed: Ref[Int] = local
+    queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    queue.send(borrowed)
+    found: Ref[Int] = readQueued(queue)
+    print(found)
+    return 0
+}

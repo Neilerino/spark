@@ -8,6 +8,7 @@ use super::{
 pub fn analyze_program(
     mir: &Mir,
     table: &TypeTable,
+    definitions: Option<&spark_resolve::DefinitionTable>,
     diagnostics: &mut Diagnostics,
 ) -> FxHashMap<DefId, Vec<Vec<crate::regions::Region>>> {
     let facts: FxHashMap<_, _> = mir
@@ -15,11 +16,12 @@ pub fn analyze_program(
         .iter()
         .map(|(def, function)| (*def, crate::facts::extract_facts(function)))
         .collect();
-    let (summaries, ports) = infer_summaries(mir, table, &facts);
+    let (summaries, ports) = infer_summaries_with_definitions(mir, table, &facts, definitions);
     let context = Context {
         mir,
         summaries: &summaries,
         ports: &ports,
+        definitions,
     };
     let mut regions: FxHashMap<_, Vec<_>> = FxHashMap::default();
     for key in summaries.keys() {
@@ -31,6 +33,7 @@ pub fn analyze_program(
         flow.report_returns(&facts[&key.function], diagnostics);
         flow.report_reads(diagnostics);
         flow.report_obligations(diagnostics);
+        flow.report_queue_sends(diagnostics);
         regions
             .entry(key.function)
             .or_default()
@@ -39,10 +42,20 @@ pub fn analyze_program(
     regions
 }
 
+#[cfg(test)]
 pub(super) fn infer_summaries(
     mir: &Mir,
     table: &TypeTable,
     facts: &FxHashMap<DefId, crate::facts::BorrowFacts>,
+) -> (Summaries, Ports) {
+    infer_summaries_with_definitions(mir, table, facts, None)
+}
+
+fn infer_summaries_with_definitions(
+    mir: &Mir,
+    table: &TypeTable,
+    facts: &FxHashMap<DefId, crate::facts::BorrowFacts>,
+    definitions: Option<&spark_resolve::DefinitionTable>,
 ) -> (Summaries, Ports) {
     let mut summaries: Summaries = mir
         .functions
@@ -55,6 +68,7 @@ pub(super) fn infer_summaries(
             mir,
             summaries: &summaries,
             ports: &ports,
+            definitions,
         };
         let mut next = summaries.clone();
         let mut discovered = ports.clone();

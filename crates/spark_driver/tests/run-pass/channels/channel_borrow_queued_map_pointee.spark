@@ -1,0 +1,25 @@
+// TAG [SPARK-114]
+
+fn apply(callback: (): Ref[Int]): Ref[Int] { return callback() }
+fn nest(callback: (): Ref[Int]): (): Ref[Int] { return fn(): Ref[Int] { return callback() } }
+fn produce(input: Ref[Int]): Ref[Int] {
+    local: Int = 7
+    localRef: Ref[Int] = local
+    entries: Map[String, Ref[Int]] = {"one": input}
+    view: Ref[Map[String, Ref[Int]]] = entries
+    queue: Channel[Ref[Map[String, Ref[Int]]]] = Channel[Ref[Map[String, Ref[Int]]]]()
+    queue.send(view)
+    read: (): Ref[Int] = fn(): Ref[Int] {
+        received: Ref[Map[String, Ref[Int]]] = queue.recv()
+        snapshot: Map[String, Ref[Int]] = received
+        return snapshot["one"] to { found: Ref[Int] -> found, Null -> input }
+    }
+    return apply(nest(nest(read)))
+}
+fn main(): Int {
+    value: Int = 9
+    input: Ref[Int] = value
+    found: Ref[Int] = produce(input)
+    print(found)
+    return 0
+}

@@ -53,7 +53,7 @@ impl Accesses {
                 let mut target = dependency.clone();
                 if leaf.opaque.is_empty() {
                     if let Dependency::InputValue(selector) = &mut target {
-                        if reference_ty.is_some() {
+                        if reference_ty.is_some() && selector.queue.is_none() {
                             selector.expected = reference_ty;
                         }
                     }
@@ -102,6 +102,11 @@ impl<'a> IntoIterator for &'a Accesses {
     fn into_iter(self) -> Self::IntoIter {
         self.events.iter()
     }
+}
+
+struct TailValues {
+    references: Value,
+    channels: Value,
 }
 
 impl Flow<'_> {
@@ -246,6 +251,10 @@ impl Flow<'_> {
     ) -> Value {
         use super::address::{DerefKind, Intent, Selector, TypedPath};
         let source_ty = self.function.locals[selector.input.index()].ty;
+        let mut basis = selector.clone();
+        if let Intent::Payload(payload) = &selector.intent {
+            basis.select_payload(payload, source_ty, self.table);
+        }
         let (selection, payload) = match &selector.intent {
             Intent::Address(payload) => (selector.selection.clone(), payload.clone()),
             Intent::Value => (
@@ -256,17 +265,8 @@ impl Flow<'_> {
                     projection: Vec::new(),
                 },
             ),
-            Intent::Payload(payload) => (
-                value::normalize(
-                    source_ty,
-                    [
-                        selector.selection.clone(),
-                        vec![payload.kind.slot()],
-                        payload.projection.clone(),
-                    ]
-                    .concat(),
-                    self.table,
-                ),
+            Intent::Payload(_) => (
+                basis.selection.clone(),
                 TypedPath {
                     kind: DerefKind::All,
                     pointee: ty,
@@ -291,6 +291,8 @@ impl Flow<'_> {
             None
         };
         let address = Selector {
+            channel_capture: None,
+            queue: basis.queue,
             capture: selector.address_capture(),
             input: selector.input,
             selection,
@@ -339,15 +341,21 @@ impl Flow<'_> {
             self.table,
         );
         let mut result = self.symbolic_pointee_input(ty, source_ty, &prefix, address, qualified);
+        self.qualify_queued_pointee_handles(&mut result, address, payload);
         result
             .leaves
             .retain(|(path, _, _), _| !covered.iter().any(|prefix| path.starts_with(prefix)));
         result
             .callees
             .retain(|path, _| !covered.iter().any(|prefix| path.starts_with(prefix)));
+        result
+            .queues
+            .retain(|path, _| !covered.iter().any(|prefix| path.starts_with(prefix)));
         for ((path, _, _), leaf) in &mut result.leaves {
             leaf.dependencies.clear();
             leaf.dependencies.insert(Dependency::InputValue(Selector {
+                channel_capture: None,
+                queue: address.queue.clone(),
                 capture: address.capture,
                 input: address.input,
                 selection: selection.clone(),
@@ -378,7 +386,17 @@ impl Flow<'_> {
             if *slot == Slot::Tail {
                 return value;
             }
-            value = if *slot == Slot::Deref {
+            value = if *slot == Slot::Element
+                && matches!(
+                    self.table.resolve(value::strip_mutable(ty, self.table)),
+                    Ty::Channel { .. }
+                ) {
+                self.queue_payload(
+                    &value,
+                    child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR),
+                    state,
+                )
+            } else if *slot == Slot::Deref {
                 self.dereference(&value, ty, state)
             } else {
                 value.project(slot)
@@ -416,10 +434,46 @@ impl Flow<'_> {
         expected: Option<TypeId>,
         state: &State,
     ) -> Value {
+        self.tail_values(value, ty, expected, state).references
+    }
+
+    pub(super) fn tail_channel_value(
+        &self,
+        value: Value,
+        ty: TypeId,
+        expected: TypeId,
+        state: &State,
+    ) -> Value {
+        self.tail_values(value, ty, Some(expected), state).channels
+    }
+
+    fn tail_values(
+        &self,
+        value: Value,
+        ty: TypeId,
+        expected: Option<TypeId>,
+        state: &State,
+    ) -> TailValues {
         let mut result = Value::default();
+        let mut channels = Value::default();
         let mut pending = vec![(value, ty)];
         let mut seen: rustc_hash::FxHashMap<_, Value> = rustc_hash::FxHashMap::default();
         while let Some((value, ty)) = pending.pop() {
+            for target in value.queues.values().flatten() {
+                if expected.is_none_or(|expected| {
+                    matches!(
+                        spark_types::check_expr::cast_kind(target.ty(), expected, self.table),
+                        Ok(spark_types::check_expr::CastKind::Identity
+                            | spark_types::check_expr::CastKind::Deferred)
+                    )
+                }) {
+                    channels
+                        .queues
+                        .entry(Vec::new())
+                        .or_default()
+                        .insert(target.clone());
+                }
+            }
             for ((path, origin, capture), leaf) in &value.leaves {
                 let selected = self.selected_type(ty, path);
 
@@ -481,7 +535,10 @@ impl Flow<'_> {
                 }
             }
         }
-        result
+        TailValues {
+            references: result,
+            channels,
+        }
     }
 
     pub(super) fn selected_type(&self, mut ty: TypeId, path: &[Slot]) -> TypeId {

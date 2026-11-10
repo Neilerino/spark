@@ -2,7 +2,7 @@
 
 use spark_mir::Local;
 use spark_resolve::DefId;
-use spark_types::TypeId;
+use spark_types::{TypeId, TypeTable};
 
 use super::{Path, Point};
 
@@ -36,7 +36,16 @@ pub(super) struct TypedPath {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct QueueSelection {
+    pub capture: Option<super::channels::Capture>,
+    pub channel: TypeId,
+    pub projection: Path,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Selector {
+    pub channel_capture: Option<super::channels::Capture>,
+    pub queue: Option<QueueSelection>,
     pub input: Local,
     pub selection: Path,
     pub intent: Intent,
@@ -45,8 +54,36 @@ pub(super) struct Selector {
 }
 
 impl Selector {
+    pub(super) fn select_payload(&mut self, payload: &TypedPath, root: TypeId, table: &TypeTable) {
+        if let Some(queue) = &mut self.queue {
+            let root = super::value::child_type(queue.channel, &super::Slot::Element, table)
+                .unwrap_or(TypeId::ERROR);
+            queue.projection = super::value::normalize(
+                root,
+                [
+                    queue.projection.clone(),
+                    vec![payload.kind.slot()],
+                    payload.projection.clone(),
+                ]
+                .concat(),
+                table,
+            );
+        } else {
+            self.selection = super::value::normalize(
+                root,
+                [
+                    self.selection.clone(),
+                    vec![payload.kind.slot()],
+                    payload.projection.clone(),
+                ]
+                .concat(),
+                table,
+            );
+        }
+    }
+
     pub const fn address_capture(&self) -> Option<super::value::ReferenceCapture> {
-        if matches!(&self.intent, Intent::Payload(_)) {
+        if self.queue.is_some() || matches!(&self.intent, Intent::Payload(_)) {
             None
         } else {
             self.capture
@@ -153,16 +190,11 @@ impl super::Flow<'_> {
                     Dependency::InputValue(selector) => {
                         let mut selector = selector.clone();
                         let capture = selector.address_capture();
-                        if let Intent::Payload(payload) = &selector.intent {
+                        if let Intent::Payload(payload) = selector.intent.clone() {
                             selector.capture = capture;
-                            selector.selection = super::value::normalize(
+                            selector.select_payload(
+                                &payload,
                                 self.function.locals[selector.input.index()].ty,
-                                [
-                                    selector.selection,
-                                    vec![payload.kind.slot()],
-                                    payload.projection.clone(),
-                                ]
-                                .concat(),
                                 self.table,
                             );
                         }

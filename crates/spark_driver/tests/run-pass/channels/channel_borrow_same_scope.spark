@@ -1,0 +1,11 @@
+// TAG [SPARK-114]
+
+fn main(): Int {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    channel: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    channel.send(borrowed)
+    result: Ref[Int] = channel.recv()
+    print(result)
+    return 0
+}

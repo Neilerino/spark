@@ -1,0 +1,25 @@
+// TAG [SPARK-114]
+
+fn apply(callback: (): Ref[Int]): Ref[Int] { return callback() }
+fn produce(input: Ref[Int]): Ref[Int] {
+    local: Int = 7
+    localRef: Ref[Int] = local
+    inner: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    inner.send(input)
+    view: Ref[Channel[Ref[Int]]] = inner
+    outer: Channel[Ref[Channel[Ref[Int]]]] = Channel[Ref[Channel[Ref[Int]]]]()
+    outer.send(view)
+    read: (): Ref[Int] = fn(): Ref[Int] {
+        received: Ref[Channel[Ref[Int]]] = outer.recv()
+        snapshot: Channel[Ref[Int]] = received
+        return snapshot.recv()
+    }
+    return apply(read)
+}
+fn main(): Int {
+    local: Int = 9
+    input: Ref[Int] = local
+    found: Ref[Int] = produce(input)
+    print(found)
+    return 0
+}

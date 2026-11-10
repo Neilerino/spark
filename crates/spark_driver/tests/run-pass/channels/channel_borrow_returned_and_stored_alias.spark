@@ -1,0 +1,23 @@
+// TAG [SPARK-114]
+
+fn fill(target: Ref[Channel[Ref[Int]]] !): Channel[Ref[Int]] {
+    queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    target = queue
+    return queue
+}
+fn produce(input: Ref[Int]): Ref[Int] {
+    local: Int = 7
+    localRef: Ref[Int] = local
+    stored: Channel[Ref[Int]]! = Channel[Ref[Int]]()
+    target: Ref[Channel[Ref[Int]]] ! = stored
+    returned: Channel[Ref[Int]] = fill(target)
+    returned.send(input)
+    return stored.recv()
+}
+fn main(): Int {
+    value: Int = 9
+    input: Ref[Int] = value
+    found: Ref[Int] = produce(input)
+    print(found)
+    return 0
+}

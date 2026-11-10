@@ -70,6 +70,9 @@ fn residual_binding_filters_endpoints_without_erasing_opaque_or_ambiguous_altern
         })
     };
     let family = Port {
+        kind: crate::provenance::aliases::StorageKind::Reference,
+        channel_capture: None,
+        queue: None,
         capture: None,
         input: Local(1),
         selection: vec![Slot::Element],

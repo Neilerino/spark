@@ -1,0 +1,30 @@
+// TAG [SPARK-114]
+
+fn produce(first: Ref[Int], second: Ref[Int]): Channel[Ref[Int]] {
+    kept: Channel[Ref[Int]]! = Channel[Ref[Int]]()
+    index: Int! = 0
+    loop {
+        queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+        if index == 0 {
+            local: Int = 7
+            borrowed: Ref[Int] = local
+            queue.send(first)
+            kept = queue
+        } else {
+            queue.send(second)
+            return kept
+        }
+        index += 1
+    }
+    return kept
+}
+fn main(): Int {
+    first: Int = 9
+    second: Int = 10
+    firstRef: Ref[Int] = first
+    secondRef: Ref[Int] = second
+    queue: Channel[Ref[Int]] = produce(firstRef, secondRef)
+    found: Ref[Int] = queue.recv()
+    print(found)
+    return 0
+}

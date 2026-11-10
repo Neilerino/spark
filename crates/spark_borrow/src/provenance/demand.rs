@@ -10,6 +10,7 @@ pub(super) enum Storage {
     Logical(Local),
     Cell(Local),
     External(Port),
+    Queue(super::channels::Target, spark_types::TypeId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -129,6 +130,7 @@ impl super::Flow<'_> {
                 self.function.locals[local.index()].ty
             }
             Storage::External(port) => port.pointee,
+            Storage::Queue(_, ty) => *ty,
         };
         let transfer = self.transfers.entry(point).or_default();
         if strong {
@@ -177,14 +179,20 @@ impl super::Flow<'_> {
                     let returned = state
                         .value(Local::RETURN_PLACE)
                         .sourced(&Storage::Logical(Local::RETURN_PLACE));
-                    let external = state.external.iter().flat_map(|(local, value)| {
-                        value
-                            .clone()
-                            .sourced(&Storage::External(local.clone()))
+                    let returned = self.reachable_queue_payloads(&returned, &state);
+                    let external: Demand = state
+                        .external
+                        .iter()
+                        .flat_map(|(local, value)| {
+                            self.reachable_queue_payloads(
+                                &value.clone().sourced(&Storage::External(local.clone())),
+                                &state,
+                            )
                             .sources
                             .into_values()
                             .flatten()
-                    });
+                        })
+                        .collect();
                     self.transfers
                         .entry(point)
                         .or_default()
@@ -304,6 +312,11 @@ impl super::State {
                     .iter()
                     .map(|(port, value)| (Storage::External(port.clone()), value)),
             )
+            .chain(
+                self.queues
+                    .iter()
+                    .map(|((target, ty), value)| (Storage::Queue(target.clone(), *ty), value)),
+            )
             .flat_map(|(storage, value)| {
                 value
                     .clone()
@@ -320,6 +333,7 @@ impl super::State {
             Storage::Logical(local) => self.values.get(local),
             Storage::Cell(local) => self.cells.get(local),
             Storage::External(port) => self.external.get(port),
+            Storage::Queue(target, ty) => self.queues.get(&(target.clone(), *ty)),
         }
     }
 
@@ -377,6 +391,9 @@ mod tests {
     fn replacing_external_owner_preserves_independent_pointee_demand() {
         let owner = Port::root(Local(1), spark_types::TypeId::ERROR);
         let pointee = Port {
+            kind: crate::provenance::aliases::StorageKind::Reference,
+            channel_capture: None,
+            queue: None,
             capture: None,
             input: Local(1),
             selection: vec![Slot::Deref, Slot::Field(spark_intern::sym("target"))],
@@ -648,7 +665,7 @@ mod tests {
             functions: HashMap::from([(helper_id, helper), (caller_id, caller)]),
         };
         let mut diagnostics = spark_diagnostics::Diagnostics::new();
-        let regions = super::super::effects::analyze_program(&mir, &table, &mut diagnostics);
+        let regions = super::super::effects::analyze_program(&mir, &table, None, &mut diagnostics);
         assert!(!diagnostics.has_errors());
         let read = Point::new(BlockId(1), 2);
         let replace_other = Point::new(BlockId(1), 1);
@@ -858,7 +875,7 @@ mod tests {
             functions: HashMap::from([(caller_id, caller), (invoke_id, invoke)]),
         };
         let mut diagnostics = spark_diagnostics::Diagnostics::new();
-        let regions = super::super::effects::analyze_program(&mir, &table, &mut diagnostics);
+        let regions = super::super::effects::analyze_program(&mir, &table, None, &mut diagnostics);
         assert!(!diagnostics.has_errors());
         assert!(
             regions[&caller_id]

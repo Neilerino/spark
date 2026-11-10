@@ -1,0 +1,12 @@
+// TAG [SPARK-114]
+
+fn main(): Int {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    copied: Channel[Ref[Int]] = queue
+    queue.send(borrowed)
+    result: Ref[Int] = copied.recv()
+    print(result)
+    return 0
+}
