@@ -1,5 +1,7 @@
 //! Backward demand over individual reaching reference contributions.
 
+// TAG [SPARK-114]
+
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_mir::Local;
 
@@ -28,7 +30,14 @@ pub(super) struct Atom {
 }
 
 pub(super) type Demand = FxHashSet<Atom>;
-pub(super) type Sources = FxHashMap<super::value::Contribution, Demand>;
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Source {
+    Current(Atom),
+    Entry(Atom),
+}
+
+pub(super) type Frontier = FxHashSet<Source>;
+pub(super) type Sources = FxHashMap<super::value::Contribution, Frontier>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Definition {
@@ -46,52 +55,120 @@ impl Definition {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Transfer {
-    pub definitions: Vec<Definition>,
-    pub dependencies: FxHashMap<Atom, Demand>,
+    support: Demand,
+    rows: FxHashMap<Atom, Demand>,
     pub seeds: Demand,
 }
 
 impl Transfer {
-    pub fn join_alternative(&mut self, other: &Self) {
-        self.definitions
-            .retain(|definition| other.definitions.contains(definition));
-        self.seeds.extend(other.seeds.iter().cloned());
-        for (destination, sources) in &other.dependencies {
-            self.dependencies
-                .entry(destination.clone())
-                .or_default()
-                .extend(sources.iter().cloned());
+    pub fn at_entry(support: Demand) -> Self {
+        Self {
+            support,
+            ..Self::default()
         }
+    }
+
+    fn current(&self, atom: &Atom) -> Demand {
+        if self.support.contains(atom) {
+            self.rows
+                .get(atom)
+                .cloned()
+                .unwrap_or_else(|| Demand::from_iter([atom.clone()]))
+        } else {
+            Demand::default()
+        }
+    }
+
+    fn resolve(&self, sources: &Frontier) -> Demand {
+        sources
+            .iter()
+            .flat_map(|source| match source {
+                Source::Current(atom) => self.current(atom),
+                Source::Entry(atom) => Demand::from_iter([atom.clone()]),
+            })
+            .collect()
+    }
+
+    fn freeze(&self, mut value: super::Value) -> super::Value {
+        for sources in value.sources.values_mut() {
+            *sources = self
+                .resolve(sources)
+                .into_iter()
+                .map(Source::Entry)
+                .collect();
+        }
+        value
+    }
+
+    fn define(&mut self, definition: &Definition) {
+        self.support.retain(|atom| !definition.includes(atom));
+        self.rows.retain(|atom, _| !definition.includes(atom));
+    }
+
+    fn store(
+        &mut self,
+        definition: &Definition,
+        incoming: FxHashMap<Atom, Frontier>,
+        strong: bool,
+    ) {
+        let incoming: Vec<_> = incoming
+            .into_iter()
+            .map(|(atom, sources)| (atom, self.resolve(&sources)))
+            .collect();
+        if strong {
+            self.define(definition);
+        }
+        for (atom, sources) in incoming {
+            let mut row = self.current(&atom);
+            row.extend(sources);
+            self.support.insert(atom.clone());
+            self.rows.insert(atom, row);
+        }
+    }
+
+    pub fn seed(&mut self, sources: &Frontier) {
+        self.seeds.extend(self.resolve(sources));
+    }
+
+    pub fn join_alternative(&mut self, other: &Self) {
+        let support: Demand = self.support.union(&other.support).cloned().collect();
+        self.rows = support
+            .iter()
+            .map(|atom| {
+                let mut row = self.current(atom);
+                row.extend(other.current(atom));
+                (atom.clone(), row)
+            })
+            .collect();
+        self.support = support;
+        self.seeds.extend(other.seeds.iter().cloned());
     }
 
     pub fn before(&self, after: &Demand) -> Demand {
         let mut before = self.seeds.clone();
         for atom in after {
-            if let Some(sources) = self.dependencies.get(atom) {
-                before.extend(sources.iter().cloned());
-            }
-            if !self
-                .definitions
-                .iter()
-                .any(|definition| definition.includes(atom))
-            {
-                before.insert(atom.clone());
-            }
+            before.extend(self.current(atom));
         }
         before
     }
 }
 
 impl super::Flow<'_> {
-    pub(super) fn record_consumed(&mut self, point: super::Point, local: Local) {
+    pub(super) fn ensure_transfer(&mut self, point: super::Point, state: &super::State) {
         self.transfers
             .entry(point)
-            .or_default()
-            .definitions
-            .push(Definition {
-                storage: Storage::Logical(local),
-                prefix: Vec::new(),
-            });
+            .or_insert_with(|| Transfer::at_entry(state.atoms()));
+    }
+
+    pub(super) fn freeze_sources(&self, point: super::Point, value: super::Value) -> super::Value {
+        self.transfers[&point].freeze(value)
+    }
+
+    pub(super) fn record_consumed(&mut self, point: super::Point, local: Local) {
+        self.transfers.get_mut(&point).unwrap().define(&Definition {
+            storage: Storage::Logical(local),
+            prefix: Vec::new(),
+        });
     }
 
     pub(super) fn record_store(
@@ -100,6 +177,7 @@ impl super::Flow<'_> {
         place: &spark_mir::Place,
         value: &super::Value,
     ) {
+        let value = self.freeze_sources(point, value.clone());
         let root = self.function.locals[place.local.index()].ty;
         let (prefix, _) = self.projection_path(root, &place.projections);
         for storage in [Storage::Logical(place.local), Storage::Cell(place.local)] {
@@ -109,7 +187,7 @@ impl super::Flow<'_> {
                     storage,
                     path: prefix.clone(),
                 },
-                value,
+                &value,
                 place.projections.is_empty(),
             );
         }
@@ -133,30 +211,40 @@ impl super::Flow<'_> {
             Storage::External(port) => port.pointee,
             Storage::Queue(_, ty) | Storage::Task(_, ty) => *ty,
         };
-        let transfer = self.transfers.entry(point).or_default();
-        if strong {
-            transfer.definitions.push(Definition {
-                storage: storage.clone(),
-                prefix: prefix.clone(),
-            });
-        }
-        for ((path, origin, capture), sources) in &value.sources {
-            let path =
-                super::value::normalize(root, [prefix.clone(), path.clone()].concat(), self.table);
+        let mut incoming = FxHashMap::default();
+        for (path, origin, capture) in value.leaves.keys() {
+            if *origin == Origin::ValidationHole {
+                continue;
+            }
             let destination = Atom {
                 coordinate: Coordinate {
                     storage: storage.clone(),
-                    path,
+                    path: super::value::normalize(
+                        root,
+                        [prefix.clone(), path.clone()].concat(),
+                        self.table,
+                    ),
                 },
                 origin: origin.clone(),
                 capture: *capture,
             };
-            transfer
-                .dependencies
+            incoming
                 .entry(destination)
-                .or_default()
-                .extend(sources.iter().cloned());
+                .or_insert_with(Frontier::default)
+                .extend(
+                    value
+                        .sources
+                        .get(&(path.clone(), origin.clone(), *capture))
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
         }
+        self.transfers.get_mut(&point).unwrap().store(
+            &Definition { storage, prefix },
+            incoming,
+            strong,
+        );
     }
 
     pub(super) fn carrier_regions(
@@ -181,7 +269,7 @@ impl super::Flow<'_> {
                         .value(Local::RETURN_PLACE)
                         .sourced(&Storage::Logical(Local::RETURN_PLACE));
                     let returned = self.reachable_queue_payloads(&returned, &state);
-                    let external: Demand = state
+                    let external: Frontier = state
                         .external
                         .iter()
                         .flat_map(|(local, value)| {
@@ -194,11 +282,14 @@ impl super::Flow<'_> {
                             .flatten()
                         })
                         .collect();
-                    self.transfers
-                        .entry(point)
-                        .or_default()
-                        .seeds
-                        .extend(returned.sources.into_values().flatten().chain(external));
+                    self.transfers.entry(point).or_default().seed(
+                        &returned
+                            .sources
+                            .into_values()
+                            .flatten()
+                            .chain(external)
+                            .collect(),
+                    );
                 }
             }
         }
@@ -299,7 +390,7 @@ fn solve(
 }
 
 impl super::State {
-    fn atoms(&self) -> Demand {
+    pub(super) fn atoms(&self) -> Demand {
         self.values
             .iter()
             .map(|(local, value)| (Storage::Logical(*local), value))
@@ -326,11 +417,17 @@ impl super::State {
             }))
             .flat_map(|(storage, value)| {
                 value
-                    .clone()
-                    .sourced(&storage)
-                    .sources
-                    .into_values()
-                    .flatten()
+                    .leaves
+                    .keys()
+                    .filter(|(_, origin, _)| *origin != Origin::ValidationHole)
+                    .map(move |(path, origin, capture)| Atom {
+                        coordinate: Coordinate {
+                            storage: storage.clone(),
+                            path: path.clone(),
+                        },
+                        origin: origin.clone(),
+                        capture: *capture,
+                    })
             })
             .collect()
     }
@@ -375,521 +472,4 @@ impl super::State {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::facts::Point;
-    use spark_mir::BlockId;
-
-    fn atom(storage: Storage, path: Path) -> Atom {
-        Atom {
-            coordinate: Coordinate { storage, path },
-            origin: Origin::Loan(Point::new(BlockId(0), 0)),
-            capture: None,
-        }
-    }
-
-    fn definition(storage: Storage) -> Definition {
-        Definition {
-            storage,
-            prefix: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn replacing_external_owner_preserves_independent_pointee_demand() {
-        let owner = Port::root(Local(1), spark_types::TypeId::ERROR);
-        let pointee = Port {
-            kind: crate::provenance::aliases::StorageKind::Reference,
-            channel_capture: None,
-            queue: None,
-            capture: None,
-            input: Local(1),
-            selection: vec![Slot::Deref, Slot::Field(spark_intern::sym("target"))],
-            pointee: spark_types::TypeId::ERROR,
-        };
-        let retained = atom(Storage::External(pointee.clone()), vec![Slot::Value]);
-        let mut transfer = Transfer {
-            definitions: vec![definition(Storage::External(owner))],
-            ..Transfer::default()
-        };
-        let demand = Demand::from_iter([retained.clone()]);
-        assert_eq!(
-            transfer.before(&demand),
-            demand,
-            "replacing the pointer-containing value cannot kill demand in its old pointee cell"
-        );
-        transfer
-            .definitions
-            .push(definition(Storage::External(pointee)));
-        assert!(
-            transfer.before(&Demand::from_iter([retained])).is_empty(),
-            "clearing the actual pointee cell ends that demand"
-        );
-    }
-
-    #[test]
-    fn clearing_a_carrier_preserves_demand_for_its_sibling_copy() {
-        let removed = atom(Storage::Logical(Local(1)), vec![Slot::Value]);
-        let old_cell = atom(Storage::Cell(Local(1)), vec![Slot::Value]);
-        let sibling = atom(Storage::Logical(Local(2)), vec![Slot::Value]);
-        let transfer = Transfer {
-            definitions: vec![
-                definition(Storage::Logical(Local(1))),
-                definition(Storage::Cell(Local(1))),
-            ],
-            ..Transfer::default()
-        };
-        let after = [removed, old_cell, sibling.clone()].into_iter().collect();
-        assert_eq!(transfer.before(&after), [sibling].into_iter().collect());
-    }
-
-    #[test]
-    fn reissuing_a_reference_does_not_kill_an_old_carrier_with_the_same_origin() {
-        let fresh = atom(Storage::Logical(Local(1)), Vec::new());
-        let retained = atom(Storage::Logical(Local(2)), vec![Slot::Value]);
-        assert_eq!(fresh.origin, retained.origin);
-        let transfer = Transfer {
-            definitions: vec![
-                definition(Storage::Logical(Local(1))),
-                definition(Storage::Cell(Local(1))),
-            ],
-            ..Transfer::default()
-        };
-        let after = [fresh, retained.clone()].into_iter().collect();
-        assert_eq!(transfer.before(&after), [retained].into_iter().collect());
-    }
-
-    #[test]
-    fn consuming_a_logical_value_preserves_its_addressable_contents() {
-        let logical = atom(Storage::Logical(Local(1)), vec![Slot::Tuple(0)]);
-        let cell = atom(Storage::Cell(Local(1)), vec![Slot::Tuple(0)]);
-        let transfer = Transfer {
-            definitions: vec![definition(Storage::Logical(Local(1)))],
-            ..Transfer::default()
-        };
-        let after = [logical, cell.clone()].into_iter().collect();
-        assert_eq!(transfer.before(&after), [cell].into_iter().collect());
-    }
-
-    #[test]
-    fn copied_payload_depends_on_its_cell_and_the_copy_reads_its_wrapper() {
-        let payload = atom(Storage::Logical(Local(3)), vec![Slot::Value]);
-        let source = atom(Storage::Cell(Local(1)), vec![Slot::Value]);
-        let wrapper = atom(Storage::Logical(Local(2)), Vec::new());
-        let transfer = Transfer {
-            definitions: vec![
-                definition(Storage::Logical(Local(3))),
-                definition(Storage::Cell(Local(3))),
-            ],
-            dependencies: FxHashMap::from_iter([(
-                payload.clone(),
-                [source.clone()].into_iter().collect(),
-            )]),
-            seeds: [wrapper.clone()].into_iter().collect(),
-        };
-        assert_eq!(
-            transfer.before(&Demand::default()),
-            [wrapper.clone()].into_iter().collect()
-        );
-        assert_eq!(
-            transfer.before(&[payload].into_iter().collect()),
-            [source, wrapper].into_iter().collect()
-        );
-    }
-
-    #[test]
-    fn widened_tail_does_not_authorize_a_strong_subpath_kill() {
-        let retained = atom(Storage::Logical(Local(1)), vec![Slot::Value, Slot::Tail]);
-        let transfer = Transfer {
-            definitions: vec![Definition {
-                storage: Storage::Logical(Local(1)),
-                prefix: vec![Slot::Value, Slot::Tail],
-            }],
-            ..Transfer::default()
-        };
-        let after = [retained].into_iter().collect();
-        assert_eq!(transfer.before(&after), after);
-    }
-    #[test]
-    fn projected_helper_reborrows_keep_each_returned_parent_separate() {
-        use spark_mir::{
-            AggregateKind, BasicBlock, Constant, LocalDecl, Mir, MirFunction, Operand, Place,
-            Projection, Rvalue, Statement, Terminator,
-        };
-        use spark_resolve::DefId;
-        use spark_span::Span;
-        use spark_types::{IntWidth, LifetimeId, Ty, TypeId, TypeTable};
-        use std::collections::HashMap;
-        let mut table = TypeTable::new();
-        let int = table.intern(Ty::Int(IntWidth::I64));
-        let record_id = DefId::new(9100);
-        let field = spark_intern::sym("value");
-        table.set_struct_fields(record_id, vec![(field, int)]);
-        let record = table.intern(Ty::Struct(record_id));
-        let reference = |inner| Ty::Ref {
-            inner,
-            mutable: false,
-            lifetime: LifetimeId::ANONYMOUS,
-        };
-        let record_ref = table.intern(reference(record));
-        let int_ref = table.intern(reference(int));
-        let pair = table.intern(Ty::Tuple(vec![int_ref, int_ref]));
-        let span = Span::DUMMY;
-        let local = |index| Place::from_local(Local(index));
-        let copy = |index| Operand::Copy(local(index));
-        let assign = |index, rvalue| Statement::Assign {
-            place: local(index),
-            rvalue,
-            span,
-        };
-        let block = |statements, terminator| BasicBlock {
-            statements,
-            terminator,
-            is_cleanup: false,
-        };
-        let locals = |types: &[TypeId]| {
-            types
-                .iter()
-                .enumerate()
-                .map(|(index, ty)| LocalDecl {
-                    local: Local(index as u32),
-                    ty: *ty,
-                    name: None,
-                    is_user_variable: false,
-                    mutable: true,
-                    span,
-                })
-                .collect()
-        };
-        let helper_id = DefId::new(9101);
-        let caller_id = DefId::new(9102);
-        let helper = MirFunction {
-            def_id: helper_id,
-            param_count: 2,
-            return_type: pair,
-            locals: locals(&[pair, record_ref, record_ref, int_ref, int_ref]),
-            blocks: vec![block(
-                vec![
-                    assign(
-                        3,
-                        Rvalue::Ref {
-                            place: Place {
-                                local: Local(1),
-                                projections: vec![Projection::Deref, Projection::Field(field)],
-                            },
-                            mutable: false,
-                        },
-                    ),
-                    assign(
-                        4,
-                        Rvalue::Ref {
-                            place: Place {
-                                local: Local(2),
-                                projections: vec![Projection::Deref, Projection::Field(field)],
-                            },
-                            mutable: false,
-                        },
-                    ),
-                    assign(
-                        0,
-                        Rvalue::Aggregate(AggregateKind::Tuple, vec![copy(3), copy(4)]),
-                    ),
-                ],
-                Terminator::Return,
-            )],
-            captures: vec![],
-            is_async: false,
-            span,
-        };
-        let value = |value| {
-            Rvalue::Aggregate(
-                AggregateKind::Struct {
-                    def_id: record_id,
-                    fields: vec![field],
-                },
-                vec![Operand::Constant(Constant::Int(value))],
-            )
-        };
-        let caller = MirFunction {
-            def_id: caller_id,
-            param_count: 0,
-            return_type: int,
-            locals: locals(&[int, record, record, record_ref, record_ref, pair, int_ref]),
-            blocks: vec![
-                block(
-                    vec![
-                        assign(1, value(1)),
-                        assign(2, value(2)),
-                        assign(
-                            3,
-                            Rvalue::Ref {
-                                place: local(1),
-                                mutable: false,
-                            },
-                        ),
-                        assign(
-                            4,
-                            Rvalue::Ref {
-                                place: local(2),
-                                mutable: false,
-                            },
-                        ),
-                    ],
-                    Terminator::Call {
-                        func: Operand::Constant(Constant::FunctionRef(helper_id)),
-                        args: vec![copy(3), copy(4)],
-                        destination: local(5),
-                        target: BlockId(1),
-                        span,
-                    },
-                ),
-                block(
-                    vec![
-                        assign(
-                            6,
-                            Rvalue::Use(Operand::Copy(Place {
-                                local: Local(5),
-                                projections: vec![Projection::Field(spark_intern::sym("0"))],
-                            })),
-                        ),
-                        assign(2, value(9)),
-                        assign(
-                            0,
-                            Rvalue::Use(Operand::Copy(Place {
-                                local: Local(6),
-                                projections: vec![Projection::Deref],
-                            })),
-                        ),
-                    ],
-                    Terminator::Return,
-                ),
-            ],
-            captures: vec![],
-            is_async: false,
-            span,
-        };
-        let facts = crate::facts::extract_facts(&caller);
-        let mir = Mir {
-            functions: HashMap::from([(helper_id, helper), (caller_id, caller)]),
-        };
-        let mut diagnostics = spark_diagnostics::Diagnostics::new();
-        let regions = super::super::effects::analyze_program(&mir, &table, None, &mut diagnostics);
-        assert!(!diagnostics.has_errors());
-        let read = Point::new(BlockId(1), 2);
-        let replace_other = Point::new(BlockId(1), 1);
-        assert!(
-            regions[&caller_id]
-                .iter()
-                .all(|context| context[0].points.contains(&read)),
-            "selected field must protect its actual source"
-        );
-        assert!(
-            regions[&caller_id]
-                .iter()
-                .all(|context| !context[1].points.contains(&read)),
-            "another field sharing the synthetic call origin must not extend this parent"
-        );
-        assert!(
-            regions[&caller_id]
-                .iter()
-                .all(|context| !context[1].points.contains(&replace_other)),
-            "unused field must not prevent replacing its source"
-        );
-        assert_eq!(facts.loans.len(), 2);
-    }
-    #[test]
-    fn copied_opaque_payload_keeps_parent_region_live() {
-        opaque_payload_region_case(false);
-    }
-
-    #[test]
-    fn opaque_helper_payload_keeps_caller_parent_region_live() {
-        opaque_payload_region_case(true);
-    }
-
-    fn opaque_payload_region_case(through_helper: bool) {
-        use spark_mir::{
-            AggregateKind, BasicBlock, Constant, LocalDecl, Mir, MirFunction, Operand, Place,
-            Projection, Rvalue, Statement, Terminator,
-        };
-        use spark_resolve::DefId;
-        use spark_span::Span;
-        use spark_types::{IntWidth, LifetimeId, Ty, TypeId, TypeTable};
-        use std::collections::HashMap;
-        let mut table = TypeTable::new();
-        let int = table.intern(Ty::Int(IntWidth::I64));
-        let list = table.intern(Ty::List(int));
-        let reference = |inner| Ty::Ref {
-            inner,
-            mutable: false,
-            lifetime: LifetimeId::ANONYMOUS,
-        };
-        let list_ref = table.intern(reference(list));
-        let carrier = table.intern(Ty::List(list_ref));
-        let carrier_ref = table.intern(reference(carrier));
-        let callback = table.intern(Ty::Function {
-            params: vec![list_ref],
-            ret: carrier_ref,
-            is_async: false,
-        });
-        let span = Span::DUMMY;
-        let local = |index| Place::from_local(Local(index));
-        let copy = |index| Operand::Copy(local(index));
-        let assign = |index, rvalue| Statement::Assign {
-            place: local(index),
-            rvalue,
-            span,
-        };
-        let block = |statements, terminator| BasicBlock {
-            statements,
-            terminator,
-            is_cleanup: false,
-        };
-        let locals = |types: &[TypeId]| {
-            types
-                .iter()
-                .enumerate()
-                .map(|(index, ty)| LocalDecl {
-                    local: Local(index as u32),
-                    ty: *ty,
-                    name: None,
-                    is_user_variable: false,
-                    mutable: true,
-                    span,
-                })
-                .collect()
-        };
-        let invoke_id = DefId::new(9301);
-        let invoke = MirFunction {
-            def_id: invoke_id,
-            param_count: 2,
-            return_type: carrier_ref,
-            locals: locals(&[carrier_ref, callback, list_ref]),
-            blocks: vec![
-                block(
-                    vec![],
-                    Terminator::Call {
-                        func: copy(1),
-                        args: vec![copy(2)],
-                        destination: local(0),
-                        target: BlockId(1),
-                        span,
-                    },
-                ),
-                block(vec![], Terminator::Return),
-            ],
-            captures: vec![],
-            is_async: false,
-            span,
-        };
-        let caller_id = DefId::new(9300);
-        let caller = MirFunction {
-            def_id: caller_id,
-            param_count: 0,
-            return_type: int,
-            locals: locals(&[
-                int,
-                callback,
-                list,
-                list_ref,
-                list_ref,
-                carrier_ref,
-                carrier,
-                int,
-                list_ref,
-            ]),
-            blocks: vec![
-                block(
-                    vec![
-                        assign(
-                            1,
-                            Rvalue::Use(Operand::Constant(Constant::FunctionRef(DefId::new(9302)))),
-                        ),
-                        assign(
-                            2,
-                            Rvalue::Aggregate(
-                                AggregateKind::List,
-                                vec![Operand::Constant(Constant::Int(1))],
-                            ),
-                        ),
-                        assign(
-                            3,
-                            Rvalue::Ref {
-                                place: local(2),
-                                mutable: false,
-                            },
-                        ),
-                        assign(
-                            4,
-                            Rvalue::Ref {
-                                place: Place {
-                                    local: Local(3),
-                                    projections: vec![Projection::Deref],
-                                },
-                                mutable: false,
-                            },
-                        ),
-                        assign(7, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
-                    ],
-                    Terminator::Call {
-                        func: if through_helper {
-                            Operand::Constant(Constant::FunctionRef(invoke_id))
-                        } else {
-                            copy(1)
-                        },
-                        args: if through_helper {
-                            vec![copy(1), copy(4)]
-                        } else {
-                            vec![copy(4)]
-                        },
-                        destination: local(5),
-                        target: BlockId(1),
-                        span,
-                    },
-                ),
-                block(
-                    vec![
-                        assign(
-                            6,
-                            Rvalue::Use(Operand::Copy(Place {
-                                local: Local(5),
-                                projections: vec![Projection::Deref],
-                            })),
-                        ),
-                        Statement::Nop,
-                        assign(
-                            8,
-                            Rvalue::Use(Operand::Copy(Place {
-                                local: Local(6),
-                                projections: vec![Projection::Index(Local(7))],
-                            })),
-                        ),
-                        assign(
-                            0,
-                            Rvalue::Use(Operand::Copy(Place {
-                                local: Local(8),
-                                projections: vec![Projection::Deref, Projection::Index(Local(7))],
-                            })),
-                        ),
-                    ],
-                    Terminator::Return,
-                ),
-            ],
-            captures: vec![],
-            is_async: false,
-            span,
-        };
-        let mir = Mir {
-            functions: HashMap::from([(caller_id, caller), (invoke_id, invoke)]),
-        };
-        let mut diagnostics = spark_diagnostics::Diagnostics::new();
-        let regions = super::super::effects::analyze_program(&mir, &table, None, &mut diagnostics);
-        assert!(!diagnostics.has_errors());
-        assert!(
-            regions[&caller_id]
-                .iter()
-                .all(|context| context[0].points.contains(&Point::new(BlockId(1), 1))),
-            "source parent must stay live between opaque payload copy and its later read"
-        );
-    }
-}
+mod tests;

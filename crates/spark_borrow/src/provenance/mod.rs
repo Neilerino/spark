@@ -260,7 +260,6 @@ impl<'a> Flow<'a> {
         let body = &self.function.blocks[block.index()];
         for (index, statement) in body.statements.iter().enumerate() {
             let point = Point::new(block, index as u32);
-            self.transfers.insert(point, demand::Transfer::default());
             self.transfer_statement(statement, point, state);
         }
         self.transfer_terminator(block, state)
@@ -269,7 +268,8 @@ impl<'a> Flow<'a> {
     fn transfer_terminator(&mut self, block: BlockId, state: &mut State) -> bool {
         let body = &self.function.blocks[block.index()];
         let point = Point::new(block, body.statements.len() as u32);
-        self.transfers.insert(point, demand::Transfer::default());
+        self.transfers
+            .insert(point, demand::Transfer::at_entry(state.atoms()));
         match &body.terminator {
             Terminator::Call {
                 func,
@@ -298,64 +298,7 @@ impl<'a> Flow<'a> {
                 let Some(outcome) = self.call_result(func, args, ty, point, state) else {
                     return false;
                 };
-                for arg in args {
-                    if let Some(local) = consume(arg, state) {
-                        self.record_consumed(point, local);
-                    }
-                }
-                let common = self.transfers[&point].clone();
-                let mut alternatives: Option<(State, demand::Transfer)> = None;
-                for alternative in outcome {
-                    self.transfers.insert(point, common.clone());
-                    let mut after = state.clone();
-                    let returned_copy = self.apply_call_future_proof(
-                        alternative.future_proof,
-                        &alternative.clobbered_copies,
-                        &mut after,
-                    );
-                    self.import_tasks(alternative.tasks, point, &mut after);
-                    if let Some((local, result)) = alternative.completed_task {
-                        self.complete_future(local, &result, &mut after);
-                    }
-
-                    for write in alternative.queue_contents {
-                        self.import_queue_contents(
-                            &write.target,
-                            &write.value,
-                            write.ty,
-                            point,
-                            &mut after,
-                        );
-                    }
-                    for write in alternative.queues {
-                        self.queue_send(&write.target, &write.value, write.ty, point, &mut after);
-                    }
-                    for write in alternative.memory {
-                        self.store_references(
-                            &write.target,
-                            &write.value,
-                            write.ty,
-                            point,
-                            &mut after,
-                        );
-                    }
-                    for (place, value) in alternative.place_writes {
-                        self.store(&place, value, point, &mut after);
-                    }
-                    self.store(destination, alternative.returned, point, &mut after);
-                    self.store_future_copy(destination, returned_copy, &mut after);
-                    let transfer = self.transfers[&point].clone();
-                    if let Some((joined, ledger)) = &mut alternatives {
-                        joined.join(&after);
-                        ledger.join_alternative(&transfer);
-                    } else {
-                        alternatives = Some((after, transfer));
-                    }
-                }
-                if let Some((after, transfer)) = alternatives {
-                    *state = after;
-                    self.transfers.insert(point, transfer);
-                }
+                self.apply_call_outcomes(args, destination, outcome, point, state);
             }
             Terminator::SwitchInt { discriminant, .. } => {
                 let mut accesses = Accesses::default();
@@ -371,10 +314,13 @@ impl<'a> Flow<'a> {
     }
 
     fn transfer_statement(&mut self, statement: &Statement, point: Point, state: &mut State) {
+        self.transfers
+            .insert(point, demand::Transfer::at_entry(state.atoms()));
         match statement {
             Statement::Assign { place, rvalue, .. } => {
                 let future_copy = self.future_copy_witness(rvalue, state);
                 let result = self.rvalue(rvalue, self.place_type(place), point, state);
+                let result = self.freeze_sources(point, result);
                 let mut accesses = Accesses::default();
                 self.read_access(place, state, AccessKind::Address, &mut accesses);
                 self.record_accesses(point, accesses, state);
@@ -397,14 +343,13 @@ impl<'a> Flow<'a> {
                     ty = child_type(ty, &slot, self.table).unwrap_or(TypeId::ERROR);
                     path.push(slot);
                 }
-                let stored = state.value(*value).prefixed_path(
-                    &path,
-                    self.function.locals[root.index()].ty,
-                    self.table,
-                );
-                let mut current = state.value(*root);
+                let stored = state
+                    .value(*value)
+                    .sourced(&demand::Storage::Logical(*value))
+                    .prefixed_path(&path, self.function.locals[root.index()].ty, self.table);
+                let mut current = state.value(*root).sourced(&demand::Storage::Logical(*root));
                 current.join(&stored);
-                state.set(*root, current);
+                self.store(&Place::from_local(*root), current, point, state);
                 state.consume(*value);
                 self.record_consumed(point, *value);
             }
@@ -582,6 +527,8 @@ impl<'a> Flow<'a> {
     }
 
     fn store(&mut self, place: &Place, value: Value, point: Point, state: &mut State) {
+        self.ensure_transfer(point, state);
+        let value = self.freeze_sources(point, value);
         if place
             .projections
             .iter()

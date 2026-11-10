@@ -934,7 +934,6 @@ mod tests {
                 point,
                 &mut state,
             );
-            assert_eq!(!flow.transfers[&point].definitions.is_empty(), strong);
             let mut coverage = super::super::writes::Coverage::default();
             if strong {
                 coverage.insert(View::whole(flow.aliases.representative(&root)));

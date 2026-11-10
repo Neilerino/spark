@@ -6,7 +6,7 @@ use spark_resolve::DefId;
 use spark_types::{Ty, TypeId, TypeTable};
 
 use super::address::{Dependency, Endpoint, Intent, OpaqueSite, Selector};
-use super::demand::{Atom, Coordinate, Sources, Storage};
+use super::demand::{Atom, Coordinate, Source, Sources, Storage};
 use super::{Origin, Origins};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -170,7 +170,7 @@ impl Value {
             .join(leaf);
     }
 
-    pub fn insert_sourced(&mut self, path: Path, origin: Origin, sources: super::demand::Demand) {
+    pub fn insert_sourced(&mut self, path: Path, origin: Origin, sources: super::demand::Frontier) {
         self.insert_source_contribution(path, origin, None, sources);
     }
 
@@ -179,7 +179,7 @@ impl Value {
         path: Path,
         origin: Origin,
         capture: Option<ReferenceCapture>,
-        sources: super::demand::Demand,
+        sources: super::demand::Frontier,
     ) {
         self.leaves
             .entry((path.clone(), origin.clone(), capture))
@@ -215,7 +215,7 @@ impl Value {
         self.join(&selected);
     }
 
-    pub fn all_sources(&self) -> super::demand::Demand {
+    pub fn all_sources(&self) -> super::demand::Frontier {
         self.sources.values().flatten().cloned().collect()
     }
 
@@ -259,14 +259,14 @@ impl Value {
             self.sources
                 .entry((path.clone(), origin.clone(), *capture))
                 .or_default()
-                .insert(Atom {
+                .insert(Source::Current(Atom {
                     coordinate: Coordinate {
                         storage: storage.clone(),
                         path: path.clone(),
                     },
                     origin: origin.clone(),
                     capture: *capture,
-                });
+                }));
         }
         self
     }
@@ -410,7 +410,7 @@ impl Value {
             .collect()
     }
 
-    pub fn address_sources(&self) -> super::demand::Demand {
+    pub fn address_sources(&self) -> super::demand::Frontier {
         self.sources
             .iter()
             .filter(|((path, _, _), _)| path.is_empty() || *path == [Slot::Tail])

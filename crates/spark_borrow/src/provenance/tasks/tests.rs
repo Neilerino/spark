@@ -64,7 +64,7 @@ fn completing_a_current_copy_preserves_result_borrows_and_unproved_other_instanc
         is_async: false,
         span: Span::DUMMY,
     };
-    let flow = Flow::new(&function, &table, None);
+    let mut flow = Flow::new(&function, &table, None);
     let (_, mut pending) = birth(function.def_id, Point::new(BlockId::ENTRY, 1), future);
     pending.join(
         &Value::reference(Origin::Loan(Point::new(BlockId::ENTRY, 2))).prefixed(
@@ -81,7 +81,7 @@ fn completing_a_current_copy_preserves_result_borrows_and_unproved_other_instanc
     state
         .future_copies
         .assign(Local(2), state.future_copies.witness(Local(1)), &state.live);
-    flow.complete_future(Local(2), &result, &mut state);
+    flow.complete_future(Local(2), &result, Point::new(BlockId::ENTRY, 4), &mut state);
     for index in [1, 2] {
         let completed = state.value(Local(index));
         assert!(completed

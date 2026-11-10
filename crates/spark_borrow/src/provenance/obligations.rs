@@ -67,8 +67,7 @@ impl Flow<'_> {
         self.transfers
             .entry(point)
             .or_default()
-            .seeds
-            .extend(value.all_sources());
+            .seed(&value.all_sources());
     }
 
     pub(super) fn report_obligations(&self, diagnostics: &mut Diagnostics) {

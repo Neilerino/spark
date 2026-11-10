@@ -24,7 +24,7 @@ pub(super) struct Access {
 #[derive(Clone, Debug, Default)]
 pub(super) struct Accesses {
     events: FxHashSet<Access>,
-    pub demands: super::demand::Demand,
+    pub demands: super::demand::Frontier,
 }
 
 impl Accesses {
@@ -92,7 +92,7 @@ impl FromIterator<Access> for Accesses {
     fn from_iter<T: IntoIterator<Item = Access>>(values: T) -> Self {
         Self {
             events: values.into_iter().collect(),
-            demands: super::demand::Demand::default(),
+            demands: super::demand::Frontier::default(),
         }
     }
 }

@@ -101,6 +101,27 @@ pub(super) struct CallOutcome {
     pub queue_contents: Vec<super::channels::Write>,
 }
 
+impl CallOutcome {
+    pub(super) fn freeze_sources(&mut self, flow: &Flow<'_>, point: Point) {
+        self.returned = flow.freeze_sources(point, std::mem::take(&mut self.returned));
+        for (_, record) in &mut self.tasks {
+            record.callback = flow.freeze_sources(point, std::mem::take(&mut record.callback));
+        }
+        if let Some((_, result)) = &mut self.completed_task {
+            *result = flow.freeze_sources(point, std::mem::take(result));
+        }
+        for (_, value) in &mut self.place_writes {
+            *value = flow.freeze_sources(point, std::mem::take(value));
+        }
+        for write in &mut self.memory {
+            write.value = flow.freeze_sources(point, std::mem::take(&mut write.value));
+        }
+        for write in self.queues.iter_mut().chain(&mut self.queue_contents) {
+            write.value = flow.freeze_sources(point, std::mem::take(&mut write.value));
+        }
+    }
+}
+
 pub(super) struct MemoryWrite {
     pub target: super::value::Leaf,
     pub ty: TypeId,
@@ -147,6 +168,72 @@ pub use inference::analyze_program;
 use inference::infer_summaries;
 
 impl Flow<'_> {
+    pub(super) fn apply_call_outcomes(
+        &mut self,
+        args: &[Operand],
+        destination: &spark_mir::Place,
+        mut outcome: Vec<CallOutcome>,
+        point: Point,
+        state: &mut State,
+    ) {
+        for alternative in &mut outcome {
+            alternative.freeze_sources(self, point);
+        }
+        for arg in args {
+            if let Some(local) = super::consume(arg, state) {
+                self.record_consumed(point, local);
+            }
+        }
+        let common = self.transfers[&point].clone();
+        let mut alternatives: Option<(State, super::demand::Transfer)> = None;
+        for alternative in outcome {
+            self.transfers.insert(point, common.clone());
+            let mut after = state.clone();
+            let returned_copy = self.apply_call_future_proof(
+                alternative.future_proof,
+                &alternative.clobbered_copies,
+                point,
+                &mut after,
+            );
+            self.import_tasks(alternative.tasks, point, &mut after);
+            if let Some((local, result)) = alternative.completed_task {
+                self.complete_future(local, &result, point, &mut after);
+            }
+
+            for write in alternative.queue_contents {
+                self.import_queue_contents(
+                    &write.target,
+                    &write.value,
+                    write.ty,
+                    point,
+                    &mut after,
+                );
+            }
+            for write in alternative.queues {
+                self.queue_send(&write.target, &write.value, write.ty, point, &mut after);
+            }
+            for write in alternative.memory {
+                self.store_references(&write.target, &write.value, write.ty, point, &mut after);
+            }
+            for (place, value) in alternative.place_writes {
+                self.store(&place, value, point, &mut after);
+            }
+            self.store(destination, alternative.returned, point, &mut after);
+            self.store_future_copy(destination, returned_copy, &mut after);
+            let transfer = self.transfers[&point].clone();
+            if let Some((joined, ledger)) = &mut alternatives {
+                joined.join(&after);
+                ledger.join_alternative(&transfer);
+            } else {
+                alternatives = Some((after, transfer));
+            }
+        }
+        if let Some((after, transfer)) = alternatives {
+            *state = after;
+            self.transfers.insert(point, transfer);
+        }
+    }
+
     fn discover_ports(&self, summary: &Summary, ports: &mut Vec<Port>) {
         for port in &self.queue_ports {
             if !ports.contains(port) {
@@ -195,6 +282,7 @@ impl Flow<'_> {
         point: Point,
         state: &State,
     ) -> Option<Vec<CallOutcome>> {
+        self.ensure_transfer(point, state);
         if let Some(outcome) = self.task_call(func, args, ty, point, state) {
             return match outcome {
                 task_binding::TaskDispatch::Returns(outcomes) => Some(outcomes),
@@ -630,7 +718,7 @@ impl Flow<'_> {
                 opaque: leaf.opaque.clone(),
                 ..Default::default()
             };
-            let mut retained_sources = super::demand::Demand::default();
+            let mut retained_sources = super::demand::Frontier::default();
             for endpoint in &leaf.endpoints {
                 match endpoint {
                     Endpoint::Frame { .. } => {
@@ -867,7 +955,7 @@ fn export_value(value: &Value, function: DefId) -> Value {
 fn retain_selected(
     value: &Value,
     retained: &mut super::value::Leaf,
-    sources: &mut super::demand::Demand,
+    sources: &mut super::demand::Frontier,
 ) {
     retained.parents.extend(value.origins());
     sources.extend(value.all_sources());

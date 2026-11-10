@@ -262,22 +262,37 @@ impl super::Flow<'_> {
         }
     }
 
-    pub(super) fn complete_future(&self, local: Local, result: &Value, state: &mut super::State) {
-        self.complete_future_witness(state.future_copies.witness(local), Some(result), state);
+    pub(super) fn complete_future(
+        &mut self,
+        local: Local,
+        result: &Value,
+        point: Point,
+        state: &mut super::State,
+    ) {
+        self.complete_future_witness(
+            state.future_copies.witness(local),
+            Some(result),
+            point,
+            state,
+        );
     }
 
     pub(super) fn complete_future_witness(
-        &self,
+        &mut self,
         witness: Witness,
         result: Option<&Value>,
+        point: Point,
         state: &mut super::State,
     ) {
+        self.ensure_transfer(point, state);
         state.joined_inputs.extend(witness.inputs);
         for peer in witness.peers {
             if !state.live.contains(&peer) {
                 continue;
             }
-            let mut current = state.value(peer);
+            let mut current = state
+                .value(peer)
+                .sourced(&super::demand::Storage::Logical(peer));
             for (path, handles) in &mut current.futures {
                 if path.is_empty() || *path == [Slot::Tail] {
                     *handles = handles
@@ -297,14 +312,16 @@ impl super::Flow<'_> {
             if let Some(result) = result {
                 current.join(&result.prefixed(Slot::Element, ty, self.table));
             }
+            self.record_store(point, &spark_mir::Place::from_local(peer), &current);
             state.set(peer, current);
         }
     }
 
     pub(super) fn apply_call_future_proof(
-        &self,
+        &mut self,
         mut proof: proofs::CallProof,
         clobbered: &[Local],
+        point: Point,
         state: &mut super::State,
     ) -> Option<Witness> {
         proof.exclude(clobbered);
@@ -312,7 +329,7 @@ impl super::Flow<'_> {
             state.future_copies.forget(*local);
         }
         for witness in proof.completed {
-            self.complete_future_witness(witness, None, state);
+            self.complete_future_witness(witness, None, point, state);
         }
         proof.returned
     }
@@ -399,6 +416,7 @@ impl super::Flow<'_> {
         point: Point,
         state: &mut super::State,
     ) {
+        self.ensure_transfer(point, state);
         for (target, mut record) in records {
             self.record_path_store(
                 point,

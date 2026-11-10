@@ -63,10 +63,22 @@ fn prefix_obligations_demand_sources_without_defining_a_destination() {
     let point = Point::new(BlockId::ENTRY, 0);
     let value = Value::reference(Origin::Loan(point)).sourced(&Storage::Logical(Local(1)));
     let mut flow = Flow::new(&function, &table, None);
+    let mut state = super::super::State::default();
+    state.set(Local(1), value.clone());
+    flow.ensure_transfer(point, &state);
     flow.record_obligation(point, Boundary::Store(int), &value);
-    assert_eq!(flow.transfers[&point].seeds, value.all_sources());
-    assert!(!flow.transfers[&point].seeds.is_empty());
-    assert!(flow.transfers[&point].definitions.is_empty());
+    let expected = super::super::demand::Atom {
+        coordinate: super::super::demand::Coordinate {
+            storage: Storage::Logical(Local(1)),
+            path: Vec::new(),
+        },
+        origin: Origin::Loan(point),
+        capture: None,
+    };
+    assert_eq!(
+        flow.transfers[&point].seeds,
+        super::super::demand::Demand::from_iter([expected])
+    );
     assert_eq!(flow.obligations[&(point, Boundary::Store(int))], value);
     flow.record_obligation(
         point,

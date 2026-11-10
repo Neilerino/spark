@@ -83,7 +83,7 @@ fn widened_captures_keep_endpoint_and_demand_contributions_separate() {
         assert!(selected
             .all_sources()
             .iter()
-            .all(|atom| atom.capture == Some(capture)));
+            .all(|source| matches!(source, super::super::demand::Source::Current(atom) | super::super::demand::Source::Entry(atom) if atom.capture == Some(capture))));
     }
     let tainted = tainted_from(first.ty, &joined, &table);
     assert_eq!(
