@@ -5892,3 +5892,88 @@ fn collection_borrow_future_private_returned_queue_has_native_layout() {
         assert_eq!(result.stdout.trim(), "5", "{args:?}");
     }
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_tasks_publish_late_queue_payloads() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/async/future_task_late_queue_publication_scoped.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout.trim(), "5", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_late_queue_publication_owner_drop.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_private_input_roles_survive_helper_returns() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/async/future_task_private_input_role_scoped.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout.trim(), "5", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_private_input_role_owner_drop.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_queue_closure_covers_chains_cycles_and_divergence() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for name in [
+            "future_task_two_late_relays_scoped.spark",
+            "future_task_self_queue_reaches_a_fixed_point.spark",
+        ] {
+            let safe = run_spark_with_args(&format!("run-pass/async/{name}"), args);
+            assert_eq!(safe.exit_code, 0, "{name} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout.trim(), "5", "{name} {args:?}");
+        }
+        let diverging = build_spark_with_args(
+            "run-pass/async/future_task_late_diverging_prefix_scoped.spark",
+            args,
+        );
+        assert_eq!(diverging.exit_code, 0, "{args:?}: {}", diverging.stderr);
+        for name in [
+            "future_task_two_late_relays_owner_drop.spark",
+            "future_task_late_diverging_prefix_owner_drop.spark",
+        ] {
+            let invalid =
+                build_spark_with_args(&format!("compile-fail/borrow_errors/{name}"), args);
+            assert_eq!(invalid.exit_code, 1, "{name} {args:?}: {}", invalid.stderr);
+            assert!(
+                invalid
+                    .stderr
+                    .contains("borrowed value does not live long enough"),
+                "{name} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}

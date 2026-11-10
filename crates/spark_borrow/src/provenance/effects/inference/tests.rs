@@ -226,6 +226,38 @@ fn task_created_queues_keep_their_identity_across_observation_points() {
     );
 }
 
+#[test]
+fn late_task_publications_are_bound_even_when_the_body_never_returns() {
+    let output = lower_source(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_task_late_diverging_prefix_scoped.spark"
+    )));
+    assert!(!output.diagnostics.has_errors());
+    let facts = output
+        .mir
+        .functions
+        .iter()
+        .map(|(id, function)| (*id, crate::facts::extract_facts(function)))
+        .collect();
+    let (summaries, _, _) = infer_summaries_with_definitions(
+        &output.mir,
+        &output.table,
+        &facts,
+        Some(&output.definitions),
+    );
+    let matching: Vec<_> = summaries
+        .iter()
+        .filter(|(key, _)| {
+            output.definitions.get(key.function).unwrap().name.as_str() == "publishForever"
+        })
+        .collect();
+    assert!(!matching.is_empty());
+    for (_, summary) in matching {
+        assert!(!summary.normal_return);
+        assert!(!summary.queues.is_empty());
+    }
+}
+
 fn make_graph(file_id: spark_span::FileId, ast: &spark_ast::Ast) -> ModuleGraph {
     use spark_ast::Item;
     use spark_modules::{ModuleInfo, ModulePath};

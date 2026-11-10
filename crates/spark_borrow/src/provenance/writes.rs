@@ -154,6 +154,9 @@ impl Flow<'_> {
                 current
                     .futures
                     .retain(|stored, _| !super::storage::prefix(path, stored));
+                current
+                    .task_views
+                    .retain(|stored, _| !super::storage::prefix(path, stored));
             }
             current.join(&value.prefixed_path(path, root, self.table));
             current.sources.clear();

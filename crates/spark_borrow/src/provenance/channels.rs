@@ -3,7 +3,7 @@
 //! Shared channel handles and weak payload storage.
 
 use crate::provenance::tasks::proofs::CallProof;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use spark_intern::kw;
 use spark_mir::{Local, Operand};
 use spark_resolve::{DefId, DefinitionKind};
@@ -861,5 +861,23 @@ impl Flow<'_> {
         let stored = state.queues.entry((target, ty)).or_default();
         stored.join(payload);
         stored.sources.clear();
+    }
+}
+
+pub(in crate::provenance) fn remap_queues(
+    queues: &mut FxHashMap<Path, FxHashSet<Handle>>,
+    bindings: &FxHashMap<Target, Target>,
+) {
+    for handles in queues.values_mut() {
+        *handles = handles
+            .iter()
+            .map(|handle| Handle {
+                target: bindings
+                    .get(&handle.target)
+                    .cloned()
+                    .unwrap_or_else(|| handle.target.clone()),
+                capture: handle.capture,
+            })
+            .collect();
     }
 }

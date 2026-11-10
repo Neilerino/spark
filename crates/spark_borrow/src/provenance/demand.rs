@@ -53,7 +53,7 @@ impl Definition {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Transfer {
     support: Demand,
     rows: FxHashMap<Atom, Demand>,
@@ -432,7 +432,7 @@ impl super::State {
             .collect()
     }
 
-    fn stored_value(&self, storage: &Storage) -> Option<&super::Value> {
+    pub(super) fn stored_value(&self, storage: &Storage) -> Option<&super::Value> {
         match storage {
             Storage::Logical(local) => self.values.get(local),
             Storage::Cell(local) => self.cells.get(local),
