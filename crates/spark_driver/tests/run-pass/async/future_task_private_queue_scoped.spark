@@ -1,0 +1,17 @@
+// TAG [SPARK-114]
+
+struct Holder { value: Ref[String] }
+async fn inspect(holder: Holder): Int {
+    private: Channel[Ref[String]] = Channel[Ref[String]]()
+    private.send(holder.value)
+    value: Ref[String] = private.recv()
+    return value.len()
+}
+fn main(): Int {
+    text: String = " seven ".trim()
+    borrowed: Ref[String] = text
+    holder: Holder = Holder { value: borrowed }
+    pending: Future[Int] = spawn { inspect(holder) }
+    print(await pending)
+    return 0
+}

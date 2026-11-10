@@ -1,0 +1,12 @@
+// TAG [SPARK-114]
+
+struct Holder { value: Ref[Int] }
+fn neverLoop(): Int { return neverLoop() }
+async fn publishForever(output: Channel[Ref[Int]], holder: Holder): Int {
+    output.send(holder.value)
+    return neverLoop()
+}
+fn launch(output: Channel[Ref[Int]], holder: Holder): Future[Int] {
+    return spawn { publishForever(output, holder) }
+}
+fn main(): Int { return 0 }
