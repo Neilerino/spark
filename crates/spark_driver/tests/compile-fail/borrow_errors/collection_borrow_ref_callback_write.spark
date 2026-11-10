@@ -1,0 +1,25 @@
+// TAG [SPARK-114]
+
+fn invoke(pointer: Ref[(): Void]): Void {
+    callback: (): Void = pointer
+    callback()
+}
+fn produce(value: Int): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    borrowed: Ref[Int] = value
+    callback: (): Void = fn(): Void {
+        next: Map[String, Ref[Int]] = {"one": borrowed}
+        target = next
+    }
+    pointer: Ref[(): Void] = callback
+    invoke(pointer)
+    return entries
+}
+fn main(): Int {
+    value: Int = 7
+    
+    entries: Map[String, Ref[Int]] = produce(value)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    return 0
+}

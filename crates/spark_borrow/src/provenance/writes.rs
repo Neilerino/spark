@@ -89,7 +89,7 @@ impl Flow<'_> {
     ) {
         let targets = self.write_targets(metadata);
         if targets.unknown {
-            self.record_unproven_store(point, ty, value);
+            self.record_obligation(point, super::obligations::Boundary::Store(ty), value);
         }
         let unique = targets.physical.len() == 1 && !targets.unknown;
         for destination in targets.all {
@@ -264,39 +264,6 @@ impl Flow<'_> {
             value = value.project(slot);
         }
         (value, state.external_defined.relative(&view))
-    }
-
-    pub(super) fn record_unproven_store(
-        &mut self,
-        point: Point,
-        ty: spark_types::TypeId,
-        value: &Value,
-    ) {
-        if value.leaves.is_empty() {
-            return;
-        }
-        self.unproven_stores
-            .entry((point, ty))
-            .or_default()
-            .join(value);
-        self.transfers
-            .entry(point)
-            .or_default()
-            .seeds
-            .extend(value.all_sources());
-    }
-
-    pub(super) fn report_unproven_stores(&self, diagnostics: &mut Diagnostics) {
-        let mut reported = rustc_hash::FxHashSet::default();
-        for ((point, _), value) in &self.unproven_stores {
-            for root in value.frame_sources(self.function.def_id) {
-                if reported.insert((*point, root)) {
-                    diagnostics.push(Diagnostic::error("cannot store a reference to local storage through an unproven destination")
-                        .with_label(Label::primary(crate::errors::span_for_point(*point, self.function), "this write may retain the borrowed value"))
-                        .with_label(Label::secondary(crate::errors::span_for_point(root, self.function), "borrowed storage belongs to this function")));
-                }
-            }
-        }
     }
 
     pub(super) fn report_external_stores(

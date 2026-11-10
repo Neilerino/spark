@@ -4408,3 +4408,277 @@ fn collection_borrow_keeps_each_callback_target_with_its_own_captures() {
         );
     }
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_helper_callback_observes_captured_storage() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/collections/collection_borrow_helper_owned_callback.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "5\n");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_helper_callback_read.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_helper_callback_preserves_writes_and_clears() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, expected) in [
+            (
+                "run-pass/collections/collection_borrow_helper_callback_incoming.spark",
+                "7\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_helper_callback_clear.spark",
+                "0\n",
+            ),
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, expected, "{fixture} {args:?}");
+        }
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_helper_callback_write.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid.stderr.contains("reference to local storage"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_recursive_callback_preserves_capture_observations() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/collections/collection_borrow_recursive_owned_callback.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "5\n");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_recursive_callback_read.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_callback_effects_preserve_alias_ordering() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, expected) in [
+            (
+                "run-pass/collections/collection_borrow_callback_disjoint.spark",
+                "8\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_callback_snapshot.spark",
+                "8\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_callback_alias_incoming.spark",
+                "7\n",
+            ),
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, expected, "{fixture} {args:?}");
+        }
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_callback_alias.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid.stderr.contains("reference to local storage"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_callback_forwarding_preserves_owned_and_inert_values() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/collections/collection_borrow_callback_forwarding.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "5\n7\n1\n");
+        let owned = build_spark_with_args(
+            "run-pass/collections/collection_borrow_callback_nonreturn_owned.spark",
+            args,
+        );
+        assert_eq!(owned.exit_code, 0, "{args:?}: {}", owned.stderr);
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_callback_nonreturn_read.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_unknown_callback_requires_proven_effects() {
+    let native = "void *opaque_callback(void *slot) { return slot; }\nvoid inspect(void *target, void *value) {}\n";
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/collections/collection_borrow_callback_borrowed_for_call.spark"),
+        "7",
+    );
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/collections/collection_borrow_foreign_arguments_for_call.spark"),
+        "7",
+    );
+    assert_native_borrow_error_fixture(
+        native,
+        include_str!(
+            "compile-fail/borrow_errors/collection_borrow_unknown_callback_arguments.spark"
+        ),
+        "cannot verify effects of a callback on borrowed storage",
+    );
+    assert_native_borrow_error_fixture(
+        native,
+        include_str!("compile-fail/borrow_errors/collection_borrow_unknown_callback_write.spark"),
+        "cannot verify effects of a callback on borrowed storage",
+    );
+    assert_native_borrow_error_fixture(
+        native,
+        include_str!(
+            "compile-fail/borrow_errors/collection_borrow_unknown_callback_nonreturn.spark"
+        ),
+        "cannot verify effects of a callback on borrowed storage",
+    );
+    for fixture in [
+        include_str!("compile-fail/borrow_errors/collection_borrow_unknown_callback_forwarded_arguments.spark"),
+        include_str!("compile-fail/borrow_errors/collection_borrow_unknown_callback_nonreturn_arguments.spark"),
+    ] {
+        assert_native_borrow_error_fixture(native, fixture, "cannot verify effects of a callback on borrowed storage");
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_open_inputs_keep_known_callback_precision() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, expected) in [
+            (
+                "run-pass/collections/collection_borrow_open_local_argument.spark",
+                "7\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_open_safe_return.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_open_factory.spark",
+                "7\n",
+            ),
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, expected, "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/collection_borrow_open_identity_return.spark",
+            "compile-fail/borrow_errors/collection_borrow_open_unconditional_return.spark",
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(
+                invalid.exit_code, 1,
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+            assert!(
+                invalid.stderr.contains("cannot return reference to local"),
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_reference_callback_preserves_writes() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/collections/collection_borrow_ref_callback_incoming.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "7\n");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_ref_callback_write.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid.stderr.contains("reference to local"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_open_function_results_preserve_target_roles() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/collections/collection_borrow_open_function_result.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "9\n");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_open_function_escape.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid.stderr.contains("reference to local"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}

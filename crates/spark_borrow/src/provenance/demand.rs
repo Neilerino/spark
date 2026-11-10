@@ -752,7 +752,7 @@ mod tests {
         let caller_id = DefId::new(9300);
         let caller = MirFunction {
             def_id: caller_id,
-            param_count: 1,
+            param_count: 0,
             return_type: int,
             locals: locals(&[
                 int,
@@ -768,6 +768,10 @@ mod tests {
             blocks: vec![
                 block(
                     vec![
+                        assign(
+                            1,
+                            Rvalue::Use(Operand::Constant(Constant::FunctionRef(DefId::new(9302)))),
+                        ),
                         assign(
                             2,
                             Rvalue::Aggregate(

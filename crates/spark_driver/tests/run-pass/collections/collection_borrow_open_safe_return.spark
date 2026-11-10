@@ -1,0 +1,15 @@
+// TAG [SPARK-114]
+
+fn withLocal(callback: (Ref[Int]): Ref[Int]): Ref[Int] {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    return callback(borrowed)
+}
+fn main(): Int {
+    stable: Int = 9
+    borrowed: Ref[Int] = stable
+    callback: (Ref[Int]): Ref[Int] = fn(ignored: Ref[Int]): Ref[Int] { return borrowed }
+    result: Ref[Int] = withLocal(callback)
+    print(result)
+    return 0
+}

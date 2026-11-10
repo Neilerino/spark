@@ -970,5 +970,5 @@ fn projected_opaque_result_retains_deferred_capture_dependencies() {
     };
     let mut diagnostics = Diagnostics::new();
     analyze_program(&mir, &table, &mut diagnostics);
-    assert!(diagnostics.has_errors(), "projecting an opaque result must retain the captured frame dependency despite its different pointee type");
+    assert!(diagnostics.iter().any(|diagnostic| diagnostic.message.starts_with("cannot return reference to local variable")), "projecting an opaque result must retain the captured frame dependency despite its different pointee type");
 }

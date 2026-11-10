@@ -107,7 +107,10 @@ fn pending_memory_summary_is_not_a_returning_empty_clear() {
     let ports = FxHashMap::from_iter([(DefId::new(9800), Vec::new()), (caller.def_id, Vec::new())]);
     for normal_return in [false, true] {
         let summaries = FxHashMap::from_iter([(
-            Key::distinct(DefId::new(9800)),
+            Key {
+                callables: super::super::callbacks::Inputs::invocation(),
+                ..Key::distinct(DefId::new(9800))
+            },
             Summary {
                 normal_return,
                 memory: FxHashMap::from_iter([(Port::root(Local(1), map), Value::default())]),

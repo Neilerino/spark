@@ -139,6 +139,7 @@ fn compatible(left: TypeId, right: TypeId, table: &TypeTable) -> bool {
 pub(super) struct Key {
     pub function: DefId,
     pub aliases: Aliases,
+    pub callables: super::callbacks::Inputs,
 }
 
 impl Key {
@@ -146,6 +147,7 @@ impl Key {
         Self {
             function,
             aliases: Aliases::default(),
+            callables: super::callbacks::Inputs::default(),
         }
     }
 }
