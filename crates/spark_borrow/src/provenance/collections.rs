@@ -38,6 +38,9 @@ impl Flow<'_> {
                 .prefixed(Slot::Element, ty, self.table),
         );
         Some(super::effects::CallOutcome {
+            tasks: Vec::new(),
+            completed_task: None,
+            clobbered_copies: Vec::new(),
             returned: Value::default(),
             place_writes: vec![(place.clone(), contents)],
             memory: Vec::new(),

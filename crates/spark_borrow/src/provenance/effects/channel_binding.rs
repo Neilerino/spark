@@ -149,6 +149,9 @@ impl Flow<'_> {
             point: actuals.point,
         };
         returned.join(&opaque_handles(actuals.ty, site, self.table));
+        returned.join(&super::super::tasks::opaque_handles(
+            actuals.ty, site, self.table, false,
+        ));
         for handles in returned.queues.values_mut() {
             let expected: Vec<_> = handles.iter().map(Handle::ty).collect();
             for ty in expected {
@@ -211,6 +214,9 @@ impl Flow<'_> {
             });
         }
         super::CallOutcome {
+            tasks: Vec::new(),
+            completed_task: None,
+            clobbered_copies: Vec::new(),
             place_writes: Vec::new(),
             returned,
             memory: Vec::new(),

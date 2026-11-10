@@ -83,9 +83,25 @@ pub(super) struct Value {
     pub sources: Sources,
     pub callees: FxHashMap<Path, super::callbacks::Targets>,
     pub queues: FxHashMap<Path, FxHashSet<super::channels::Handle>>,
+    pub futures: FxHashMap<Path, FxHashSet<super::tasks::Handle>>,
 }
 
 impl Value {
+    pub(super) fn task_lineage(&self) -> Self {
+        let mut result = Self::default();
+        for ((_, origin, capture), leaf) in &self.leaves {
+            result.insert_contribution(vec![Slot::Tail], origin.clone(), *capture, leaf);
+        }
+        for ((_, origin, capture), sources) in &self.sources {
+            result.insert_source_contribution(
+                vec![Slot::Tail],
+                origin.clone(),
+                *capture,
+                sources.clone(),
+            );
+        }
+        result
+    }
     pub fn materialize_validation_holes(&mut self) {
         let paths: Vec<_> = self
             .leaves
@@ -180,6 +196,7 @@ impl Value {
         let mut result = Self {
             callees: self.callees.clone(),
             queues: self.queues.clone(),
+            futures: self.futures.clone(),
             ..Self::default()
         };
         for ((path, origin, _), leaf) in &self.leaves {
@@ -212,6 +229,12 @@ impl Value {
             let entry = self.sources.entry(key.clone()).or_default();
             let before = entry.len();
             entry.extend(sources.iter().cloned());
+            changed |= before != entry.len();
+        }
+        for (path, targets) in &other.futures {
+            let entry = self.futures.entry(path.clone()).or_default();
+            let before = entry.len();
+            entry.extend(targets.iter().cloned());
             changed |= before != entry.len();
         }
         for (path, targets) in &other.queues {
@@ -264,7 +287,10 @@ impl Value {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.leaves.is_empty() && self.callees.is_empty() && self.queues.is_empty()
+        self.leaves.is_empty()
+            && self.callees.is_empty()
+            && self.queues.is_empty()
+            && self.futures.is_empty()
     }
 
     pub fn with_channel_capture(&self, capture: super::channels::Capture) -> Self {
@@ -304,6 +330,7 @@ impl Value {
         let mut result = Self {
             callees: self.callees.clone(),
             queues: self.queues.clone(),
+            futures: self.futures.clone(),
             ..Self::default()
         };
         for ((path, origin, previous), leaf) in &self.leaves {
@@ -480,6 +507,15 @@ impl Value {
 
     fn map_borrows(&self, select: impl Fn(&[Slot]) -> Option<Path>) -> Self {
         let mut result = Self::default();
+        for (path, targets) in &self.futures {
+            if let Some(path) = select(path) {
+                result
+                    .futures
+                    .entry(path)
+                    .or_default()
+                    .extend(targets.iter().cloned());
+            }
+        }
         for (path, targets) in &self.queues {
             if let Some(path) = select(path) {
                 result
@@ -587,6 +623,7 @@ pub(super) fn inputs(
 ) -> Value {
     let mut value = Value::default();
     super::channels::seed_inputs(&mut value, ty, local, source_ty, prefix, table);
+    super::tasks::seed_inputs(&mut value, ty, local, source_ty, prefix, table);
     seed(
         ty,
         &mut Vec::new(),

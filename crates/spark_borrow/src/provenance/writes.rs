@@ -79,6 +79,34 @@ struct WriteTargets {
 }
 
 impl Flow<'_> {
+    pub(super) fn possibly_written_locals(
+        &mut self,
+        metadata: &super::value::Leaf,
+        state: &State,
+    ) -> rustc_hash::FxHashSet<spark_mir::Local> {
+        let targets = self.write_targets(metadata);
+        for coordinate in &targets.all {
+            if let Storage::External(port) = &coordinate.storage {
+                self.written_inputs.insert(View {
+                    root: port.clone(),
+                    path: coordinate.path.clone(),
+                });
+            }
+        }
+        if targets.unknown {
+            self.unknown_copy_clobber = true;
+            return state.live.clone();
+        }
+        targets
+            .all
+            .into_iter()
+            .filter_map(|coordinate| match coordinate.storage {
+                Storage::Cell(local) | Storage::Logical(local) => Some(local),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(super) fn store_references(
         &mut self,
         metadata: &super::value::Leaf,
@@ -103,28 +131,12 @@ impl Flow<'_> {
         let unique = targets.physical.len() == 1 && !targets.unknown;
         for destination in targets.all {
             let Coordinate { storage, path } = &destination;
-            let (root, mut current) = match storage {
-                Storage::Queue(target, ty) => (
-                    *ty,
-                    state
-                        .queues
-                        .get(&(target.clone(), *ty))
-                        .cloned()
-                        .unwrap_or_default(),
-                ),
-                Storage::External(port) => (
-                    port.pointee,
-                    state.external.get(port).cloned().unwrap_or_default(),
-                ),
-                Storage::Cell(local) | Storage::Logical(local) => {
-                    (self.function.locals[local.index()].ty, state.cell(*local))
-                }
-            };
+            let (root, mut current) = self.stored_carrier(storage, state);
             let strong = unique
                 && match storage {
                     Storage::Cell(_) => owned_path(path),
                     Storage::External(_) => targets.exact.contains(&destination),
-                    Storage::Logical(_) | Storage::Queue(_, _) => false,
+                    Storage::Logical(_) | Storage::Queue(_, _) | Storage::Task(_, _) => false,
                 };
             self.record_path_store(point, destination.clone(), value, strong);
             if strong {
@@ -137,10 +149,20 @@ impl Flow<'_> {
                 current
                     .queues
                     .retain(|stored, _| !super::storage::prefix(path, stored));
+                current
+                    .futures
+                    .retain(|stored, _| !super::storage::prefix(path, stored));
             }
             current.join(&value.prefixed_path(path, root, self.table));
             current.sources.clear();
             match storage {
+                Storage::Task(target, ty) => {
+                    let record = super::tasks::Record {
+                        callback: current,
+                        callback_ty: *ty,
+                    };
+                    state.tasks.insert(target.clone(), record);
+                }
                 Storage::Queue(target, ty) => {
                     state.queues.insert((target.clone(), *ty), current);
                 }
@@ -159,6 +181,7 @@ impl Flow<'_> {
                     state.external.insert(port.clone(), current);
                 }
                 Storage::Cell(local) | Storage::Logical(local) => {
+                    state.future_copies.forget(*local);
                     State::set_value(&mut state.cells, *local, current.clone());
                     if state.live.contains(local) {
                         self.record_path_store(
@@ -178,6 +201,34 @@ impl Flow<'_> {
                         });
                     }
                 }
+            }
+        }
+    }
+
+    fn stored_carrier(&self, storage: &Storage, state: &State) -> (spark_types::TypeId, Value) {
+        match storage {
+            Storage::Task(target, ty) => (
+                *ty,
+                state
+                    .tasks
+                    .get(target)
+                    .map(|record| record.callback.clone())
+                    .unwrap_or_default(),
+            ),
+            Storage::Queue(target, ty) => (
+                *ty,
+                state
+                    .queues
+                    .get(&(target.clone(), *ty))
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+            Storage::External(port) => (
+                port.pointee,
+                state.external.get(port).cloned().unwrap_or_default(),
+            ),
+            Storage::Cell(local) | Storage::Logical(local) => {
+                (self.function.locals[local.index()].ty, state.cell(*local))
             }
         }
     }

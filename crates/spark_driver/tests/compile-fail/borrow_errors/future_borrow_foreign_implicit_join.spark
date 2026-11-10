@@ -1,0 +1,21 @@
+// TAG [SPARK-114]
+
+link "union_probe"
+extern fn foreign_length(values: List[Ref[String]]): Int
+async fn lengthAfter(signal: Channel[Int], values: List[Ref[String]]): Int {
+    token: Int = signal.recv()
+    return foreign_length(values)
+}
+async fn zero(): Int { return 0 }
+fn main(): Int {
+    signal: Channel[Int] = Channel[Int]()
+    pending: Future[Int]! = spawn { zero() }
+    if true {
+        text: String = " seven ".trim()
+        borrowed: Ref[String] = text
+        values: List[Ref[String]] = [borrowed]
+        pending = spawn { lengthAfter(signal, values) }
+    }
+    signal.send(1)
+    return 0
+}

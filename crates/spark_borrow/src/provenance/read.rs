@@ -105,6 +105,7 @@ impl<'a> IntoIterator for &'a Accesses {
 }
 
 struct TailValues {
+    writes: Vec<super::value::Leaf>,
     references: Value,
     channels: Value,
 }
@@ -351,6 +352,9 @@ impl Flow<'_> {
         result
             .queues
             .retain(|path, _| !covered.iter().any(|prefix| path.starts_with(prefix)));
+        result
+            .futures
+            .retain(|path, _| !covered.iter().any(|prefix| path.starts_with(prefix)));
         for ((path, _, _), leaf) in &mut result.leaves {
             leaf.dependencies.clear();
             leaf.dependencies.insert(Dependency::InputValue(Selector {
@@ -437,6 +441,15 @@ impl Flow<'_> {
         self.tail_values(value, ty, expected, state).references
     }
 
+    pub(super) fn tail_write_targets(
+        &self,
+        value: Value,
+        ty: TypeId,
+        state: &State,
+    ) -> Vec<super::value::Leaf> {
+        self.tail_values(value, ty, None, state).writes
+    }
+
     pub(super) fn tail_channel_value(
         &self,
         value: Value,
@@ -445,6 +458,13 @@ impl Flow<'_> {
         state: &State,
     ) -> Value {
         self.tail_values(value, ty, Some(expected), state).channels
+    }
+
+    fn may_write_reference(&self, ty: TypeId) -> bool {
+        match self.table.resolve(value::strip_mutable(ty, self.table)) {
+            Ty::Ref { mutable, .. } => *mutable || matches!(self.table.resolve(ty), Ty::Mutable(_)),
+            _ => true,
+        }
     }
 
     fn tail_values(
@@ -456,6 +476,7 @@ impl Flow<'_> {
     ) -> TailValues {
         let mut result = Value::default();
         let mut channels = Value::default();
+        let mut writes = Vec::new();
         let mut pending = vec![(value, ty)];
         let mut seen: rustc_hash::FxHashMap<_, Value> = rustc_hash::FxHashMap::default();
         while let Some((value, ty)) = pending.pop() {
@@ -476,6 +497,7 @@ impl Flow<'_> {
             }
             for ((path, origin, capture), leaf) in &value.leaves {
                 let selected = self.selected_type(ty, path);
+                let writable = self.may_write_reference(selected);
 
                 let sources = value
                     .sources
@@ -491,6 +513,9 @@ impl Flow<'_> {
                     self.pointee_types(leaf)
                 };
                 if pointees.is_empty() {
+                    if writable {
+                        writes.push(leaf.clone());
+                    }
                     result.insert_contribution(Vec::new(), origin.clone(), *capture, leaf);
                     result.insert_source_contribution(
                         Vec::new(),
@@ -524,6 +549,9 @@ impl Flow<'_> {
                         *capture,
                         sources.clone(),
                     );
+                    if writable {
+                        writes.push(self.project_reference(&reference, pointee, &Vec::new()));
+                    }
                     let context = seen.entry((origin.clone(), pointee)).or_default();
                     if !context.join(&reference) {
                         continue;
@@ -536,6 +564,7 @@ impl Flow<'_> {
             }
         }
         TailValues {
+            writes,
             references: result,
             channels,
         }

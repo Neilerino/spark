@@ -10,6 +10,7 @@ mod effects;
 mod obligations;
 mod read;
 mod storage;
+mod tasks;
 mod value;
 mod writes;
 
@@ -42,6 +43,8 @@ type Origins = FxHashSet<Origin>;
 #[derive(Clone, Debug, Default)]
 struct State {
     queues: FxHashMap<(channels::Target, TypeId), Value>,
+    tasks: FxHashMap<tasks::Target, tasks::Record>,
+    future_copies: tasks::Copies,
     exposed_queues: FxHashSet<channels::Target>,
     values: FxHashMap<Local, Value>,
     live: FxHashSet<Local>,
@@ -79,12 +82,22 @@ impl State {
     fn consume(&mut self, local: Local) {
         self.values.remove(&local);
         self.live.remove(&local);
+        self.future_copies.forget(local);
     }
 
     fn join(&mut self, other: &Self) -> bool {
         let before = self.live.len();
         self.live.extend(other.live.iter().copied());
         let mut changed = before != self.live.len();
+        changed |= self.future_copies.intersect(&other.future_copies);
+        for (target, record) in &other.tasks {
+            if let Some(current) = self.tasks.get_mut(target) {
+                changed |= current.join(record);
+            } else {
+                self.tasks.insert(target.clone(), record.clone());
+                changed = true;
+            }
+        }
         let before = self.exposed_queues.len();
         self.exposed_queues
             .extend(other.exposed_queues.iter().cloned());
@@ -126,6 +139,7 @@ struct Flow<'a> {
     callables: callbacks::Inputs,
     requests: FxHashSet<aliases::Key>,
     written_inputs: FxHashSet<aliases::View>,
+    unknown_copy_clobber: bool,
     obligations: FxHashMap<(Point, obligations::Boundary), Value>,
     queue_sends: FxHashMap<(Point, channels::Target, TypeId), Value>,
     queue_ports: FxHashSet<aliases::Port>,
@@ -164,6 +178,7 @@ impl<'a> Flow<'a> {
             callables: callbacks::Inputs::default(),
             requests: FxHashSet::default(),
             written_inputs: FxHashSet::default(),
+            unknown_copy_clobber: false,
             obligations: FxHashMap::default(),
             queue_sends: FxHashMap::default(),
             queue_ports: FxHashSet::default(),
@@ -280,6 +295,14 @@ impl<'a> Flow<'a> {
                 for alternative in outcome {
                     self.transfers.insert(point, common.clone());
                     let mut after = state.clone();
+                    for local in alternative.clobbered_copies {
+                        after.future_copies.forget(local);
+                    }
+                    self.import_tasks(alternative.tasks, point, &mut after);
+                    if let Some((local, result)) = alternative.completed_task {
+                        self.complete_future(local, &result, &mut after);
+                    }
+
                     for write in alternative.queue_contents {
                         self.import_queue_contents(
                             &write.target,
@@ -334,6 +357,7 @@ impl<'a> Flow<'a> {
     fn transfer_statement(&mut self, statement: &Statement, point: Point, state: &mut State) {
         match statement {
             Statement::Assign { place, rvalue, .. } => {
+                let future_copy = self.future_copy_witness(rvalue, state);
                 let result = self.rvalue(rvalue, self.place_type(place), point, state);
                 let mut accesses = Accesses::default();
                 self.read_access(place, state, AccessKind::Address, &mut accesses);
@@ -342,6 +366,7 @@ impl<'a> Flow<'a> {
                     self.record_consumed(point, local);
                 }
                 self.store(place, result, point, state);
+                self.store_future_copy(place, future_copy, state);
             }
             Statement::IndexedAssign {
                 root,
@@ -368,6 +393,7 @@ impl<'a> Flow<'a> {
                 self.record_consumed(point, *value);
             }
             Statement::Drop { place, .. } => {
+                self.observe_pending_tasks(point, state);
                 let mut accesses = Accesses::default();
                 self.read_access(place, state, AccessKind::Value, &mut accesses);
                 self.record_accesses(point, accesses, state);
@@ -376,6 +402,7 @@ impl<'a> Flow<'a> {
                     state.consume(place.local);
                     self.record_consumed(point, place.local);
                 }
+                self.observe_pending_tasks(point, state);
             }
             Statement::Nop => {}
         }
@@ -400,7 +427,15 @@ impl<'a> Flow<'a> {
             }
             Rvalue::Cast { operand, .. } => {
                 let source = self.read_operand(operand, state, &mut accesses);
-                value::tainted_from(ty, &source, self.table)
+                let source_ty = match operand {
+                    Operand::Copy(place) | Operand::Move(place) => self.place_type(place),
+                    Operand::Constant(_) => TypeId::ERROR,
+                };
+                if strip_mutable(source_ty, self.table) == strip_mutable(ty, self.table) {
+                    source
+                } else {
+                    value::tainted_from(ty, &source, self.table)
+                }
             }
             Rvalue::CollectionGetOptional { collection, index } => {
                 self.read_access(index, state, AccessKind::Value, &mut accesses);
@@ -514,6 +549,15 @@ impl<'a> Flow<'a> {
                         index,
                         ty: capture_ty,
                     });
+                } else if matches!(
+                    self.table.resolve(strip_mutable(capture_ty, self.table)),
+                    Ty::Future { .. }
+                ) {
+                    value = value.with_future_capture(tasks::Capture {
+                        owner,
+                        index,
+                        ty: capture_ty,
+                    });
                 }
             }
             result.join(&value.prefixed(slot, ty, self.table));
@@ -531,6 +575,7 @@ impl<'a> Flow<'a> {
             self.store_references(&targets, &value, self.place_type(place), point, state);
             return;
         }
+        state.future_copies.forget(place.local);
         self.record_store(point, place, &value);
         if place.projections.is_empty() {
             state
