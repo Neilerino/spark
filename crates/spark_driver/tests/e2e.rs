@@ -5457,3 +5457,100 @@ fn collection_borrow_generic_recursive_channels_preserve_payload_provenance() {
         );
     }
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_append_preserves_caller_and_local_reference_provenance() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/collections/collection_append_incoming.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "9\n", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_append_local.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid.stderr.contains("reference to local storage"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_append_preserves_snapshots_and_source_owner_lifetimes() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, expected) in [
+            (
+                "run-pass/collections/collection_append_snapshot.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_append_scoped_string.spark",
+                "seven\n",
+            ),
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, expected, "{fixture} {args:?}");
+        }
+        for (fixture, diagnostic) in [
+            (
+                "compile-fail/borrow_errors/collection_append_retained_local.spark",
+                "cannot return reference to local variable",
+            ),
+            (
+                "compile-fail/borrow_errors/collection_append_owner_drop.spark",
+                "borrowed value does not live long enough",
+            ),
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(
+                invalid.exit_code, 1,
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+            assert!(
+                invalid.stderr.contains(diagnostic),
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_append_preserves_callback_and_channel_metadata() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/collections/collection_append_owned_callback.spark",
+            "run-pass/collections/collection_append_channel_incoming.spark",
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, "9\n", "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/collection_append_borrowed_callback.spark",
+            "compile-fail/borrow_errors/collection_append_channel_local.spark",
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(
+                invalid.exit_code, 1,
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+            assert!(
+                invalid.stderr.contains("reference to local storage"),
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}

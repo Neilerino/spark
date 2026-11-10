@@ -211,6 +211,7 @@ impl Flow<'_> {
             });
         }
         super::CallOutcome {
+            place_writes: Vec::new(),
             returned,
             memory: Vec::new(),
             queues: Vec::new(),
