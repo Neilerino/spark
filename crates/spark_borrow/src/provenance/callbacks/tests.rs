@@ -99,3 +99,77 @@ fn universal_and_invocation_defaults_are_distinct_contexts() {
     }));
     assert!(open.open && open.unresolved);
 }
+
+#[test]
+fn tail_target_queries_are_typed_and_exact_roots_take_precedence() {
+    use spark_mir::MirFunction;
+    use spark_span::Span;
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let string = table.intern(Ty::String);
+    let callable = table.intern(Ty::Function {
+        params: vec![],
+        ret: int,
+        is_async: false,
+    });
+    let different_arity = table.intern(Ty::Function {
+        params: vec![int],
+        ret: int,
+        is_async: false,
+    });
+    let different_return = table.intern(Ty::Function {
+        params: vec![],
+        ret: string,
+        is_async: false,
+    });
+    let matching = DefId::new(9890);
+    let arity = DefId::new(9891);
+    let returned = DefId::new(9892);
+    for (def, ty) in [
+        (matching, callable),
+        (arity, different_arity),
+        (returned, different_return),
+    ] {
+        table.set_def_type(def, ty);
+    }
+    let function = MirFunction {
+        def_id: DefId::new(9893),
+        param_count: 0,
+        return_type: int,
+        locals: vec![],
+        blocks: vec![],
+        captures: vec![],
+        is_async: false,
+        span: Span::DUMMY,
+    };
+    let flow = Flow::new(&function, &table, None);
+    let mut value = Value::default();
+    value.callees.insert(
+        vec![Slot::Tail],
+        Targets {
+            known: [matching, arity, returned].into_iter().collect(),
+            open: true,
+            unresolved: false,
+        },
+    );
+    let extracted = value.capture(DefId::new(9894), 0);
+    let targets = flow.callee_targets(&extracted, callable);
+    assert_eq!(targets.known, FxHashSet::from_iter([matching]));
+    assert!(targets.open && !targets.unresolved);
+    value.callees.insert(vec![], Targets::function(arity));
+    assert_eq!(
+        flow.callee_targets(&value, different_arity).known,
+        FxHashSet::from_iter([arity]),
+        "contained functions are not alternatives for an exact root"
+    );
+    let mut uncertain = extracted;
+    uncertain
+        .callees
+        .get_mut(&vec![Slot::Tail])
+        .unwrap()
+        .known
+        .insert(DefId::new(9895));
+    assert!(flow.callee_targets(&uncertain, callable).unresolved);
+    let mismatched = Value::function(arity).prefixed(Slot::Tail, callable, &table);
+    assert!(flow.callee_targets(&mismatched, callable).unresolved);
+}
