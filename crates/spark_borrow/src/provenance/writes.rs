@@ -327,6 +327,7 @@ impl Flow<'_> {
                     Storage::Logical(_)
                     | Storage::Queue(_, _)
                     | Storage::Task(_, _)
+                    | Storage::ExecutionCallback(_, _)
                     | Storage::Observation(_)
                     | Storage::PendingWrite(_)
                     | Storage::SettledMemory(_)
@@ -359,6 +360,9 @@ impl Flow<'_> {
                 | Storage::SettledMemory(_)
                 | Storage::Residual(_)
                 | Storage::ResidualCallback(_, _) => {}
+                Storage::ExecutionCallback(local, ty) => {
+                    state.clobber_execution_callback(*local, *ty, current);
+                }
                 Storage::Task(target, ty) => {
                     let record = super::tasks::Record {
                         callback: current,
@@ -412,7 +416,8 @@ impl Flow<'_> {
 
     fn stored_carrier(&self, storage: &Storage, state: &State) -> (spark_types::TypeId, Value) {
         match storage {
-            Storage::PendingWrite(_)
+            Storage::ExecutionCallback(_, _)
+            | Storage::PendingWrite(_)
             | Storage::SettledMemory(_)
             | Storage::Residual(_)
             | Storage::ResidualCallback(_, _) => (

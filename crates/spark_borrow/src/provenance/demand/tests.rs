@@ -883,3 +883,110 @@ fn call_transaction_preserves_moved_argument_sources_in_return_and_queue() {
         Demand::from_iter([source])
     );
 }
+
+#[test]
+fn execution_callback_uses_function_typed_capture_sources_after_creator_consumption() {
+    use crate::provenance::{Flow, State, Value};
+    use spark_mir::{LocalDecl, MirFunction};
+    use spark_resolve::DefId;
+    use spark_span::Span;
+    use spark_types::{IntWidth, LifetimeId, Ty, TypeTable};
+
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let reference = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let callback_ty = table.intern(Ty::Function {
+        params: vec![],
+        ret: int,
+        is_async: false,
+    });
+    let parent_ty = table.intern(Ty::Future { inner: int });
+    let function = MirFunction {
+        def_id: DefId::new(9966),
+        param_count: 0,
+        return_type: int,
+        locals: [int, parent_ty, callback_ty]
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| LocalDecl {
+                local: Local(index as u32),
+                ty,
+                name: None,
+                is_user_variable: false,
+                mutable: false,
+                span: Span::DUMMY,
+            })
+            .collect(),
+        blocks: vec![],
+        captures: vec![],
+        is_async: false,
+        span: Span::DUMMY,
+    };
+    let mut flow = Flow::new(&function, &table, None);
+    let mut state = State::default();
+    let point = Point::new(BlockId::ENTRY, 1);
+    let origin = Origin::Loan(Point::new(BlockId::ENTRY, 0));
+    let path = vec![Slot::Capture(DefId::new(9967), 0, reference)];
+    let callback = Value::reference(origin.clone()).prefixed_path(&path, callback_ty, &table);
+    state.set(Local(2), callback);
+    flow.ensure_transfer(point, &state);
+    let callback = flow.freeze_sources(
+        point,
+        state.value(Local(2)).sourced(&Storage::Logical(Local(2))),
+    );
+    let storage = Storage::ExecutionCallback(Local(1), callback_ty);
+    flow.record_path_store(
+        point,
+        Coordinate {
+            storage: storage.clone(),
+            path: vec![],
+        },
+        &callback,
+        true,
+    );
+    let mut stored = callback;
+    stored.sources.clear();
+    state.executions.insert((Local(1), callback_ty), stored);
+    state.consume(Local(2));
+    assert_eq!(flow.storage_type(&storage), callback_ty);
+    let stored = state.stored_value(&storage).unwrap();
+    assert_eq!(
+        stored.origins(),
+        crate::provenance::Origins::from_iter([origin.clone()])
+    );
+    let expected = Atom {
+        coordinate: Coordinate {
+            storage: storage.clone(),
+            path: path.clone(),
+        },
+        origin: origin.clone(),
+        capture: None,
+    };
+    assert!(
+        state.atoms().contains(&expected),
+        "capture paths must not normalize through the Future type into Tail"
+    );
+    let before = flow.transfers[&point].before(&Demand::from_iter([expected]));
+    assert_eq!(
+        before,
+        Demand::from_iter([Atom {
+            coordinate: Coordinate {
+                storage: Storage::Logical(Local(2)),
+                path
+            },
+            origin,
+            capture: None,
+        }])
+    );
+    let carriers = flow.task_carriers(&state);
+    assert!(carriers
+        .iter()
+        .any(|(location, ty, value)| location == &storage
+            && *ty == callback_ty
+            && value == stored));
+    assert!(!state.live.contains(&Local(2)));
+}

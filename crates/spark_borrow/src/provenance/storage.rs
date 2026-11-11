@@ -74,6 +74,7 @@ impl Flow<'_> {
             .chain(state.residuals.values_mut())
             .chain(state.residual_callbacks.values_mut())
             .chain(state.tasks.values_mut().map(|task| &mut task.callback))
+            .chain(state.executions.values_mut())
         {
             value.retire_frames(boundary);
         }

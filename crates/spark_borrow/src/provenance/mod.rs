@@ -52,6 +52,7 @@ struct State {
     residuals: FxHashMap<std::sync::Arc<tasks::residual::Key>, Value>,
     residual_callbacks: FxHashMap<(std::sync::Arc<tasks::residual::Key>, TypeId), Value>,
     tasks: FxHashMap<tasks::Target, tasks::Record>,
+    executions: FxHashMap<(Local, TypeId), Value>,
     future_copies: tasks::Copies,
     future_owners: tasks::lifecycle::Owners,
     input_owners: tasks::lifecycle::InputOwners,
@@ -160,6 +161,10 @@ impl State {
                 self.tasks.insert(target.clone(), record.clone());
                 changed = true;
             }
+        }
+        for (key, callback) in &other.executions {
+            let absent = !self.executions.contains_key(key);
+            changed |= self.executions.entry(*key).or_default().join(callback) || absent;
         }
         let before = self.exposed_queues.len();
         self.exposed_queues

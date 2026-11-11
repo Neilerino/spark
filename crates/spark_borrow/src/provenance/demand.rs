@@ -21,6 +21,7 @@ pub(super) enum Storage {
     External(Port),
     Queue(super::channels::Target, spark_types::TypeId),
     Task(super::tasks::Target, spark_types::TypeId),
+    ExecutionCallback(Local, spark_types::TypeId),
     Observation(std::sync::Arc<super::observations::Lane>),
 }
 
@@ -223,7 +224,10 @@ impl super::Flow<'_> {
                 self.function.locals[local.index()].ty
             }
             Storage::External(port) => port.pointee,
-            Storage::Queue(_, ty) | Storage::Task(_, ty) | Storage::ResidualCallback(_, ty) => *ty,
+            Storage::Queue(_, ty)
+            | Storage::Task(_, ty)
+            | Storage::ExecutionCallback(_, ty)
+            | Storage::ResidualCallback(_, ty) => *ty,
             Storage::Observation(lane) => lane.sample.ty,
             Storage::PendingWrite(lane) => lane.location.ty,
             Storage::SettledMemory(location) => location.ty,
@@ -444,6 +448,11 @@ impl super::State {
                     .iter()
                     .map(|((target, ty), value)| (Storage::Queue(target.clone(), *ty), value)),
             )
+            .chain(
+                self.executions.iter().map(|((local, ty), callback)| {
+                    (Storage::ExecutionCallback(*local, *ty), callback)
+                }),
+            )
             .chain(self.tasks.iter().map(|(target, record)| {
                 (
                     Storage::Task(target.clone(), record.callback_ty),
@@ -499,6 +508,7 @@ impl super::State {
             Storage::External(port) => self.external.get(port),
             Storage::Queue(target, ty) => self.queues.get(&(target.clone(), *ty)),
             Storage::Task(target, _) => self.tasks.get(target).map(|record| &record.callback),
+            Storage::ExecutionCallback(local, ty) => self.executions.get(&(*local, *ty)),
             Storage::Observation(lane) => self.observations.get(lane),
             Storage::PendingWrite(lane) => self.pending_memory.get(lane),
             Storage::SettledMemory(location) => self.settled_memory.get(location),

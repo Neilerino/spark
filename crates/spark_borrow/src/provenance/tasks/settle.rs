@@ -302,6 +302,13 @@ impl Flow<'_> {
             .chain(state.queues.iter().map(|((target, ty), value)| {
                 (Storage::Queue(target.clone(), *ty), *ty, value.clone())
             }))
+            .chain(state.executions.iter().map(|((local, ty), callback)| {
+                (
+                    Storage::ExecutionCallback(*local, *ty),
+                    *ty,
+                    callback.clone(),
+                )
+            }))
             .chain(state.tasks.iter().map(|(target, record)| {
                 (
                     Storage::Task(target.clone(), record.callback_ty),
@@ -382,6 +389,9 @@ impl Flow<'_> {
             }
             Storage::Task(target, _) => {
                 state.tasks.get_mut(target).unwrap().callback = current;
+            }
+            Storage::ExecutionCallback(local, ty) => {
+                state.executions.insert((*local, *ty), current);
             }
         }
         true
