@@ -16,7 +16,7 @@ pub(super) mod proofs;
 pub(super) mod residual;
 mod settle;
 pub(super) mod views;
-pub(super) use identity::{Copies, Witness};
+pub(super) use identity::{Copies, Role, Witness};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Capture {
@@ -302,8 +302,9 @@ impl super::Flow<'_> {
         self.ensure_transfer(point, state);
         witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
         self.settle_task_memory(&witness, &[], point, state);
+        let peers: Vec<_> = witness.locals().collect();
         state.joined_inputs.extend(witness.inputs);
-        for peer in witness.peers {
+        for peer in peers {
             if !state.live.contains(&peer) {
                 continue;
             }
@@ -357,12 +358,12 @@ impl super::Flow<'_> {
         };
         for handle in handles.iter().filter(|handle| handle.pending) {
             let subject = views::Subject::from(handle);
-            for peer in witness.peers.iter().filter(|peer| {
+            for peer in witness.locals().filter(|peer| {
                 state.live.contains(peer)
                     && !clobbered.contains(peer)
                     && !state.invalidated_copies.contains(peer)
             }) {
-                let Some(current) = state.values.get(peer) else {
+                let Some(current) = state.values.get(&peer) else {
                     continue;
                 };
                 if !current.futures.get(&Vec::new()).is_some_and(|handles| {

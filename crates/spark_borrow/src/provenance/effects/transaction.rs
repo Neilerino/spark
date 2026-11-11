@@ -313,12 +313,12 @@ impl Flow<'_> {
                     .future_proof
                     .completed
                     .iter()
-                    .any(|witness| witness.peers.contains(&place.local));
+                    .any(|witness| witness.contains_local(place.local));
                 let returned = outcome
                     .future_proof
                     .returned
                     .as_ref()
-                    .is_some_and(|witness| witness.peers.contains(&place.local));
+                    .is_some_and(|witness| witness.contains_local(place.local));
                 let joined = outcome
                     .completed_task
                     .as_ref()

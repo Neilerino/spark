@@ -1,37 +1,45 @@
 // TAG [SPARK-114]
 
-//! Cleanup rights describe current owning locals, never an allocation-site singleton.
+//! Cleanup rights cover current owner roles, never an allocation-site singleton.
 
 use rustc_hash::FxHashSet;
 use spark_mir::{Constant, Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator};
 use spark_types::{Ty, TypeId, TypeTable};
 
-use super::{Copies, Record};
+use super::{Copies, Record, Role, Witness};
 use crate::provenance::{value, Flow, State};
 
 #[derive(Clone, Debug, Default)]
 pub(in crate::provenance) struct Owners {
-    closed: FxHashSet<Local>,
+    closed: FxHashSet<Role>,
     exposed: FxHashSet<Local>,
 }
 
 impl Owners {
     pub fn known(&self, local: Local) -> bool {
-        self.closed.contains(&local)
+        self.known_role(&Role::root(local))
+    }
+    pub fn known_role(&self, role: &Role) -> bool {
+        self.closed.contains(role)
     }
     pub fn grant(&mut self, local: Local, copies: &Copies) {
-        if self.exposed.contains(&local) {
-            self.invalidate(local, copies);
+        self.grant_role(Role::root(local), copies);
+    }
+    pub fn grant_role(&mut self, role: Role, copies: &Copies) {
+        if self.exposed.contains(&role.local()) {
+            self.invalidate(role.local(), copies);
         } else {
-            self.closed.insert(local);
+            self.closed.insert(role);
         }
     }
     pub fn forget(&mut self, local: Local) {
-        self.closed.remove(&local);
+        self.closed.retain(|role| role.local() != local);
     }
     pub fn invalidate(&mut self, local: Local, copies: &Copies) {
-        for peer in copies.peers(local) {
-            self.closed.remove(&peer);
+        for role in copies.anchored(local) {
+            for peer in copies.role_peers(&role) {
+                self.closed.remove(&peer);
+            }
         }
     }
     pub fn expose(&mut self, local: Local, copies: &Copies) {
@@ -40,13 +48,52 @@ impl Owners {
     }
     pub fn intersect(&mut self, copies: &Copies, other: &Self, other_copies: &Copies) -> bool {
         let before = self.closed.clone();
-        self.closed.retain(|local| {
-            other.closed.contains(local) && copies.peers(*local) == other_copies.peers(*local)
+        self.closed.retain(|role| {
+            other.closed.contains(role) && copies.role_peers(role) == other_copies.role_peers(role)
         });
         let before_exposed = self.exposed.len();
         self.exposed.extend(other.exposed.iter().copied());
-        self.closed.retain(|local| !self.exposed.contains(local));
+        self.closed
+            .retain(|role| !self.exposed.contains(&role.local()));
         self.closed != before || before_exposed != self.exposed.len()
+    }
+}
+
+pub(in crate::provenance) struct CapturedOwner {
+    role: Role,
+    witness: Witness,
+    closed: bool,
+}
+
+impl CapturedOwner {
+    pub fn install_all(mut captures: Vec<Self>, state: &mut State) {
+        let peers: Vec<Vec<Role>> = captures
+            .iter()
+            .map(|capture| {
+                captures
+                    .iter()
+                    .filter(|other| !capture.witness.peers.is_disjoint(&other.witness.peers))
+                    .map(|other| other.role.clone())
+                    .collect()
+            })
+            .collect();
+        for (capture, peers) in captures.iter_mut().zip(peers) {
+            capture.witness.peers.extend(peers);
+        }
+        for capture in captures {
+            capture.install(state);
+        }
+    }
+
+    fn install(self, state: &mut State) {
+        state
+            .future_copies
+            .assign_role(self.role.clone(), self.witness, &state.live);
+        if self.closed {
+            state
+                .future_owners
+                .grant_role(self.role, &state.future_copies);
+        }
     }
 }
 
@@ -164,6 +211,52 @@ impl Flow<'_> {
         true
     }
 
+    fn captured_future(&self, operand: &Operand) -> Option<(Local, TypeId)> {
+        let (Operand::Copy(place) | Operand::Move(place)) = operand else {
+            return None;
+        };
+        if !place.projections.is_empty() {
+            return None;
+        }
+        let ty = self.place_type(place);
+        matches!(
+            self.table.resolve(value::strip_mutable(ty, self.table)),
+            Ty::Future { .. }
+        )
+        .then_some((place.local, ty))
+    }
+
+    pub(in crate::provenance) fn captured_future_owners(
+        &self,
+        rvalue: &Rvalue,
+        destination: &Place,
+        state: &State,
+    ) -> Vec<CapturedOwner> {
+        let Rvalue::Aggregate(spark_mir::AggregateKind::Closure { func_def_id }, operands) = rvalue
+        else {
+            return Vec::new();
+        };
+        if !destination.projections.is_empty() {
+            return Vec::new();
+        }
+        operands
+            .iter()
+            .enumerate()
+            .filter_map(|(index, operand)| {
+                let (source, ty) = self.captured_future(operand)?;
+                state.live.contains(&source).then(|| {
+                    let mut witness = state.future_copies.witness(source);
+                    witness.exclude(&[destination.local]);
+                    CapturedOwner {
+                        role: Role::capture(destination.local, *func_def_id, index, ty),
+                        witness,
+                        closed: state.future_owners.known(source),
+                    }
+                })
+            })
+            .collect()
+    }
+
     pub(in crate::provenance) fn owning_rvalue(
         &self,
         rvalue: &Rvalue,
@@ -191,6 +284,15 @@ impl Flow<'_> {
                 .expose(place.local, &state.future_copies),
             Rvalue::Use(operand) | Rvalue::Cast { operand, .. } | Rvalue::UnaryOp(_, operand) => {
                 Self::lose_owning_operand(operand, state);
+            }
+            Rvalue::Aggregate(spark_mir::AggregateKind::Closure { .. }, operands)
+                if destination.projections.is_empty() =>
+            {
+                for operand in operands {
+                    if self.captured_future(operand).is_none() {
+                        Self::lose_owning_operand(operand, state);
+                    }
+                }
             }
             Rvalue::Aggregate(_, operands) | Rvalue::StringInterp(operands) => {
                 for operand in operands {

@@ -236,8 +236,8 @@ impl Flow<'_> {
             .and_then(|proof| proof.events.get(event));
         for input in guarded.into_iter().flatten() {
             if let Some(witness) = actual_witness(*input, args, state) {
+                fence.peers.extend(witness.locals());
                 fence.inputs.extend(witness.inputs);
-                fence.peers.extend(witness.peers);
             }
         }
         fence

@@ -223,12 +223,12 @@ impl Flow<'_> {
         if place.projections.is_empty() {
             let witness = state.future_copies.witness(place.local);
             let peers: Vec<_> = witness
-                .peers
-                .iter()
-                .copied()
+                .locals()
                 .filter(|peer| *peer != place.local && state.live.contains(peer))
                 .collect();
-            if !peers.is_empty() {
+            if witness.peers.iter().any(|peer| {
+                peer != &super::Role::root(place.local) && state.live.contains(&peer.local())
+            }) {
                 let proof = super::proofs::CallProof {
                     completed: Vec::new(),
                     returned: Some(witness),

@@ -2,84 +2,167 @@
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_mir::Local;
+use spark_resolve::DefId;
+use spark_types::TypeId;
+
+use crate::provenance::{Path, Slot};
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(in crate::provenance) struct Role {
+    local: Local,
+    path: Path,
+}
+
+impl Role {
+    pub const fn root(local: Local) -> Self {
+        Self {
+            local,
+            path: Vec::new(),
+        }
+    }
+
+    pub fn capture(local: Local, owner: DefId, index: usize, ty: TypeId) -> Self {
+        Self {
+            local,
+            path: vec![Slot::Capture(owner, index, ty)],
+        }
+    }
+
+    pub const fn local(&self) -> Local {
+        self.local
+    }
+
+    pub fn as_local(&self) -> Option<Local> {
+        self.path.is_empty().then_some(self.local)
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Copies {
-    equal: FxHashSet<(Local, Local)>,
-    inputs: FxHashMap<Local, FxHashSet<Local>>,
+    roles: FxHashSet<Role>,
+    equal: FxHashSet<(Role, Role)>,
+    inputs: FxHashMap<Role, FxHashSet<Local>>,
 }
 
 pub(in crate::provenance) struct Witness {
-    pub peers: FxHashSet<Local>,
+    pub peers: FxHashSet<Role>,
     pub inputs: FxHashSet<Local>,
 }
 
 impl Witness {
     pub fn exclude(&mut self, clobbered: &[Local]) {
-        self.peers.retain(|local| !clobbered.contains(local));
+        self.peers.retain(|role| !clobbered.contains(&role.local));
+    }
+
+    pub fn locals(&self) -> impl Iterator<Item = Local> + '_ {
+        self.peers.iter().filter_map(Role::as_local)
+    }
+
+    pub fn contains_local(&self, local: Local) -> bool {
+        self.peers.contains(&Role::root(local))
     }
 }
 
 impl Copies {
     pub fn witness(&self, source: Local) -> Witness {
+        let source = Role::root(source);
         Witness {
-            peers: self.peers(source),
-            inputs: self.inputs(source),
+            peers: self.role_peers(&source),
+            inputs: self.inputs.get(&source).cloned().unwrap_or_default(),
         }
     }
 
     pub fn seed_input(&mut self, input: Local) {
-        self.inputs.insert(input, FxHashSet::from_iter([input]));
+        let role = Role::root(input);
+        self.roles.insert(role.clone());
+        self.inputs.insert(role, FxHashSet::from_iter([input]));
     }
 
     pub fn inputs(&self, local: Local) -> FxHashSet<Local> {
-        self.inputs.get(&local).cloned().unwrap_or_default()
+        self.inputs
+            .get(&Role::root(local))
+            .cloned()
+            .unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub fn peers(&self, source: Local) -> FxHashSet<Local> {
+        self.role_peers(&Role::root(source))
+            .iter()
+            .filter_map(Role::as_local)
+            .collect()
+    }
+
+    pub fn role_peers(&self, source: &Role) -> FxHashSet<Role> {
         self.equal
             .iter()
-            .filter_map(|(left, right)| (*left == source).then_some(*right))
-            .chain(std::iter::once(source))
+            .filter_map(|(left, right)| (left == source).then_some(right.clone()))
+            .chain(std::iter::once(source.clone()))
+            .collect()
+    }
+
+    pub fn anchored(&self, local: Local) -> FxHashSet<Role> {
+        self.roles
+            .iter()
+            .filter(|role| role.local == local)
+            .cloned()
+            .chain(std::iter::once(Role::root(local)))
             .collect()
     }
 
     pub fn forget(&mut self, local: Local) {
-        self.inputs.remove(&local);
+        self.roles.retain(|role| role.local != local);
+        self.inputs.retain(|role, _| role.local != local);
         self.equal
-            .retain(|(left, right)| *left != local && *right != local);
+            .retain(|(left, right)| left.local != local && right.local != local);
+    }
+
+    fn forget_role(&mut self, role: &Role) {
+        self.roles.remove(role);
+        self.inputs.remove(role);
+        self.equal
+            .retain(|(left, right)| left != role && right != role);
     }
 
     pub fn assign(&mut self, destination: Local, witness: Witness, live: &FxHashSet<Local>) {
         self.forget(destination);
+        self.assign_role(Role::root(destination), witness, live);
+    }
+
+    pub fn assign_role(&mut self, destination: Role, witness: Witness, live: &FxHashSet<Local>) {
+        self.forget_role(&destination);
         let mut peers: FxHashSet<_> = witness
             .peers
             .into_iter()
-            .filter(|peer| *peer != destination && live.contains(peer))
+            .filter(|peer| *peer != destination && live.contains(&peer.local))
             .collect();
-        peers.insert(destination);
+        peers.insert(destination.clone());
+        self.roles.extend(peers.iter().cloned());
         if !witness.inputs.is_empty() {
             self.inputs.insert(destination, witness.inputs);
         }
         for left in &peers {
             for right in &peers {
                 if left != right {
-                    self.equal.insert((*left, *right));
+                    self.equal.insert((left.clone(), right.clone()));
                 }
             }
         }
     }
 
     pub fn intersect(&mut self, other: &Self) -> bool {
+        let before = self.roles.len();
+        self.roles.retain(|role| other.roles.contains(role));
+        let mut changed = before != self.roles.len();
         let before = self.equal.len();
         self.equal.retain(|pair| other.equal.contains(pair));
-        let mut changed = before != self.equal.len();
-        self.inputs.retain(|local, inputs| {
+        changed |= before != self.equal.len();
+        self.inputs.retain(|role, inputs| {
             let before = inputs.len();
             inputs.retain(|input| {
                 other
                     .inputs
-                    .get(local)
+                    .get(role)
                     .is_some_and(|right| right.contains(input))
             });
             changed |= before != inputs.len();

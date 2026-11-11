@@ -398,6 +398,7 @@ impl<'a> Flow<'a> {
         match statement {
             Statement::Assign { place, rvalue, .. } => {
                 let owned = self.owning_rvalue(rvalue, place, state);
+                let captures = self.captured_future_owners(rvalue, place, state);
                 let future_copy = self.future_copy_witness(rvalue, state);
                 let result = self.rvalue(rvalue, self.place_type(place), point, state);
                 let result = self.freeze_sources(point, result);
@@ -413,6 +414,7 @@ impl<'a> Flow<'a> {
                 if owned {
                     state.future_owners.grant(place.local, &state.future_copies);
                 }
+                tasks::lifecycle::CapturedOwner::install_all(captures, state);
             }
             Statement::IndexedAssign {
                 root,
