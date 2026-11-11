@@ -211,6 +211,15 @@ fn check_rvalue(
     errors: &mut Vec<String>,
 ) {
     match rvalue {
+        Rvalue::ReadFutureResult { pointer } => check_place(
+            &Place::from_local(*pointer),
+            num_locals,
+            func_id,
+            block_id,
+            stmt_idx,
+            "future result pointer",
+            errors,
+        ),
         Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast { operand: op, .. } => {
             check_operand(
                 op, num_locals, func_id, block_id, stmt_idx, "rvalue", errors,

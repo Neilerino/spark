@@ -367,6 +367,7 @@ fn analyze_consumers(
 /// Returns true if an rvalue reads from any alias local.
 fn rvalue_reads_any_alias(rvalue: &Rvalue, aliases: &[Local]) -> bool {
     match rvalue {
+        Rvalue::ReadFutureResult { pointer } => aliases.contains(pointer),
         Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast { operand: op, .. } => {
             operand_reads_alias(op, aliases)
         }

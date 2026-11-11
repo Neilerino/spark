@@ -281,6 +281,9 @@ fn extract_terminator_facts(
 /// Collects all locals used in an rvalue.
 fn collect_rvalue_uses(rvalue: &Rvalue, point: Point, facts: &mut BorrowFacts) {
     match rvalue {
+        Rvalue::ReadFutureResult { pointer } => {
+            collect_place_read(&Place::from_local(*pointer), point, facts);
+        }
         Rvalue::BinaryOp(_, lhs, rhs) => {
             collect_operand_uses(lhs, point, facts);
             collect_operand_uses(rhs, point, facts);

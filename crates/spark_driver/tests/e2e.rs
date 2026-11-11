@@ -6490,3 +6490,13 @@ fn future_captures_preserve_shared_owned_values_after_the_creator_returns() {
         assert_eq!(result.stdout.trim(), "288");
     }
 }
+
+#[test]
+fn future_cooperative_await_preserves_its_owned_handle() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result =
+            run_spark_with_args("run-pass/async/future_cooperative_owned_await.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "7");
+    }
+}

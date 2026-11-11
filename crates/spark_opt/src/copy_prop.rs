@@ -187,6 +187,7 @@ fn place_projections_read_local(place: &Place, local: Local) -> bool {
 /// Returns true if an rvalue reads from `local`.
 fn rvalue_reads_local(rvalue: &spark_mir::Rvalue, local: Local) -> bool {
     match rvalue {
+        spark_mir::Rvalue::ReadFutureResult { pointer } => *pointer == local,
         spark_mir::Rvalue::BinaryOp(_, a, b) => {
             operand_reads_local(a, local) || operand_reads_local(b, local)
         }
@@ -294,6 +295,13 @@ fn replace_local_in_place_projections(place: &mut Place, from: Local, to: Local)
 /// Replaces reads of `from` with `to` in an rvalue.
 fn replace_local_in_rvalue(rvalue: &mut spark_mir::Rvalue, from: Local, to: Local) -> bool {
     match rvalue {
+        spark_mir::Rvalue::ReadFutureResult { pointer } => {
+            let changed = *pointer == from;
+            if changed {
+                *pointer = to;
+            }
+            changed
+        }
         spark_mir::Rvalue::BinaryOp(_, a, b) => {
             let changed = replace_local_in_operand(a, from, to);
             changed | replace_local_in_operand(b, from, to)

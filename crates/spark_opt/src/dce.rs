@@ -149,6 +149,9 @@ fn collect_used_in_place_projections(place: &Place, used: &mut FxHashSet<Local>)
 /// Collects locals used in an rvalue.
 fn collect_used_in_rvalue(rvalue: &spark_mir::Rvalue, used: &mut FxHashSet<Local>) {
     match rvalue {
+        spark_mir::Rvalue::ReadFutureResult { pointer } => {
+            used.insert(*pointer);
+        }
         spark_mir::Rvalue::BinaryOp(_, lhs, rhs) => {
             collect_used_in_operand(lhs, used);
             collect_used_in_operand(rhs, used);

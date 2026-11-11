@@ -281,6 +281,12 @@ pub enum Projection {
 pub enum Rvalue {
     /// Use an operand directly.
     Use(Operand),
+    /// Copy a typed value from a non-null, completed Future result buffer.
+    /// Introduced after borrow checking by async lowering, only on a Ready edge.
+    ReadFutureResult {
+        /// Local containing the result buffer address (`CPtr`).
+        pointer: Local,
+    },
     /// Binary operation.
     BinaryOp(BinaryOp, Operand, Operand),
     /// Unary operation.

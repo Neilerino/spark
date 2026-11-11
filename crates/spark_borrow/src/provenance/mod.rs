@@ -454,6 +454,12 @@ impl<'a> Flow<'a> {
     fn rvalue(&mut self, rvalue: &Rvalue, ty: TypeId, point: Point, state: &State) -> Value {
         let mut accesses = Accesses::default();
         let value = match rvalue {
+            Rvalue::ReadFutureResult { pointer } => self.read_access(
+                &Place::from_local(*pointer),
+                state,
+                AccessKind::Value,
+                &mut accesses,
+            ),
             Rvalue::Use(operand) => self.read_operand(operand, state, &mut accesses),
             Rvalue::Ref { place, .. } => {
                 self.read_access(place, state, AccessKind::Address, &mut accesses);

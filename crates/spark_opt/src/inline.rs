@@ -449,6 +449,9 @@ fn remap_operand(op: &Operand, local_off: u32, _block_off: u32) -> Operand {
 /// Remaps an rvalue's locals and block IDs.
 fn remap_rvalue(rvalue: &Rvalue, local_off: u32, block_off: u32) -> Rvalue {
     match rvalue {
+        Rvalue::ReadFutureResult { pointer } => Rvalue::ReadFutureResult {
+            pointer: Local(pointer.0 + local_off),
+        },
         Rvalue::Use(op) => Rvalue::Use(remap_operand(op, local_off, block_off)),
         Rvalue::BinaryOp(op, lhs, rhs) => Rvalue::BinaryOp(
             *op,

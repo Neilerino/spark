@@ -33,6 +33,10 @@ pub fn emit_rvalue<M: Module>(
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
     match rvalue {
+        Rvalue::ReadFutureResult { pointer } => {
+            emit_future_result(ctx, *pointer, dest_local, ecx, module)
+        }
+
         Rvalue::Use(operand) => emit_operand(ctx, operand, ecx, module),
 
         Rvalue::BinaryOp(op, lhs, rhs) => {
@@ -142,6 +146,35 @@ pub fn emit_rvalue<M: Module>(
             Some(ctx.builder.inst_results(call)[0])
         }
     }
+}
+
+fn emit_future_result<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    pointer: Local,
+    destination: Local,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+) -> Option<Value> {
+    let address = ctx.read_local(pointer);
+    let ty = ctx.local_type_id(destination);
+    let value = if abi::is_scalar(ty, ecx.table) {
+        let clif_ty = abi::spark_type_to_clif(ty, ecx.table, ctx.ptr_type)?;
+        ctx.load(clif_ty, address, 0)
+    } else {
+        address
+    };
+    if spark_drop::needs_drop(ty, ecx.table) {
+        emit_typed_retain(
+            &mut ctx.builder,
+            value,
+            ty,
+            ecx.table,
+            ctx.stubs,
+            module,
+            ctx.ptr_type,
+        );
+    }
+    Some(value)
 }
 
 /// Emits an operand, returning the Cranelift value.
