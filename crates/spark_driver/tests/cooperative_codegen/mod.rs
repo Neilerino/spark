@@ -170,3 +170,5 @@ fn cooperative_spawn_bindings_and_effectful_fallback_select_the_correct_routes()
         }
     }
 }
+
+mod suspension;
