@@ -1093,8 +1093,8 @@ fn emit_spawn_call<M: Module>(
         .iconst(types::I64, i64::from(result_layout.size));
 
     // Determine is_float flag from the closure's return type.
-    let cb_ty_id = if let Some(Operand::Copy(place)) = args.first() {
-        ctx.local_type_id(place.local)
+    let cb_ty_id = if let Some(Operand::Copy(place) | Operand::Move(place)) = args.first() {
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -1174,6 +1174,12 @@ fn try_emit_coop_spawn<M: Module>(
     // Step 4: Get the poll function's FuncId.
     let poll_func_id = ecx.func_ids.get(&poll_info.poll_def_id)?;
 
+    let transferred_closure = if matches!(args.first(), Some(Operand::Move(_))) {
+        Some(ctx.local_stack_addr(closure_local)?)
+    } else {
+        None
+    };
+
     // Step 5: Compute state layout.
     let state_layout = ctx
         .layouts
@@ -1247,6 +1253,20 @@ fn try_emit_coop_spawn<M: Module>(
                 );
             }
         }
+    }
+
+    // TAG [SPARK-149] State owns the copied captures instead of the closure.
+    if let Some(closure) = transferred_closure {
+        let closure_ty = ctx.local_type_id(closure_local);
+        super::drop_glue::emit_typed_drop(
+            &mut ctx.builder,
+            closure,
+            closure_ty,
+            table,
+            ctx.stubs,
+            module,
+            ctx.ptr_type,
+        );
     }
 
     // Step 8: Get poll function pointer.

@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
-use crate::__spark_rc_inc;
+use crate::__spark_env_rc_dec;
 
 #[repr(C)]
 struct SparkFuture {
@@ -35,7 +35,8 @@ pub fn tokio_runtime() -> &'static tokio::runtime::Runtime {
 ///
 /// # Safety
 ///
-/// `fn_ptr` must match the result ABI, and `env_ptr` must be null or a valid Spark environment.
+/// `fn_ptr` must match the result ABI. `env_ptr` transfers one owned Spark
+/// environment reference, or is null for a callback without captures.
 pub unsafe extern "C" fn __spark_spawn(
     fn_ptr: *mut u8,
     env_ptr: *mut u8,
@@ -51,10 +52,7 @@ pub unsafe extern "C" fn __spark_spawn(
     let result_addr = result_buf as usize;
     let is_float_flag = is_float != 0;
 
-    if !env_ptr.is_null() {
-        unsafe { __spark_rc_inc(env_ptr) };
-    }
-
+    // TAG [SPARK-149]
     let handle = tokio_runtime().spawn_blocking(move || {
         let env = env_addr as *mut u8;
         let result_dst = result_addr as *mut u8;
@@ -73,10 +71,7 @@ pub unsafe extern "C" fn __spark_spawn(
             }
         }
 
-        if env_addr != 0 {
-            let rc_ptr = (env_addr as *mut u8).cast::<usize>();
-            unsafe { *rc_ptr -= 1 };
-        }
+        unsafe { __spark_env_rc_dec(env) };
     });
 
     unsafe { (*future_ptr).handle = Box::into_raw(Box::new(handle)).cast() };
@@ -291,5 +286,48 @@ fn join_future_if_needed(future: &mut SparkFuture, propagate_panic: bool) {
         tokio_runtime().block_on(async {
             let _ = handle.await;
         });
+    }
+}
+
+// TAG [SPARK-149]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spark_abi::{ENV_CAPTURES_OFFSET, ENV_DTOR_OFFSET};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    unsafe extern "C" fn count_environment_drop(env: *mut u8) {
+        let counter = unsafe {
+            *env.add(ENV_CAPTURES_OFFSET as usize)
+                .cast::<*const AtomicUsize>()
+        };
+        unsafe { &*counter }.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe extern "C" fn seven(_env: *mut u8) -> i64 {
+        7
+    }
+
+    #[test]
+    fn blocking_spawn_drops_its_owned_environment_once() {
+        for await_first in [false, true] {
+            let drops = AtomicUsize::new(0);
+            let env = crate::__spark_env_alloc(std::mem::size_of::<usize>() as i64);
+            unsafe {
+                *env.add(ENV_DTOR_OFFSET as usize).cast::<usize>() =
+                    count_environment_drop as *const () as usize;
+                *env.add(ENV_CAPTURES_OFFSET as usize)
+                    .cast::<*const AtomicUsize>() = std::ptr::from_ref(&drops);
+                let pending = __spark_spawn(seven as *const () as *mut u8, env, 8, 0);
+                if await_first {
+                    let result = __spark_await(pending);
+                    assert_eq!(*result.cast::<i64>(), 7);
+                    assert_eq!(__spark_await(pending), result);
+                    assert_eq!(drops.load(Ordering::SeqCst), 1);
+                }
+                __spark_future_rc_dec(pending);
+            }
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+        }
     }
 }

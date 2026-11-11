@@ -6458,3 +6458,25 @@ fn a_leaf_task_with_a_plain_function_reference_joins_before_frame_cleanup() {
         assert_eq!(result.stdout.trim(), "1");
     }
 }
+
+// TAG [SPARK-149]
+#[test]
+fn future_spawn_releases_its_captured_future_owner() {
+    let native = "#include <stddef.h>\n#include <stdint.h>\n\
+        int64_t future_rc(const void *const *slot) { return *(const size_t *)*slot; }\n";
+    for fixture in [
+        include_str!("run-pass/async/future_ordinary_owned_capture.spark"),
+        include_str!("run-pass/async/future_spawn_owned_capture.spark"),
+    ] {
+        assert_native_ownership_fixture(native, fixture, "1\n7\n1");
+    }
+}
+
+#[test]
+fn future_spawn_preserves_float_callback_results() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/async/future_spawn_float_result.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "1.5");
+    }
+}

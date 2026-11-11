@@ -1848,7 +1848,14 @@ fn lower_spawn(
         expr.span,
     );
 
-    let args = vec![Operand::Copy(Place::from_local(closure_local))];
+    // TAG [SPARK-149] Spawn consumes one callback owner.
+    let closure = Place::from_local(closure_local);
+    let argument = if fb.is_def_local(closure_local) || fb.owns_local(closure_local) {
+        Operand::Copy(closure)
+    } else {
+        Operand::Move(closure)
+    };
+    let args = vec![argument];
 
     let dest = fb.fresh_temp(expr.ty, expr.span);
     let cont = fb.new_block();
