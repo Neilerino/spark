@@ -36,6 +36,19 @@ impl Proof {
         }
     }
 
+    pub fn seed_owner_outputs(
+        &mut self,
+        function: &MirFunction,
+        table: &TypeTable,
+        output: Option<super::outputs::CallbackRecipe>,
+    ) {
+        if let Guarantee::Returns(certificate) = &mut self.returns {
+            certificate.released_provided = future_inputs(function, table);
+            certificate.retains_no_owner = certificate.released_provided.clone();
+            certificate.returned_owners = output;
+        }
+    }
+
     pub fn has_effect(&self) -> bool {
         self.returns.has_effect() || self.events.values().any(|inputs| !inputs.is_empty())
     }
@@ -90,6 +103,7 @@ fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witne
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Certificate {
+    pub returned_owners: Option<super::outputs::CallbackRecipe>,
     pub completed: FxHashSet<Local>,
     pub returned: FxHashSet<Local>,
     pub released_provided: FxHashSet<Local>,
@@ -122,6 +136,7 @@ impl Guarantee {
             })
             .collect();
         Self::Returns(Certificate {
+            returned_owners: None,
             released_provided: completed.clone(),
             retains_no_owner: completed.clone(),
             completed,
@@ -130,7 +145,7 @@ impl Guarantee {
     }
 
     pub fn has_effect(&self) -> bool {
-        matches!(self, Self::Returns(certificate) if !certificate.completed.is_empty() || !certificate.returned.is_empty()
+        matches!(self, Self::Returns(certificate) if certificate.returned_owners.is_some() || !certificate.completed.is_empty() || !certificate.returned.is_empty()
             || !certificate.released_provided.is_empty() || !certificate.retains_no_owner.is_empty())
     }
 
@@ -138,6 +153,9 @@ impl Guarantee {
         let before = self.clone();
         match (&mut *self, other) {
             (Self::Returns(left), Self::Returns(right)) => {
+                if left.returned_owners != right.returned_owners {
+                    left.returned_owners = None;
+                }
                 left.completed
                     .retain(|input| right.completed.contains(input));
                 left.returned.retain(|input| right.returned.contains(input));
@@ -155,6 +173,7 @@ impl Guarantee {
 
 #[derive(Default)]
 pub(in crate::provenance) struct CallProof {
+    pub output_owners: Option<super::outputs::BoundOutput>,
     pub completed: Vec<Witness>,
     pub returned: Option<Witness>,
     pub released_owners: FxHashMap<usize, Witness>,
@@ -182,6 +201,7 @@ impl Flow<'_> {
                 continue;
             }
             let candidate = Guarantee::Returns(Certificate {
+                returned_owners: self.observed_callback_recipe(&state),
                 completed: state.joined_inputs,
                 returned: state.future_copies.inputs(Local::RETURN_PLACE),
                 released_provided: future_inputs(self.function, self.table)
@@ -218,6 +238,10 @@ impl Flow<'_> {
         };
         let witness = |input: &Local| actual_witness(*input, args, state);
         CallProof {
+            output_owners: certificate
+                .returned_owners
+                .as_ref()
+                .and_then(|recipe| self.bind_output_recipe(recipe, args, state)),
             completed: certificate.completed.iter().filter_map(witness).collect(),
             returned: certificate.returned.iter().find_map(witness),
             released_owners: certificate

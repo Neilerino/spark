@@ -9,6 +9,28 @@ use super::{
 
 type EventVocabulary = FxHashMap<Key, FxHashSet<EventKey>>;
 
+type OutputVocabulary = FxHashMap<Key, crate::provenance::tasks::outputs::CallbackOutputs>;
+
+fn discover_outputs(outputs: &mut OutputVocabulary, key: &Key, summary: &Summary) -> bool {
+    if summary.returned_callbacks.is_empty() {
+        return false;
+    }
+    let known = outputs.entry(key.clone()).or_default();
+    let mut changed = false;
+    for (ty, output) in &summary.returned_callbacks {
+        changed |= known.entry(*ty).or_default().join(output);
+    }
+    changed
+}
+
+fn discover_summary_outputs(outputs: &mut OutputVocabulary, summaries: &Summaries) -> bool {
+    let mut changed = false;
+    for (key, summary) in summaries {
+        changed |= discover_outputs(outputs, key, summary);
+    }
+    changed
+}
+
 fn discover_events(events: &mut EventVocabulary, key: &Key, summary: &Summary) -> bool {
     if summary.prefix_memory.is_empty()
         && summary.queues.is_empty()
@@ -111,12 +133,14 @@ fn infer_summaries_with_definitions(
         .collect();
     let mut ports = mir.functions.keys().map(|def| (*def, Vec::new())).collect();
     let mut events = EventVocabulary::default();
+    let mut outputs = OutputVocabulary::default();
     'vocabulary: loop {
         let (base, frozen_ports) = program.may(&keys, ports, None);
         keys = base.keys().cloned().collect();
         discover_summary_events(&mut events, &base);
+        discover_summary_outputs(&mut outputs, &base);
         let (mut proofs, discovered, requests, new_events) =
-            program.proofs(&base, &frozen_ports, &mut events, None);
+            program.proofs(&base, &frozen_ports, &mut events, &mut outputs, None);
         if new_events
             || discovered != frozen_ports
             || requests.iter().any(|key| !keys.contains(key))
@@ -126,12 +150,45 @@ fn infer_summaries_with_definitions(
             ports = discovered;
             continue;
         }
+        for (key, proof) in &mut proofs {
+            proof.seed_owner_outputs(
+                &mir.functions[&key.function],
+                table,
+                outputs.get(key).and_then(|output| {
+                    crate::provenance::tasks::outputs::CallbackRecipe::candidate(
+                        output,
+                        &mir.functions[&key.function],
+                        mir,
+                        table,
+                    )
+                }),
+            );
+        }
+        let (owners, discovered, requests, new_events) = program.proofs(
+            &base,
+            &frozen_ports,
+            &mut events,
+            &mut outputs,
+            Some(&proofs),
+        );
+        if new_events
+            || discovered != frozen_ports
+            || requests.iter().any(|key| !keys.contains(key))
+        {
+            keys.extend(requests);
+            program.expand_keys(&mut keys, &discovered);
+            ports = discovered;
+            continue;
+        }
+        proofs = owners;
         if !proofs.values().any(Proof::has_effect) {
             return (base, frozen_ports, proofs);
         }
         loop {
             let (refined, refined_ports) = program.may(&keys, frozen_ports.clone(), Some(&proofs));
+            let new_output_shapes = discover_summary_outputs(&mut outputs, &refined);
             if discover_summary_events(&mut events, &refined)
+                || new_output_shapes
                 || refined_ports != frozen_ports
                 || refined.keys().any(|key| !keys.contains(key))
             {
@@ -140,8 +197,13 @@ fn infer_summaries_with_definitions(
                 ports = refined_ports;
                 continue 'vocabulary;
             }
-            let (checked, discovered, requests, new_events) =
-                program.proofs(&refined, &refined_ports, &mut events, Some(&proofs));
+            let (checked, discovered, requests, new_events) = program.proofs(
+                &refined,
+                &refined_ports,
+                &mut events,
+                &mut outputs,
+                Some(&proofs),
+            );
             if new_events
                 || discovered != refined_ports
                 || requests.iter().any(|key| !keys.contains(key))
@@ -189,6 +251,7 @@ impl Program<'_> {
         summaries: &Summaries,
         ports: &Ports,
         events: &mut EventVocabulary,
+        outputs: &mut OutputVocabulary,
         bounds: Option<&Proofs>,
     ) -> (Proofs, Ports, FxHashSet<Key>, bool) {
         let mut proofs: Proofs = summaries
@@ -236,6 +299,7 @@ impl Program<'_> {
                 let summary = flow.summary();
                 changed |= proof.restrict(&returns, &flow.event_guards);
                 new_events |= discover_events(events, key, &summary);
+                new_events |= discover_outputs(outputs, key, &summary);
                 flow.discover_ports(&summary, discovered.entry(key.function).or_default());
                 requests.extend(flow.requests);
             }

@@ -3,7 +3,7 @@
 //! Cleanup rights cover current owner roles, never an allocation-site singleton.
 
 mod tokens;
-pub(in crate::provenance) use tokens::{InputOwners, Transfer};
+pub(in crate::provenance) use tokens::{InputOwners, Tags, Token, Transfer};
 
 use rustc_hash::FxHashSet;
 use spark_mir::{Constant, Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator};
@@ -106,7 +106,11 @@ impl CapturedOwner {
     }
 }
 
-fn may_own_future(ty: TypeId, table: &TypeTable, seen: &mut FxHashSet<TypeId>) -> bool {
+pub(in crate::provenance) fn may_own_future(
+    ty: TypeId,
+    table: &TypeTable,
+    seen: &mut FxHashSet<TypeId>,
+) -> bool {
     let ty = value::strip_mutable(ty, table);
     if !seen.insert(ty) {
         return false;
@@ -117,6 +121,9 @@ fn may_own_future(ty: TypeId, table: &TypeTable, seen: &mut FxHashSet<TypeId>) -
         | Ty::Param(_)
         | Ty::AsyncState { .. }
         | Ty::Error => true,
+        Ty::Map(key, value) => {
+            may_own_future(*key, table, seen) || may_own_future(*value, table, seen)
+        }
         Ty::Ref { inner, .. }
         | Ty::Channel { inner }
         | Ty::List(inner)

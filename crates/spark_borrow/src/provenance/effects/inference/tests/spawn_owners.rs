@@ -393,3 +393,102 @@ fn adopting_a_child_with_unproved_coverage_does_not_grant_cleanup_rights() {
         );
     });
 }
+
+#[test]
+fn helper_return_transports_the_execution_owned_child_graph() {
+    for name in ["keep", "keep2", "keep3", "keepPair"] {
+        let source = KEEPER
+        .replace("fn main(): Int {", "fn keep(child: Future[Int], release: Channel[Int]): Future[Int] { return spawn { hold(child, release) } }\nfn keep2(child: Future[Int], release: Channel[Int]): Future[Int] { return keep(child, release) }\nfn keep3(child: Future[Int], release: Channel[Int]): Future[Int] { return keep2(child, release) }\nasync fn holdPair(first: Future[Int], second: Future[Int], release: Channel[Int]): Int { return release.recv() }\nfn keepPair(first: Future[Int], second: Future[Int], release: Channel[Int]): Future[Int] { return spawn { holdPair(first, second, release) } }\nfn main(): Int {")
+        .replace("keeper: Future[Int] = spawn { hold(child, release) }", &if name == "keepPair" { "keeper: Future[Int] = keepPair(child, child, release)".to_owned() } else { format!("keeper: Future[Int] = {name}(child, release)") });
+        let output = lower_source(&source);
+        assert!(!output.diagnostics.has_errors());
+        let facts = output
+            .mir
+            .functions
+            .iter()
+            .map(|(id, function)| (*id, crate::facts::extract_facts(function)))
+            .collect();
+        let (summaries, ports, proofs) = infer_summaries_with_definitions(
+            &output.mir,
+            &output.table,
+            &facts,
+            Some(&output.definitions),
+        );
+        let context = Context {
+            mir: &output.mir,
+            summaries: &summaries,
+            ports: &ports,
+            definitions: Some(&output.definitions),
+            proofs: Some(&proofs),
+        };
+        let function = output
+            .mir
+            .functions
+            .values()
+            .find(|function| {
+                output
+                    .definitions
+                    .get(function.def_id)
+                    .unwrap()
+                    .name
+                    .as_str()
+                    == "main"
+            })
+            .unwrap();
+        let child = function
+            .locals
+            .iter()
+            .find(|decl| decl.name.is_some_and(|name| name.as_str() == "child"))
+            .unwrap()
+            .local;
+        let (index, body) = function
+            .blocks
+            .iter()
+            .enumerate()
+            .find(|(_, body)| {
+                let Terminator::Call { func, .. } = &body.terminator else {
+                    return false;
+                };
+                function
+                    .resolve_callee_def_id(func)
+                    .and_then(|def| output.definitions.get(def))
+                    .is_some_and(|definition| definition.name.as_str() == name)
+            })
+            .unwrap();
+        let Terminator::Call { destination, .. } = &body.terminator else {
+            unreachable!()
+        };
+        let mut flow = Flow::new(function, &output.table, Some(context));
+        flow.solve(&facts[&function.def_id]);
+        let mut state = flow.entries[index].clone().unwrap();
+        assert!(flow.transfer_block(BlockId(index as u32), &mut state));
+        let origins = state.value(child).origins();
+        assert!(!origins.is_empty());
+        assert!(origins.is_subset(&state.value(destination.local).origins()));
+        assert!(
+            state
+                .executions
+                .keys()
+                .any(|(local, _)| *local == destination.local),
+            "a normal helper return must transport the current callback backing"
+        );
+        assert!(
+            state
+                .future_copies
+                .witness(child)
+                .peers
+                .iter()
+                .any(|role| role.local() == destination.local && role.callback_type().is_some()),
+            "the returned execution must retain its bound child owner"
+        );
+        assert_eq!(
+            state.future_copies.witness(child).peers.len(),
+            if name == "keepPair" { 3 } else { 2 },
+            "each output capture is one physical owner; forwarding does not clone it"
+        );
+        assert!(
+            state.future_owners.known(child),
+            "a supplied temporary released by the helper must not become an opaque child escape"
+        );
+    }
+}

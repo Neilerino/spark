@@ -40,6 +40,7 @@ pub(in crate::provenance) struct CallOutcome {
     pub memory: Vec<MemoryWrite>,
     pub async_memory: Vec<MemoryWrite>,
     pub fresh_leaf_task: bool,
+    pub returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs,
     pub spawn_owners: Option<crate::provenance::tasks::execution::ExecutionTransfer>,
     pub residuals: Vec<crate::provenance::tasks::residual::Import>,
     pub prefix_memory: Vec<MemoryEvent>,
@@ -49,7 +50,7 @@ pub(in crate::provenance) struct CallOutcome {
 }
 
 impl CallOutcome {
-    fn detach_spawn_owners(
+    fn prepare_owner_transfers(
         &mut self,
         flow: &mut Flow<'_>,
         destination: &Place,
@@ -67,10 +68,55 @@ impl CallOutcome {
         if let Some(owners) = &self.spawn_owners {
             owners.detach(flow, point, state);
         }
+        if !destination.projections.is_empty()
+            || self
+                .future_proof
+                .output_owners
+                .as_ref()
+                .is_some_and(|output| {
+                    !output.valid(flow, destination, &self.clobbered_copies, state)
+                })
+        {
+            self.future_proof.output_owners = None;
+        }
+        if let Some(output) = &self.future_proof.output_owners {
+            output.carry_progress(
+                flow,
+                &mut self.returned_callbacks,
+                &self.clobbered_copies,
+                point,
+                state,
+            );
+        }
+    }
+
+    fn install_owner_outputs(
+        &mut self,
+        flow: &mut Flow<'_>,
+        destination: &Place,
+        output: Option<crate::provenance::tasks::outputs::BoundOutput>,
+        point: Point,
+        state: &mut State,
+    ) {
+        if let Some(owners) = self.spawn_owners.take() {
+            owners.install(flow, destination.local, point, state);
+        }
+        flow.install_callback_outputs(
+            std::mem::take(&mut self.returned_callbacks),
+            destination,
+            point,
+            state,
+        );
+        if let Some(output) = output {
+            output.install(destination.local, state);
+        }
     }
 
     fn visit_values(&mut self, mut visit: impl FnMut(&mut Value)) {
         visit(&mut self.returned);
+        for output in self.returned_callbacks.values_mut() {
+            visit(&mut output.callback);
+        }
         if let Some(owners) = &mut self.spawn_owners {
             owners.visit_callback(&mut visit);
         }
@@ -212,6 +258,13 @@ impl Flow<'_> {
         CallOutcome {
             fresh_leaf_task: false,
             spawn_owners: None,
+            returned_callbacks: self.bind_callback_outputs(
+                summary,
+                function,
+                actuals,
+                args,
+                actuals.read.state,
+            ),
             residuals,
             async_memory,
             publications: prefix.publications,
@@ -328,7 +381,7 @@ impl Flow<'_> {
     fn consume_call_arguments(
         &mut self,
         args: &[Operand],
-        outcome: &CallOutcome,
+        outcome: &mut CallOutcome,
         point: Point,
         state: &mut State,
     ) {
@@ -354,7 +407,14 @@ impl Flow<'_> {
             })
             .collect();
         for (index, (arg, released)) in args.iter().zip(&released).enumerate() {
-            if *released || (index == 0 && outcome.spawn_owners.is_some()) {
+            if *released
+                || (index == 0 && outcome.spawn_owners.is_some())
+                || outcome
+                    .future_proof
+                    .output_owners
+                    .as_ref()
+                    .is_some_and(|output| output.covered.contains(&index))
+            {
                 continue;
             }
             let borrowed_await = matches!(arg, Operand::Copy(place) if place.projections.is_empty()
@@ -363,6 +423,9 @@ impl Flow<'_> {
                 self.escape_input_owner_operand(arg, state);
             }
             Self::lose_owning_operand(arg, state);
+        }
+        if let Some(output) = &mut outcome.future_proof.output_owners {
+            output.restrict_coverage(state);
         }
         for (index, (arg, released)) in args.iter().zip(released).enumerate() {
             if let Operand::Move(place) = arg {
@@ -373,9 +436,23 @@ impl Flow<'_> {
                     }
                     continue;
                 }
-                if released {
+                if outcome
+                    .future_proof
+                    .output_owners
+                    .as_ref()
+                    .is_some_and(|output| output.covered.contains(&index))
+                {
                     state.input_owners.drop_local(place.local);
-                    self.preserve_writer_loss(place, point, state);
+                } else if released {
+                    state.input_owners.drop_local(place.local);
+                    if !outcome
+                        .future_proof
+                        .output_owners
+                        .as_ref()
+                        .is_some_and(|output| output.reserves(place.local))
+                    {
+                        self.preserve_writer_loss(place, point, state);
+                    }
                 } else {
                     let completed = outcome
                         .future_proof
@@ -422,11 +499,9 @@ impl Flow<'_> {
             let mut after = state.clone();
             alternative.import_observations(self, point, &mut after);
             self.apply_call_prefix(&alternative, point, &mut after);
-            for local in &after.invalidated_copies {
-                if !alternative.clobbered_copies.contains(local) {
-                    alternative.clobbered_copies.push(*local);
-                }
-            }
+            alternative
+                .clobbered_copies
+                .extend(after.invalidated_copies.iter().copied());
             Self::preserve_returned_task_progress(
                 &mut alternative.returned,
                 &alternative.future_proof,
@@ -447,20 +522,21 @@ impl Flow<'_> {
             for residual in alternative.residuals.drain(..) {
                 self.import_residual(residual, point, &mut after);
             }
-            alternative.detach_spawn_owners(self, destination, point, &mut after);
-            self.consume_call_arguments(args, &alternative, point, &mut after);
+            alternative.prepare_owner_transfers(self, destination, point, &mut after);
+            self.consume_call_arguments(args, &mut alternative, point, &mut after);
+            let output_owners = alternative.future_proof.output_owners.take();
             let returned_copy = self.apply_call_future_proof(
-                alternative.future_proof,
+                std::mem::take(&mut alternative.future_proof),
                 &alternative.clobbered_copies,
                 point,
                 &mut after,
             );
-            self.import_tasks(alternative.tasks, point, &mut after);
-            if let Some((local, result)) = alternative.completed_task {
+            self.import_tasks(std::mem::take(&mut alternative.tasks), point, &mut after);
+            if let Some((local, result)) = alternative.completed_task.take() {
                 self.complete_future(local, &result, point, &mut after);
             }
 
-            for write in alternative.queue_contents {
+            for write in alternative.queue_contents.drain(..) {
                 self.import_queue_contents(
                     &write.target,
                     &write.value,
@@ -469,13 +545,13 @@ impl Flow<'_> {
                     &mut after,
                 );
             }
-            for write in alternative.queues {
+            for write in alternative.queues.drain(..) {
                 self.apply_queue_event(&write, point, &mut after);
             }
-            for write in alternative.async_memory {
+            for write in alternative.async_memory.drain(..) {
                 self.import_settled_memory(&write, point, &mut after);
             }
-            for write in alternative.memory {
+            for write in alternative.memory.drain(..) {
                 self.apply_memory_snapshot(
                     &write.target,
                     &write.value,
@@ -484,10 +560,15 @@ impl Flow<'_> {
                     &mut after,
                 );
             }
-            for (place, value) in alternative.place_writes {
+            for (place, value) in alternative.place_writes.drain(..) {
                 self.store(&place, value, point, &mut after);
             }
-            self.store(destination, alternative.returned, point, &mut after);
+            self.store(
+                destination,
+                std::mem::take(&mut alternative.returned),
+                point,
+                &mut after,
+            );
             self.store_future_copy(destination, returned_copy, &mut after);
             after.future_owners.forget(destination.local);
             if alternative.fresh_leaf_task && destination.projections.is_empty() {
@@ -495,11 +576,7 @@ impl Flow<'_> {
                     .future_owners
                     .grant(destination.local, &after.future_copies);
             }
-            if let Some(owners) = alternative.spawn_owners.take() {
-                if destination.projections.is_empty() {
-                    owners.install(self, destination.local, point, &mut after);
-                }
-            }
+            alternative.install_owner_outputs(self, destination, output_owners, point, &mut after);
             self.retire_call_frames(point, &mut after);
             let transfer = self.transfers[&point].clone();
             if let Some((joined, ledger)) = &mut alternatives {

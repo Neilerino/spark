@@ -7,6 +7,7 @@ use spark_modules::ModuleGraph;
 use std::collections::HashMap;
 
 mod history_transport;
+mod output_contracts;
 mod owner_calls;
 mod receive_snapshots;
 mod spawn_owners;
@@ -40,8 +41,10 @@ fn certificates_are_closed_against_their_own_refined_may_summaries() {
         .iter()
         .map(|(key, proof)| (key.clone(), proof.events.keys().cloned().collect()))
         .collect();
+    let mut outputs = OutputVocabulary::default();
+    discover_summary_outputs(&mut outputs, &summaries);
     let (rechecked, discovered, requests, new_events) =
-        program.proofs(&summaries, &ports, &mut events, Some(&proofs));
+        program.proofs(&summaries, &ports, &mut events, &mut outputs, Some(&proofs));
     assert!(!new_events);
     assert_eq!(proofs, rechecked);
     assert_eq!(ports, discovered);

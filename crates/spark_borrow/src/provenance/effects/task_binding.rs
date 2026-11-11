@@ -82,6 +82,7 @@ impl Flow<'_> {
         Some(TaskDispatch::Returns(vec![CallOutcome {
             fresh_leaf_task,
             spawn_owners: self.spawn_owner_transfer(args, state),
+            returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals: facts.prefix.residuals,
             async_memory: Vec::new(),
             returned,
@@ -173,6 +174,7 @@ impl Flow<'_> {
         Some(TaskDispatch::Returns(vec![CallOutcome {
             fresh_leaf_task: false,
             spawn_owners: None,
+            returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals,
             async_memory: Vec::new(),
             returned,

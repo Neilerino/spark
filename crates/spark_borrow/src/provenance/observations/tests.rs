@@ -618,6 +618,7 @@ fn returned_history_follows_only_live_unclobbered_pending_copy_witnesses() {
         let outcome = CallOutcome {
             fresh_leaf_task: false,
             spawn_owners: None,
+            returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals: Vec::new(),
             async_memory: Vec::new(),
             returned,
@@ -663,4 +664,190 @@ fn returned_history_follows_only_live_unclobbered_pending_copy_witnesses() {
             "the input was consumed: {name}"
         );
     }
+}
+
+#[test]
+fn a_returned_capture_keeps_progress_learned_after_the_entry_snapshot() {
+    use crate::provenance::{
+        demand::Storage,
+        effects::{CallOutcome, PrefixWrites},
+        tasks::{
+            lifecycle::{Tags, Token},
+            outputs::{CallbackOutput, CallbackRecipe},
+            Capture,
+        },
+    };
+    use spark_mir::Operand;
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let future = table.intern(Ty::Future { inner: int });
+    let reference = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let callback_ty = table.intern(Ty::Function {
+        params: vec![],
+        ret: future,
+        is_async: false,
+    });
+    let function = MirFunction {
+        def_id: DefId::new(10002),
+        param_count: 1,
+        return_type: future,
+        locals: [future, future, reference]
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| LocalDecl {
+                local: Local(index as u32),
+                ty,
+                name: None,
+                is_user_variable: false,
+                mutable: false,
+                span: Span::DUMMY,
+            })
+            .collect(),
+        blocks: vec![],
+        captures: vec![],
+        is_async: false,
+        span: Span::DUMMY,
+    };
+    let point = Point::new(BlockId::ENTRY, 1);
+    let mut flow = Flow::new(&function, &table, None);
+    let mut state = flow.initial_state();
+    let (target, original) = tasks::birth(function.def_id, point, future);
+    state.set(Local(1), original.clone());
+    state.future_owners.grant(Local(1), &state.future_copies);
+    let capture = Capture {
+        owner: function.def_id,
+        index: 0,
+        ty: future,
+    };
+    let path = vec![Slot::Capture(capture.owner, capture.index, future)];
+    let args = vec![Operand::Move(Place::from_local(Local(1)))];
+    let recipe = CallbackRecipe {
+        parent_ty: future,
+        callback_ty,
+        callback: function.def_id,
+        slots: FxHashMap::from_iter([(path.clone(), Token::Derived(Local(1)))]),
+    };
+    let output_owners = flow.bind_output_recipe(&recipe, &args, &state);
+    let bound = output_owners.as_ref().unwrap();
+    assert!(bound.valid(&flow, &Place::from_local(Local(0)), &[], &state));
+    assert!(!bound.valid(&flow, &Place::from_local(Local(2)), &[], &state));
+    let callback = original
+        .with_future_capture(capture)
+        .prefixed_path(&path, callback_ty, &table);
+    let subject = Subject {
+        target,
+        capture: None,
+    };
+    let lane = Arc::new(Lane {
+        site: None,
+        receive: None,
+        actor: subject.clone(),
+        function: function.def_id,
+        selector: Selector {
+            input: Local(1),
+            selection: vec![],
+            intent: Intent::Value,
+            expected: Some(reference),
+            capture: None,
+            channel_capture: None,
+            queue: None,
+        },
+        role: ReadRole::Payload,
+        sample: Sample {
+            memory: Memory::Frame {
+                scope: FrameScope::Current,
+                function: function.def_id,
+                local: Local(2),
+                ty: reference,
+            },
+            path: vec![],
+            ty: reference,
+        },
+    });
+    let origin = Origin::Loan(Point::new(BlockId::ENTRY, 2));
+    state
+        .observations
+        .insert(lane.clone(), Value::reference(origin.clone()));
+    let mut learned = original;
+    learned
+        .task_views
+        .entry(vec![])
+        .or_default()
+        .entry(subject)
+        .or_default()
+        .history
+        .import_sample(
+            lane.clone(),
+            Value::reference(origin.clone()).sourced(&Storage::Observation(lane.clone())),
+        );
+    state.set(Local(1), learned);
+    flow.ensure_transfer(point, &state);
+    let (_, returned) = tasks::birth(function.def_id, Point::new(BlockId::ENTRY, 3), future);
+    let outcome = CallOutcome {
+        returned,
+        returned_callbacks: FxHashMap::from_iter([(
+            callback_ty,
+            CallbackOutput {
+                callback,
+                lineage: FxHashMap::from_iter([(
+                    path.clone(),
+                    Tags::from_iter([Token::Derived(Local(1))]),
+                )]),
+            },
+        )]),
+        future_proof: tasks::proofs::CallProof {
+            output_owners,
+            ..Default::default()
+        },
+        fresh_leaf_task: false,
+        spawn_owners: None,
+        tasks: vec![],
+        completed_task: None,
+        clobbered_copies: vec![],
+        returned_prefix: Default::default(),
+        publications: PrefixWrites::default(),
+        place_writes: vec![],
+        memory: vec![],
+        async_memory: vec![],
+        residuals: vec![],
+        prefix_memory: vec![],
+        prefix_residuals: vec![],
+        queues: vec![],
+        queue_contents: vec![],
+    };
+    flow.apply_call_outcomes(
+        &args,
+        &Place::from_local(Local(0)),
+        vec![outcome],
+        point,
+        &mut state,
+    );
+    let captured = state.executions[&(Local(0), callback_ty)].capture(capture.owner, capture.index);
+    assert!(
+        captured
+            .task_views
+            .values()
+            .flat_map(|subjects| subjects.values())
+            .any(|view| view
+                .history
+                .samples()
+                .any(|(_, sample)| sample.origins().contains(&origin))),
+        "the output capture must carry progress learned after callback binding"
+    );
+    assert!(!state.live.contains(&Local(1)));
+    let atom = Atom {
+        coordinate: Coordinate {
+            storage: Storage::Observation(lane),
+            path: vec![],
+        },
+        origin,
+        capture: None,
+    };
+    assert!(!flow.transfers[&point]
+        .before(&Demand::from_iter([atom]))
+        .is_empty());
 }

@@ -13,6 +13,7 @@ pub(super) mod execution;
 mod identity;
 pub(super) mod lifecycle;
 pub(super) mod memory;
+pub(super) mod outputs;
 pub(super) mod proofs;
 pub(super) mod residual;
 mod settle;
@@ -341,40 +342,13 @@ impl super::Flow<'_> {
         let Some(witness) = &proof.returned else {
             return;
         };
-        let Some(handles) = returned.futures.get(&Vec::new()) else {
-            return;
-        };
-        for handle in handles.iter().filter(|handle| handle.pending) {
-            let subject = views::Subject::from(handle);
-            for peer in witness.locals().filter(|peer| {
-                state.live.contains(peer)
-                    && !clobbered.contains(peer)
-                    && !state.invalidated_copies.contains(peer)
-            }) {
-                let Some(current) = state.values.get(&peer) else {
-                    continue;
-                };
-                if !current.futures.get(&Vec::new()).is_some_and(|handles| {
-                    handles
-                        .iter()
-                        .any(|handle| handle.pending && views::Subject::from(handle) == subject)
-                }) {
-                    continue;
-                }
-                if let Some(view) = current
-                    .task_views
-                    .get(&Vec::new())
-                    .and_then(|views| views.get(&subject))
-                {
-                    let returned_view = returned
-                        .task_views
-                        .entry(Vec::new())
-                        .or_default()
-                        .entry(subject.clone())
-                        .or_insert_with(views::View::unknown);
-                    returned_view.history.join(&view.history);
-                    returned_view.memory.join(&view.memory);
-                }
+        for peer in witness.locals().filter(|peer| {
+            state.live.contains(peer)
+                && !clobbered.contains(peer)
+                && !state.invalidated_copies.contains(peer)
+        }) {
+            if let Some(current) = state.values.get(&peer) {
+                returned.merge_task_progress(current);
             }
         }
     }
@@ -399,6 +373,36 @@ impl super::Flow<'_> {
 }
 
 impl Value {
+    pub(in crate::provenance) fn merge_task_progress(&mut self, current: &Self) {
+        let Some(handles) = self.futures.get(&Vec::new()) else {
+            return;
+        };
+        for handle in handles.iter().filter(|handle| handle.pending) {
+            let subject = views::Subject::from(handle);
+            if !current.futures.get(&Vec::new()).is_some_and(|handles| {
+                handles
+                    .iter()
+                    .any(|handle| handle.pending && views::Subject::from(handle) == subject)
+            }) {
+                continue;
+            }
+            if let Some(view) = current
+                .task_views
+                .get(&Vec::new())
+                .and_then(|views| views.get(&subject))
+            {
+                let returned_view = self
+                    .task_views
+                    .entry(Vec::new())
+                    .or_default()
+                    .entry(subject)
+                    .or_insert_with(views::View::unknown);
+                returned_view.history.join(&view.history);
+                returned_view.memory.join(&view.memory);
+            }
+        }
+    }
+
     pub(super) fn future_result(&self) -> Self {
         let mut result = self.clone();
         result.leaves.retain(|(path, ..), _| *path != [Slot::Tail]);

@@ -20,6 +20,7 @@ use super::{
 #[derive(Clone, Default)]
 pub(super) struct Summary {
     returned: Value,
+    pub(super) returned_callbacks: super::tasks::outputs::CallbackOutputs,
     queues: FxHashMap<super::channels::QueueKey, Value>,
     queue_contents: FxHashMap<(super::channels::Target, TypeId), Value>,
     tasks: FxHashMap<super::tasks::Target, super::tasks::Record>,
@@ -43,6 +44,9 @@ pub(super) struct Summary {
 impl Summary {
     fn join(&mut self, other: &Self) -> bool {
         let mut changed = self.returned.join(&other.returned);
+        for (ty, output) in &other.returned_callbacks {
+            changed |= self.returned_callbacks.entry(*ty).or_default().join(output);
+        }
         changed |= join_prefix(&mut self.normal_prefix, &other.normal_prefix);
         changed |= self.normal_publications.join(&other.normal_publications);
         for (receive, values) in &other.receive_snapshots {
@@ -197,6 +201,7 @@ pub(super) use prefix::{
 };
 pub(super) use receive_snapshots::ReceiveSnapshots;
 mod history;
+mod output_binding;
 mod selection;
 mod task_binding;
 mod task_views;
@@ -376,6 +381,7 @@ impl Flow<'_> {
         CallOutcome {
             fresh_leaf_task: false,
             spawn_owners: None,
+            returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals: Vec::new(),
             async_memory: Vec::new(),
             tasks: Vec::new(),
@@ -564,6 +570,7 @@ impl Flow<'_> {
                 .join(&state.publications.exported(self.function.def_id));
             self.export_queue_contents(&state, &mut summary);
             self.export_tasks(&state, &mut summary);
+            self.export_callback_outputs(&state, &mut summary);
             for (key, value) in &state.residuals {
                 summary
                     .residuals

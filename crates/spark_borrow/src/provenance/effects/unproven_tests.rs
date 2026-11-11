@@ -780,6 +780,7 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
     let outcome = CallOutcome {
         fresh_leaf_task: false,
         spawn_owners: None,
+        returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
         residuals: Vec::new(),
         async_memory: Vec::new(),
         returned: Value::default(),

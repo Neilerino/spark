@@ -12,20 +12,20 @@ use crate::provenance::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Token {
+pub(in crate::provenance) enum Token {
     Provided(Local),
     Derived(Local),
 }
 
-type Tags = FxHashSet<Token>;
+pub(in crate::provenance) type Tags = FxHashSet<Token>;
 
 impl Token {
-    const fn derived(self) -> Self {
+    pub const fn derived(self) -> Self {
         match self {
             Self::Provided(input) | Self::Derived(input) => Self::Derived(input),
         }
     }
-    const fn input(self) -> Local {
+    pub const fn input(self) -> Local {
         match self {
             Self::Provided(input) | Self::Derived(input) => input,
         }
@@ -45,7 +45,7 @@ impl InputOwners {
             FxHashSet::from_iter([Token::Provided(input)]),
         );
     }
-    fn tags(&self, role: &Role) -> Tags {
+    pub fn tags(&self, role: &Role) -> Tags {
         self.locations.get(role).cloned().unwrap_or_default()
     }
     pub fn drop_local(&mut self, local: Local) {
@@ -68,6 +68,31 @@ impl InputOwners {
             self.escaped.extend(tags.iter().copied());
             false
         });
+    }
+
+    pub fn execution_outputs(
+        &self,
+        local: Local,
+        ty: TypeId,
+    ) -> FxHashMap<crate::provenance::Path, Tags> {
+        self.locations
+            .iter()
+            .filter(|(role, _)| role.local() == local && role.callback_type() == Some(ty))
+            .map(|(role, tags)| (role.selection().to_vec(), tags.clone()))
+            .collect()
+    }
+
+    pub fn add_output(&mut self, role: Role, tags: Tags) {
+        if !tags.is_empty() {
+            self.locations.entry(role).or_default().extend(tags);
+        }
+    }
+
+    pub fn retains_only(&self, input: Local, roles: &FxHashSet<Role>) -> bool {
+        !self.escaped.iter().any(|tag| tag.input() == input)
+            && self.locations.iter().all(|(role, tags)| {
+                roles.contains(role) || !tags.iter().any(|tag| tag.input() == input)
+            })
     }
 
     pub fn join(&mut self, other: &Self) -> bool {
