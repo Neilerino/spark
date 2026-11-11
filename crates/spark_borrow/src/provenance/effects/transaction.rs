@@ -40,6 +40,7 @@ pub(in crate::provenance) struct CallOutcome {
     pub memory: Vec<MemoryWrite>,
     pub async_memory: Vec<MemoryWrite>,
     pub fresh_leaf_task: bool,
+    pub spawn_owners: Option<crate::provenance::tasks::execution::ExecutionTransfer>,
     pub residuals: Vec<crate::provenance::tasks::residual::Import>,
     pub prefix_memory: Vec<MemoryEvent>,
     pub prefix_residuals: Vec<crate::provenance::tasks::residual::Import>,
@@ -48,8 +49,31 @@ pub(in crate::provenance) struct CallOutcome {
 }
 
 impl CallOutcome {
+    fn detach_spawn_owners(
+        &mut self,
+        flow: &mut Flow<'_>,
+        destination: &Place,
+        point: Point,
+        state: &mut State,
+    ) {
+        if !destination.projections.is_empty()
+            || self
+                .spawn_owners
+                .as_ref()
+                .is_some_and(|owners| !owners.valid(&self.clobbered_copies, state))
+        {
+            self.spawn_owners = None;
+        }
+        if let Some(owners) = &self.spawn_owners {
+            owners.detach(flow, point, state);
+        }
+    }
+
     fn visit_values(&mut self, mut visit: impl FnMut(&mut Value)) {
         visit(&mut self.returned);
+        if let Some(owners) = &mut self.spawn_owners {
+            owners.visit_callback(&mut visit);
+        }
         for residual in self.residuals.iter_mut().chain(&mut self.prefix_residuals) {
             residual.visit_values(&mut visit);
         }
@@ -187,6 +211,7 @@ impl Flow<'_> {
         let residuals = self.bind_residuals(summary, function, actuals, context, Some(args));
         CallOutcome {
             fresh_leaf_task: false,
+            spawn_owners: None,
             residuals,
             async_memory,
             publications: prefix.publications,
@@ -328,8 +353,8 @@ impl Flow<'_> {
                         })
             })
             .collect();
-        for (arg, released) in args.iter().zip(&released) {
-            if *released {
+        for (index, (arg, released)) in args.iter().zip(&released).enumerate() {
+            if *released || (index == 0 && outcome.spawn_owners.is_some()) {
                 continue;
             }
             let borrowed_await = matches!(arg, Operand::Copy(place) if place.projections.is_empty()
@@ -339,8 +364,15 @@ impl Flow<'_> {
             }
             Self::lose_owning_operand(arg, state);
         }
-        for (arg, released) in args.iter().zip(released) {
+        for (index, (arg, released)) in args.iter().zip(released).enumerate() {
             if let Operand::Move(place) = arg {
+                self.retire_execution_owner(place.local, point, state);
+                if index == 0 && outcome.spawn_owners.is_some() {
+                    if let Some(local) = crate::provenance::consume(arg, state) {
+                        self.record_consumed(point, local);
+                    }
+                    continue;
+                }
                 if released {
                     state.input_owners.drop_local(place.local);
                     self.preserve_writer_loss(place, point, state);
@@ -415,6 +447,7 @@ impl Flow<'_> {
             for residual in alternative.residuals.drain(..) {
                 self.import_residual(residual, point, &mut after);
             }
+            alternative.detach_spawn_owners(self, destination, point, &mut after);
             self.consume_call_arguments(args, &alternative, point, &mut after);
             let returned_copy = self.apply_call_future_proof(
                 alternative.future_proof,
@@ -461,6 +494,11 @@ impl Flow<'_> {
                 after
                     .future_owners
                     .grant(destination.local, &after.future_copies);
+            }
+            if let Some(owners) = alternative.spawn_owners.take() {
+                if destination.projections.is_empty() {
+                    owners.install(self, destination.local, point, &mut after);
+                }
             }
             self.retire_call_frames(point, &mut after);
             let transfer = self.transfers[&point].clone();

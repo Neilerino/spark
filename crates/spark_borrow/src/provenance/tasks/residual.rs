@@ -250,14 +250,26 @@ impl Flow<'_> {
         }
         let root_ty = self.function.locals[place.local.index()].ty;
         let (role, _) = self.projection_path(root_ty, &place.projections);
+        self.preserve_pending_loss(&source, &role, point, state, false);
+    }
+
+    pub(in crate::provenance) fn preserve_pending_loss(
+        &mut self,
+        source: &Value,
+        role: &Path,
+        point: Point,
+        state: &mut State,
+        all: bool,
+    ) {
         for (path, handles) in &source.futures {
             let mut selected = source.clone();
             for slot in path {
                 selected = selected.project(slot);
             }
             for handle in handles.iter().filter(|handle| handle.pending) {
-                let view = views::contribution(&source, path, handle);
-                if !view.memory.may_write
+                let view = views::contribution(source, path, handle);
+                if !all
+                    && !view.memory.may_write
                     && view.memory.samples().next().is_none()
                     && !view.fallback
                 {
@@ -306,7 +318,7 @@ impl Flow<'_> {
                 );
             }
         }
-        self.settle_lost_publications(&source, point, state);
+        self.settle_lost_publications(source, point, state);
     }
 
     fn settle_lost_publications(&mut self, value: &Value, point: Point, state: &mut State) {

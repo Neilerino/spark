@@ -16,6 +16,8 @@ fn preserveOriginal(task: Future[Int]): Future[Int] {
     ignored: Int = release(task)
     return task
 }
+async fn releaseAsync(task: Future[Int]): Int { return 0 }
+fn retainInParent(task: Future[Int]): Future[Int] { return spawn { releaseAsync(task) } }
 fn main(): Int { return 0 }
 "#,
     );
@@ -39,7 +41,12 @@ fn main(): Int { return 0 }
         definitions: Some(&output.definitions),
         proofs: Some(&proofs),
     };
-    for name in ["release", "releaseAll", "preserveOriginal"] {
+    for name in [
+        "release",
+        "releaseAll",
+        "preserveOriginal",
+        "retainInParent",
+    ] {
         let function = output
             .mir
             .functions
@@ -70,8 +77,8 @@ fn main(): Int { return 0 }
         );
         assert_eq!(
             certificate.retains_no_owner.contains(&spark_mir::Local(1)),
-            name != "preserveOriginal",
-            "{name}: supplied helper temporary must not escape"
+            matches!(name, "release" | "releaseAll"),
+            "{name}: a returned parent retains its captured child owner"
         );
         if name == "preserveOriginal" {
             assert!(

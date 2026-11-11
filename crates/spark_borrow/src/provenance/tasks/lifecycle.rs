@@ -3,7 +3,7 @@
 //! Cleanup rights cover current owner roles, never an allocation-site singleton.
 
 mod tokens;
-pub(in crate::provenance) use tokens::InputOwners;
+pub(in crate::provenance) use tokens::{InputOwners, Transfer};
 
 use rustc_hash::FxHashSet;
 use spark_mir::{Constant, Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator};
@@ -63,13 +63,17 @@ impl Owners {
 }
 
 pub(in crate::provenance) struct CapturedOwner {
-    role: Role,
-    witness: Witness,
-    closed: bool,
+    pub(super) role: Role,
+    pub(super) witness: Witness,
+    pub(super) closed: bool,
 }
 
 impl CapturedOwner {
-    pub fn install_all(mut captures: Vec<Self>, state: &mut State) {
+    pub fn install_all(captures: Vec<Self>, state: &mut State) {
+        Self::install_excluding(captures, &[], state);
+    }
+
+    pub fn install_excluding(mut captures: Vec<Self>, excluded: &[Local], state: &mut State) {
         let peers: Vec<Vec<Role>> = captures
             .iter()
             .map(|capture| {
@@ -81,6 +85,7 @@ impl CapturedOwner {
             })
             .collect();
         for (capture, peers) in captures.iter_mut().zip(peers) {
+            capture.witness.exclude(excluded);
             capture.witness.exclude(&[capture.role.local()]);
             capture.witness.peers.extend(peers);
         }

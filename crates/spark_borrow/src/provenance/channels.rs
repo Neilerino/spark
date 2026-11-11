@@ -419,6 +419,7 @@ impl Flow<'_> {
         };
         Some(super::effects::CallOutcome {
             fresh_leaf_task: false,
+            spawn_owners: None,
             residuals: Vec::new(),
             async_memory: Vec::new(),
             tasks: Vec::new(),

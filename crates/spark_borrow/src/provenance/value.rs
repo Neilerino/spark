@@ -88,6 +88,41 @@ pub(super) struct Value {
 }
 
 impl Value {
+    pub(super) fn clear_path(&mut self, path: &[Slot]) {
+        self.leaves
+            .retain(|(stored, ..), _| !stored.starts_with(path));
+        self.sources
+            .retain(|(stored, ..), _| !stored.starts_with(path));
+        self.callees.retain(|stored, _| !stored.starts_with(path));
+        self.queues.retain(|stored, _| !stored.starts_with(path));
+        self.futures.retain(|stored, _| !stored.starts_with(path));
+        self.task_views
+            .retain(|stored, _| !stored.starts_with(path));
+    }
+
+    pub(super) fn mark_future_completed(&mut self) {
+        for (path, handles) in &mut self.futures {
+            if path.is_empty() || *path == [Slot::Tail] {
+                *handles = handles
+                    .iter()
+                    .map(|handle| super::tasks::Handle {
+                        pending: false,
+                        ..handle.clone()
+                    })
+                    .collect();
+            }
+        }
+        for (path, subjects) in &mut self.task_views {
+            if path.is_empty() || *path == [Slot::Tail] {
+                for view in subjects.values_mut() {
+                    *view = super::tasks::views::View::default();
+                }
+            }
+        }
+        self.leaves.retain(|(path, ..), _| *path != [Slot::Tail]);
+        self.sources.retain(|(path, ..), _| *path != [Slot::Tail]);
+    }
+
     pub(super) fn task_lineage(&self) -> Self {
         let mut result = Self::default();
         for ((_, origin, capture), leaf) in &self.leaves {

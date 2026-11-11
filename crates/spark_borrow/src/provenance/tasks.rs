@@ -9,7 +9,7 @@ use spark_types::{Ty, TypeId, TypeTable};
 
 use super::{address::OpaqueSite, value, Path, Point, Slot, Value};
 
-mod execution;
+pub(super) mod execution;
 mod identity;
 pub(super) mod lifecycle;
 pub(super) mod memory;
@@ -303,37 +303,24 @@ impl super::Flow<'_> {
         self.ensure_transfer(point, state);
         witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
         self.settle_task_memory(&witness, &[], point, state);
+        for role in witness
+            .peers
+            .iter()
+            .filter(|role| role.as_local().is_none())
+        {
+            self.complete_owned_capture(role, result, point, state);
+        }
         let peers: Vec<_> = witness.locals().collect();
         state.joined_inputs.extend(witness.inputs);
         for peer in peers {
+            self.demote_completed_execution(peer, point, state);
             if !state.live.contains(&peer) {
                 continue;
             }
             let mut current = state
                 .value(peer)
                 .sourced(&super::demand::Storage::Logical(peer));
-            for (path, handles) in &mut current.futures {
-                if path.is_empty() || *path == [Slot::Tail] {
-                    *handles = handles
-                        .iter()
-                        .map(|handle| Handle {
-                            pending: false,
-                            ..handle.clone()
-                        })
-                        .collect();
-                }
-            }
-            for (path, subjects) in &mut current.task_views {
-                if path.is_empty() || *path == [Slot::Tail] {
-                    for view in subjects.values_mut() {
-                        *view = views::View::default();
-                    }
-                }
-            }
-            current.leaves.retain(|(path, ..), _| *path != [Slot::Tail]);
-            current
-                .sources
-                .retain(|(path, ..), _| *path != [Slot::Tail]);
+            current.mark_future_completed();
             let ty = self.function.locals[peer.index()].ty;
             if let Some(result) = result {
                 current.join(&result.prefixed(Slot::Element, ty, self.table));

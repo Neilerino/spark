@@ -617,6 +617,7 @@ fn returned_history_follows_only_live_unclobbered_pending_copy_witnesses() {
             .collect();
         let outcome = CallOutcome {
             fresh_leaf_task: false,
+            spawn_owners: None,
             residuals: Vec::new(),
             async_memory: Vec::new(),
             returned,

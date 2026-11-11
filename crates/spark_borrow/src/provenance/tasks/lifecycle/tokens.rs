@@ -60,6 +60,16 @@ impl InputOwners {
             false
         });
     }
+    pub fn escape_execution(&mut self, local: Local, ty: TypeId) {
+        self.locations.retain(|role, tags| {
+            if role.local() != local || role.callback_type() != Some(ty) {
+                return true;
+            }
+            self.escaped.extend(tags.iter().copied());
+            false
+        });
+    }
+
     pub fn join(&mut self, other: &Self) -> bool {
         let before = self.escaped.len();
         self.escaped.extend(other.escaped.iter().copied());
@@ -104,6 +114,38 @@ impl Transfer {
             }
         }
         result
+    }
+
+    pub fn execution(
+        source: Local,
+        destination: Local,
+        ty: TypeId,
+        owners: &InputOwners,
+        adopting: bool,
+    ) -> Self {
+        let mut result = Self::default();
+        for (role, tags) in &owners.locations {
+            if role.local() == source
+                && (if adopting {
+                    role.callback_type().is_none()
+                } else {
+                    role.callback_type() == Some(ty)
+                })
+            {
+                if let Some(target) = role.in_execution(destination, ty) {
+                    result.moved.insert(role.clone());
+                    result.values.insert(target, tags.clone());
+                }
+            }
+        }
+        result
+    }
+
+    pub fn reanchor(&mut self, destination: Local) {
+        self.values = std::mem::take(&mut self.values)
+            .into_iter()
+            .map(|(role, tags)| (role.reanchor(destination), tags))
+            .collect();
     }
 
     pub fn detach(&self, owners: &mut InputOwners) {

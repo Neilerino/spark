@@ -11,6 +11,7 @@ use crate::provenance::{Path, Slot};
 pub(in crate::provenance) struct Role {
     local: Local,
     path: Path,
+    callback_ty: Option<TypeId>,
 }
 
 impl Role {
@@ -18,6 +19,7 @@ impl Role {
         Self {
             local,
             path: Vec::new(),
+            callback_ty: None,
         }
     }
 
@@ -25,6 +27,15 @@ impl Role {
         Self {
             local,
             path: vec![Slot::Capture(owner, index, ty)],
+            callback_ty: None,
+        }
+    }
+
+    pub fn reanchor(&self, local: Local) -> Self {
+        Self {
+            local,
+            path: self.path.clone(),
+            callback_ty: self.callback_ty,
         }
     }
 
@@ -32,7 +43,22 @@ impl Role {
         matches!(self.path.as_slice(), [Slot::Capture(..)]).then(|| Self {
             local,
             path: self.path.clone(),
+            callback_ty: self.callback_ty,
         })
+    }
+
+    pub fn selection(&self) -> &[Slot] {
+        &self.path
+    }
+
+    pub fn in_execution(&self, local: Local, callback_ty: TypeId) -> Option<Self> {
+        let mut role = self.capture_at(local)?;
+        role.callback_ty = Some(callback_ty);
+        Some(role)
+    }
+
+    pub const fn callback_type(&self) -> Option<TypeId> {
+        self.callback_ty
     }
 
     pub const fn local(&self) -> Local {
@@ -40,7 +66,7 @@ impl Role {
     }
 
     pub fn as_local(&self) -> Option<Local> {
-        self.path.is_empty().then_some(self.local)
+        (self.callback_ty.is_none() && self.path.is_empty()).then_some(self.local)
     }
 }
 
@@ -132,6 +158,18 @@ impl Copies {
         self.inputs.remove(role);
         self.equal
             .retain(|(left, right)| left != role && right != role);
+    }
+
+    pub fn forget_execution(&mut self, local: Local, ty: TypeId) {
+        let roles: Vec<_> = self
+            .roles
+            .iter()
+            .filter(|role| role.local == local && role.callback_ty == Some(ty))
+            .cloned()
+            .collect();
+        for role in roles {
+            self.forget_role(&role);
+        }
     }
 
     pub fn assign(&mut self, destination: Local, witness: Witness, live: &FxHashSet<Local>) {

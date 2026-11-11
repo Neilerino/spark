@@ -779,6 +779,7 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
     flow.ensure_transfer(point, &state);
     let outcome = CallOutcome {
         fresh_leaf_task: false,
+        spawn_owners: None,
         residuals: Vec::new(),
         async_memory: Vec::new(),
         returned: Value::default(),

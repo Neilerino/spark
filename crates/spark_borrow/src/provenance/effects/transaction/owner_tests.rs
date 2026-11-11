@@ -63,6 +63,7 @@ fn outcome(state: &State, released_index: usize) -> CallOutcome {
         memory: vec![],
         async_memory: vec![],
         fresh_leaf_task: false,
+        spawn_owners: None,
         residuals: vec![],
         prefix_memory: vec![],
         prefix_residuals: vec![],

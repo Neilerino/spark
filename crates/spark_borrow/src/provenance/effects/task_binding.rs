@@ -81,6 +81,7 @@ impl Flow<'_> {
         returned.join(&facts.returned.prefixed(Slot::Element, ty, self.table));
         Some(TaskDispatch::Returns(vec![CallOutcome {
             fresh_leaf_task,
+            spawn_owners: self.spawn_owner_transfer(args, state),
             residuals: facts.prefix.residuals,
             async_memory: Vec::new(),
             returned,
@@ -171,6 +172,7 @@ impl Flow<'_> {
             .then_some((place.local, returned.clone()));
         Some(TaskDispatch::Returns(vec![CallOutcome {
             fresh_leaf_task: false,
+            spawn_owners: None,
             residuals,
             async_memory: Vec::new(),
             returned,

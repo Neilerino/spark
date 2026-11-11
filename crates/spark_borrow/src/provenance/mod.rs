@@ -407,6 +407,7 @@ impl<'a> Flow<'a> {
         self.settle_pending_tasks(point, state);
         match statement {
             Statement::Assign { place, rvalue, .. } => {
+                let executions = self.moving_executions(rvalue, place, point, state);
                 let input_transfer = self.input_owner_transfer(rvalue, place, state);
                 let owned = self.owning_rvalue(rvalue, place, state);
                 let captures = self.captured_future_owners(rvalue, place, state);
@@ -416,6 +417,10 @@ impl<'a> Flow<'a> {
                 let mut accesses = Accesses::default();
                 self.read_access(place, state, AccessKind::Address, &mut accesses);
                 self.record_accesses(point, accesses, state);
+                for execution in &executions {
+                    execution.detach(self, point, state);
+                }
+                self.retire_rvalue_executions(rvalue, point, state);
                 input_transfer.detach(&mut state.input_owners);
                 for local in consume_rvalue(rvalue, state) {
                     self.record_consumed(point, local);
@@ -428,6 +433,9 @@ impl<'a> Flow<'a> {
                 }
                 tasks::lifecycle::CapturedOwner::install_all(captures, state);
                 input_transfer.install(&mut state.input_owners);
+                for execution in executions {
+                    execution.install(self, place.local, point, state);
+                }
             }
             Statement::IndexedAssign {
                 root,
@@ -451,10 +459,12 @@ impl<'a> Flow<'a> {
                 self.record_accesses(point, accesses, state);
                 current.join(&stored);
                 self.store(root, current, point, state);
+                self.retire_execution_owner(*value, point, state);
                 state.consume(*value);
                 self.record_consumed(point, *value);
             }
             Statement::Drop { place, .. } => {
+                self.retire_execution_owner(place.local, point, state);
                 if place.projections.is_empty() {
                     state.input_owners.drop_local(place.local);
                 } else {
@@ -651,6 +661,7 @@ impl<'a> Flow<'a> {
             self.store_references(&targets, &value, self.place_type(place), point, state);
             return;
         }
+        self.retire_execution_owner(place.local, point, state);
         state.input_owners.escape_local(place.local);
         state.future_copies.forget(place.local);
         self.record_store(point, place, &value);

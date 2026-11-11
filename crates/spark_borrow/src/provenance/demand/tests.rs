@@ -819,6 +819,7 @@ fn call_transaction_preserves_moved_argument_sources_in_return_and_queue() {
     flow.ensure_transfer(point, &state);
     let outcome = CallOutcome {
         fresh_leaf_task: false,
+        spawn_owners: None,
         residuals: Vec::new(),
         async_memory: Vec::new(),
         returned: value.clone(),

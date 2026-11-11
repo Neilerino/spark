@@ -9,6 +9,7 @@ use std::collections::HashMap;
 mod history_transport;
 mod owner_calls;
 mod receive_snapshots;
+mod spawn_owners;
 
 #[test]
 fn certificates_are_closed_against_their_own_refined_may_summaries() {
