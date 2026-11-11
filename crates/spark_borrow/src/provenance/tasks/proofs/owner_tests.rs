@@ -444,3 +444,20 @@ fn opaque_access_through_nested_borrows_does_not_prove_no_retained_owner() {
         "an opaque reader can retain the Future through nested borrowed views"
     );
 }
+
+#[test]
+fn forwarding_a_provided_owner_is_stronger_than_returning_the_same_execution() {
+    let (table, _, future, _) = fixture();
+    for (statements, forwarded) in [
+        (vec![assign(0, moved(1))], true),
+        (vec![assign(0, copied(1)), drop_owner(1)], false),
+        (vec![assign(2, copied(1)), assign(0, moved(1))], false),
+    ] {
+        let certificate = returns(&table, &[future, future, future], statements);
+        assert_eq!(certificate.returned, FxHashSet::from_iter([Local(1)]));
+        assert_eq!(
+            certificate.forwarded_provided.contains(&Local(1)),
+            forwarded
+        );
+    }
+}

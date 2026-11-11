@@ -45,7 +45,8 @@ impl Proof {
         if let Guarantee::Returns(certificate) = &mut self.returns {
             certificate.released_provided = future_inputs(function, table);
             certificate.retains_no_owner = certificate.released_provided.clone();
-            certificate.returned_owners = output;
+            certificate.returned_owners = output.map(Box::new);
+            certificate.forwarded_provided = certificate.returned.clone();
         }
     }
 
@@ -103,7 +104,8 @@ fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witne
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Certificate {
-    pub returned_owners: Option<super::outputs::CallbackRecipe>,
+    pub returned_owners: Option<Box<super::outputs::CallbackRecipe>>,
+    pub forwarded_provided: FxHashSet<Local>,
     pub completed: FxHashSet<Local>,
     pub returned: FxHashSet<Local>,
     pub released_provided: FxHashSet<Local>,
@@ -127,7 +129,7 @@ impl Guarantee {
         if !normal_return {
             return Self::NoReturn;
         }
-        let returned = completed
+        let returned: FxHashSet<_> = completed
             .iter()
             .copied()
             .filter(|input| {
@@ -137,6 +139,7 @@ impl Guarantee {
             .collect();
         Self::Returns(Certificate {
             returned_owners: None,
+            forwarded_provided: returned.clone(),
             released_provided: completed.clone(),
             retains_no_owner: completed.clone(),
             completed,
@@ -146,7 +149,7 @@ impl Guarantee {
 
     pub fn has_effect(&self) -> bool {
         matches!(self, Self::Returns(certificate) if certificate.returned_owners.is_some() || !certificate.completed.is_empty() || !certificate.returned.is_empty()
-            || !certificate.released_provided.is_empty() || !certificate.retains_no_owner.is_empty())
+            || !certificate.released_provided.is_empty() || !certificate.retains_no_owner.is_empty() || !certificate.forwarded_provided.is_empty())
     }
 
     pub fn intersect(&mut self, other: &Self) -> bool {
@@ -159,6 +162,8 @@ impl Guarantee {
                 left.completed
                     .retain(|input| right.completed.contains(input));
                 left.returned.retain(|input| right.returned.contains(input));
+                left.forwarded_provided
+                    .retain(|input| right.forwarded_provided.contains(input));
                 left.released_provided
                     .retain(|input| right.released_provided.contains(input));
                 left.retains_no_owner
@@ -173,6 +178,8 @@ impl Guarantee {
 
 #[derive(Default)]
 pub(in crate::provenance) struct CallProof {
+    pub forwarded_provided: FxHashMap<usize, Witness>,
+    pub forwarded: Option<super::forwarding::ForwardInput>,
     pub output_owners: Option<super::outputs::BoundOutput>,
     pub completed: Vec<Witness>,
     pub returned: Option<Witness>,
@@ -200,10 +207,26 @@ impl Flow<'_> {
             if !self.transfer_block(BlockId(index as u32), &mut state) {
                 continue;
             }
+            let returned = state.future_copies.inputs(Local::RETURN_PLACE);
+            let output_role = super::Role::root(Local::RETURN_PLACE);
+            let forwarded_provided = future_inputs(self.function, self.table)
+                .into_iter()
+                .filter(|input| {
+                    returned.contains(input)
+                        && value::strip_mutable(self.function.locals[input.index()].ty, self.table)
+                            == value::strip_mutable(self.function.return_type, self.table)
+                        && state.input_owners.tags(&output_role)
+                            == FxHashSet::from_iter([super::lifecycle::Token::Provided(*input)])
+                        && state
+                            .input_owners
+                            .retains_only(*input, &FxHashSet::from_iter([output_role.clone()]))
+                })
+                .collect();
             let candidate = Guarantee::Returns(Certificate {
-                returned_owners: self.observed_callback_recipe(&state),
+                forwarded_provided,
+                returned_owners: self.observed_callback_recipe(&state).map(Box::new),
                 completed: state.joined_inputs,
-                returned: state.future_copies.inputs(Local::RETURN_PLACE),
+                returned,
                 released_provided: future_inputs(self.function, self.table)
                     .into_iter()
                     .filter(|input| state.input_owners.released_provided(*input))
@@ -238,6 +261,12 @@ impl Flow<'_> {
         };
         let witness = |input: &Local| actual_witness(*input, args, state);
         CallProof {
+            forwarded: None,
+            forwarded_provided: certificate
+                .forwarded_provided
+                .iter()
+                .filter_map(|input| Some((input.index().checked_sub(1)?, witness(input)?)))
+                .collect(),
             output_owners: certificate
                 .returned_owners
                 .as_ref()

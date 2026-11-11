@@ -38,10 +38,27 @@ impl Owners {
     pub fn forget(&mut self, local: Local) {
         self.closed.retain(|role| role.local() != local);
     }
+    pub fn forget_execution(&mut self, local: Local, ty: TypeId) {
+        self.closed
+            .retain(|role| role.local() != local || role.callback_type() != Some(ty));
+    }
+    pub fn forget_role(&mut self, role: &Role) {
+        self.closed.remove(role);
+    }
     pub fn invalidate(&mut self, local: Local, copies: &Copies) {
-        for role in copies.anchored(local) {
-            for peer in copies.role_peers(&role) {
-                self.closed.remove(&peer);
+        let mut visited = FxHashSet::default();
+        let mut pending = vec![local];
+        while let Some(root) = pending.pop() {
+            if !visited.insert(root) {
+                continue;
+            }
+            for role in copies.anchored(root) {
+                for peer in copies.role_peers(&role) {
+                    self.closed.remove(&peer);
+                    if let Some(local) = peer.as_local() {
+                        pending.push(local);
+                    }
+                }
             }
         }
     }
@@ -95,6 +112,7 @@ impl CapturedOwner {
     }
 
     fn install(self, state: &mut State) {
+        state.future_owners.forget_role(&self.role);
         state
             .future_copies
             .assign_role(self.role.clone(), self.witness, &state.live);
@@ -436,5 +454,31 @@ mod tests {
         owners.forget(Local(1));
         copies.forget(Local(1));
         assert!(!owners.known(Local(2)));
+    }
+    #[test]
+    fn an_opaque_outer_capture_revokes_nested_execution_owner_coverage() {
+        use spark_resolve::DefId;
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(spark_types::IntWidth::I64));
+        let future = table.intern(Ty::Future { inner: int });
+        let callback = table.intern(Ty::Function {
+            params: vec![],
+            ret: int,
+            is_async: false,
+        });
+        let mut copies = Copies::default();
+        let live = FxHashSet::from_iter([Local(1), Local(2), Local(3)]);
+        let parent = Role::capture(Local(3), DefId::new(9980), 0, future);
+        copies.assign_role(parent, copies.witness(Local(1)), &live);
+        let child = Role::capture(Local(1), DefId::new(9981), 0, future)
+            .in_execution(Local(1), callback)
+            .unwrap();
+        copies.assign_role(child.clone(), copies.witness(Local(2)), &live);
+        let mut owners = Owners::default();
+        owners.grant(Local(2), &copies);
+        owners.grant_role(child.clone(), &copies);
+        owners.invalidate(Local(3), &copies);
+        assert!(!owners.known(Local(2)));
+        assert!(!owners.known_role(&child));
     }
 }

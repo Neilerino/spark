@@ -394,12 +394,53 @@ fn adopting_a_child_with_unproved_coverage_does_not_grant_cleanup_rights() {
     });
 }
 
+const KEEPER_HELPERS: &str = r#"
+fn keep(child: Future[Int], release: Channel[Int]): Future[Int] { return spawn { hold(child, release) } }
+fn identity(parent: Future[Int]): Future[Int] { return parent }
+fn identityKeep(child: Future[Int], release: Channel[Int]): Future[Int] { return identity(keep(child, release)) }
+fn identityKeep3(child: Future[Int], release: Channel[Int]): Future[Int] { return identity(identity(identity(keep(child, release)))) }
+fn identityLeaky(parent: Future[Int], out: Channel[Future[Int]]): Future[Int] { out.send(parent) return parent }
+fn identityCompleted(parent: Future[Int]): Future[Int] { result: Int = await parent return parent }
+fn keep2(child: Future[Int], release: Channel[Int]): Future[Int] { return keep(child, release) }
+fn keep3(child: Future[Int], release: Channel[Int]): Future[Int] { return keep2(child, release) }
+async fn holdPair(first: Future[Int], second: Future[Int], release: Channel[Int]): Int { return release.recv() }
+fn keepPair(first: Future[Int], second: Future[Int], release: Channel[Int]): Future[Int] { return spawn { holdPair(first, second, release) } }
+fn identityCopied(parent: Future[Int]): Future[Int] { copy: Future[Int] = parent return copy }
+"#;
+
 #[test]
 fn helper_return_transports_the_execution_owned_child_graph() {
-    for name in ["keep", "keep2", "keep3", "keepPair"] {
+    for name in [
+        "keep",
+        "keep2",
+        "keep3",
+        "keepPair",
+        "identityKeep",
+        "identityKeep3",
+        "identity",
+        "identityLeaky",
+        "identityCompleted",
+        "identityCopied",
+    ] {
         let source = KEEPER
-        .replace("fn main(): Int {", "fn keep(child: Future[Int], release: Channel[Int]): Future[Int] { return spawn { hold(child, release) } }\nfn keep2(child: Future[Int], release: Channel[Int]): Future[Int] { return keep(child, release) }\nfn keep3(child: Future[Int], release: Channel[Int]): Future[Int] { return keep2(child, release) }\nasync fn holdPair(first: Future[Int], second: Future[Int], release: Channel[Int]): Int { return release.recv() }\nfn keepPair(first: Future[Int], second: Future[Int], release: Channel[Int]): Future[Int] { return spawn { holdPair(first, second, release) } }\nfn main(): Int {")
-        .replace("keeper: Future[Int] = spawn { hold(child, release) }", &if name == "keepPair" { "keeper: Future[Int] = keepPair(child, child, release)".to_owned() } else { format!("keeper: Future[Int] = {name}(child, release)") });
+        .replace("fn main(): Int {", &format!("{KEEPER_HELPERS}\nfn main(): Int {{"))
+        .replace("keeper: Future[Int] = spawn { hold(child, release) }", &match name {
+            "keepPair" => "keeper: Future[Int] = keepPair(child, child, release)".to_owned(),
+            "identity" | "identityCompleted" | "identityCopied" => format!("existing: Future[Int] = keep(child, release)\nkeeper: Future[Int] = {name}(existing)"),
+            "identityLeaky" => "existing: Future[Int] = keep(child, release)\nout: Channel[Future[Int]] = Channel[Future[Int]]()\nkeeper: Future[Int] = identityLeaky(existing, out)".to_owned(),
+            _ => format!("keeper: Future[Int] = {name}(child, release)"),
+        });
+        let source = if matches!(
+            name,
+            "identity" | "identityLeaky" | "identityCompleted" | "identityCopied"
+        ) {
+            source.replace(
+                "return result",
+                "parentResult: Int = await existing\nreturn result",
+            )
+        } else {
+            source
+        };
         let output = lower_source(&source);
         assert!(!output.diagnostics.has_errors());
         let facts = output
@@ -462,6 +503,17 @@ fn helper_return_transports_the_execution_owned_child_graph() {
         flow.solve(&facts[&function.def_id]);
         let mut state = flow.entries[index].clone().unwrap();
         assert!(flow.transfer_block(BlockId(index as u32), &mut state));
+        if name == "identityCompleted" {
+            assert!(
+                state.executions.is_empty(),
+                "a completed parent must not regain its callback"
+            );
+            let returned = state.value(destination.local);
+            let handles = returned.futures.get(&vec![]).unwrap();
+            assert!(!handles.is_empty());
+            assert!(handles.iter().all(|handle| !handle.pending));
+            continue;
+        }
         let origins = state.value(child).origins();
         assert!(!origins.is_empty());
         assert!(origins.is_subset(&state.value(destination.local).origins()));
@@ -486,9 +538,31 @@ fn helper_return_transports_the_execution_owned_child_graph() {
             if name == "keepPair" { 3 } else { 2 },
             "each output capture is one physical owner; forwarding does not clone it"
         );
-        assert!(
+        assert_eq!(
             state.future_owners.known(child),
-            "a supplied temporary released by the helper must not become an opaque child escape"
+            !matches!(name, "identityLeaky" | "identityCopied"),
+            "{name}: only complete forwarding may preserve child owner coverage"
         );
+        assert_eq!(
+            state.executions.len(),
+            1,
+            "parent copies do not clone callback ownership"
+        );
+        if name == "identity" {
+            let original = function
+                .locals
+                .iter()
+                .find(|decl| decl.name.is_some_and(|name| name.as_str() == "existing"))
+                .unwrap()
+                .local;
+            state
+                .future_owners
+                .invalidate(original, &state.future_copies);
+            let point = Point::new(BlockId(index as u32), body.statements.len() as u32);
+            flow.retire_execution_owner(destination.local, point, &mut state);
+            assert!(state.future_copies.witness(child).peers.iter().all(|role| {
+                role.callback_type().is_none() || !state.future_owners.known_role(role)
+            }), "moving an uncovered graph back to an old live anchor must not restore closed roles");
+        }
     }
 }

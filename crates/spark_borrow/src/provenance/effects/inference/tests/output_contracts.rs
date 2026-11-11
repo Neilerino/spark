@@ -27,6 +27,16 @@ async fn holdMap(child: Future[Int], held: Map[Int, Future[Int]], release: Chann
 fn mapCaptured(child: Future[Int], held: Map[Int, Future[Int]], release: Channel[Int]): Future[Int] {
     return spawn { holdMap(child, held, release) }
 }
+fn identity(parent: Future[Int]): Future[Int] { return parent }
+fn identityRecursive(parent: Future[Int], choose: Bool): Future[Int] {
+    if choose { return parent }
+    return identityRecursive(parent, true)
+}
+fn identityNever(parent: Future[Int]): Future[Int] { return identityNever(parent) }
+fn identityLeaky(parent: Future[Int], out: Channel[Future[Int]]): Future[Int] {
+    out.send(parent)
+    return parent
+}
 fn main(): Int { return 0 }
 "#,
     );
@@ -56,6 +66,10 @@ fn main(): Int { return 0 }
         "leaky",
         "chooseParent",
         "mapCaptured",
+        "identity",
+        "identityRecursive",
+        "identityNever",
+        "identityLeaky",
     ] {
         let function = output
             .mir
@@ -74,7 +88,7 @@ fn main(): Int { return 0 }
         let mut flow = Flow::new(function, &output.table, Some(context));
         flow.solve(&facts[&function.def_id]);
         let guarantee = flow.future_guarantee();
-        if name == "keepNever" {
+        if matches!(name, "keepNever" | "identityNever") {
             assert_eq!(guarantee, Guarantee::NoReturn);
             continue;
         }
@@ -90,6 +104,16 @@ fn main(): Int { return 0 }
             name == "keepRecursive",
             "{name}: only a grounded, complete output may preserve owner coverage"
         );
+        assert_eq!(
+            certificate
+                .forwarded_provided
+                .contains(&spark_mir::Local(1)),
+            name == "identity",
+            "{name}: only exclusive provided-token forwarding preserves root owner coverage"
+        );
+        if name.starts_with("identity") {
+            assert!(certificate.returned.contains(&spark_mir::Local(1)));
+        }
         if name == "keepRecursive" {
             let mut invalid = function.clone();
             invalid.return_type = match output.table.resolve(function.return_type) {

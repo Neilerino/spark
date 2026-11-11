@@ -283,3 +283,48 @@ fn a_returned_capture_reserves_ownership_across_all_released_alias_arguments() {
         );
     }
 }
+
+#[test]
+fn a_forwarded_root_reserves_the_parent_across_all_released_alias_arguments() {
+    for retained_index in [0, 1] {
+        let (table, mut function) = fixture();
+        function.return_type = function.locals[1].ty;
+        function.locals[0].ty = function.return_type;
+        let mut flow = Flow::new(&function, &table, None);
+        let point = Point::new(BlockId::ENTRY, 1);
+        let mut state = pending(&flow, point);
+        flow.ensure_transfer(point, &state);
+        flow.transfer_statement(
+            &spark_mir::Statement::Assign {
+                place: Place::from_local(Local(2)),
+                rvalue: spark_mir::Rvalue::Use(copied()),
+                span: Span::DUMMY,
+            },
+            point,
+            &mut state,
+        );
+        let args = if retained_index == 0 {
+            vec![moved(), Operand::Move(Place::from_local(Local(2)))]
+        } else {
+            vec![Operand::Move(Place::from_local(Local(2))), moved()]
+        };
+        let mut call = outcome(&state, 1 - retained_index);
+        call.future_proof.returned = Some(state.future_copies.witness(Local(1)));
+        call.future_proof
+            .forwarded_provided
+            .insert(retained_index, state.future_copies.witness(Local(1)));
+        call.prepare_owner_transfers(
+            &mut flow,
+            &args,
+            &Place::from_local(Local(0)),
+            point,
+            &mut state,
+        );
+        assert!(call.future_proof.forwarded.is_some());
+        flow.consume_call_arguments(&args, &mut call, point, &mut state);
+        assert!(
+            state.joined_inputs.is_empty(),
+            "forwarded parent is not a final release in either order"
+        );
+    }
+}

@@ -50,13 +50,49 @@ pub(in crate::provenance) struct CallOutcome {
 }
 
 impl CallOutcome {
+    fn transfers_argument(&self, index: usize) -> bool {
+        self.future_proof
+            .forwarded
+            .as_ref()
+            .is_some_and(|forwarded| forwarded.covers(index))
+            || self
+                .future_proof
+                .output_owners
+                .as_ref()
+                .is_some_and(|output| output.covered.contains(&index))
+    }
+
+    fn apply_prefix(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        self.import_observations(flow, point, state);
+        flow.apply_call_prefix(self, point, state);
+        self.clobbered_copies
+            .extend(state.invalidated_copies.iter().copied());
+        Flow::preserve_returned_task_progress(
+            &mut self.returned,
+            &self.future_proof,
+            &self.clobbered_copies,
+            state,
+        );
+        state.reached_prefix.extend(self.returned_prefix.drain());
+        flow.remember_publications(&self.publications, &mut state.publications);
+    }
+
     fn prepare_owner_transfers(
         &mut self,
         flow: &mut Flow<'_>,
+        args: &[Operand],
         destination: &Place,
         point: Point,
         state: &mut State,
     ) {
+        self.future_proof.forwarded = flow.forward_input(
+            &self.future_proof,
+            args,
+            destination,
+            &self.clobbered_copies,
+            point,
+            state,
+        );
         if !destination.projections.is_empty()
             || self
                 .spawn_owners
@@ -408,12 +444,8 @@ impl Flow<'_> {
             .collect();
         for (index, (arg, released)) in args.iter().zip(&released).enumerate() {
             if *released
+                || outcome.transfers_argument(index)
                 || (index == 0 && outcome.spawn_owners.is_some())
-                || outcome
-                    .future_proof
-                    .output_owners
-                    .as_ref()
-                    .is_some_and(|output| output.covered.contains(&index))
             {
                 continue;
             }
@@ -427,6 +459,9 @@ impl Flow<'_> {
         if let Some(output) = &mut outcome.future_proof.output_owners {
             output.restrict_coverage(state);
         }
+        if let Some(forwarded) = &mut outcome.future_proof.forwarded {
+            forwarded.detach(self, point, state);
+        }
         for (index, (arg, released)) in args.iter().zip(released).enumerate() {
             if let Operand::Move(place) = arg {
                 self.retire_execution_owner(place.local, point, state);
@@ -436,20 +471,20 @@ impl Flow<'_> {
                     }
                     continue;
                 }
-                if outcome
-                    .future_proof
-                    .output_owners
-                    .as_ref()
-                    .is_some_and(|output| output.covered.contains(&index))
-                {
+                if outcome.transfers_argument(index) {
                     state.input_owners.drop_local(place.local);
                 } else if released {
                     state.input_owners.drop_local(place.local);
                     if !outcome
                         .future_proof
-                        .output_owners
+                        .forwarded
                         .as_ref()
-                        .is_some_and(|output| output.reserves(place.local))
+                        .is_some_and(|forwarded| forwarded.reserves(place.local))
+                        && !outcome
+                            .future_proof
+                            .output_owners
+                            .as_ref()
+                            .is_some_and(|output| output.reserves(place.local))
                     {
                         self.preserve_writer_loss(place, point, state);
                     }
@@ -497,21 +532,7 @@ impl Flow<'_> {
         for mut alternative in outcome {
             self.transfers.insert(point, common.clone());
             let mut after = state.clone();
-            alternative.import_observations(self, point, &mut after);
-            self.apply_call_prefix(&alternative, point, &mut after);
-            alternative
-                .clobbered_copies
-                .extend(after.invalidated_copies.iter().copied());
-            Self::preserve_returned_task_progress(
-                &mut alternative.returned,
-                &alternative.future_proof,
-                &alternative.clobbered_copies,
-                &after,
-            );
-            after
-                .reached_prefix
-                .extend(alternative.returned_prefix.drain());
-            self.remember_publications(&alternative.publications, &mut after.publications);
+            alternative.apply_prefix(self, point, &mut after);
             for witness in &alternative.future_proof.completed {
                 self.settle_task_memory(witness, &alternative.clobbered_copies, point, &mut after);
             }
@@ -522,9 +543,10 @@ impl Flow<'_> {
             for residual in alternative.residuals.drain(..) {
                 self.import_residual(residual, point, &mut after);
             }
-            alternative.prepare_owner_transfers(self, destination, point, &mut after);
+            alternative.prepare_owner_transfers(self, args, destination, point, &mut after);
             self.consume_call_arguments(args, &mut alternative, point, &mut after);
             let output_owners = alternative.future_proof.output_owners.take();
+            let forwarded = alternative.future_proof.forwarded.take();
             let returned_copy = self.apply_call_future_proof(
                 std::mem::take(&mut alternative.future_proof),
                 &alternative.clobbered_copies,
@@ -577,6 +599,9 @@ impl Flow<'_> {
                     .grant(destination.local, &after.future_copies);
             }
             alternative.install_owner_outputs(self, destination, output_owners, point, &mut after);
+            if let Some(forwarded) = forwarded {
+                forwarded.install(self, destination.local, point, &mut after);
+            }
             self.retire_call_frames(point, &mut after);
             let transfer = self.transfers[&point].clone();
             if let Some((joined, ledger)) = &mut alternatives {

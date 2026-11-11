@@ -10,6 +10,7 @@ use spark_types::{Ty, TypeId, TypeTable};
 use super::{address::OpaqueSite, value, Path, Point, Slot, Value};
 
 pub(super) mod execution;
+pub(super) mod forwarding;
 mod identity;
 pub(super) mod lifecycle;
 pub(super) mod memory;

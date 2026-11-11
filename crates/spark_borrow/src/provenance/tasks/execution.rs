@@ -20,6 +20,7 @@ impl State {
     ) {
         self.input_owners.escape_execution(local, ty);
         self.future_owners.invalidate(local, &self.future_copies);
+        self.future_owners.forget_execution(local, ty);
         self.future_copies.forget_execution(local, ty);
         self.invalidated_copies.insert(local);
         self.executions.insert((local, ty), callback);
@@ -71,6 +72,16 @@ impl ExecutionTransfer {
         }
     }
 
+    pub fn restrict_coverage(&mut self, state: &State) {
+        for capture in &mut self.captures {
+            capture.closed &= capture
+                .witness
+                .peers
+                .iter()
+                .all(|peer| state.future_owners.known_role(peer));
+        }
+    }
+
     pub fn visit_callback(&mut self, visit: &mut impl FnMut(&mut Value)) {
         visit(&mut self.callback);
     }
@@ -92,6 +103,9 @@ impl ExecutionTransfer {
                 true,
             );
         }
+        state
+            .future_owners
+            .forget_execution(self.source, self.callback_ty);
         state
             .future_copies
             .forget_execution(self.source, self.callback_ty);
@@ -341,6 +355,7 @@ impl Flow<'_> {
     ) {
         state.future_owners.invalidate(local, &state.future_copies);
         state.input_owners.escape_execution(local, ty);
+        state.future_owners.forget_execution(local, ty);
         state.future_copies.forget_execution(local, ty);
         self.preserve_pending_loss(callback, &vec![], point, state, true);
         state.executions.remove(&(local, ty));
