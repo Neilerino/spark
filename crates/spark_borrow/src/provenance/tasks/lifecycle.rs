@@ -3,7 +3,7 @@
 //! Cleanup rights describe current owning locals, never an allocation-site singleton.
 
 use rustc_hash::FxHashSet;
-use spark_mir::{Local, Operand, Place, Rvalue, Terminator};
+use spark_mir::{Constant, Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator};
 use spark_types::{Ty, TypeId, TypeTable};
 
 use super::{Copies, Record};
@@ -72,6 +72,36 @@ fn may_own_future(ty: TypeId, table: &TypeTable, seen: &mut FxHashSet<TypeId>) -
     }
 }
 
+// TAG [SPARK-151]
+fn plain_function_reference(function: &MirFunction, local: Local) -> Option<spark_resolve::DefId> {
+    let declaration = &function.locals[local.index()];
+    if declaration.is_user_variable || declaration.mutable || declaration.name.is_some() {
+        return None;
+    }
+    let mut target = None;
+    for block in &function.blocks {
+        if matches!(&block.terminator, Terminator::Call { destination, .. } if destination.local == local)
+        {
+            return None;
+        }
+        for statement in &block.statements {
+            if let Statement::Assign { place, rvalue, .. } = statement {
+                if place.local != local {
+                    continue;
+                }
+                if target.is_some() || !place.projections.is_empty() {
+                    return None;
+                }
+                let Rvalue::Use(Operand::Constant(Constant::FunctionRef(def))) = rvalue else {
+                    return None;
+                };
+                target = Some(*def);
+            }
+        }
+    }
+    target
+}
+
 impl Flow<'_> {
     pub(in crate::provenance) fn leaf_task(&self, record: &Record) -> bool {
         if !record.callback.futures.is_empty() {
@@ -91,12 +121,19 @@ impl Flow<'_> {
                 continue;
             }
             if let Some(function) = context.mir.functions.get(&def) {
-                if function
-                    .locals
-                    .iter()
-                    .any(|local| may_own_future(local.ty, self.table, &mut FxHashSet::default()))
-                {
-                    return false;
+                for local in &function.locals {
+                    if matches!(
+                        self.table
+                            .resolve(value::strip_mutable(local.ty, self.table)),
+                        Ty::Function { .. }
+                    ) {
+                        let Some(callee) = plain_function_reference(function, local.local) else {
+                            return false;
+                        };
+                        pending.push(callee);
+                    } else if may_own_future(local.ty, self.table, &mut FxHashSet::default()) {
+                        return false;
+                    }
                 }
                 for block in &function.blocks {
                     if let Terminator::Call { func, .. } = &block.terminator {
@@ -110,9 +147,15 @@ impl Flow<'_> {
                 .definitions
                 .and_then(|definitions| definitions.get(def))
                 .is_some_and(|info| {
-                    matches!(info.kind, spark_resolve::DefinitionKind::BuiltinFunction)
-                        && info.name != spark_intern::kw::SPARK_SPAWN
-                        && info.name != spark_intern::kw::SPARK_AWAIT
+                    use spark_intern::kw;
+                    use spark_resolve::DefinitionKind;
+                    match info.kind {
+                        DefinitionKind::BuiltinFunction => {
+                            info.name != kw::SPARK_SPAWN && info.name != kw::SPARK_AWAIT
+                        }
+                        DefinitionKind::BuiltinMethod => matches!(info.name, kw::SEND | kw::RECV),
+                        _ => false,
+                    }
                 })
             {
                 return false;

@@ -6448,3 +6448,13 @@ fn struct_owned_fields_follow_collection_and_closure_lifetimes() {
         "1\n1\n1\n1\n2\n1\n2\n1\n1\n2\n1\n2\n1\n1",
     );
 }
+
+#[test]
+fn a_leaf_task_with_a_plain_function_reference_joins_before_frame_cleanup() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result =
+            run_spark_with_args("run-pass/async/future_leaf_struct_frame_scoped.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "1");
+    }
+}
