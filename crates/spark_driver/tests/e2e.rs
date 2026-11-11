@@ -6500,3 +6500,37 @@ fn future_cooperative_await_preserves_its_owned_handle() {
         assert_eq!(result.stdout.trim(), "7");
     }
 }
+
+// TAG [SPARK-117]
+mod cooperative_codegen;
+
+#[test]
+fn cooperative_spawn_preserves_actual_argument_bindings_and_wrapper_effects() {
+    for (fixture, expected) in [
+        ("run-pass/async/future_cooperative_bindings.spark", "33\n23"),
+        ("run-pass/async/future_cooperative_float.spark", "1.5"),
+        (
+            "run-pass/async/future_spawn_effectful_wrapper.spark",
+            "11\n7",
+        ),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout.trim(), expected);
+        }
+    }
+}
+
+#[test]
+fn cooperative_spawn_observes_zero_sized_child_completion() {
+    let native = "#include <stdint.h>\n\
+        extern void *__spark_spawn_coop(void *, void *, int64_t, int64_t, int64_t);\n\
+        static int8_t ready(void *state) { (void)state; return 1; }\n\
+        void *emptyFuture(void) { return __spark_spawn_coop((void *)ready, 0, 0, 0, 0); }\n";
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/async/future_cooperative_empty_child.spark"),
+        "7",
+    );
+}

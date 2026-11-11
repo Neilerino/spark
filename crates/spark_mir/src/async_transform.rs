@@ -27,6 +27,9 @@ use crate::mir::{
     Rvalue, Statement, Terminator,
 };
 
+mod forwarding;
+pub use forwarding::{SpawnAdapter, SpawnArgument};
+
 // ── Public API ──────────────────────────────────────────────────────────
 
 /// Input to the async transform pass.
@@ -64,6 +67,8 @@ pub struct PollFnInfo {
     pub state_type_id: TypeId,
     /// Field names and types in the state struct, in order.
     pub state_fields: Vec<(Symbol, TypeId)>,
+    /// Certified callback bindings, keyed by the original callback definition.
+    pub spawn_adapters: FxHashMap<DefId, SpawnAdapter>,
 }
 
 /// Runs the async state machine transform.
@@ -162,11 +167,14 @@ pub fn transform(input: AsyncTransformInput) -> AsyncTransformOutput {
                 poll_def_id,
                 state_type_id,
                 state_fields: state_fields.clone(),
+                spawn_adapters: FxHashMap::default(),
             },
         );
 
         mir.functions.insert(poll_def_id, poll_fn);
     }
+
+    forwarding::attach(&mir, &table, &definitions, &mut poll_fn_map);
 
     AsyncTransformOutput {
         mir,

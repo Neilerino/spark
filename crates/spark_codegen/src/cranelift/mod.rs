@@ -861,23 +861,14 @@ impl CodegenBackend for CraneliftBackend {
             diagnostics,
         );
 
-        // Phase 2c: Precompute lambda → async function mapping for spawn_coop.
-        // For each lambda that calls an async function with a poll entry,
-        // record the mapping so emit_spawn_call can use the cooperative path.
-        let mut lambda_to_async: FxHashMap<DefId, DefId> = FxHashMap::default();
-        for mir_func in mir.functions.values() {
-            for block in &mir_func.blocks {
-                if let spark_mir::Terminator::Call {
-                    func: spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(callee)),
-                    ..
-                } = &block.terminator
-                {
-                    if poll_fn_map.contains_key(callee) {
-                        lambda_to_async.insert(mir_func.def_id, *callee);
-                    }
-                }
-            }
-        }
+        let lambda_to_async = poll_fn_map
+            .iter()
+            .flat_map(|(callee, info)| {
+                info.spawn_adapters
+                    .keys()
+                    .map(move |callback| (*callback, *callee))
+            })
+            .collect();
 
         // Phase 3: Compile each function.
         let thunk_ids = self.thunk_ids.clone();

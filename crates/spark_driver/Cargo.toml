@@ -31,6 +31,7 @@ spark_bindgen.workspace = true
 clap.workspace = true
 
 [dev-dependencies]
+object.workspace = true
 spark_runtime = { path = "../spark_runtime" }
 tempfile.workspace = true
 

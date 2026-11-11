@@ -207,6 +207,10 @@ pub unsafe extern "C" fn __spark_spawn_coop(
 #[allow(clippy::cast_ptr_alignment, clippy::missing_panics_doc)]
 /// Tries to poll a Spark future without blocking.
 ///
+/// Null means Pending. Ready returns the result buffer, or an aligned non-null
+/// zero-length buffer marker when the result has no bytes. The marker must not
+/// be read or freed.
+///
 /// # Safety
 ///
 /// `future_ptr` must be null or a valid Spark future pointer.
@@ -219,7 +223,11 @@ pub unsafe extern "C" fn __spark_try_poll(future_ptr: *mut u8) -> *mut u8 {
     let waker = CURRENT_WAKER.take();
     CURRENT_WAKER.set(waker.clone());
     if future.completion.poll(waker.as_ref()) {
-        future.result
+        if future.result_size == 0 {
+            std::ptr::NonNull::<u64>::dangling().as_ptr().cast()
+        } else {
+            future.result
+        }
     } else {
         std::ptr::null_mut()
     }
@@ -336,5 +344,28 @@ mod tests {
                 }
             });
         }
+    }
+    // TAG [SPARK-117]
+    #[test]
+    fn completed_zero_sized_results_are_distinct_from_pending() {
+        let (release, held) = tokio::sync::oneshot::channel();
+        let task = tokio_runtime().spawn(async move {
+            held.await.expect("release empty task");
+        });
+        let future = new_future(std::ptr::null_mut(), 0, task).cast();
+        let was_pending = unsafe { __spark_try_poll(future).is_null() };
+        release.send(()).expect("release empty task");
+        unsafe {
+            __spark_await(future);
+        }
+        let ready = unsafe { __spark_try_poll(future) };
+        unsafe {
+            __spark_future_rc_dec(future);
+        }
+        assert!(was_pending);
+        assert!(
+            !ready.is_null(),
+            "a completed empty result must signal Ready"
+        );
     }
 }

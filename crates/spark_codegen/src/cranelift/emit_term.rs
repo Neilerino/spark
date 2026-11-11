@@ -202,7 +202,7 @@ fn emit_call<M: Module>(
             }
             if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::SPARK_SPAWN
             {
-                emit_spawn_call(ctx, args, destination, target, ecx, module);
+                emit_spawn_call(ctx, args, destination, target, ecx, module, diagnostics);
                 return;
             }
             if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::SPARK_AWAIT
@@ -1049,11 +1049,12 @@ fn emit_spawn_call<M: Module>(
     target: BlockId,
     ecx: &EmitCtx<'_>,
     module: &mut M,
+    diagnostics: &mut Diagnostics,
 ) {
     let table = ecx.table;
 
     // Try cooperative spawn path.
-    if try_emit_coop_spawn(ctx, args, destination, target, ecx, module).is_some() {
+    if try_emit_coop_spawn(ctx, args, destination, target, ecx, module, diagnostics).is_some() {
         return;
     }
 
@@ -1122,6 +1123,49 @@ fn emit_spawn_call<M: Module>(
     ctx.builder.ins().jump(target_block, &[]);
 }
 
+// TAG [SPARK-117]
+fn spawn_callback(
+    function: &spark_mir::MirFunction,
+    local: spark_mir::Local,
+) -> Option<spark_resolve::DefId> {
+    let declaration = &function.locals[local.index()];
+    if declaration.is_user_variable
+        || declaration.mutable
+        || declaration.name.is_some()
+        || function.address_taken_locals().contains(&local)
+    {
+        return None;
+    }
+    let mut callback = None;
+    for block in &function.blocks {
+        if matches!(&block.terminator, Terminator::Call { destination, .. } if destination.local == local)
+        {
+            return None;
+        }
+        for statement in &block.statements {
+            if let spark_mir::Statement::Assign { place, rvalue, .. } = statement {
+                if place.local != local {
+                    continue;
+                }
+                if callback.is_some() || !place.projections.is_empty() {
+                    return None;
+                }
+                callback = Some(match rvalue {
+                    spark_mir::Rvalue::Aggregate(
+                        spark_mir::AggregateKind::Closure { func_def_id },
+                        _,
+                    ) => *func_def_id,
+                    spark_mir::Rvalue::Use(Operand::Constant(
+                        spark_mir::Constant::FunctionRef(def),
+                    )) => *def,
+                    _ => return None,
+                });
+            }
+        }
+    }
+    callback
+}
+
 /// Attempts to emit a cooperative spawn. Returns `Some(())` if successful.
 ///
 /// Detects if the spawned closure wraps an async function that has a poll entry,
@@ -1134,10 +1178,10 @@ fn try_emit_coop_spawn<M: Module>(
     target: BlockId,
     ecx: &EmitCtx<'_>,
     module: &mut M,
+    diagnostics: &mut Diagnostics,
 ) -> Option<()> {
     let table = ecx.table;
 
-    // Step 1: Find the closure local from the spawn argument.
     let closure_local = match args.first() {
         Some(Operand::Copy(place) | Operand::Move(place)) if place.projections.is_empty() => {
             place.local
@@ -1145,33 +1189,25 @@ fn try_emit_coop_spawn<M: Module>(
         _ => return None,
     };
 
-    // Step 2: Scan MIR for the MakeClosure that assigned to this local.
-    let mut lambda_def_id = None;
-    let mut capture_operands = Vec::new();
-    for block in &ctx.mir_func.blocks {
-        for stmt in &block.statements {
-            if let spark_mir::Statement::Assign { place, rvalue, .. } = stmt {
-                if place.local == closure_local && place.projections.is_empty() {
-                    if let spark_mir::Rvalue::Aggregate(
-                        spark_mir::AggregateKind::Closure { func_def_id },
-                        operands,
-                    ) = rvalue
-                    {
-                        lambda_def_id = Some(*func_def_id);
-                        capture_operands = operands.clone();
-                    }
-                }
-            }
-        }
-    }
-
-    let lambda_def_id = lambda_def_id?;
-
-    // Step 3: Check if this lambda wraps an async function with a poll entry.
+    let lambda_def_id = spawn_callback(ctx.mir_func, closure_local)?;
     let async_def_id = ecx.lambda_to_async.get(&lambda_def_id)?;
     let poll_info = ecx.poll_fn_map.get(async_def_id)?;
+    let adapter = poll_info.spawn_adapters.get(&lambda_def_id)?;
+    let closure = ctx.local_stack_addr(closure_local)?;
+    let parameter_fields: Vec<_> = adapter
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, argument)| {
+            let name = format!("__local_{}", index + 1);
+            let field = poll_info
+                .state_fields
+                .iter()
+                .position(|(field, _)| field.as_str() == name)?;
+            Some((field, argument))
+        })
+        .collect::<Option<_>>()?;
 
-    // Step 4: Get the poll function's FuncId.
     let poll_func_id = ecx.func_ids.get(&poll_info.poll_def_id)?;
 
     let transferred_closure = if matches!(args.first(), Some(Operand::Move(_))) {
@@ -1180,78 +1216,109 @@ fn try_emit_coop_spawn<M: Module>(
         None
     };
 
-    // Step 5: Compute state layout.
     let state_layout = ctx
         .layouts
         .async_state_layout_of(&poll_info.state_fields, table);
     let state_size = state_layout.layout.size;
 
-    // Step 6: Allocate state via __spark_alloc_state(state_size).
+    let environment = ctx.builder.ins().load(
+        ctx.ptr_type,
+        MemFlags::new(),
+        closure,
+        ctx.ptr_type.bytes() as i32,
+    );
+    let mut arguments = Vec::new();
+    for (field, argument) in parameter_fields {
+        let ty = poll_info.state_fields[field].1;
+        if abi::is_zero_sized(ty, table) {
+            continue;
+        }
+        let (value, retained) = match argument {
+            spark_mir::async_transform::SpawnArgument::Capture(index) => {
+                let capture_ty = adapter.capture_types[*index];
+                let offset = ctx
+                    .layouts
+                    .tuple_field_offset(&adapter.capture_types, *index, table)
+                    + spark_abi::ENV_CAPTURES_OFFSET;
+                let value = if abi::is_scalar(capture_ty, table) {
+                    let clif_ty = abi::spark_type_to_clif(capture_ty, table, ctx.ptr_type)?;
+                    ctx.builder
+                        .ins()
+                        .load(clif_ty, MemFlags::new(), environment, offset as i32)
+                } else {
+                    ctx.builder.ins().iadd_imm(environment, i64::from(offset))
+                };
+                (value, true)
+            }
+            spark_mir::async_transform::SpawnArgument::Constant(spark_mir::Constant::Null) => {
+                continue; // State allocation initializes absent Optional values to zero.
+            }
+            spark_mir::async_transform::SpawnArgument::Constant(spark_mir::Constant::Int(
+                value,
+            )) => {
+                let clif_ty = abi::spark_type_to_clif(ty, table, ctx.ptr_type)?;
+                (ctx.builder.ins().iconst(clif_ty, *value), false)
+            }
+            spark_mir::async_transform::SpawnArgument::Constant(spark_mir::Constant::Float(
+                value,
+            )) => {
+                let (_, ty) = clif_types::unwrap_mutable(ty, table);
+                let value = if matches!(ty, Ty::Float(spark_types::FloatWidth::F32)) {
+                    ctx.builder.ins().f32const(*value as f32)
+                } else {
+                    ctx.builder.ins().f64const(*value)
+                };
+                (value, false)
+            }
+            spark_mir::async_transform::SpawnArgument::Constant(constant) => {
+                let Some(value) = emit_rvalue::emit_operand(
+                    ctx,
+                    &Operand::Constant(constant.clone()),
+                    ecx,
+                    module,
+                ) else {
+                    diagnostics.error("could not emit a certified spawn argument");
+                    return None;
+                };
+                (value, false)
+            }
+        };
+        arguments.push((field, ty, value, retained));
+    }
     let state_size_val = ctx.builder.ins().iconst(types::I64, i64::from(state_size));
     let alloc_ref = module.declare_func_in_func(ctx.stubs.alloc_state, ctx.builder.func);
     let alloc_call = ctx.builder.ins().call(alloc_ref, &[state_size_val]);
     let state_ptr = ctx.builder.inst_results(alloc_call)[0];
-
-    // Step 7: Store capture values (async function params) into state struct fields.
-    // The state struct fields begin with __tag, then __param_<name> fields for each param.
-    // Captures correspond to the param fields in order.
-    let tag_offset = state_layout.field_offsets.first().copied().unwrap_or(0);
-
-    // Store __tag = 0 (initial segment).
-    let tag_zero = ctx.builder.ins().iconst(types::I64, 0);
-    ctx.builder.ins().store(
-        MemFlags::new(),
-        tag_zero,
-        state_ptr,
-        i32::try_from(tag_offset).unwrap_or(0),
-    );
-
-    // Store each capture into its corresponding state field.
-    // Captures correspond to the async function's params (Local(1), Local(2), ...).
-    // State field names are __local_1, __local_2, etc.
-    for (i, cap_op) in capture_operands.iter().enumerate() {
-        let param_idx = i + 1; // Local(1), Local(2), ...
-        let field_name = format!("__local_{param_idx}");
-
-        // Find the state field by name.
-        let field_pos = poll_info
-            .state_fields
-            .iter()
-            .position(|(name, _)| name.as_str() == field_name);
-        let Some(field_idx) = field_pos else { continue };
-        if field_idx >= state_layout.field_offsets.len() {
-            continue;
+    for (field, ty, value, retained) in arguments {
+        if retained && spark_drop::needs_drop(ty, table) {
+            super::drop_glue::emit_typed_retain(
+                &mut ctx.builder,
+                value,
+                ty,
+                table,
+                ctx.stubs,
+                module,
+                ctx.ptr_type,
+            );
         }
-        let field_offset = state_layout.field_offsets[field_idx];
-        let field_ty = poll_info.state_fields[field_idx].1;
-
-        if let Some(val) = emit_rvalue::emit_operand(ctx, cap_op, ecx, module) {
-            if abi::is_scalar(field_ty, table) {
-                ctx.builder.ins().store(
-                    MemFlags::new(),
-                    val,
-                    state_ptr,
-                    i32::try_from(field_offset).unwrap_or(0),
-                );
-            } else {
-                // Aggregate capture: memcpy from the value address.
-                let field_layout = ctx.layouts.layout_of(field_ty, table);
-                let dest = ctx
-                    .builder
-                    .ins()
-                    .iadd_imm(state_ptr, i64::from(field_offset));
-                let config = module.target_config();
-                ctx.builder.emit_small_memory_copy(
-                    config,
-                    dest,
-                    val,
-                    u64::from(field_layout.size),
-                    1,
-                    1,
-                    true,
-                    MemFlags::new(),
-                );
-            }
+        let offset = state_layout.field_offsets[field];
+        if abi::is_scalar(ty, table) {
+            ctx.builder
+                .ins()
+                .store(MemFlags::new(), value, state_ptr, offset as i32);
+        } else {
+            let size = ctx.layouts.layout_of(ty, table).size;
+            let dest = ctx.builder.ins().iadd_imm(state_ptr, i64::from(offset));
+            ctx.builder.emit_small_memory_copy(
+                module.target_config(),
+                dest,
+                value,
+                u64::from(size),
+                1,
+                1,
+                true,
+                MemFlags::new(),
+            );
         }
     }
 
@@ -1269,11 +1336,9 @@ fn try_emit_coop_spawn<M: Module>(
         );
     }
 
-    // Step 8: Get poll function pointer.
     let poll_func_ref = module.declare_func_in_func(*poll_func_id, ctx.builder.func);
     let poll_fn_ptr = ctx.builder.ins().func_addr(ctx.ptr_type, poll_func_ref);
 
-    // Step 9: Compute result_size and result_offset.
     let dest_ty_id = ctx.local_type_id(destination.local);
     let inner_ty = match table.resolve(dest_ty_id) {
         Ty::Future { inner } => *inner,
@@ -1301,7 +1366,6 @@ fn try_emit_coop_spawn<M: Module>(
         .ins()
         .iconst(types::I64, i64::from(result_offset));
 
-    // Step 10: Call __spark_spawn_coop(poll_fn_ptr, state_ptr, state_size, result_size, result_offset) -> ptr.
     let spawn_coop_ref = module.declare_func_in_func(ctx.stubs.spawn_coop, ctx.builder.func);
     let spawn_call = ctx.builder.ins().call(
         spawn_coop_ref,

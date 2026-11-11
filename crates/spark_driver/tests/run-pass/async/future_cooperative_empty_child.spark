@@ -1,0 +1,13 @@
+// TAG [SPARK-117]
+link "union_probe"
+extern fn emptyFuture(): Future[Void]
+async fn relay(pending: Future[Void]): Int {
+    await pending
+    return 7
+}
+fn main(): Int {
+    pending: Future[Void] = emptyFuture()
+    forwarded: Future[Int] = spawn { relay(pending) }
+    print(await forwarded)
+    return 0
+}
