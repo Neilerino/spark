@@ -6127,6 +6127,54 @@ fn collection_borrow_future_postjoin_relay_does_not_publish_to_the_joined_observ
 
 // TAG [SPARK-114]
 #[test]
+fn collection_borrow_future_returned_input_keeps_history_learned_during_the_call() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let scoped = run_spark_with_args(
+            "run-pass/async/future_task_returned_input_history_scoped.spark",
+            args,
+        );
+        assert_eq!(scoped.exit_code, 0, "{args:?}: {}", scoped.stderr);
+        assert_eq!(scoped.stdout.trim(), "0\n5", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_returned_input_history_owner_drop.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_future_returned_tasks_preserve_helper_observation_history() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let scoped = run_spark_with_args(
+            "run-pass/async/future_task_returned_history_old_endpoint_scoped.spark",
+            args,
+        );
+        assert_eq!(scoped.exit_code, 0, "{args:?}: {}", scoped.stderr);
+        assert_eq!(scoped.stdout.trim(), "0\n5", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_returned_history_old_endpoint_owner_drop.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+#[test]
 fn collection_borrow_future_receive_snapshots_survive_nonreturning_outer_calls() {
     for args in [&[][..], &["--no-opt"][..]] {
         let valid = build_spark_with_args(

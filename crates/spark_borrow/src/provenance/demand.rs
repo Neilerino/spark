@@ -90,13 +90,24 @@ impl Transfer {
             .collect()
     }
 
-    pub(super) fn freeze(&self, mut value: super::Value) -> super::Value {
-        for sources in value.sources.values_mut() {
-            *sources = self
-                .resolve(sources)
+    pub(super) fn freeze_annotations(&self, sources: &mut Sources) {
+        for frontier in sources.values_mut() {
+            *frontier = self
+                .resolve(frontier)
                 .into_iter()
                 .map(Source::Entry)
                 .collect();
+        }
+    }
+
+    pub(super) fn freeze(&self, mut value: super::Value) -> super::Value {
+        self.freeze_annotations(&mut value.sources);
+        for view in value
+            .task_views
+            .values_mut()
+            .flat_map(|views| views.values_mut())
+        {
+            view.history.freeze_imports(self);
         }
         value
     }

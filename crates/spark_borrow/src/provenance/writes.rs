@@ -127,7 +127,8 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         self.ensure_transfer(point, state);
-        let value = self.freeze_sources(point, value.clone());
+        let mut value = self.freeze_sources(point, value.clone());
+        self.import_value_observations(&mut value, point, state);
         let targets = self.write_targets(metadata);
         let published = self.record_prefix_memory(
             super::address::OpaqueSite {
@@ -166,7 +167,8 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         self.ensure_transfer(point, state);
-        let value = self.freeze_sources(point, value.clone());
+        let mut value = self.freeze_sources(point, value.clone());
+        self.import_value_observations(&mut value, point, state);
         let targets = self.write_targets(metadata);
         self.write_resolved_references(targets, &value, ty, point, state);
     }
@@ -193,6 +195,7 @@ impl Flow<'_> {
             if let Storage::External(port) = destination.storage {
                 let mut value = event.write.value.clone();
                 value.sources.clear();
+                value.clear_observation_imports();
                 publications
                     .entry((
                         event.site,
@@ -291,6 +294,7 @@ impl Flow<'_> {
                 };
                 let mut data = value.clone();
                 data.sources.clear();
+                data.clear_observation_imports();
                 let event = (site, view);
                 self.record_event_guard(super::effects::EventKey::Memory(event.clone()), joined);
                 published.entry(event.clone()).or_default().join(&data);
@@ -523,20 +527,18 @@ impl Flow<'_> {
         selector: &Selector,
         ty: spark_types::TypeId,
         read: ReadView<'_>,
-    ) -> (Value, Vec<Path>) {
+    ) -> (Value, Vec<Path>, Option<Sample>) {
         let Some((view, _)) = self.external_target(selector) else {
-            return (Value::default(), Vec::new());
+            return (Value::default(), Vec::new(), None);
         };
         let covered = read.state.external_defined.relative(&view);
-        let value = self.read_memory(
-            Sample {
-                memory: Memory::External(view.root),
-                path: view.path,
-                ty,
-            },
-            read,
-        );
-        (value, covered)
+        let sample = Sample {
+            memory: Memory::External(view.root),
+            path: view.path,
+            ty,
+        };
+        let value = self.sample_memory(&sample, read);
+        (value, covered, Some(sample))
     }
 
     pub(super) fn report_external_stores(

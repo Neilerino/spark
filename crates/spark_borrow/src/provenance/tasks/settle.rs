@@ -169,7 +169,13 @@ impl Flow<'_> {
                 .callback
                 .sourced(&Storage::Task(handle.target.clone(), record.callback_ty));
             let read = ReadView::task(state, &subject, &history, &trace).with_envelope(envelope);
-            let facts = self.task_facts_in(&record, &handle.target, point, read, inner);
+            let mut facts = self.task_facts_in(&record, &handle.target, point, read, inner);
+            self.import_prefix_observations(
+                &mut facts.prefix.memory,
+                &mut facts.prefix.queues,
+                point,
+                state,
+            );
             self.observe_prefix(&facts.prefix, point, state);
             self.expose_prefix_memory(&facts.prefix.memory, state);
             for mut write in facts.prefix.queues {
@@ -246,6 +252,9 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) -> bool {
+        let mut result = self.freeze_sources(point, result.clone());
+        self.import_value_observations(&mut result, point, state);
+        let result = &result;
         path.push(Slot::Element);
         let mut current = state.stored_value(storage).cloned().unwrap_or_default();
         self.record_path_store(

@@ -94,6 +94,7 @@ impl Flow<'_> {
             for target in self.queue_targets(&event.write.target) {
                 let mut value = event.write.value.clone();
                 value.sources.clear();
+                value.clear_observation_imports();
                 publications
                     .queues
                     .entry((event.site, target, event.write.ty))

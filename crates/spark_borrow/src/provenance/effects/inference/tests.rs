@@ -6,6 +6,7 @@ use spark_mir::{lower, MirInput, MirOutput};
 use spark_modules::ModuleGraph;
 use std::collections::HashMap;
 
+mod history_transport;
 mod receive_snapshots;
 
 #[test]

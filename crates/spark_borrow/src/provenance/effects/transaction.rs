@@ -44,31 +44,51 @@ pub(in crate::provenance) struct CallOutcome {
 }
 
 impl CallOutcome {
-    pub(super) fn freeze_sources(&mut self, flow: &Flow<'_>, point: Point) {
-        self.returned = flow.freeze_sources(point, std::mem::take(&mut self.returned));
+    fn visit_values(&mut self, mut visit: impl FnMut(&mut Value)) {
+        visit(&mut self.returned);
         for (_, record) in &mut self.tasks {
-            record.callback = flow.freeze_sources(point, std::mem::take(&mut record.callback));
+            visit(&mut record.callback);
         }
         if let Some((_, result)) = &mut self.completed_task {
-            *result = flow.freeze_sources(point, std::mem::take(result));
+            visit(result);
         }
         for (_, value) in &mut self.place_writes {
-            *value = flow.freeze_sources(point, std::mem::take(value));
+            visit(value);
         }
-        for event in &mut self.prefix_memory {
-            event.freeze_sources(flow, point);
-        }
-        for write in &mut self.memory {
-            write.value = flow.freeze_sources(point, std::mem::take(&mut write.value));
-        }
-        for write in self
-            .queues
+        for value in self
+            .memory
             .iter_mut()
-            .map(|event| &mut event.write)
-            .chain(&mut self.queue_contents)
+            .map(|write| &mut write.value)
+            .chain(
+                self.prefix_memory
+                    .iter_mut()
+                    .map(|event| &mut event.write.value),
+            )
+            .chain(self.queues.iter_mut().map(|event| &mut event.write.value))
+            .chain(self.queue_contents.iter_mut().map(|write| &mut write.value))
+            .chain(
+                self.publications
+                    .memory
+                    .iter_mut()
+                    .map(|event| &mut event.write.value),
+            )
+            .chain(
+                self.publications
+                    .queues
+                    .iter_mut()
+                    .map(|event| &mut event.write.value),
+            )
         {
-            write.value = flow.freeze_sources(point, std::mem::take(&mut write.value));
+            visit(value);
         }
+    }
+
+    pub(super) fn freeze_sources(&mut self, flow: &Flow<'_>, point: Point) {
+        self.visit_values(|value| *value = flow.freeze_sources(point, std::mem::take(value)));
+    }
+
+    fn import_observations(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        self.visit_values(|value| flow.import_value_observations(value, point, state));
     }
 }
 
@@ -159,14 +179,14 @@ impl Flow<'_> {
                 continue;
             }
             let mut entry = self.transfers[&point].clone();
-            for event in &mut events.memory {
-                event.freeze_sources(self, point);
-            }
-            for event in &mut events.queues {
-                event.write.value =
-                    self.freeze_sources(point, std::mem::take(&mut event.write.value));
-            }
-            self.apply_prefix_writes(&events.memory, &events.queues, point, &mut state.clone());
+            let mut divergent = state.clone();
+            self.import_prefix_observations(
+                &mut events.memory,
+                &mut events.queues,
+                point,
+                &mut divergent,
+            );
+            self.apply_prefix_writes(&events.memory, &events.queues, point, &mut divergent);
             entry
                 .seeds
                 .extend(self.transfers[&point].seeds.iter().cloned());
@@ -205,14 +225,21 @@ impl Flow<'_> {
         }
         let common = self.transfers[&point].clone();
         let mut alternatives: Option<(State, crate::provenance::demand::Transfer)> = None;
-        for alternative in outcome {
+        for mut alternative in outcome {
             self.transfers.insert(point, common.clone());
             let mut after = state.clone();
+            alternative.import_observations(self, point, &mut after);
             self.apply_prefix_writes(
                 &alternative.prefix_memory,
                 &alternative.queues,
                 point,
                 &mut after,
+            );
+            Self::preserve_returned_task_history(
+                &mut alternative.returned,
+                &alternative.future_proof,
+                &alternative.clobbered_copies,
+                &after,
             );
             after.reached_prefix.extend(alternative.returned_prefix);
             self.remember_publications(&alternative.publications, &mut after.publications);

@@ -115,6 +115,7 @@ impl Flow<'_> {
             replay
                 .transfers
                 .insert(point, self.transfers[&point].clone());
+            replay.import_prefix_observations(&mut memory, &mut queues, point, &mut state);
             replay.settle_pending_tasks_in(point, &mut state, &memory, &queues);
             for event in &queues {
                 replay.apply_queue_event(event, point, &mut state);

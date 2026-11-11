@@ -548,7 +548,8 @@ impl<'a> Flow<'a> {
 
     fn store(&mut self, place: &Place, value: Value, point: Point, state: &mut State) {
         self.ensure_transfer(point, state);
-        let value = self.freeze_sources(point, value);
+        let mut value = self.freeze_sources(point, value);
+        self.import_value_observations(&mut value, point, state);
         if place
             .projections
             .iter()
