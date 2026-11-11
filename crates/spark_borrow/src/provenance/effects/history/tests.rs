@@ -220,3 +220,92 @@ fn binding_known_and_unknown_queue_support_keeps_the_unknown_alternative() {
         .iter()
         .any(|sample| matches!(sample.memory, Memory::Unavailable(_))));
 }
+
+#[test]
+fn input_residual_binding_keeps_callbacks_with_their_current_actor() {
+    use crate::provenance::tasks::{
+        self,
+        residual::{Activity, Key, Visibility},
+        views::{Subject, View},
+    };
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let future = table.intern(Ty::Future { inner: int });
+    let callback_ty = table.intern(Ty::Function {
+        params: Vec::new(),
+        ret: int,
+        is_async: false,
+    });
+    let caller = function(19100, future);
+    let callee = function(19101, future);
+    let point = Point::new(BlockId::ENTRY, 3);
+    let mut state = State::default();
+    let mut actual = Value::default();
+    for index in 0..2 {
+        let issued = Point::new(BlockId::ENTRY, index);
+        let (target, mut current) = tasks::birth(caller.def_id, issued, future);
+        let callback = Value::reference(Origin::Loan(issued));
+        let mut view = View::pending(callback.clone(), callback_ty);
+        view.memory.may_write = true;
+        current.task_views.entry(Vec::new()).or_default().insert(
+            Subject {
+                target: target.clone(),
+                capture: None,
+            },
+            view,
+        );
+        actual.join(&current);
+        state.tasks.insert(
+            target,
+            tasks::Record {
+                callback,
+                callback_ty,
+            },
+        );
+    }
+    let mut symbolic = Value::default();
+    tasks::seed_inputs(&mut symbolic, future, Local(1), future, &[], &table);
+    let handle = symbolic.futures[&Vec::new()].iter().next().unwrap();
+    let key = std::sync::Arc::new(Key {
+        site: OpaqueSite {
+            function: callee.def_id,
+            point,
+        },
+        role: Vec::new(),
+        ty: future,
+        actor: Subject::from(handle),
+    });
+    let mut flow = Flow::new(&caller, &table, None);
+    let callee_value = Value::default();
+    let bound = flow.bind_residual_activity(
+        &key,
+        &Activity {
+            value: symbolic,
+            ..Activity::default()
+        },
+        &callee,
+        CallActuals {
+            callee: &callee_value,
+            arguments: &[actual],
+            ty: future,
+            point,
+            read: ReadView::current(&state),
+            instantiation_site: None,
+            frame_caller: Some(caller.def_id),
+            aliases: None,
+        },
+        &Visibility::Continuation(tasks::proofs::EventFence::default()),
+    );
+    assert_eq!(bound.len(), 2);
+    for residual in bound {
+        assert_eq!(
+            residual.callbacks.len(),
+            1,
+            "a contribution must not import another actor's callback"
+        );
+        assert_eq!(
+            residual.callbacks[0].1.origins(),
+            state.tasks[&residual.key.actor.target].callback.origins()
+        );
+    }
+}

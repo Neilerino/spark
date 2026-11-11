@@ -818,6 +818,9 @@ fn call_transaction_preserves_moved_argument_sources_in_return_and_queue() {
     let mut flow = Flow::new(&function, &table, None);
     flow.ensure_transfer(point, &state);
     let outcome = CallOutcome {
+        fresh_leaf_task: false,
+        residuals: Vec::new(),
+        async_memory: Vec::new(),
         returned: value.clone(),
         tasks: Vec::new(),
         completed_task: None,
@@ -827,6 +830,7 @@ fn call_transaction_preserves_moved_argument_sources_in_return_and_queue() {
         publications: crate::provenance::effects::PrefixWrites::default(),
         place_writes: Vec::new(),
         prefix_memory: Vec::new(),
+        prefix_residuals: Vec::new(),
         memory: Vec::new(),
         queue_contents: Vec::new(),
         queues: vec![channels::QueueEvent {

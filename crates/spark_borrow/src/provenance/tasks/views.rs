@@ -75,6 +75,7 @@ pub(in crate::provenance) struct View {
     pub callbacks: FxHashMap<TypeId, Carrier>,
     pub fallback: bool,
     pub history: crate::provenance::observations::History,
+    pub memory: super::memory::Effects,
 }
 
 impl View {
@@ -94,6 +95,7 @@ impl View {
         let mut changed = other.fallback && !self.fallback;
         self.fallback |= other.fallback;
         changed |= self.history.join(&other.history);
+        changed |= self.memory.join(&other.memory);
         for (ty, carrier) in &other.callbacks {
             if let Some(current) = self.callbacks.get_mut(ty) {
                 changed |= current.join(carrier);
@@ -232,3 +234,29 @@ impl Carrier {
 
 #[cfg(test)]
 mod tests;
+
+impl Value {
+    pub(in crate::provenance) fn clear_task_imports(&mut self) {
+        for view in self
+            .task_views
+            .values_mut()
+            .flat_map(|views| views.values_mut())
+        {
+            view.history.clear_imports();
+            view.memory.clear_imports();
+        }
+    }
+}
+
+impl crate::provenance::State {
+    pub(in crate::provenance) fn current_task_views(&self) -> impl Iterator<Item = &View> {
+        self.values
+            .values()
+            .chain(self.residuals.values())
+            .chain(self.external.values())
+            .chain(self.queues.values())
+            .chain(self.tasks.values().map(|record| &record.callback))
+            .flat_map(|value| value.task_views.values())
+            .flat_map(|subjects| subjects.values())
+    }
+}

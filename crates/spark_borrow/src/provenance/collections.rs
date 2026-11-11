@@ -39,6 +39,9 @@ impl Flow<'_> {
                 .prefixed(Slot::Element, ty, self.table),
         );
         Some(super::effects::CallOutcome {
+            fresh_leaf_task: false,
+            residuals: Vec::new(),
+            async_memory: Vec::new(),
             tasks: Vec::new(),
             completed_task: None,
             clobbered_copies: Vec::new(),
@@ -48,6 +51,7 @@ impl Flow<'_> {
             returned: Value::default(),
             place_writes: vec![(place.clone(), contents)],
             prefix_memory: Vec::new(),
+            prefix_residuals: Vec::new(),
             memory: Vec::new(),
             queues: Vec::new(),
             queue_contents: Vec::new(),

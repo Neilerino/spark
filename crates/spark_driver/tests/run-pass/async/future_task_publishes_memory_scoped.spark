@@ -1,0 +1,31 @@
+// TAG [SPARK-114]
+struct Cell { entries: Map[String, Ref[String]]! }
+struct Shared { cell: Ref[Cell]! }
+async fn install(shared: Shared, input: Channel[Ref[String]], started: Channel[Int], ready: Channel[Int]): Int {
+    started.send(1)
+    value: Ref[String] = input.recv()
+    entries: Map[String, Ref[String]] = {"one": value}
+    cell: Ref[Cell]! = shared.cell
+    cell.entries = entries
+    ready.send(1)
+    return 0
+}
+fn main(): Int {
+    empty: Map[String, Ref[String]] = {}
+    cell: Cell! = Cell { entries: empty }
+    cellRef: Ref[Cell]! = cell
+    shared: Shared = Shared { cell: cellRef }
+    input: Channel[Ref[String]] = Channel[Ref[String]]()
+    started: Channel[Int] = Channel[Int]()
+    ready: Channel[Int] = Channel[Int]()
+    pending: Future[Int] = spawn { install(shared, input, started, ready) }
+    running: Int = started.recv()
+    text: String = " seven ".trim()
+    borrowed: Ref[String] = text
+    input.send(borrowed)
+    installed: Int = ready.recv()
+    joined: Int = await pending
+    snapshot: Cell = cellRef
+    snapshot.entries["one"] to { value: Ref[String] -> print(value.len()), Null -> print(99) }
+    return 0
+}

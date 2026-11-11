@@ -38,7 +38,11 @@ pub(in crate::provenance) struct CallOutcome {
     pub publications: PrefixWrites,
     pub place_writes: Vec<(spark_mir::Place, Value)>,
     pub memory: Vec<MemoryWrite>,
+    pub async_memory: Vec<MemoryWrite>,
+    pub fresh_leaf_task: bool,
+    pub residuals: Vec<crate::provenance::tasks::residual::Import>,
     pub prefix_memory: Vec<MemoryEvent>,
+    pub prefix_residuals: Vec<crate::provenance::tasks::residual::Import>,
     pub queues: Vec<crate::provenance::channels::QueueEvent>,
     pub queue_contents: Vec<crate::provenance::channels::Write>,
 }
@@ -46,6 +50,9 @@ pub(in crate::provenance) struct CallOutcome {
 impl CallOutcome {
     fn visit_values(&mut self, mut visit: impl FnMut(&mut Value)) {
         visit(&mut self.returned);
+        for residual in self.residuals.iter_mut().chain(&mut self.prefix_residuals) {
+            residual.visit_values(&mut visit);
+        }
         for (_, record) in &mut self.tasks {
             visit(&mut record.callback);
         }
@@ -59,6 +66,7 @@ impl CallOutcome {
             .memory
             .iter_mut()
             .map(|write| &mut write.value)
+            .chain(self.async_memory.iter_mut().map(|write| &mut write.value))
             .chain(
                 self.prefix_memory
                     .iter_mut()
@@ -88,7 +96,7 @@ impl CallOutcome {
     }
 
     fn import_observations(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
-        self.visit_values(|value| flow.import_value_observations(value, point, state));
+        self.visit_values(|value| flow.import_task_sources(value, point, state));
     }
 }
 
@@ -100,18 +108,17 @@ pub(in crate::provenance) struct MemoryWrite {
 }
 
 impl Flow<'_> {
-    pub(super) fn bind_outcome(
+    fn bind_memory_snapshots(
         &mut self,
         summary: &Summary,
+        views: &rustc_hash::FxHashSet<super::View>,
         function: &MirFunction,
         actuals: CallActuals<'_>,
         aliases: &Aliases,
-        prefix: super::prefix::Prefix,
-    ) -> CallOutcome {
-        let returned = self.bind(&summary.returned, function, actuals);
+    ) -> Vec<MemoryWrite> {
         let mut memory = Vec::new();
-        for modified in &summary.modified {
-            if summary.modified.iter().any(|other| {
+        for modified in views {
+            if views.iter().any(|other| {
                 other != modified
                     && other.root == modified.root
                     && modified.path.starts_with(&other.path)
@@ -147,10 +154,41 @@ impl Flow<'_> {
                 value,
             });
         }
+        memory
+    }
+
+    pub(super) fn bind_outcome(
+        &mut self,
+        summary: &Summary,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        context: &super::Key,
+        args: &[Operand],
+        prefix: super::prefix::Prefix,
+    ) -> CallOutcome {
+        let returned = self.bind(&summary.returned, function, actuals);
+        let memory = self.bind_memory_snapshots(
+            summary,
+            &summary.modified,
+            function,
+            actuals,
+            &context.aliases,
+        );
+        let async_memory = self.bind_memory_snapshots(
+            summary,
+            &summary.async_modified,
+            function,
+            actuals,
+            &context.aliases,
+        );
         let queue_contents = self.bind_queue_contents(summary, function, actuals);
         let tasks = self.bind_tasks(summary, function, actuals);
         let clobbered_copies = self.bound_copy_clobbers(summary, function, actuals);
+        let residuals = self.bind_residuals(summary, function, actuals, context, Some(args));
         CallOutcome {
+            fresh_leaf_task: false,
+            residuals,
+            async_memory,
             publications: prefix.publications,
             tasks,
             completed_task: None,
@@ -159,6 +197,7 @@ impl Flow<'_> {
             returned_prefix: prefix.returned,
             place_writes: Vec::new(),
             prefix_memory: prefix.memory,
+            prefix_residuals: prefix.residuals,
             returned,
             memory,
             queues: prefix.queues,
@@ -175,18 +214,27 @@ impl Flow<'_> {
         state: &mut State,
     ) -> bool {
         for mut events in dispatch.diverging {
-            if events.memory.is_empty() && events.queues.is_empty() {
+            if events.memory.is_empty() && events.queues.is_empty() && events.residuals.is_empty() {
                 continue;
             }
             let mut entry = self.transfers[&point].clone();
             let mut divergent = state.clone();
+            for residual in &mut events.residuals {
+                residual.freeze_sources(self, point);
+            }
             self.import_prefix_observations(
                 &mut events.memory,
                 &mut events.queues,
                 point,
                 &mut divergent,
             );
-            self.apply_prefix_writes(&events.memory, &events.queues, point, &mut divergent);
+            self.apply_prefix_writes(
+                &events.memory,
+                &events.queues,
+                &events.residuals,
+                point,
+                &mut divergent,
+            );
             entry
                 .seeds
                 .extend(self.transfers[&point].seeds.iter().cloned());
@@ -203,12 +251,89 @@ impl Flow<'_> {
         &mut self,
         memory: &[MemoryEvent],
         queues: &[crate::provenance::channels::QueueEvent],
+        residuals: &[crate::provenance::tasks::residual::Import],
         point: Point,
         state: &mut State,
     ) {
-        if !memory.is_empty() || !queues.is_empty() {
+        if !memory.is_empty() || !queues.is_empty() || !residuals.is_empty() {
             self.expose_prefix_memory(memory, state);
-            self.settle_pending_tasks_in(point, state, memory, queues);
+            self.settle_pending_tasks_in(point, state, memory, queues, residuals);
+        }
+    }
+
+    fn apply_call_prefix(&mut self, outcome: &CallOutcome, point: Point, state: &mut State) {
+        if outcome.prefix_residuals.is_empty() {
+            self.apply_prefix_writes(
+                &outcome.prefix_memory,
+                &outcome.queues,
+                &outcome.residuals,
+                point,
+                state,
+            );
+            return;
+        }
+        let entry = state.clone();
+        let entry_transfer = self.transfers[&point].clone();
+        self.apply_prefix_writes(
+            &outcome.prefix_memory,
+            &outcome.queues,
+            &outcome.residuals,
+            point,
+            state,
+        );
+        let live = std::mem::replace(state, entry);
+        let live_transfer = self.transfers[&point].clone();
+        self.transfers.insert(point, entry_transfer);
+        self.apply_prefix_writes(
+            &outcome.prefix_memory,
+            &outcome.queues,
+            &outcome.prefix_residuals,
+            point,
+            state,
+        );
+        state.join_task_backing(&live);
+        state.residuals = live.residuals;
+        state.residual_callbacks = live.residual_callbacks;
+        self.transfers
+            .get_mut(&point)
+            .expect("current call transfer")
+            .join_alternative(&live_transfer);
+    }
+
+    fn consume_call_arguments(
+        &mut self,
+        args: &[Operand],
+        outcome: &CallOutcome,
+        point: Point,
+        state: &mut State,
+    ) {
+        for arg in args {
+            if let Operand::Move(place) = arg {
+                let completed = outcome
+                    .future_proof
+                    .completed
+                    .iter()
+                    .any(|witness| witness.peers.contains(&place.local));
+                let returned = outcome
+                    .future_proof
+                    .returned
+                    .as_ref()
+                    .is_some_and(|witness| witness.peers.contains(&place.local));
+                let joined = outcome
+                    .completed_task
+                    .as_ref()
+                    .is_some_and(|(local, _)| *local == place.local);
+                if outcome.clobbered_copies.contains(&place.local)
+                    || !(completed || returned || joined)
+                {
+                    Self::lose_owning_operand(arg, state);
+                    self.preserve_writer_loss(place, point, state);
+                }
+            }
+            Self::lose_owning_operand(arg, state);
+            if let Some(local) = crate::provenance::consume(arg, state) {
+                self.record_consumed(point, local);
+            }
         }
     }
 
@@ -229,25 +354,33 @@ impl Flow<'_> {
             self.transfers.insert(point, common.clone());
             let mut after = state.clone();
             alternative.import_observations(self, point, &mut after);
-            self.apply_prefix_writes(
-                &alternative.prefix_memory,
-                &alternative.queues,
-                point,
-                &mut after,
-            );
-            Self::preserve_returned_task_history(
+            self.apply_call_prefix(&alternative, point, &mut after);
+            for local in &after.invalidated_copies {
+                if !alternative.clobbered_copies.contains(local) {
+                    alternative.clobbered_copies.push(*local);
+                }
+            }
+            Self::preserve_returned_task_progress(
                 &mut alternative.returned,
                 &alternative.future_proof,
                 &alternative.clobbered_copies,
                 &after,
             );
-            after.reached_prefix.extend(alternative.returned_prefix);
+            after
+                .reached_prefix
+                .extend(alternative.returned_prefix.drain());
             self.remember_publications(&alternative.publications, &mut after.publications);
-            for arg in args {
-                if let Some(local) = crate::provenance::consume(arg, &mut after) {
-                    self.record_consumed(point, local);
-                }
+            for witness in &alternative.future_proof.completed {
+                self.settle_task_memory(witness, &alternative.clobbered_copies, point, &mut after);
             }
+            if let Some((local, _)) = &alternative.completed_task {
+                let witness = after.future_copies.witness(*local);
+                self.settle_task_memory(&witness, &alternative.clobbered_copies, point, &mut after);
+            }
+            for residual in alternative.residuals.drain(..) {
+                self.import_residual(residual, point, &mut after);
+            }
+            self.consume_call_arguments(args, &alternative, point, &mut after);
             let returned_copy = self.apply_call_future_proof(
                 alternative.future_proof,
                 &alternative.clobbered_copies,
@@ -271,6 +404,9 @@ impl Flow<'_> {
             for write in alternative.queues {
                 self.apply_queue_event(&write, point, &mut after);
             }
+            for write in alternative.async_memory {
+                self.import_settled_memory(&write, point, &mut after);
+            }
             for write in alternative.memory {
                 self.apply_memory_snapshot(
                     &write.target,
@@ -285,6 +421,12 @@ impl Flow<'_> {
             }
             self.store(destination, alternative.returned, point, &mut after);
             self.store_future_copy(destination, returned_copy, &mut after);
+            after.future_owners.forget(destination.local);
+            if alternative.fresh_leaf_task && destination.projections.is_empty() {
+                after
+                    .future_owners
+                    .grant(destination.local, &after.future_copies);
+            }
             self.retire_call_frames(point, &mut after);
             let transfer = self.transfers[&point].clone();
             if let Some((joined, ledger)) = &mut alternatives {

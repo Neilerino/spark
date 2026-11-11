@@ -48,6 +48,7 @@ impl super::Value {
                 callback.retire_frames(boundary);
             }
             view.history.retire_frames(boundary);
+            view.memory.retire_frames(boundary);
         }
     }
 }
@@ -68,6 +69,10 @@ impl Flow<'_> {
             .chain(state.external.values_mut())
             .chain(state.queues.values_mut())
             .chain(state.observations.values_mut())
+            .chain(state.pending_memory.values_mut())
+            .chain(state.settled_memory.values_mut())
+            .chain(state.residuals.values_mut())
+            .chain(state.residual_callbacks.values_mut())
             .chain(state.tasks.values_mut().map(|task| &mut task.callback))
         {
             value.retire_frames(boundary);

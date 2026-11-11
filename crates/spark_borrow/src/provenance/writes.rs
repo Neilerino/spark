@@ -72,11 +72,11 @@ pub(super) fn owned_path(path: &[super::Slot]) -> bool {
 }
 
 #[derive(Default)]
-struct WriteTargets {
-    all: rustc_hash::FxHashSet<Coordinate>,
+pub(super) struct WriteTargets {
+    pub all: rustc_hash::FxHashSet<Coordinate>,
     physical: rustc_hash::FxHashSet<Coordinate>,
     exact: rustc_hash::FxHashSet<Coordinate>,
-    unknown: bool,
+    pub unknown: bool,
 }
 
 impl WriteTargets {
@@ -128,7 +128,7 @@ impl Flow<'_> {
     ) {
         self.ensure_transfer(point, state);
         let mut value = self.freeze_sources(point, value.clone());
-        self.import_value_observations(&mut value, point, state);
+        self.import_task_sources(&mut value, point, state);
         let targets = self.write_targets(metadata);
         let published = self.record_prefix_memory(
             super::address::OpaqueSite {
@@ -168,7 +168,7 @@ impl Flow<'_> {
     ) {
         self.ensure_transfer(point, state);
         let mut value = self.freeze_sources(point, value.clone());
-        self.import_value_observations(&mut value, point, state);
+        self.import_task_sources(&mut value, point, state);
         let targets = self.write_targets(metadata);
         self.write_resolved_references(targets, &value, ty, point, state);
     }
@@ -195,7 +195,7 @@ impl Flow<'_> {
             if let Storage::External(port) = destination.storage {
                 let mut value = event.write.value.clone();
                 value.sources.clear();
-                value.clear_observation_imports();
+                value.clear_task_imports();
                 publications
                     .entry((
                         event.site,
@@ -294,7 +294,7 @@ impl Flow<'_> {
                 };
                 let mut data = value.clone();
                 data.sources.clear();
-                data.clear_observation_imports();
+                data.clear_task_imports();
                 let event = (site, view);
                 self.record_event_guard(super::effects::EventKey::Memory(event.clone()), joined);
                 published.entry(event.clone()).or_default().join(&data);
@@ -327,7 +327,11 @@ impl Flow<'_> {
                     Storage::Logical(_)
                     | Storage::Queue(_, _)
                     | Storage::Task(_, _)
-                    | Storage::Observation(_) => false,
+                    | Storage::Observation(_)
+                    | Storage::PendingWrite(_)
+                    | Storage::SettledMemory(_)
+                    | Storage::Residual(_)
+                    | Storage::ResidualCallback(_, _) => false,
                 };
             self.record_path_store(point, destination.clone(), value, strong);
             if strong {
@@ -350,7 +354,11 @@ impl Flow<'_> {
             current.join(&value.prefixed_path(path, root, self.table));
             current.sources.clear();
             match storage {
-                Storage::Observation(_) => {}
+                Storage::Observation(_)
+                | Storage::PendingWrite(_)
+                | Storage::SettledMemory(_)
+                | Storage::Residual(_)
+                | Storage::ResidualCallback(_, _) => {}
                 Storage::Task(target, ty) => {
                     let record = super::tasks::Record {
                         callback: current,
@@ -376,6 +384,7 @@ impl Flow<'_> {
                     state.external.insert(port.clone(), current);
                 }
                 Storage::Cell(local) | Storage::Logical(local) => {
+                    state.future_owners.invalidate(*local, &state.future_copies);
                     state.future_copies.forget(*local);
                     State::set_value(&mut state.cells, *local, current.clone());
                     if state.live.contains(local) {
@@ -402,6 +411,13 @@ impl Flow<'_> {
 
     fn stored_carrier(&self, storage: &Storage, state: &State) -> (spark_types::TypeId, Value) {
         match storage {
+            Storage::PendingWrite(_)
+            | Storage::SettledMemory(_)
+            | Storage::Residual(_)
+            | Storage::ResidualCallback(_, _) => (
+                self.storage_type(storage),
+                state.stored_value(storage).cloned().unwrap_or_default(),
+            ),
             Storage::Observation(lane) => (
                 lane.sample.ty,
                 state.stored_value(storage).cloned().unwrap_or_default(),
@@ -432,7 +448,7 @@ impl Flow<'_> {
         }
     }
 
-    fn write_targets(&self, metadata: &super::value::Leaf) -> WriteTargets {
+    pub(super) fn write_targets(&self, metadata: &super::value::Leaf) -> WriteTargets {
         let mut targets = WriteTargets {
             unknown: !metadata.opaque.is_empty(),
             ..Default::default()
@@ -548,8 +564,13 @@ impl Flow<'_> {
         diagnostics: &mut Diagnostics,
     ) {
         let mut reported = rustc_hash::FxHashSet::default();
-        for value in state.external.values() {
-            let value = self.reachable_queue_payloads(value, state);
+        for value in state
+            .external
+            .values()
+            .cloned()
+            .chain(Self::external_async_values(state))
+        {
+            let value = self.reachable_queue_payloads(&value, state);
             for root in value.frame_sources(self.function.def_id) {
                 if reported.insert(root) {
                     let exit = Point::new(

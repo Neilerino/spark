@@ -10,12 +10,22 @@ use super::{
 type EventVocabulary = FxHashMap<Key, FxHashSet<EventKey>>;
 
 fn discover_events(events: &mut EventVocabulary, key: &Key, summary: &Summary) -> bool {
-    if summary.prefix_memory.is_empty() && summary.queues.is_empty() {
+    if summary.prefix_memory.is_empty()
+        && summary.queues.is_empty()
+        && summary.prefix_residuals.is_empty()
+    {
         return false;
     }
     let known = events.entry(key.clone()).or_default();
     let before = known.len();
     known.extend(summary.prefix_memory.keys().cloned().map(EventKey::Memory));
+    known.extend(
+        summary
+            .prefix_residuals
+            .keys()
+            .cloned()
+            .map(EventKey::Residual),
+    );
     known.extend(
         summary
             .queues

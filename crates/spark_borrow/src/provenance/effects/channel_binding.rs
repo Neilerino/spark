@@ -247,6 +247,9 @@ impl Flow<'_> {
             });
         }
         super::CallOutcome {
+            fresh_leaf_task: false,
+            residuals: Vec::new(),
+            async_memory: Vec::new(),
             tasks: Vec::new(),
             completed_task: None,
             clobbered_copies: Vec::new(),
@@ -255,6 +258,7 @@ impl Flow<'_> {
             publications: crate::provenance::effects::PrefixWrites::default(),
             place_writes: Vec::new(),
             prefix_memory: Vec::new(),
+            prefix_residuals: Vec::new(),
             returned,
             memory: Vec::new(),
             queues: Vec::new(),

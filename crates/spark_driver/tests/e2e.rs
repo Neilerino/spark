@@ -6127,6 +6127,103 @@ fn collection_borrow_future_postjoin_relay_does_not_publish_to_the_joined_observ
 
 // TAG [SPARK-114]
 #[test]
+fn collection_borrow_future_dropped_tasks_keep_published_memory() {
+    for (scoped, escaping) in [
+        (
+            "run-pass/async/future_task_drop_keeps_memory_scoped.spark",
+            "compile-fail/borrow_errors/future_task_drop_keeps_memory_owner_drop.spark",
+        ),
+        (
+            "run-pass/async/future_task_copy_drop_keeps_memory_scoped.spark",
+            "compile-fail/borrow_errors/future_task_copy_drop_keeps_memory_owner_drop.spark",
+        ),
+        (
+            "run-pass/async/future_task_replaced_root_keeps_memory_scoped.spark",
+            "compile-fail/borrow_errors/future_task_replaced_root_keeps_memory_owner_drop.spark",
+        ),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let valid = run_spark_with_args(scoped, args);
+            assert_eq!(valid.exit_code, 0, "{scoped} {args:?}: {}", valid.stderr);
+            assert_eq!(valid.stdout.trim(), "5", "{scoped} {args:?}");
+            let invalid = build_spark_with_args(escaping, args);
+            assert_eq!(
+                invalid.exit_code, 1,
+                "{escaping} {args:?}: {}",
+                invalid.stderr
+            );
+            assert!(
+                invalid
+                    .stderr
+                    .contains("borrowed value does not live long enough"),
+                "{escaping} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_future_helper_memory_survives_scalar_returns() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let scoped = run_spark_with_args(
+            "run-pass/async/future_task_helper_publishes_memory_scoped.spark",
+            args,
+        );
+        assert_eq!(scoped.exit_code, 0, "{args:?}: {}", scoped.stderr);
+        assert_eq!(scoped.stdout.trim(), "5", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_helper_publishes_memory_owner_drop.spark",
+            args,
+        );
+        let local = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_helper_local_memory_escape.spark",
+            args,
+        );
+        assert_eq!(local.exit_code, 1, "{args:?}: {}", local.stderr);
+        assert!(
+            local
+                .stderr
+                .contains("stored value contains a reference to local storage"),
+            "{args:?}: {}",
+            local.stderr
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_future_tasks_publish_borrowed_memory() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let scoped = run_spark_with_args(
+            "run-pass/async/future_task_publishes_memory_scoped.spark",
+            args,
+        );
+        assert_eq!(scoped.exit_code, 0, "{args:?}: {}", scoped.stderr);
+        assert_eq!(scoped.stdout.trim(), "5", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_publishes_memory_owner_drop.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+#[test]
 fn collection_borrow_future_returned_input_keeps_history_learned_during_the_call() {
     for args in [&[][..], &["--no-opt"][..]] {
         let scoped = run_spark_with_args(
@@ -6285,6 +6382,36 @@ fn collection_borrow_future_retires_helper_frame_after_the_call() {
                 .contains("borrowed value does not live long enough"),
             "{args:?}: {}",
             escapes.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_nonreturning_parents_keep_child_memory_writers() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let control = run_spark_with_args(
+            "run-pass/async/future_task_retained_child_memory_scoped.spark",
+            args,
+        );
+        assert_eq!(control.exit_code, 0, "{args:?}: {}", control.stderr);
+        assert_eq!(control.stdout.trim(), "5", "{args:?}");
+        let scoped = build_spark_with_args(
+            "build-pass/future_task_nonreturning_child_memory_scoped.spark",
+            args,
+        );
+        assert_eq!(scoped.exit_code, 0, "{args:?}: {}", scoped.stderr);
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_nonreturning_child_memory_owner_drop.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
         );
     }
 }

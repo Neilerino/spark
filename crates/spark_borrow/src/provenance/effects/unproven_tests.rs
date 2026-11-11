@@ -778,6 +778,9 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
     let mut flow = Flow::new(&function, &table, None);
     flow.ensure_transfer(point, &state);
     let outcome = CallOutcome {
+        fresh_leaf_task: false,
+        residuals: Vec::new(),
+        async_memory: Vec::new(),
         returned: Value::default(),
         tasks: Vec::new(),
         completed_task: None,
@@ -789,6 +792,7 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
         memory: Vec::new(),
         queues: Vec::new(),
         queue_contents: Vec::new(),
+        prefix_residuals: Vec::new(),
         prefix_memory: vec![prefix::MemoryEvent {
             site,
             fence: Default::default(),
