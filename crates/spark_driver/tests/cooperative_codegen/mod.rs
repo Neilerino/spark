@@ -1,3 +1,4 @@
+// TAG [SPARK-117]
 // TAG [SPARK-154]
 
 //! Tests native coroutine dispatch through the complete compiler pipeline.
@@ -140,6 +141,11 @@ fn cooperative_spawn_bindings_and_effectful_fallback_select_the_correct_routes()
             (
                 include_str!("../run-pass/async/future_cooperative_frame_cow.spark"),
                 &["main"][..],
+                true,
+            ),
+            (
+                include_str!("../run-pass/async/future_cooperative_owned_result.spark"),
+                &["launch"][..],
                 true,
             ),
             (

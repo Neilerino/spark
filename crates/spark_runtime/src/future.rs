@@ -1,3 +1,4 @@
+// TAG [SPARK-117]
 // TAG [SPARK-152]
 use crate::heap::RefCount;
 
@@ -16,6 +17,7 @@ struct SparkFuture {
     rc: RefCount,
     result: *mut u8,
     result_size: usize,
+    result_drop: Option<unsafe extern "C" fn(*mut u8)>,
     completion: Completion,
 }
 
@@ -43,11 +45,14 @@ pub fn tokio_runtime() -> &'static tokio::runtime::Runtime {
 ///
 /// `fn_ptr` must match the result ABI. `env_ptr` transfers one owned Spark
 /// environment reference, or is null for a callback without captures.
+/// `result_drop`, when present, must accept the initialized result slot and
+/// release its owned value without deallocating the slot itself.
 pub unsafe extern "C" fn __spark_spawn(
     fn_ptr: *mut u8,
     env_ptr: *mut u8,
     result_size: i64,
     is_float: i8,
+    result_drop: Option<unsafe extern "C" fn(*mut u8)>,
 ) -> *mut u8 {
     let size = result_size as usize;
     let result_buf = alloc_result_buffer(size);
@@ -79,7 +84,7 @@ pub unsafe extern "C" fn __spark_spawn(
         unsafe { __spark_env_rc_dec(env) };
     });
 
-    new_future(result_buf, size, handle).cast::<u8>()
+    new_future(result_buf, size, result_drop, handle).cast::<u8>()
 }
 
 #[no_mangle]
@@ -111,7 +116,11 @@ pub unsafe extern "C" fn __spark_future_rc_dec(ptr: *mut u8) {
     }
     let future = unsafe { &*(ptr.cast::<SparkFuture>()) };
     if future.rc.release() {
-        future.completion.wait(false);
+        if future.completion.wait(false) {
+            if let Some(drop_result) = future.result_drop {
+                unsafe { drop_result(future.result) };
+            }
+        }
         dealloc_result_buffer(future.result, future.result_size);
         drop(unsafe { Box::from_raw(ptr.cast::<SparkFuture>()) });
     }
@@ -181,12 +190,15 @@ pub extern "C" fn __spark_alloc_state(size: i64) -> *mut u8 {
 /// # Safety
 ///
 /// `poll_fn` and `state_ptr` must follow the cooperative async ABI.
+/// On Ready, the initialized result moves from the state into the cache.
+/// `result_drop`, when present, releases that cached value from its slot.
 pub unsafe extern "C" fn __spark_spawn_coop(
     poll_fn: *mut u8,
     state_ptr: *mut u8,
     state_size: i64,
     result_size: i64,
     result_offset: i64,
+    result_drop: Option<unsafe extern "C" fn(*mut u8)>,
 ) -> *mut u8 {
     let result_size = result_size as usize;
     let result_buf = alloc_result_buffer(result_size);
@@ -200,7 +212,7 @@ pub unsafe extern "C" fn __spark_spawn_coop(
     };
 
     let handle = tokio_runtime().spawn(task);
-    new_future(result_buf, result_size, handle).cast::<u8>()
+    new_future(result_buf, result_size, result_drop, handle).cast::<u8>()
 }
 
 #[no_mangle]
@@ -246,12 +258,14 @@ pub extern "C" fn __spark_wake_current() {
 fn new_future(
     result: *mut u8,
     result_size: usize,
+    result_drop: Option<unsafe extern "C" fn(*mut u8)>,
     handle: tokio::task::JoinHandle<()>,
 ) -> *mut SparkFuture {
     Box::into_raw(Box::new(SparkFuture {
         rc: RefCount::new(),
         result,
         result_size,
+        result_drop,
         completion: Completion::new(handle),
     }))
 }
@@ -307,7 +321,7 @@ mod tests {
                     count_environment_drop as *const () as usize;
                 *env.add(ENV_CAPTURES_OFFSET as usize)
                     .cast::<*const AtomicUsize>() = std::ptr::from_ref(&drops);
-                let pending = __spark_spawn(seven as *const () as *mut u8, env, 8, 0);
+                let pending = __spark_spawn(seven as *const () as *mut u8, env, 8, 0, None);
                 if await_first {
                     let result = __spark_await(pending);
                     assert_eq!(*result.cast::<i64>(), 7);
@@ -322,8 +336,15 @@ mod tests {
     #[test]
     fn concurrent_owned_aliases_await_the_same_result() {
         for _ in 0..16 {
-            let pending =
-                unsafe { __spark_spawn(seven as *const () as *mut u8, std::ptr::null_mut(), 8, 0) };
+            let pending = unsafe {
+                __spark_spawn(
+                    seven as *const () as *mut u8,
+                    std::ptr::null_mut(),
+                    8,
+                    0,
+                    None,
+                )
+            };
             for _ in 1..4 {
                 unsafe { crate::__spark_rc_inc(pending) };
             }
@@ -352,7 +373,7 @@ mod tests {
         let task = tokio_runtime().spawn(async move {
             held.await.expect("release empty task");
         });
-        let future = new_future(std::ptr::null_mut(), 0, task).cast();
+        let future = new_future(std::ptr::null_mut(), 0, None, task).cast();
         let was_pending = unsafe { __spark_try_poll(future).is_null() };
         release.send(()).expect("release empty task");
         unsafe {
@@ -367,5 +388,83 @@ mod tests {
             !ready.is_null(),
             "a completed empty result must signal Ready"
         );
+    }
+    unsafe extern "C" fn return_counter(env: *mut u8) -> i64 {
+        unsafe { *env.add(ENV_CAPTURES_OFFSET as usize).cast::<usize>() as i64 }
+    }
+
+    unsafe extern "C" fn count_result_drop(slot: *mut u8) {
+        let counter = unsafe { *slot.cast::<*const AtomicUsize>() };
+        unsafe { &*counter }.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn counter_future(counter: &AtomicUsize) -> *mut u8 {
+        let env = crate::__spark_env_alloc(std::mem::size_of::<usize>() as i64);
+        unsafe {
+            *env.add(ENV_CAPTURES_OFFSET as usize)
+                .cast::<*const AtomicUsize>() = counter;
+            __spark_spawn(
+                return_counter as *const () as *mut u8,
+                env,
+                8,
+                0,
+                Some(count_result_drop),
+            )
+        }
+    }
+
+    #[test]
+    fn cached_result_drops_only_on_the_last_future_release() {
+        for await_first in [false, true] {
+            let drops = AtomicUsize::new(0);
+            let pending = counter_future(&drops);
+            unsafe { crate::__spark_rc_inc(pending) };
+            if await_first {
+                unsafe {
+                    assert_eq!(__spark_await(pending), __spark_await(pending));
+                }
+            }
+            unsafe { __spark_future_rc_dec(pending) };
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+            unsafe { __spark_future_rc_dec(pending) };
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn concurrent_future_aliases_drop_the_cached_result_once() {
+        let drops = AtomicUsize::new(0);
+        let pending = counter_future(&drops);
+        for _ in 1..4 {
+            unsafe { crate::__spark_rc_inc(pending) };
+        }
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let address = pending as usize;
+                scope.spawn(move || unsafe {
+                    let future = address as *mut u8;
+                    __spark_await(future);
+                    __spark_future_rc_dec(future);
+                });
+            }
+        });
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn failed_completion_does_not_destroy_an_uninitialized_result() {
+        let drops = AtomicUsize::new(0);
+        let result = alloc_result_buffer(std::mem::size_of::<usize>());
+        // Keep a valid counter in the bytes so an erroneous callback is a safe failure.
+        unsafe { *result.cast::<*const AtomicUsize>() = &drops };
+        let task = tokio_runtime().spawn(async { panic!("expected task failure") });
+        let pending = new_future(
+            result,
+            std::mem::size_of::<usize>(),
+            Some(count_result_drop),
+            task,
+        );
+        unsafe { __spark_future_rc_dec(pending.cast()) };
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
     }
 }

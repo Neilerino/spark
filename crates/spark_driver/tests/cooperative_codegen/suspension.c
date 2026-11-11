@@ -1,3 +1,4 @@
+// TAG [SPARK-117]
 // TAG [SPARK-154]
 #include <stdint.h>
 #include <stddef.h>
@@ -14,8 +15,8 @@ extern int8_t generated_poll(void *) __asm__("_main");
 extern int8_t generated_poll(void *) __asm__("main");
 #endif
 extern void *__spark_alloc_state(int64_t);
-extern void *__spark_spawn(void *, void *, int64_t, int8_t);
-extern void *__spark_spawn_coop(void *, void *, int64_t, int64_t, int64_t);
+extern void *__spark_spawn(void *, void *, int64_t, int8_t, void *);
+extern void *__spark_spawn_coop(void *, void *, int64_t, int64_t, int64_t, void *);
 extern void *__spark_await(void *);
 extern void __spark_future_rc_dec(void *);
 extern void __spark_rc_inc(void *);
@@ -50,12 +51,12 @@ static int8_t recording_poll(void *state) {
 // Exit from the constructor so CRT never invokes the poll with a main ABI.
 __attribute__((constructor)) static void drive_generated_poll(void) {
     alarm(10);
-    void *child = __spark_spawn((void *)child_body, NULL, 8, 0);
+    void *child = __spark_spawn((void *)child_body, NULL, 8, 0, NULL);
     void *state = __spark_alloc_state(STATE_SIZE);
     memset(state, 0, STATE_SIZE);
     __spark_rc_inc(child); // Transfer a distinct owner into the generated frame.
     memcpy((char *)state + PARAMETER_OFFSET, &child, sizeof(child));
-    void *parent = __spark_spawn_coop((void *)recording_poll, state, STATE_SIZE, 8, RESULT_OFFSET);
+    void *parent = __spark_spawn_coop((void *)recording_poll, state, STATE_SIZE, 8, RESULT_OFFSET, NULL);
     while (atomic_load(&pending_count) != 2) sched_yield();
     size_t pending_owners = atomic_load((_Atomic size_t *)child);
     int pending_owners_ok = !CHECK_OWNERS || pending_owners == 2;

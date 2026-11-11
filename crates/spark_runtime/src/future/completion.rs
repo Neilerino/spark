@@ -1,3 +1,4 @@
+// TAG [SPARK-117]
 // TAG [SPARK-152]
 
 use std::future::Future;
@@ -74,11 +75,13 @@ impl Completion {
         }
     }
 
-    pub(super) fn wait(&self, propagate_panic: bool) {
+    pub(super) fn wait(&self, propagate_panic: bool) -> bool {
         let outcome = tokio::task::block_in_place(|| self.join());
+        let initialized = outcome.is_ok();
         if propagate_panic {
             outcome.expect("spark: spawned task panicked");
         }
+        initialized
     }
 
     fn join(&self) -> Outcome {

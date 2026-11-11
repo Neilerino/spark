@@ -1,3 +1,4 @@
+// TAG [SPARK-117]
 // TAG [SPARK-148]
 // TAG [SPARK-154]
 
@@ -1045,7 +1046,7 @@ fn emit_parallel_map_reduce_call<M: Module>(
 /// 1. Allocates an async state struct via `__spark_alloc_state(state_size)`
 /// 2. Stores the async function's parameters into the state struct
 /// 3. Sets the dispatch tag to 0 (initial segment)
-/// 4. Calls `__spark_spawn_coop(poll_fn_ptr, state_ptr, state_size, result_size, result_offset)`
+/// 4. Calls `__spark_spawn_coop(poll_fn_ptr, state_ptr, state_size, result_size, result_offset, result_drop)`
 ///
 /// **Blocking fallback** (no poll function available):
 /// Extracts `fn_ptr` and `env_ptr` from the closure fat pointer and calls `__spark_spawn`.
@@ -1094,6 +1095,12 @@ fn emit_spawn_call<M: Module>(
         Ty::Future { inner } => *inner,
         _ => dest_ty_id,
     };
+    let Some(result_drop) = future_result_destructor(ctx, inner_ty, ecx, module, diagnostics)
+    else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
     let result_layout = ctx.layouts.layout_of(inner_ty, table);
     let result_size_val = ctx
         .builder
@@ -1115,12 +1122,12 @@ fn emit_spawn_call<M: Module>(
         .ins()
         .iconst(types::I8, i64::from(u8::from(is_float)));
 
-    // Call __spark_spawn(fn_ptr, env_ptr, result_size, is_float) -> ptr
+    // Call __spark_spawn(fn_ptr, env_ptr, result_size, is_float, result_drop) -> ptr
     let func_ref = module.declare_func_in_func(ctx.stubs.spawn, ctx.builder.func);
-    let call = ctx
-        .builder
-        .ins()
-        .call(func_ref, &[fn_ptr, env_ptr, result_size_val, is_float_val]);
+    let call = ctx.builder.ins().call(
+        func_ref,
+        &[fn_ptr, env_ptr, result_size_val, is_float_val, result_drop],
+    );
     let result = ctx.builder.inst_results(call)[0];
     if destination.projections.is_empty() {
         ctx.write_local(destination.local, result);
@@ -1351,6 +1358,7 @@ fn try_emit_coop_spawn<M: Module>(
         Ty::Future { inner } => *inner,
         _ => dest_ty_id,
     };
+    let result_drop = future_result_destructor(ctx, inner_ty, ecx, module, diagnostics)?;
     let result_layout = ctx.layouts.layout_of(inner_ty, table);
     let result_size_val = ctx
         .builder
@@ -1382,6 +1390,7 @@ fn try_emit_coop_spawn<M: Module>(
             state_size_val,
             result_size_val,
             result_offset_val,
+            result_drop,
         ],
     );
     let future_ptr = ctx.builder.inst_results(spawn_call)[0];
@@ -1392,6 +1401,24 @@ fn try_emit_coop_spawn<M: Module>(
     let target_block = ctx.clif_block(target);
     ctx.builder.ins().jump(target_block, &[]);
     Some(())
+}
+
+fn future_result_destructor<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    ty: spark_types::TypeId,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+    diagnostics: &mut Diagnostics,
+) -> Option<Value> {
+    if !spark_drop::needs_drop(ty, ecx.table) {
+        return Some(ctx.builder.ins().iconst(ctx.ptr_type, 0));
+    }
+    let Some(id) = ecx.elem_dtor_ids.get(&ty) else {
+        diagnostics.error("missing destructor for an owned Future result");
+        return None;
+    };
+    let function = module.declare_func_in_func(*id, ctx.builder.func);
+    Some(ctx.builder.ins().func_addr(ctx.ptr_type, function))
 }
 
 /// Emits an `await` call: passes the future pointer to `__spark_await` and
@@ -1429,6 +1456,17 @@ fn emit_await_call<M: Module>(
             .builder
             .ins()
             .load(clif_ty, MemFlags::new(), result_ptr, 0);
+        if abi::is_scalar(dest_ty_id, table) && spark_drop::needs_drop(dest_ty_id, table) {
+            super::drop_glue::emit_typed_retain(
+                &mut ctx.builder,
+                result_val,
+                dest_ty_id,
+                table,
+                ctx.stubs,
+                module,
+                ctx.ptr_type,
+            );
+        }
         if destination.projections.is_empty() {
             ctx.write_local(destination.local, result_val);
         }

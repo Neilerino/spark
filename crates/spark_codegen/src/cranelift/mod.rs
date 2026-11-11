@@ -1,3 +1,4 @@
+// TAG [SPARK-117]
 //! Cranelift code generation backend.
 //!
 //! Compiles MIR to native object files using the Cranelift compiler framework.
@@ -426,7 +427,7 @@ impl CraneliftBackend {
         }
     }
 
-    /// Pre-generates element destructor functions for all collection types
+    /// Pre-generates slot destructors for collection payloads and Future caches
     /// that appear in the MIR. Returns a map from element `TypeId` to the
     /// generated `FuncId` so codegen can store the function pointer in
     /// collection descriptors at construction time.
@@ -485,6 +486,15 @@ impl CraneliftBackend {
                     result.insert(elem, fid);
                 }
                 self.collect_elem_dtors(elem, table, stubs, gen, result);
+            }
+            Ty::Future { inner } => {
+                let inner = *inner;
+                if let Some(fid) =
+                    gen.get_or_generate_elem_dtor(inner, table, stubs, &mut self.module)
+                {
+                    result.insert(inner, fid);
+                }
+                self.collect_elem_dtors(inner, table, stubs, gen, result);
             }
             Ty::Map(k, v) => {
                 let k = *k;

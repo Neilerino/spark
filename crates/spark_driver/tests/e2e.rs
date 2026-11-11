@@ -6525,9 +6525,9 @@ fn cooperative_spawn_preserves_actual_argument_bindings_and_wrapper_effects() {
 #[test]
 fn cooperative_spawn_observes_zero_sized_child_completion() {
     let native = "#include <stdint.h>\n\
-        extern void *__spark_spawn_coop(void *, void *, int64_t, int64_t, int64_t);\n\
+        extern void *__spark_spawn_coop(void *, void *, int64_t, int64_t, int64_t, void *);\n\
         static int8_t ready(void *state) { (void)state; return 1; }\n\
-        void *emptyFuture(void) { return __spark_spawn_coop((void *)ready, 0, 0, 0, 0); }\n";
+        void *emptyFuture(void) { return __spark_spawn_coop((void *)ready, 0, 0, 0, 0, 0); }\n";
     assert_native_ownership_fixture(
         native,
         include_str!("run-pass/async/future_cooperative_empty_child.spark"),
@@ -6581,4 +6581,19 @@ fn cooperative_frame_ownership_survives_conditional_replacement() {
         include_str!("run-pass/async/future_cooperative_frame_owners.spark"),
         "1\n5\n17\n1\n1\n2\n17\n1",
     );
+}
+
+// TAG [SPARK-117]
+#[test]
+fn future_results_own_their_cache_and_each_awaited_copy() {
+    for fixture in [
+        include_str!("run-pass/async/future_owned_result.spark"),
+        include_str!("run-pass/async/future_cooperative_owned_result.spark"),
+    ] {
+        assert_native_ownership_fixture(
+            include_str!("cooperative_codegen/result_ownership.c"),
+            fixture,
+            "7\n7",
+        );
+    }
 }
