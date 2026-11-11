@@ -308,6 +308,11 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         for arg in args {
+            let borrowed_await = matches!(arg, Operand::Copy(place) if place.projections.is_empty()
+                && outcome.completed_task.as_ref().is_some_and(|(local, _)| *local == place.local));
+            if !borrowed_await {
+                self.escape_input_owner_operand(arg, state);
+            }
             if let Operand::Move(place) = arg {
                 let completed = outcome
                     .future_proof

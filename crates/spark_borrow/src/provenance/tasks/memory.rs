@@ -141,6 +141,7 @@ impl Flow<'_> {
                 local,
                 ..
             } if *function == self.function.def_id => {
+                state.input_owners.escape_local(*local);
                 state.future_owners.invalidate(*local, &state.future_copies);
                 state.future_copies.forget(*local);
                 state.invalidated_copies.insert(*local);
@@ -155,6 +156,7 @@ impl Flow<'_> {
             Memory::Frame { .. } | Memory::Unavailable(_) => {
                 self.unknown_copy_clobber = true;
                 for local in &state.live {
+                    state.input_owners.escape_local(*local);
                     state.future_owners.invalidate(*local, &state.future_copies);
                     state.future_copies.forget(*local);
                     state.invalidated_copies.insert(*local);

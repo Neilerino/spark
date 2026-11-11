@@ -2,6 +2,9 @@
 
 //! Cleanup rights cover current owner roles, never an allocation-site singleton.
 
+mod tokens;
+pub(in crate::provenance) use tokens::InputOwners;
+
 use rustc_hash::FxHashSet;
 use spark_mir::{Constant, Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator};
 use spark_types::{Ty, TypeId, TypeTable};

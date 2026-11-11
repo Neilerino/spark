@@ -92,6 +92,9 @@ fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witne
 pub(in crate::provenance) struct Certificate {
     pub completed: FxHashSet<Local>,
     pub returned: FxHashSet<Local>,
+    pub released_provided: FxHashSet<Local>,
+    /// No owner from this formal's lineage remains; aliased actuals must be bound together.
+    pub retains_no_owner: FxHashSet<Local>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,13 +122,16 @@ impl Guarantee {
             })
             .collect();
         Self::Returns(Certificate {
+            released_provided: completed.clone(),
+            retains_no_owner: completed.clone(),
             completed,
             returned,
         })
     }
 
     pub fn has_effect(&self) -> bool {
-        matches!(self, Self::Returns(certificate) if !certificate.completed.is_empty() || !certificate.returned.is_empty())
+        matches!(self, Self::Returns(certificate) if !certificate.completed.is_empty() || !certificate.returned.is_empty()
+            || !certificate.released_provided.is_empty() || !certificate.retains_no_owner.is_empty())
     }
 
     pub fn intersect(&mut self, other: &Self) -> bool {
@@ -135,6 +141,10 @@ impl Guarantee {
                 left.completed
                     .retain(|input| right.completed.contains(input));
                 left.returned.retain(|input| right.returned.contains(input));
+                left.released_provided
+                    .retain(|input| right.released_provided.contains(input));
+                left.retains_no_owner
+                    .retain(|input| right.retains_no_owner.contains(input));
             }
             (_, Self::NoReturn) => *self = Self::NoReturn,
             (Self::NoReturn, Self::Returns(_)) => {}
@@ -173,6 +183,14 @@ impl Flow<'_> {
             let candidate = Guarantee::Returns(Certificate {
                 completed: state.joined_inputs,
                 returned: state.future_copies.inputs(Local::RETURN_PLACE),
+                released_provided: future_inputs(self.function, self.table)
+                    .into_iter()
+                    .filter(|input| state.input_owners.released_provided(*input))
+                    .collect(),
+                retains_no_owner: future_inputs(self.function, self.table)
+                    .into_iter()
+                    .filter(|input| state.input_owners.retains_no_owner(*input))
+                    .collect(),
             });
             if let Some(result) = &mut result {
                 result.intersect(&candidate);
@@ -253,10 +271,12 @@ mod tests {
         let mut proof = Guarantee::Returns(Certificate {
             completed: FxHashSet::from_iter([Local(1)]),
             returned: FxHashSet::from_iter([Local(1)]),
+            ..Certificate::default()
         });
         let different_return = Guarantee::Returns(Certificate {
             completed: FxHashSet::default(),
             returned: FxHashSet::from_iter([Local(2)]),
+            ..Certificate::default()
         });
         assert!(proof.intersect(&different_return));
         assert!(!proof.has_effect());
@@ -269,8 +289,78 @@ mod tests {
         assert!(!proof.intersect(&Guarantee::Returns(Certificate {
             completed: FxHashSet::from_iter([Local(1)]),
             returned: FxHashSet::default(),
+            ..Certificate::default()
         })));
         assert_eq!(proof, Guarantee::NoReturn);
         assert!(!proof.has_effect());
     }
+    #[test]
+    fn dropping_a_moved_parameter_releases_its_owner_without_completing_the_task() {
+        use spark_mir::{BasicBlock, Constant, LocalDecl, Place, Rvalue, Statement};
+        use spark_resolve::DefId;
+        use spark_span::Span;
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(spark_types::IntWidth::I64));
+        let future = table.intern(Ty::Future { inner: int });
+        let function = MirFunction {
+            def_id: DefId::new(9950),
+            param_count: 1,
+            return_type: int,
+            locals: [int, future, future]
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| LocalDecl {
+                    local: Local(index as u32),
+                    ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                })
+                .collect(),
+            blocks: vec![BasicBlock {
+                statements: vec![
+                    Statement::Assign {
+                        place: Place::from_local(Local(2)),
+                        rvalue: Rvalue::Use(Operand::Move(Place::from_local(Local(1)))),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Drop {
+                        place: Place::from_local(Local(2)),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))),
+                        span: Span::DUMMY,
+                    },
+                ],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+        let mut flow = Flow::new(&function, &table, None);
+        flow.solve(&crate::facts::extract_facts(&function));
+        let Guarantee::Returns(certificate) = flow.future_guarantee() else {
+            panic!("expected a normal return")
+        };
+        assert!(
+            certificate.completed.is_empty(),
+            "owner release does not prove a join"
+        );
+        assert_eq!(
+            certificate.released_provided,
+            FxHashSet::from_iter([Local(1)])
+        );
+        assert_eq!(
+            certificate.retains_no_owner,
+            FxHashSet::from_iter([Local(1)])
+        );
+    }
 }
+
+#[cfg(test)]
+mod owner_tests;

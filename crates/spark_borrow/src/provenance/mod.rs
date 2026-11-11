@@ -54,6 +54,7 @@ struct State {
     tasks: FxHashMap<tasks::Target, tasks::Record>,
     future_copies: tasks::Copies,
     future_owners: tasks::lifecycle::Owners,
+    input_owners: tasks::lifecycle::InputOwners,
     // Cleared at each MIR point; qualifies entry-captured call witnesses within its alternatives.
     invalidated_copies: FxHashSet<Local>,
     joined_inputs: FxHashSet<Local>,
@@ -94,6 +95,7 @@ impl State {
     }
 
     fn consume(&mut self, local: Local) {
+        self.input_owners.escape_local(local);
         self.values.remove(&local);
         self.live.remove(&local);
         self.future_copies.forget(local);
@@ -146,6 +148,7 @@ impl State {
             &other.future_copies,
         );
         changed |= self.future_copies.intersect(&other.future_copies);
+        changed |= self.input_owners.join(&other.input_owners);
         let before = self.joined_inputs.len();
         self.joined_inputs
             .retain(|input| other.joined_inputs.contains(input));
@@ -285,6 +288,7 @@ impl<'a> Flow<'a> {
                     )
                 {
                     state.future_copies.seed_input(decl.local);
+                    state.input_owners.seed(decl.local);
                 }
                 state.set(
                     decl.local,
@@ -374,6 +378,7 @@ impl<'a> Flow<'a> {
                     }
                 }
                 self.record_accesses(point, accesses, state);
+                self.escape_input_owner_operand(func, state);
                 let dispatch = self.call_result(func, args, ty, point, state);
                 return self.apply_dispatch(dispatch, args, destination, point, state);
             }
@@ -397,6 +402,7 @@ impl<'a> Flow<'a> {
         self.settle_pending_tasks(point, state);
         match statement {
             Statement::Assign { place, rvalue, .. } => {
+                let input_transfer = self.input_owner_transfer(rvalue, place, state);
                 let owned = self.owning_rvalue(rvalue, place, state);
                 let captures = self.captured_future_owners(rvalue, place, state);
                 let future_copy = self.future_copy_witness(rvalue, state);
@@ -405,6 +411,7 @@ impl<'a> Flow<'a> {
                 let mut accesses = Accesses::default();
                 self.read_access(place, state, AccessKind::Address, &mut accesses);
                 self.record_accesses(point, accesses, state);
+                input_transfer.detach(&mut state.input_owners);
                 for local in consume_rvalue(rvalue, state) {
                     self.record_consumed(point, local);
                 }
@@ -415,6 +422,7 @@ impl<'a> Flow<'a> {
                     state.future_owners.grant(place.local, &state.future_copies);
                 }
                 tasks::lifecycle::CapturedOwner::install_all(captures, state);
+                input_transfer.install(&mut state.input_owners);
             }
             Statement::IndexedAssign {
                 root,
@@ -442,6 +450,11 @@ impl<'a> Flow<'a> {
                 self.record_consumed(point, *value);
             }
             Statement::Drop { place, .. } => {
+                if place.projections.is_empty() {
+                    state.input_owners.drop_local(place.local);
+                } else {
+                    self.escape_input_owner_operand(&Operand::Move(place.clone()), state);
+                }
                 self.preserve_writer_loss(place, point, state);
                 let mut accesses = Accesses::default();
                 self.read_access(place, state, AccessKind::Value, &mut accesses);
@@ -633,6 +646,7 @@ impl<'a> Flow<'a> {
             self.store_references(&targets, &value, self.place_type(place), point, state);
             return;
         }
+        state.input_owners.escape_local(place.local);
         state.future_copies.forget(place.local);
         self.record_store(point, place, &value);
         if place.projections.is_empty() {

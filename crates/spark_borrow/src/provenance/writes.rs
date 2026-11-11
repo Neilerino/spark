@@ -384,6 +384,7 @@ impl Flow<'_> {
                     state.external.insert(port.clone(), current);
                 }
                 Storage::Cell(local) | Storage::Logical(local) => {
+                    state.input_owners.escape_local(*local);
                     state.future_owners.invalidate(*local, &state.future_copies);
                     state.future_copies.forget(*local);
                     State::set_value(&mut state.cells, *local, current.clone());
