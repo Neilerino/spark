@@ -143,6 +143,11 @@ fn cooperative_spawn_bindings_and_effectful_fallback_select_the_correct_routes()
                 true,
             ),
             (
+                include_str!("../run-pass/async/future_await_borrowed_receiver.spark"),
+                &["main"][..],
+                true,
+            ),
+            (
                 include_str!("../run-pass/async/future_spawn_effectful_wrapper.spark"),
                 &["main"][..],
                 false,

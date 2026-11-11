@@ -256,7 +256,7 @@ fn emit_string_comparison<M: Module>(
     Some(ctx.builder.ins().icmp_imm(condition, result, 0))
 }
 
-fn emit_borrowed_operand<M: Module>(
+pub(super) fn emit_borrowed_operand<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operand: &Operand,
     ecx: &EmitCtx<'_>,

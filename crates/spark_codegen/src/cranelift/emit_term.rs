@@ -1,3 +1,4 @@
+// TAG [SPARK-148]
 // TAG [SPARK-154]
 
 //! Terminator lowering: MIR terminators → Cranelift IR.
@@ -1408,7 +1409,7 @@ fn emit_await_call<M: Module>(
     // args[0] is the Future[T] pointer.
     let future_val = args
         .first()
-        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
+        .and_then(|arg| emit_rvalue::emit_borrowed_operand(ctx, arg, ecx, module));
 
     let Some(future_ptr) = future_val else {
         let target_block = ctx.clif_block(target);
@@ -1450,7 +1451,7 @@ fn emit_try_poll_call<M: Module>(
     // args[0] is the future pointer (opaque i64/ptr).
     let future_val = args
         .first()
-        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
+        .and_then(|arg| emit_rvalue::emit_borrowed_operand(ctx, arg, ecx, module));
 
     let Some(future_ptr) = future_val else {
         let target_block = ctx.clif_block(target);
