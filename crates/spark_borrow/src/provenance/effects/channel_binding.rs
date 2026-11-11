@@ -53,18 +53,28 @@ impl Flow<'_> {
         for value in summary
             .memory
             .values_mut()
+            .chain(summary.prefix_memory.values_mut())
             .chain(summary.obligations.values_mut())
         {
             remap_handles(value, &bindings);
         }
-        for storage in [&mut summary.queue_contents, &mut summary.queues] {
-            let mut remapped: FxHashMap<_, Value> = FxHashMap::default();
-            for ((target, ty), mut value) in std::mem::take(storage) {
-                remap_handles(&mut value, &bindings);
-                let target = bindings.get(&target).cloned().unwrap_or(target);
-                remapped.entry((target, ty)).or_default().join(&value);
-            }
-            *storage = remapped;
+        for ((target, ty), mut value) in std::mem::take(&mut summary.queue_contents) {
+            remap_handles(&mut value, &bindings);
+            let target = bindings.get(&target).cloned().unwrap_or(target);
+            summary
+                .queue_contents
+                .entry((target, ty))
+                .or_default()
+                .join(&value);
+        }
+        for ((site, target, ty), mut value) in std::mem::take(&mut summary.queues) {
+            remap_handles(&mut value, &bindings);
+            let target = bindings.get(&target).cloned().unwrap_or(target);
+            summary
+                .queues
+                .entry((site, target, ty))
+                .or_default()
+                .join(&value);
         }
     }
 
@@ -106,7 +116,26 @@ impl Flow<'_> {
                 }));
             }
         }
-        for ((target, ty), value) in &summary.queues {
+        for ((_, view), value) in &summary.prefix_memory {
+            for (path, handles) in &value.queues {
+                pending.extend(handles.iter().map(|handle| {
+                    (
+                        handle.target.clone(),
+                        OutputRole {
+                            storage: OutputStorage::Memory(view.root.clone()),
+                            ty: view.root.pointee,
+                            selection: super::value::normalize(
+                                view.root.pointee,
+                                [view.path.clone(), path.clone()].concat(),
+                                self.table,
+                            ),
+                            capture: handle.capture,
+                        },
+                    )
+                }));
+            }
+        }
+        for ((_, target, ty), value) in &summary.queues {
             let storage = if let Some(port) = target.port(self.table) {
                 OutputStorage::Queue(port)
             } else if let Target::Unknown { site, .. } = target {
@@ -160,12 +189,12 @@ impl Flow<'_> {
             let expected: Vec<_> = handles.iter().map(Handle::ty).collect();
             for ty in expected {
                 for (argument, operand) in actuals.arguments.iter().zip(args) {
-                    let reachable = self.reachable_queue_payloads(argument, actuals.state);
+                    let reachable = self.reachable_queue_payloads(argument, actuals.read.state);
                     let selected = self.tail_channel_value(
                         reachable,
                         super::super::operand_type(operand, self.function),
                         ty,
-                        actuals.state,
+                        actuals.read.state,
                     );
                     handles.extend(
                         selected
@@ -222,7 +251,10 @@ impl Flow<'_> {
             completed_task: None,
             clobbered_copies: Vec::new(),
             future_proof: CallProof::default(),
+            returned_prefix: rustc_hash::FxHashSet::default(),
+            publications: crate::provenance::effects::PrefixWrites::default(),
             place_writes: Vec::new(),
+            prefix_memory: Vec::new(),
             returned,
             memory: Vec::new(),
             queues: Vec::new(),
@@ -250,31 +282,44 @@ impl Flow<'_> {
         result
     }
 
-    pub(super) fn export_queue_writes(&self) -> FxHashMap<(Target, super::TypeId), Value> {
-        let mut writes: FxHashMap<_, Value> = FxHashMap::default();
-        for ((_, target, ty), value) in &self.queue_sends {
-            writes
-                .entry((target.clone(), *ty))
-                .or_default()
-                .join(&super::export_value(value, self.function.def_id));
-        }
-        writes
+    pub(super) fn export_queue_writes(&self) -> FxHashMap<super::super::channels::QueueKey, Value> {
+        self.queue_sends
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.clone(),
+                    super::export_value(value, self.function.def_id),
+                )
+            })
+            .collect()
     }
 
     pub(super) fn bind_queue_writes(
         &mut self,
-        summary: &super::Summary,
+        writes: &rustc_hash::FxHashMap<crate::provenance::channels::QueueKey, Value>,
         function: &MirFunction,
         actuals: CallActuals<'_>,
-    ) -> Vec<super::super::channels::Write> {
+        key: &super::Key,
+        args: Option<&[spark_mir::Operand]>,
+    ) -> Vec<super::super::channels::QueueEvent> {
+        use super::super::channels::{QueueEvent, Write};
         let mut queues = Vec::new();
-        for ((target, ty), payload) in &summary.queues {
+        for ((site, target, ty), payload) in writes {
             let bound = self.bind(payload, function, CallActuals { ty: *ty, ..actuals });
             for target in self.bind_queue_target(target, function, actuals) {
-                queues.push(super::super::channels::Write {
-                    target,
-                    ty: *ty,
-                    value: bound.clone(),
+                queues.push(QueueEvent {
+                    site: *site,
+                    fence: self.event_fence(
+                        key,
+                        &super::EventKey::Queue(*site),
+                        args,
+                        actuals.read.state,
+                    ),
+                    write: Write {
+                        target,
+                        ty: *ty,
+                        value: bound.clone(),
+                    },
                 });
             }
         }

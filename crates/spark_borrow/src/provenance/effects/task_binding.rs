@@ -13,7 +13,7 @@ use super::{
 
 pub(super) enum TaskDispatch {
     Returns(Vec<CallOutcome>),
-    NoReturn,
+    NoReturn(super::PrefixWrites),
 }
 
 #[derive(Default)]
@@ -83,7 +83,10 @@ impl Flow<'_> {
             completed_task: None,
             clobbered_copies: Vec::new(),
             future_proof: CallProof::default(),
+            returned_prefix: rustc_hash::FxHashSet::default(),
+            publications: crate::provenance::effects::PrefixWrites::default(),
             place_writes: Vec::new(),
+            prefix_memory: facts.prefix.memory,
             memory: Vec::new(),
             queues: facts.prefix.queues,
             queue_contents: Vec::new(),
@@ -118,6 +121,7 @@ impl Flow<'_> {
         let mut returned = future.future_result();
         let mut normal = false;
         let mut queues = Vec::new();
+        let mut prefix_memory = Vec::new();
         for (path, handle) in handles {
             if !handle.pending {
                 normal = true;
@@ -136,6 +140,7 @@ impl Flow<'_> {
                 let facts = self.task_facts(&record, &handle.target, point, state, ty);
                 self.observe_prefix(&facts.prefix, point, state);
                 queues.extend(facts.prefix.queues);
+                prefix_memory.extend(facts.prefix.memory);
                 returned.join(&facts.returned);
                 normal |= facts.normal_return;
             }
@@ -146,7 +151,10 @@ impl Flow<'_> {
             }
         }
         if !normal {
-            return Some(TaskDispatch::NoReturn);
+            return Some(TaskDispatch::NoReturn(super::PrefixWrites {
+                memory: prefix_memory,
+                queues,
+            }));
         }
         let completed_task = place
             .projections
@@ -158,7 +166,10 @@ impl Flow<'_> {
             completed_task,
             clobbered_copies: Vec::new(),
             future_proof: CallProof::default(),
+            returned_prefix: rustc_hash::FxHashSet::default(),
+            publications: crate::provenance::effects::PrefixWrites::default(),
             place_writes: Vec::new(),
+            prefix_memory,
             memory: Vec::new(),
             queues,
             queue_contents: Vec::new(),
@@ -173,6 +184,38 @@ impl Flow<'_> {
         state: &super::super::State,
         ty: TypeId,
     ) -> TaskFacts {
+        self.task_facts_in(
+            record,
+            target,
+            point,
+            super::super::observations::ReadView::current(state),
+            ty,
+        )
+    }
+
+    pub(in crate::provenance) fn task_reads_caller_storage(&self, record: &Record) -> bool {
+        let Some(context) = self.program else {
+            return true;
+        };
+        let targets = self.callee_targets(&record.callback, record.callback_ty);
+        targets.open
+            || targets.unresolved
+            || targets.known.is_empty()
+            || targets.known.iter().any(|def| {
+                context.mir.functions.get(def).is_none_or(|function| {
+                    function.param_count != 0 || !function.captures.is_empty()
+                }) || context.ports.get(def).is_none_or(|ports| !ports.is_empty())
+            })
+    }
+
+    pub(in crate::provenance) fn task_facts_in(
+        &mut self,
+        record: &Record,
+        target: &Target,
+        point: Point,
+        read: super::super::observations::ReadView<'_>,
+        ty: TypeId,
+    ) -> TaskFacts {
         let mut facts = TaskFacts::default();
         let callee = &record.callback;
         let actuals = CallActuals {
@@ -180,8 +223,9 @@ impl Flow<'_> {
             arguments: &[],
             ty,
             point,
-            state,
+            read,
             instantiation_site: target.instantiation_site(),
+            frame_caller: None,
             aliases: None,
         };
         let targets = self.callee_targets(callee, record.callback_ty);
@@ -211,7 +255,7 @@ impl Flow<'_> {
                 };
                 facts
                     .prefix
-                    .merge(self.bind_prefix(summary, function, actuals));
+                    .merge(self.bind_prefix(summary, function, actuals, &key, None));
                 facts.normal_return |= summary.normal_return;
                 if summary.normal_return {
                     facts

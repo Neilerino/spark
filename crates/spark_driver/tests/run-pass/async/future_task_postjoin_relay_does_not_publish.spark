@@ -1,0 +1,59 @@
+// TAG [SPARK-114]
+
+struct Cell { entries: Map[String, Ref[String]]! }
+async fn copyAfter(source: Channel[Ref[Cell]!], go: Channel[Int], ready: Channel[Int], output: Channel[Ref[String]], started: Channel[Int]): Int {
+    started.send(1)
+    token: Int = go.recv()
+    if token == 1 {
+        received: Ref[Cell]! = source.recv()
+        snapshot: Cell = received
+        snapshot.entries["one"] to { value: Ref[String] -> output.send(value), Null -> {} }
+    }
+    ready.send(1)
+    return 0
+}
+async fn forward(input: Channel[Ref[Cell]!], output: Channel[Ref[Cell]!], started: Channel[Int]): Int {
+    started.send(1)
+    target: Ref[Cell]! = input.recv()
+    output.send(target)
+    return 0
+}
+fn transientWrite(target: Ref[Cell]!, value: Ref[String], source: Channel[Ref[Cell]!], go: Channel[Int], ready: Channel[Int], task: Future[Int], relay: Future[Int]): Void {
+    next: Map[String, Ref[String]] = {"one": value}
+    target.entries = next
+    go.send(0)
+    arrived: Int = ready.recv()
+    joined: Int = await task
+    readable: Ref[Cell]! = target
+    source.send(readable)
+    relayJoined: Int = await relay
+    empty: Map[String, Ref[String]] = {}
+    target.entries = empty
+}
+fn main(): Int {
+    empty: Map[String, Ref[String]] = {}
+    cell: Cell! = Cell { entries: empty }
+    target: Ref[Cell]! = cell
+    source: Channel[Ref[Cell]!] = Channel[Ref[Cell]!]()
+    go: Channel[Int] = Channel[Int]()
+    ready: Channel[Int] = Channel[Int]()
+    output: Channel[Ref[String]] = Channel[Ref[String]]()
+    started: Channel[Int] = Channel[Int]()
+    pending: Future[Int] = spawn { copyAfter(source, go, ready, output, started) }
+    running: Int = started.recv()
+    relayInput: Channel[Ref[Cell]!] = Channel[Ref[Cell]!]()
+    relayStarted: Channel[Int] = Channel[Int]()
+    relay: Future[Int] = spawn { forward(relayInput, source, relayStarted) }
+    forwarding: Int = relayStarted.recv()
+    if true {
+        text: String = " seven ".trim()
+        borrowed: Ref[String] = text
+        transientWrite(target, borrowed, relayInput, go, ready, pending, relay)
+    }
+    if target.entries.len() != 0 { return 1 }
+    output.tryRecv() to {
+        value: Ref[String] -> print(value.len()),
+        Null -> print(0)
+    }
+    return 0
+}

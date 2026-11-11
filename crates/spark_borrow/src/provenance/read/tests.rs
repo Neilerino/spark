@@ -213,6 +213,7 @@ fn opaque_tail_expansion_joins_distinct_reaching_contexts() {
         let point = Point::new(BlockId(0), index as u32 + 20);
         let metadata = super::super::value::Leaf {
             endpoints: std::iter::once(super::super::address::Endpoint::Frame {
+                lifetime: crate::provenance::address::FrameLifetime::Local,
                 function: function.def_id,
                 root: point,
                 local,
@@ -316,6 +317,7 @@ fn reborrow_snapshots_survive_holder_overwrite_while_cell_addresses_follow_the_c
     let mut state = flow.initial_state();
     flow.transfer_block(BlockId(0), &mut state);
     let original = Endpoint::Frame {
+        lifetime: crate::provenance::address::FrameLifetime::Local,
         function: function.def_id,
         root: facts.loans[0].issued_at,
         local: Local(1),
@@ -324,6 +326,7 @@ fn reborrow_snapshots_survive_holder_overwrite_while_cell_addresses_follow_the_c
         location: vec![],
     };
     let replacement = Endpoint::Frame {
+        lifetime: crate::provenance::address::FrameLifetime::Local,
         function: function.def_id,
         root: facts.loans[1].issued_at,
         local: Local(2),
@@ -638,21 +641,24 @@ fn opaque_argument_access_preserves_the_queued_reference_type() {
         path: Vec::new(),
     })
     .with_metadata(&super::super::value::Leaf {
-        dependencies: FxHashSet::from_iter([Dependency::InputValue(Selector {
-            channel_capture: None,
-            queue: Some(basis.clone()),
-            input: Local(1),
-            selection: Vec::new(),
-            intent: Intent::Value,
-            expected: Some(reference),
-            capture: None,
-        })]),
+        dependencies: FxHashSet::from_iter([Dependency::InputValue(
+            Selector {
+                channel_capture: None,
+                queue: Some(basis.clone()),
+                input: Local(1),
+                selection: Vec::new(),
+                intent: Intent::Value,
+                expected: Some(reference),
+                capture: None,
+            },
+            None,
+        )]),
         ..Default::default()
     });
     let mut accesses = Accesses::default();
     accesses.observe_reference(&value, Some(channel), &[], AccessKind::Value);
     let access = accesses.iter().next().expect("queued payload access");
-    let Dependency::InputValue(selector) = &access.target else {
+    let Dependency::InputValue(selector, _) = &access.target else {
         panic!("expected queued input selection")
     };
     assert_eq!(selector.expected, Some(reference));

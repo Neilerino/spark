@@ -1,0 +1,45 @@
+// TAG [SPARK-114]
+
+struct Cell { entries: Map[String, Ref[String]]! }
+struct Shared { target: Ref[Cell]! }
+async fn copyAfter(shared: Shared, go: Channel[Int], ready: Channel[Int], output: Channel[Ref[String]], started: Channel[Int]): Int {
+    started.send(1)
+    token: Int = go.recv()
+    if true {
+        snapshot: Cell = shared.target
+        snapshot.entries["one"] to { value: Ref[String] -> output.send(value), Null -> {} }
+    }
+    ready.send(1)
+    return 0
+}
+fn transientWrite(target: Ref[Cell]!, value: Ref[String], go: Channel[Int], ready: Channel[Int], task: Future[Int]): Void {
+    go.send(1)
+    arrived: Int = ready.recv()
+    joined: Int = await task
+    next: Map[String, Ref[String]] = {"one": value}
+    target.entries = next
+    empty: Map[String, Ref[String]] = {}
+    target.entries = empty
+}
+fn main(): Int {
+    empty: Map[String, Ref[String]] = {}
+    cell: Cell! = Cell { entries: empty }
+    target: Ref[Cell]! = cell
+    shared: Shared = Shared { target: target }
+    go: Channel[Int] = Channel[Int]()
+    ready: Channel[Int] = Channel[Int]()
+    output: Channel[Ref[String]] = Channel[Ref[String]]()
+    started: Channel[Int] = Channel[Int]()
+    pending: Future[Int] = spawn { copyAfter(shared, go, ready, output, started) }
+    running: Int = started.recv()
+    if true {
+        text: String = " seven ".trim()
+        borrowed: Ref[String] = text
+        transientWrite(target, borrowed, go, ready, pending)
+    }
+    output.tryRecv() to {
+        value: Ref[String] -> print(value.len()),
+        Null -> print(0)
+    }
+    return 0
+}

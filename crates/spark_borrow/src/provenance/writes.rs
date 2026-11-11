@@ -8,6 +8,7 @@ use spark_mir::BlockId;
 use super::address::{DerefKind, Endpoint, Intent, Selector};
 use super::aliases::{Port, View};
 use super::demand::{Coordinate, Storage};
+use super::observations::{Envelope, Memory, ReadView, Sample};
 use super::{Flow, Path, Point, State, Value};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -78,6 +79,16 @@ struct WriteTargets {
     unknown: bool,
 }
 
+impl WriteTargets {
+    fn may_escape(&self) -> bool {
+        self.unknown
+            || self
+                .all
+                .iter()
+                .any(|target| matches!(target.storage, Storage::External(_)))
+    }
+}
+
 impl Flow<'_> {
     pub(super) fn possibly_written_locals(
         &mut self,
@@ -116,18 +127,189 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         self.ensure_transfer(point, state);
-        let value = &self.freeze_sources(point, value.clone());
+        let value = self.freeze_sources(point, value.clone());
         let targets = self.write_targets(metadata);
+        let published = self.record_prefix_memory(
+            super::address::OpaqueSite {
+                function: self.function.def_id,
+                point,
+            },
+            &targets,
+            &value,
+            &state.joined_inputs,
+        );
+        if targets
+            .all
+            .iter()
+            .any(|destination| matches!(destination.storage, Storage::External(_)))
+        {
+            state.publications.join_memory(&published);
+            state
+                .reached_prefix
+                .insert(super::effects::PrefixOccurrence {
+                    event: super::address::OpaqueSite {
+                        function: self.function.def_id,
+                        point,
+                    },
+                    returned_at: None,
+                });
+        }
+        self.write_resolved_references(targets, &value, ty, point, state);
+    }
+
+    pub(super) fn apply_memory_snapshot(
+        &mut self,
+        metadata: &super::value::Leaf,
+        value: &Value,
+        ty: spark_types::TypeId,
+        point: Point,
+        state: &mut State,
+    ) {
+        self.ensure_transfer(point, state);
+        let value = self.freeze_sources(point, value.clone());
+        let targets = self.write_targets(metadata);
+        self.write_resolved_references(targets, &value, ty, point, state);
+    }
+
+    pub(super) fn import_prefix_memory(
+        &mut self,
+        event: &super::effects::MemoryEvent,
+        point: Point,
+        state: &State,
+    ) {
+        self.ensure_transfer(point, state);
+        let write = &event.write;
+        let targets = self.write_targets(&write.target);
+        self.observe_store_boundary(&targets, &write.value, write.ty, point, state);
+        self.record_prefix_memory(event.site, &targets, &write.value, &event.fence.inputs);
+    }
+
+    pub(super) fn remember_memory_publication(
+        &self,
+        event: &super::effects::MemoryEvent,
+        publications: &mut super::effects::PrefixMemory,
+    ) {
+        for destination in self.write_targets(&event.write.target).all {
+            if let Storage::External(port) = destination.storage {
+                let mut value = event.write.value.clone();
+                value.sources.clear();
+                publications
+                    .entry((
+                        event.site,
+                        View {
+                            root: port,
+                            path: destination.path,
+                        },
+                    ))
+                    .or_default()
+                    .join(&value);
+            }
+        }
+    }
+
+    pub(super) fn expose_prefix_memory(
+        &self,
+        events: &[super::effects::MemoryEvent],
+        state: &mut State,
+    ) {
+        for event in events {
+            if self.write_targets(&event.write.target).may_escape() {
+                self.expose_queue_handles(&event.write.value, state);
+            }
+        }
+    }
+
+    pub(super) fn prefix_envelope(
+        &self,
+        events: &[super::effects::MemoryEvent],
+        queues: &[super::channels::QueueEvent],
+        storage: &Storage,
+        path: &Path,
+    ) -> Envelope {
+        let mut envelope = Envelope::default();
+        let protected = |fence: &super::tasks::proofs::EventFence| {
+            path.is_empty()
+                && matches!(storage, Storage::Logical(local) if fence.peers.contains(local))
+        };
+        for event in events {
+            if protected(&event.fence) {
+                continue;
+            }
+            for destination in self.write_targets(&event.write.target).all {
+                let ty = self.storage_type(&destination.storage);
+                let value = event
+                    .write
+                    .value
+                    .prefixed_path(&destination.path, ty, self.table);
+                envelope
+                    .entry(destination.storage)
+                    .or_default()
+                    .join(&value);
+            }
+        }
+        for event in queues {
+            if protected(&event.fence) {
+                continue;
+            }
+            for target in self.queue_targets(&event.write.target) {
+                envelope
+                    .entry(Storage::Queue(target, event.write.ty))
+                    .or_default()
+                    .join(&event.write.value);
+            }
+        }
+        envelope
+    }
+
+    fn observe_store_boundary(
+        &mut self,
+        targets: &WriteTargets,
+        value: &Value,
+        ty: spark_types::TypeId,
+        point: Point,
+        state: &State,
+    ) {
         if targets.unknown {
             let reachable = self.reachable_queue_payloads(value, state);
             self.record_obligation(point, super::obligations::Boundary::Store(ty), &reachable);
         }
-        if targets.unknown
-            || targets
-                .all
-                .iter()
-                .any(|target| matches!(target.storage, Storage::External(_)))
-        {
+    }
+
+    fn record_prefix_memory(
+        &mut self,
+        site: super::address::OpaqueSite,
+        targets: &WriteTargets,
+        value: &Value,
+        joined: &rustc_hash::FxHashSet<spark_mir::Local>,
+    ) -> super::effects::PrefixMemory {
+        let mut published = super::effects::PrefixMemory::default();
+        for destination in &targets.all {
+            if let Storage::External(port) = &destination.storage {
+                let view = View {
+                    root: port.clone(),
+                    path: destination.path.clone(),
+                };
+                let mut data = value.clone();
+                data.sources.clear();
+                let event = (site, view);
+                self.record_event_guard(super::effects::EventKey::Memory(event.clone()), joined);
+                published.entry(event.clone()).or_default().join(&data);
+                self.prefix_memory.entry(event).or_default().join(&data);
+            }
+        }
+        published
+    }
+
+    fn write_resolved_references(
+        &mut self,
+        targets: WriteTargets,
+        value: &Value,
+        ty: spark_types::TypeId,
+        point: Point,
+        state: &mut State,
+    ) {
+        self.observe_store_boundary(&targets, value, ty, point, state);
+        if targets.may_escape() {
             self.expose_queue_handles(value, state);
         }
         let unique = targets.physical.len() == 1 && !targets.unknown;
@@ -138,7 +320,10 @@ impl Flow<'_> {
                 && match storage {
                     Storage::Cell(_) => owned_path(path),
                     Storage::External(_) => targets.exact.contains(&destination),
-                    Storage::Logical(_) | Storage::Queue(_, _) | Storage::Task(_, _) => false,
+                    Storage::Logical(_)
+                    | Storage::Queue(_, _)
+                    | Storage::Task(_, _)
+                    | Storage::Observation(_) => false,
                 };
             self.record_path_store(point, destination.clone(), value, strong);
             if strong {
@@ -161,6 +346,7 @@ impl Flow<'_> {
             current.join(&value.prefixed_path(path, root, self.table));
             current.sources.clear();
             match storage {
+                Storage::Observation(_) => {}
                 Storage::Task(target, ty) => {
                     let record = super::tasks::Record {
                         callback: current,
@@ -212,6 +398,10 @@ impl Flow<'_> {
 
     fn stored_carrier(&self, storage: &Storage, state: &State) -> (spark_types::TypeId, Value) {
         match storage {
+            Storage::Observation(lane) => (
+                lane.sample.ty,
+                state.stored_value(storage).cloned().unwrap_or_default(),
+            ),
             Storage::Task(target, ty) => (
                 *ty,
                 state
@@ -246,6 +436,7 @@ impl Flow<'_> {
         for endpoint in &metadata.endpoints {
             match endpoint {
                 Endpoint::Frame {
+                    lifetime: crate::provenance::address::FrameLifetime::Local,
                     function,
                     local,
                     location,
@@ -258,7 +449,7 @@ impl Flow<'_> {
                     targets.physical.insert(coordinate.clone());
                     targets.all.insert(coordinate);
                 }
-                Endpoint::Input(selector) => {
+                Endpoint::Input(selector, _) => {
                     for (view, exact_view) in self.external_targets(selector) {
                         let coordinate = Coordinate {
                             storage: Storage::External(view.root.clone()),
@@ -330,21 +521,22 @@ impl Flow<'_> {
     pub(super) fn external_contents(
         &self,
         selector: &Selector,
-        state: &State,
+        ty: spark_types::TypeId,
+        read: ReadView<'_>,
     ) -> (Value, Vec<Path>) {
         let Some((view, _)) = self.external_target(selector) else {
             return (Value::default(), Vec::new());
         };
-        let mut value = state
-            .external
-            .get(&view.root)
-            .cloned()
-            .unwrap_or_default()
-            .sourced(&Storage::External(view.root.clone()));
-        for slot in &view.path {
-            value = value.project(slot);
-        }
-        (value, state.external_defined.relative(&view))
+        let covered = read.state.external_defined.relative(&view);
+        let value = self.read_memory(
+            Sample {
+                memory: Memory::External(view.root),
+                path: view.path,
+                ty,
+            },
+            read,
+        );
+        (value, covered)
     }
 
     pub(super) fn report_external_stores(
@@ -471,6 +663,7 @@ mod tests {
         let point = Point::new(BlockId::ENTRY, 0);
         let targets = super::super::value::Leaf {
             endpoints: std::iter::once(Endpoint::Frame {
+                lifetime: crate::provenance::address::FrameLifetime::Local,
                 function: function.def_id,
                 root: point,
                 local: Local(1),

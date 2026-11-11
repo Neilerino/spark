@@ -7,9 +7,86 @@ use spark_mir::{BlockId, Local, MirFunction, Operand, Terminator};
 use spark_types::{Ty, TypeTable};
 
 use super::{value, Witness};
-use crate::provenance::{aliases::Key, Flow, State};
+use crate::provenance::{aliases::Key, effects::EventKey, Flow, State};
 
-pub(in crate::provenance) type Proofs = FxHashMap<Key, Guarantee>;
+pub(in crate::provenance) type Proofs = FxHashMap<Key, Proof>;
+pub(in crate::provenance) type EventGuards = FxHashMap<EventKey, FxHashSet<Local>>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::provenance) struct Proof {
+    returns: Guarantee,
+    pub events: EventGuards,
+}
+
+impl Proof {
+    pub fn universe(
+        function: &MirFunction,
+        table: &TypeTable,
+        normal_return: bool,
+        events: Option<&FxHashSet<EventKey>>,
+    ) -> Self {
+        let inputs = future_inputs(function, table);
+        Self {
+            returns: Guarantee::universe(function, table, normal_return, inputs.clone()),
+            events: events
+                .into_iter()
+                .flatten()
+                .map(|event| (event.clone(), inputs.clone()))
+                .collect(),
+        }
+    }
+
+    pub fn has_effect(&self) -> bool {
+        self.returns.has_effect() || self.events.values().any(|inputs| !inputs.is_empty())
+    }
+
+    pub fn restrict(&mut self, returns: &Guarantee, events: &EventGuards) -> bool {
+        let mut changed = self.returns.intersect(returns);
+        for (event, inputs) in &mut self.events {
+            let before = inputs.len();
+            inputs.retain(|input| {
+                events
+                    .get(event)
+                    .is_some_and(|observed| observed.contains(input))
+            });
+            changed |= before != inputs.len();
+        }
+        changed
+    }
+}
+
+#[derive(Clone, Default)]
+pub(in crate::provenance) struct EventFence {
+    pub inputs: FxHashSet<Local>,
+    pub peers: FxHashSet<Local>,
+}
+
+fn future_inputs(function: &MirFunction, table: &TypeTable) -> FxHashSet<Local> {
+    function
+        .locals
+        .iter()
+        .skip(1)
+        .take(function.param_count as usize)
+        .filter(|decl| {
+            matches!(
+                table.resolve(value::strip_mutable(decl.ty, table)),
+                Ty::Future { .. }
+            )
+        })
+        .map(|decl| decl.local)
+        .collect()
+}
+
+fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witness> {
+    let (Operand::Copy(place) | Operand::Move(place)) = args.get(input.index().checked_sub(1)?)?
+    else {
+        return None;
+    };
+    place
+        .projections
+        .is_empty()
+        .then(|| state.future_copies.witness(place.local))
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Certificate {
@@ -24,23 +101,15 @@ pub(in crate::provenance) enum Guarantee {
 }
 
 impl Guarantee {
-    pub fn universe(function: &MirFunction, table: &TypeTable, normal_return: bool) -> Self {
+    fn universe(
+        function: &MirFunction,
+        table: &TypeTable,
+        normal_return: bool,
+        completed: FxHashSet<Local>,
+    ) -> Self {
         if !normal_return {
             return Self::NoReturn;
         }
-        let completed: FxHashSet<_> = function
-            .locals
-            .iter()
-            .skip(1)
-            .take(function.param_count as usize)
-            .filter(|decl| {
-                matches!(
-                    table.resolve(value::strip_mutable(decl.ty, table)),
-                    Ty::Future { .. }
-                )
-            })
-            .map(|decl| decl.local)
-            .collect();
         let returned = completed
             .iter()
             .copied()
@@ -124,24 +193,54 @@ impl Flow<'_> {
             .program
             .and_then(|context| context.proofs)
             .and_then(|proofs| proofs.get(key))
+            .map(|proof| &proof.returns)
         else {
             return CallProof::default();
         };
-        let witness = |input: &Local| {
-            let (Operand::Copy(place) | Operand::Move(place)) =
-                args.get(input.index().checked_sub(1)?)?
-            else {
-                return None;
-            };
-            place
-                .projections
-                .is_empty()
-                .then(|| state.future_copies.witness(place.local))
-        };
+        let witness = |input: &Local| actual_witness(*input, args, state);
         CallProof {
             completed: certificate.completed.iter().filter_map(witness).collect(),
             returned: certificate.returned.iter().find_map(witness),
         }
+    }
+
+    pub(in crate::provenance) fn record_event_guard(
+        &mut self,
+        event: EventKey,
+        inputs: &FxHashSet<Local>,
+    ) {
+        self.event_guards
+            .entry(event)
+            .and_modify(|joined| joined.retain(|input| inputs.contains(input)))
+            .or_insert_with(|| inputs.clone());
+    }
+
+    pub(in crate::provenance) fn event_fence(
+        &self,
+        key: &Key,
+        event: &EventKey,
+        args: Option<&[Operand]>,
+        state: &State,
+    ) -> EventFence {
+        let Some(args) = args else {
+            return EventFence::default();
+        };
+        let mut fence = EventFence {
+            inputs: state.joined_inputs.clone(),
+            ..EventFence::default()
+        };
+        let guarded = self
+            .program
+            .and_then(|context| context.proofs)
+            .and_then(|proofs| proofs.get(key))
+            .and_then(|proof| proof.events.get(event));
+        for input in guarded.into_iter().flatten() {
+            if let Some(witness) = actual_witness(*input, args, state) {
+                fence.inputs.extend(witness.inputs);
+                fence.peers.extend(witness.peers);
+            }
+        }
+        fence
     }
 }
 

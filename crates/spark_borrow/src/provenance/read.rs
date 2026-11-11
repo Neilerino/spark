@@ -6,7 +6,8 @@ use rustc_hash::FxHashSet;
 use spark_mir::{Constant, Operand, Place, Projection};
 use spark_types::{Ty, TypeId};
 
-use super::{child_type, projection_slot, value, Flow, Origin, Path, Slot, State, Value};
+use super::observations::{Memory, ReadRole, ReadView, Sample};
+use super::{child_type, projection_slot, value, Flow, Origin, Path, Point, Slot, State, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum AccessKind {
@@ -14,8 +15,15 @@ pub(super) enum AccessKind {
     Value,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct ReadSite {
+    pub function: spark_resolve::DefId,
+    pub point: Point,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Access {
+    pub site: Option<ReadSite>,
     pub origin: Origin,
     pub target: super::address::Dependency,
     pub selection: Path,
@@ -35,6 +43,17 @@ impl Accesses {
         selection: &[Slot],
         kind: AccessKind,
     ) {
+        self.observe_reference_at(reference, reference_ty, selection, kind, None);
+    }
+
+    pub fn observe_reference_at(
+        &mut self,
+        reference: &Value,
+        reference_ty: Option<TypeId>,
+        selection: &[Slot],
+        kind: AccessKind,
+        site: Option<ReadSite>,
+    ) {
         use super::address::Dependency;
         self.demands.extend(reference.address_sources());
         for ((path, origin, _), leaf) in &reference.leaves {
@@ -43,6 +62,7 @@ impl Accesses {
             }
             for endpoint in &leaf.endpoints {
                 self.insert(Access {
+                    site,
                     origin: origin.clone(),
                     target: Dependency::Address(endpoint.clone()),
                     selection: selection.to_vec(),
@@ -52,13 +72,14 @@ impl Accesses {
             for dependency in &leaf.dependencies {
                 let mut target = dependency.clone();
                 if leaf.opaque.is_empty() {
-                    if let Dependency::InputValue(selector) = &mut target {
+                    if let Dependency::InputValue(selector, _) = &mut target {
                         if reference_ty.is_some() && selector.queue.is_none() {
                             selector.expected = reference_ty;
                         }
                     }
                 }
                 self.insert(Access {
+                    site,
                     origin: origin.clone(),
                     target,
                     selection: selection.to_vec(),
@@ -66,6 +87,42 @@ impl Accesses {
                 });
             }
         }
+    }
+
+    pub fn at_site(mut self, site: ReadSite) -> Self {
+        self.events = self
+            .events
+            .into_iter()
+            .map(|mut access| {
+                access.site.get_or_insert(site);
+                access
+            })
+            .collect();
+        self
+    }
+
+    pub fn after_owner_returns(mut self, returns: &FxHashSet<super::address::OpaqueSite>) -> Self {
+        use super::address::{Dependency, Endpoint, FrameLifetime};
+
+        self.events = self
+            .events
+            .into_iter()
+            .map(|mut access| {
+                if let Dependency::Address(Endpoint::Frame { lifetime, .. }) = &mut access.target {
+                    if let FrameLifetime::DuringCall {
+                        boundary,
+                        owner_return,
+                    } = *lifetime
+                    {
+                        if boundary != owner_return && returns.contains(&owner_return) {
+                            *lifetime = FrameLifetime::Returned(owner_return);
+                        }
+                    }
+                }
+                access
+            })
+            .collect();
+        self
     }
 
     pub fn insert(&mut self, access: Access) {
@@ -170,14 +227,18 @@ impl Flow<'_> {
     }
 
     pub(super) fn dereference(&self, value: &Value, ty: TypeId, state: &State) -> Value {
-        let inner = child_type(ty, &Slot::Deref, self.table).unwrap_or(TypeId::ERROR);
-        self.read_pointee(value, inner, state)
+        self.dereference_in(value, ty, ReadView::current(state))
     }
 
-    pub(super) fn read_pointee(&self, value: &Value, inner: TypeId, state: &State) -> Value {
+    pub(super) fn dereference_in(&self, value: &Value, ty: TypeId, read: ReadView<'_>) -> Value {
+        let inner = child_type(ty, &Slot::Deref, self.table).unwrap_or(TypeId::ERROR);
+        self.read_pointee(value, inner, read)
+    }
+
+    pub(super) fn read_pointee(&self, value: &Value, inner: TypeId, read: ReadView<'_>) -> Value {
         let mut result = Value::default();
         for origin in value.addresses() {
-            result.join(&self.pointee(&origin, inner, value, state));
+            result.join(&self.pointee_in(&origin, inner, value, read));
         }
         result
     }
@@ -188,6 +249,16 @@ impl Flow<'_> {
         ty: TypeId,
         reference: &Value,
         state: &State,
+    ) -> Value {
+        self.pointee_in(origin, ty, reference, ReadView::current(state))
+    }
+
+    fn pointee_in(
+        &self,
+        origin: &Origin,
+        ty: TypeId,
+        reference: &Value,
+        read: ReadView<'_>,
     ) -> Value {
         use super::address::{Dependency, Endpoint};
         let mut result = Value::default();
@@ -201,37 +272,43 @@ impl Flow<'_> {
             for endpoint in &leaf.endpoints {
                 let payload = match endpoint {
                     Endpoint::Frame {
+                        lifetime: crate::provenance::address::FrameLifetime::Local,
                         function,
                         local,
                         root_ty,
                         location,
                         ..
-                    } if *function == self.function.def_id => {
-                        let value = self.project_path(
-                            state
-                                .cell(*local)
-                                .sourced(&super::demand::Storage::Cell(*local)),
-                            *root_ty,
-                            location,
-                            state,
-                        );
-                        if location.contains(&Slot::Tail) {
-                            value::tainted_from(ty, &value, self.table)
-                        } else {
-                            value
-                        }
-                    }
+                    } if *function == self.function.def_id => self.read_memory(
+                        Sample {
+                            memory: Memory::Frame {
+                                function: *function,
+                                local: *local,
+                                ty: *root_ty,
+                            },
+                            path: location.clone(),
+                            ty,
+                        },
+                        read,
+                    ),
                     Endpoint::Frame { .. } => {
                         value::tainted_from(ty, reference, self.table).without_reference_captures()
                     }
-                    Endpoint::Input(selector) => self.symbolic_pointee(selector, ty, state),
+                    Endpoint::Input(selector, site) => self.symbolic_pointee_in(
+                        selector,
+                        ty,
+                        read.with_bound_receive(site.as_deref()),
+                    ),
                 };
                 result.join(&payload);
             }
             if leaf.opaque.is_empty() {
                 for dependency in &leaf.dependencies {
-                    if let Dependency::InputValue(selector) = dependency {
-                        result.join(&self.symbolic_pointee(selector, ty, state));
+                    if let Dependency::InputValue(selector, site) = dependency {
+                        result.join(&self.symbolic_pointee_in(
+                            selector,
+                            ty,
+                            read.with_bound_receive(site.as_deref()),
+                        ));
                     }
                 }
             }
@@ -249,6 +326,15 @@ impl Flow<'_> {
         selector: &super::address::Selector,
         ty: TypeId,
         state: &State,
+    ) -> Value {
+        self.symbolic_pointee_in(selector, ty, ReadView::current(state))
+    }
+
+    fn symbolic_pointee_in(
+        &self,
+        selector: &super::address::Selector,
+        ty: TypeId,
+        read: ReadView<'_>,
     ) -> Value {
         use super::address::{DerefKind, Intent, Selector, TypedPath};
         let source_ty = self.function.locals[selector.input.index()].ty;
@@ -309,7 +395,7 @@ impl Flow<'_> {
                     payload.kind = DerefKind::Residual;
                 }
             }
-            result.join(&self.symbolic_cell_pointee(&address, ty, state, qualified));
+            result.join(&self.symbolic_cell_pointee(&address, ty, read, qualified));
         }
         result
     }
@@ -318,7 +404,7 @@ impl Flow<'_> {
         &self,
         address: &super::address::Selector,
         ty: TypeId,
-        state: &State,
+        read: ReadView<'_>,
         qualified: Option<super::callbacks::FactSource<'_>>,
     ) -> Value {
         use super::address::{Dependency, Intent, Selector, TypedPath};
@@ -327,7 +413,7 @@ impl Flow<'_> {
         };
         let source_ty = self.function.locals[address.input.index()].ty;
         let selection = &address.selection;
-        let (stored, covered) = self.external_contents(address, state);
+        let (stored, covered) = self.external_contents(address, ty, read);
         if covered.iter().any(Vec::is_empty) {
             return stored;
         }
@@ -357,23 +443,26 @@ impl Flow<'_> {
             .retain(|path, _| !covered.iter().any(|prefix| path.starts_with(prefix)));
         for ((path, _, _), leaf) in &mut result.leaves {
             leaf.dependencies.clear();
-            leaf.dependencies.insert(Dependency::InputValue(Selector {
-                channel_capture: None,
-                queue: address.queue.clone(),
-                capture: address.capture,
-                input: address.input,
-                selection: selection.clone(),
-                expected: Some(self.selected_type(ty, path)),
-                intent: Intent::Payload(TypedPath {
-                    kind: payload.kind,
-                    pointee: payload.pointee,
-                    projection: value::normalize(
-                        payload.pointee,
-                        [payload.projection.clone(), path.clone()].concat(),
-                        self.table,
-                    ),
-                }),
-            }));
+            leaf.dependencies.insert(Dependency::InputValue(
+                Selector {
+                    channel_capture: None,
+                    queue: address.queue.clone(),
+                    capture: address.capture,
+                    input: address.input,
+                    selection: selection.clone(),
+                    expected: Some(self.selected_type(ty, path)),
+                    intent: Intent::Payload(TypedPath {
+                        kind: payload.kind,
+                        pointee: payload.pointee,
+                        projection: value::normalize(
+                            payload.pointee,
+                            [payload.projection.clone(), path.clone()].concat(),
+                            self.table,
+                        ),
+                    }),
+                },
+                read.receive(),
+            ));
         }
         result.join(&stored);
         result
@@ -384,9 +473,10 @@ impl Flow<'_> {
         mut value: Value,
         mut ty: TypeId,
         path: &Path,
-        state: &State,
+        read: ReadView<'_>,
     ) -> Value {
-        for slot in path {
+        for (index, slot) in path.iter().enumerate() {
+            let read = read.role(ReadRole::Projection(index));
             if *slot == Slot::Tail {
                 return value;
             }
@@ -395,13 +485,13 @@ impl Flow<'_> {
                     self.table.resolve(value::strip_mutable(ty, self.table)),
                     Ty::Channel { .. }
                 ) {
-                self.queue_payload(
+                self.queue_payload_in(
                     &value,
                     child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR),
-                    state,
+                    read,
                 )
             } else if *slot == Slot::Deref {
-                self.dereference(&value, ty, state)
+                self.dereference_in(&value, ty, read)
             } else {
                 value.project(slot)
             };
@@ -588,7 +678,7 @@ impl Flow<'_> {
                 Endpoint::Frame { pointee, .. } => {
                     types.insert(*pointee);
                 }
-                Endpoint::Input(selector) => {
+                Endpoint::Input(selector, _) => {
                     if let Some(expected) = selector.expected {
                         types.insert(expected);
                     }
@@ -597,7 +687,7 @@ impl Flow<'_> {
         }
         if leaf.opaque.is_empty() {
             for dependency in &leaf.dependencies {
-                if let Dependency::InputValue(selector) = dependency {
+                if let Dependency::InputValue(selector, _) = dependency {
                     let ty = selector.expected.unwrap_or_else(|| {
                         if let super::address::Intent::Payload(payload) = &selector.intent {
                             self.selected_type(payload.pointee, &payload.projection)

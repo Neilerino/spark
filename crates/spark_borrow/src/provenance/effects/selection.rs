@@ -2,6 +2,8 @@
 
 //! Bind typed input selections against a call's before-state.
 
+use crate::provenance::observations::ReadRole;
+
 use super::{
     child_type, value, AccessKind, Accesses, CallActuals, DerefKind, Flow, Intent, Local,
     MirFunction, Origin, Path, Port, Selector, Slot, TypeId, Value,
@@ -36,6 +38,10 @@ impl Flow<'_> {
         function: &MirFunction,
         actuals: CallActuals<'_>,
     ) -> Value {
+        let actuals = CallActuals {
+            read: actuals.read.select(function.def_id, selector),
+            ..actuals
+        };
         let value = self.select_unqualified_input_value(selector, function, actuals);
         if let Some(capture) = selector.channel_capture {
             value.select_channel_capture(capture)
@@ -66,19 +72,12 @@ impl Flow<'_> {
             );
             let inner =
                 child_type(queue.channel, &Slot::Element, self.table).unwrap_or(TypeId::ERROR);
-            let payload = self.queue_payload(&handle, inner, actuals.state);
-            return self.project_path(payload, inner, &queue.projection, actuals.state);
+            let payload = self.queue_payload_in(&handle, inner, actuals.read.role(ReadRole::Queue));
+            return self.project_path(payload, inner, &queue.projection, actuals.read);
         }
         let source = self.actual_input(selector.input, function, actuals);
         let source_ty = function.locals[selector.input.index()].ty;
-        let mut selected = self.select_input(
-            source,
-            source_ty,
-            &selector.selection,
-            selector.input,
-            function,
-            actuals,
-        );
+        let mut selected = self.select_input(source, source_ty, selector, function, actuals);
         if matches!(selector.intent, Intent::Value) && selector.selection.contains(&Slot::Tail) {
             if let Some(expected) = selector.expected.filter(|ty| {
                 matches!(
@@ -96,7 +95,7 @@ impl Flow<'_> {
                     selected,
                     self.selected_type(source_ty, &prefix),
                     expected,
-                    actuals.state,
+                    actuals.read.state,
                 );
             }
         }
@@ -129,7 +128,7 @@ impl Flow<'_> {
                 selected,
                 self.selected_type(source_ty, &prefix),
                 expected,
-                actuals.state,
+                actuals.read.state,
             );
         }
         selected
@@ -141,6 +140,10 @@ impl Flow<'_> {
         function: &MirFunction,
         actuals: CallActuals<'_>,
     ) -> Value {
+        let actuals = CallActuals {
+            read: actuals.read.select(function.def_id, selector),
+            ..actuals
+        };
         if let Some(queue) = &selector.queue {
             let handles = self.select_input_value(
                 &Selector {
@@ -180,8 +183,8 @@ impl Flow<'_> {
             return self.bind_reference(&selected, payload.pointee, &payload.projection, actuals);
         }
         if let Intent::Payload(payload) = &selector.intent {
-            let value = self.read_pointee(&selected, payload.pointee, actuals.state);
-            return self.project_path(value, payload.pointee, &payload.projection, actuals.state);
+            let value = self.read_pointee(&selected, payload.pointee, actuals.read);
+            return self.project_path(value, payload.pointee, &payload.projection, actuals.read);
         }
         selected
     }
@@ -239,8 +242,14 @@ impl Flow<'_> {
             return Value::default();
         }
         let mut accesses = Accesses::default();
-        accesses.observe_reference(selected, None, projection, AccessKind::Address);
-        self.record_accesses(actuals.point, accesses, actuals.state);
+        accesses.observe_reference_at(
+            selected,
+            None,
+            projection,
+            AccessKind::Address,
+            actuals.read.access_site(),
+        );
+        self.record_accesses(actuals.point, accesses, actuals.read.state);
         let metadata = self.project_reference(selected, ty, projection);
         let mut result = Value::reference(Origin::Loan(actuals.point)).with_metadata(&metadata);
         result.insert_sourced(
@@ -255,16 +264,21 @@ impl Flow<'_> {
         &self,
         mut value: Value,
         source_ty: TypeId,
-        path: &Path,
-        input: Local,
+        selector: &Selector,
         function: &MirFunction,
         actuals: CallActuals<'_>,
     ) -> Value {
+        let actuals = CallActuals {
+            read: actuals.read.select(function.def_id, selector),
+            ..actuals
+        };
+        let path = &selector.selection;
         let mut ty = source_ty;
         for (index, slot) in path.iter().enumerate() {
             if *slot == Slot::Tail {
                 break;
             }
+            let read = actuals.read.role(ReadRole::Selection(index));
             value = match slot {
                 Slot::Element
                     if matches!(
@@ -272,25 +286,25 @@ impl Flow<'_> {
                         spark_types::Ty::Channel { .. }
                     ) =>
                 {
-                    self.queue_payload(
+                    self.queue_payload_in(
                         &value,
                         child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR),
-                        actuals.state,
+                        read,
                     )
                 }
-                Slot::Deref => self.dereference(&value, ty, actuals.state),
+                Slot::Deref => self.dereference_in(&value, ty, read),
                 Slot::ResidualDeref => {
                     let port = Port {
                         kind: crate::provenance::aliases::StorageKind::Reference,
                         channel_capture: None,
                         queue: None,
                         capture: None,
-                        input,
+                        input: selector.input,
                         selection: path[..index].to_vec(),
                         pointee: child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR),
                     };
                     let selected = self.residual_reference(&value, &port, function, actuals);
-                    self.dereference(&selected, ty, actuals.state)
+                    self.dereference_in(&selected, ty, read)
                 }
                 Slot::Capture(owner, index, ty)
                     if matches!(

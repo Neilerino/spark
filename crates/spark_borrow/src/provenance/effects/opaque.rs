@@ -35,9 +35,10 @@ impl Flow<'_> {
             arguments,
             ty,
             point,
-            state,
+            read,
             ..
         } = actuals;
+        let state = read.state;
         let expanded: Vec<_> = arguments
             .iter()
             .map(|value| self.reachable_queue_payloads(value, state))
@@ -122,8 +123,8 @@ impl Flow<'_> {
                 .get(index)
                 .copied()
                 .unwrap_or_else(|| super::super::operand_type(operand, self.function));
-            for target in self.tail_write_targets(argument.clone(), ty, actuals.state) {
-                clobbered.extend(self.possibly_written_locals(&target, actuals.state));
+            for target in self.tail_write_targets(argument.clone(), ty, actuals.read.state) {
+                clobbered.extend(self.possibly_written_locals(&target, actuals.read.state));
             }
         }
         clobbered.into_iter().collect()
@@ -138,7 +139,7 @@ impl Flow<'_> {
         let mut clobbered = FxHashSet::default();
         if summary.unknown_copy_clobber {
             self.unknown_copy_clobber = true;
-            clobbered.extend(actuals.state.live.iter().copied());
+            clobbered.extend(actuals.read.state.live.iter().copied());
         }
         for view in &summary.written_inputs {
             let mut input = self.port_input(&view.root, function, actuals);
@@ -146,7 +147,7 @@ impl Flow<'_> {
                 input = self.residual_reference(&input, &view.root, function, actuals);
             }
             let target = self.project_reference(&input, view.root.pointee, &view.path);
-            clobbered.extend(self.possibly_written_locals(&target, actuals.state));
+            clobbered.extend(self.possibly_written_locals(&target, actuals.read.state));
         }
         clobbered.into_iter().collect()
     }

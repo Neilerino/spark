@@ -8,6 +8,7 @@ use spark_types::{IntWidth, LifetimeId};
 fn reference(local: u32, int: TypeId) -> Value {
     Value::reference(Origin::Loan(Point::new(BlockId::ENTRY, 0))).with_metadata(&Leaf {
         endpoints: std::iter::once(Endpoint::Frame {
+            lifetime: crate::provenance::address::FrameLifetime::Local,
             function: DefId::new(9900),
             root: Point::new(BlockId::ENTRY, 0),
             local: Local(local),
@@ -52,7 +53,7 @@ fn targets(value: &Value) -> FxHashSet<Local> {
         .flat_map(|leaf| leaf.endpoints.iter())
         .filter_map(|endpoint| match endpoint {
             Endpoint::Frame { local, .. } => Some(*local),
-            Endpoint::Input(_) => None,
+            Endpoint::Input(..) => None,
         })
         .collect()
 }

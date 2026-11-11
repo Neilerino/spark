@@ -248,6 +248,7 @@ fn a_strong_borrowed_field_replacement_detaches_the_old_task_view() {
     let point = Point::new(BlockId::ENTRY, 3);
     let destination = Leaf {
         endpoints: rustc_hash::FxHashSet::from_iter([Endpoint::Frame {
+            lifetime: crate::provenance::address::FrameLifetime::Local,
             function: function.def_id,
             root: Point::new(BlockId::ENTRY, 0),
             local: Local(1),

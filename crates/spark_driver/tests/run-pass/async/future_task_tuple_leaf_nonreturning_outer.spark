@@ -1,0 +1,54 @@
+// TAG [SPARK-114]
+
+struct Cell { pair: Tup[Ref[String], Ref[String]]! }
+struct Shared { target: Ref[Cell]! }
+async fn copyAfter(shared: Shared, go: Channel[Int], ready: Channel[Int], output: Channel[Ref[String]], started: Channel[Int]): Int {
+    started.send(1)
+    token: Int = go.recv()
+    snapshot: Cell = shared.target
+    found: Ref[String] = snapshot.pair.1
+    output.send(found)
+    ready.send(1)
+    return 0
+}
+fn write(target: Ref[Cell]!, pair: Tup[Ref[String], Ref[String]]): Void {
+    target.pair = pair
+}
+fn produce(flag: Bool, target: Ref[Cell]!, incoming: Ref[String], go: Channel[Int], ready: Channel[Int], task: Future[Int]): Void {
+    text: String = " local-value ".trim()
+    local: Ref[String] = text
+    if flag {
+        swapped: Tup[Ref[String], Ref[String]] = (incoming, local)
+        write(target, swapped)
+        loop {}
+    }
+    pair: Tup[Ref[String], Ref[String]] = (local, incoming)
+    write(target, pair)
+    go.send(1)
+    arrived: Int = ready.recv()
+    joined: Int = await task
+    restored: Tup[Ref[String], Ref[String]] = (incoming, incoming)
+    write(target, restored)
+}
+fn forward(target: Ref[Cell]!, incoming: Ref[String], go: Channel[Int], ready: Channel[Int], task: Future[Int], output: Channel[Ref[String]]): Void {
+    produce(false, target, incoming, go, ready, task)
+    value: Ref[String] = output.recv()
+    print(value.len())
+    loop {}
+}
+fn main(): Int {
+    text: String = " seven ".trim()
+    incoming: Ref[String] = text
+    pair: Tup[Ref[String], Ref[String]] = (incoming, incoming)
+    cell: Cell! = Cell { pair: pair }
+    target: Ref[Cell]! = cell
+    shared: Shared = Shared { target: target }
+    go: Channel[Int] = Channel[Int]()
+    ready: Channel[Int] = Channel[Int]()
+    output: Channel[Ref[String]] = Channel[Ref[String]]()
+    started: Channel[Int] = Channel[Int]()
+    pending: Future[Int] = spawn { copyAfter(shared, go, ready, output, started) }
+    running: Int = started.recv()
+    forward(target, incoming, go, ready, pending, output)
+    return 0
+}

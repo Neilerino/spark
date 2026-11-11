@@ -1033,8 +1033,9 @@ fn binding_a_queued_read_discovers_its_input_storage_port() {
             arguments: &arguments,
             ty: reference,
             point: Point::new(BlockId::ENTRY, 0),
-            state: &state,
+            read: crate::provenance::observations::ReadView::current(&state),
             instantiation_site: None,
+            frame_caller: None,
             aliases: None,
         },
     );

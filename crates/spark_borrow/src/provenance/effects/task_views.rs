@@ -138,6 +138,7 @@ pub(super) fn export(value: &Value, function: spark_resolve::DefId) -> Views {
                         View {
                             callbacks,
                             fallback: view.fallback,
+                            ..View::default()
                         },
                     )
                 })
