@@ -134,8 +134,10 @@ pub fn lower_expr(
         // ── Access ───────────────────────────────────────────────
         HirExprKind::FieldAccess { base, field } => {
             let base_ty = unwrap_type_wrappers(base.ty, type_table);
-            let scoped = matches!(type_table.resolve(base_ty), Ty::Tuple(_))
-                && spark_drop::needs_drop(base_ty, type_table);
+            let scoped = matches!(
+                type_table.resolve(base_ty),
+                Ty::Tuple(_) | Ty::Struct(_) | Ty::Applied { .. }
+            ) && spark_drop::needs_drop(base_ty, type_table);
             if scoped {
                 fb.push_scope();
             }
@@ -239,14 +241,25 @@ pub fn lower_expr(
                 return temp;
             }
 
-            // Lower each field value in source order first (order of evaluation).
-            let source_fields: Vec<(Symbol, Operand)> = fields
-                .iter()
-                .map(|(name, val)| {
-                    let local = lower_expr(val, fb, mir, type_table, defs);
-                    (*name, Operand::Copy(Place::from_local(local)))
-                })
-                .collect();
+            // TAG [SPARK-151]
+            fb.push_scope();
+            let mut source_fields = Vec::with_capacity(fields.len());
+            for (name, value) in fields {
+                let source = lower_expr(value, fb, mir, type_table, defs);
+                if fb.is_terminated() {
+                    fb.pop_finished_scope();
+                    return void_temp(fb, expr);
+                }
+                let staged = stage_value(
+                    fb,
+                    source,
+                    fb.local_type(source),
+                    None,
+                    value.span,
+                    type_table,
+                );
+                source_fields.push((*name, Operand::Move(Place::from_local(staged))));
+            }
 
             // Reorder to match the struct's declaration order so that
             // codegen stores each value at the correct memory offset.
@@ -282,6 +295,7 @@ pub fn lower_expr(
                 ),
                 expr.span,
             );
+            fb.pop_finished_scope();
             temp
         }
 

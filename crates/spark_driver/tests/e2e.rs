@@ -6415,3 +6415,36 @@ fn collection_borrow_future_nonreturning_parents_keep_child_memory_writers() {
         );
     }
 }
+
+// TAG [SPARK-151]
+#[test]
+fn struct_copies_retain_and_release_owned_fields() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_cell_rc(const void *const *cell) { return *(const size_t *)*cell; }\n",
+        include_str!("run-pass/basics/struct_owned_fields.spark"),
+        "1\n1\n7\n0\n1\n2\n1\n7\n0\n1\n1\n1\n1",
+    );
+}
+
+#[test]
+fn generic_struct_fields_keep_concrete_layout_and_ownership() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         struct Box { uint8_t flag; const void *map; };\n\
+         int64_t probe_cell_rc(const void *const *cell) { return *(const size_t *)*cell; }\n\
+         int64_t probe_box_rc(const struct Box *box) { return *(const size_t *)box->map; }\n",
+        include_str!("run-pass/generics/struct_owned_fields.spark"),
+        "1\n1\n2\n3\n2\n1",
+    );
+}
+
+#[test]
+fn struct_owned_fields_follow_collection_and_closure_lifetimes() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_cell_rc(const void *const *cell) { return *(const size_t *)*cell; }\n",
+        include_str!("run-pass/basics/struct_owned_fields_integration.spark"),
+        "1\n1\n1\n1\n2\n1\n2\n1\n1\n2\n1\n2\n1\n1",
+    );
+}

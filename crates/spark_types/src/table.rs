@@ -209,6 +209,29 @@ impl TypeTable {
         self.struct_fields.get(&def_id).map(Vec::as_slice)
     }
 
+    // TAG [SPARK-151]
+    /// Returns a struct's fields in declaration order with its type arguments substituted.
+    #[must_use]
+    pub fn instantiated_struct_fields(&self, ty: TypeId) -> Option<Vec<(Symbol, TypeId)>> {
+        match self.resolve(ty) {
+            Ty::Struct(def) => self.get_struct_fields(*def).map(<[_]>::to_vec),
+            Ty::Applied { base, args } => {
+                let fields = self.get_struct_fields(*base)?;
+                let params = self.get_generic_params(*base).unwrap_or_default();
+                let subst = crate::substitute::build_subst_map(params, args);
+                Some(
+                    fields
+                        .iter()
+                        .map(|&(name, field)| {
+                            (name, crate::substitute::substitute(field, &subst, self))
+                        })
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+
     /// Records the variants of an enum.
     pub fn set_enum_variants(&mut self, def_id: DefId, variants: Vec<(Symbol, DefId)>) {
         self.enum_variants.insert(def_id, variants);
