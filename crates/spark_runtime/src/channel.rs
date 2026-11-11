@@ -4,6 +4,9 @@
 //! Channels are type-erased MPSC (multi-producer, single-consumer) channels
 //! backed by `std::sync::mpsc`. Elements are copied as raw bytes.
 
+// TAG [SPARK-152]
+use crate::heap::RefCount;
+
 use std::sync::mpsc;
 use std::sync::Mutex;
 
@@ -20,7 +23,7 @@ type ReceiverMutex = Mutex<mpsc::Receiver<Vec<u8>>>;
 #[repr(C)]
 struct SparkChannel {
     /// Reference count.
-    rc: usize,
+    rc: RefCount,
     /// `Box<SenderMutex>` — wrapped in `Option` for `close()`.
     sender: *mut std::ffi::c_void,
     /// `Box<ReceiverMutex>`.
@@ -45,7 +48,7 @@ pub extern "C" fn __spark_channel_new(elem_size: i64) -> *mut u8 {
     let receiver = Box::into_raw(Box::new(Mutex::new(rx))).cast::<std::ffi::c_void>();
 
     let ch = Box::new(SparkChannel {
-        rc: 1,
+        rc: RefCount::new(),
         sender,
         receiver,
         elem_size: elem_size as usize,
@@ -207,9 +210,8 @@ pub unsafe extern "C" fn __spark_channel_rc_dec(ch: *mut u8) {
     if ch.is_null() {
         return;
     }
-    let channel = unsafe { &mut *(ch.cast::<SparkChannel>()) };
-    channel.rc -= 1;
-    if channel.rc == 0 {
+    let channel = unsafe { &*(ch.cast::<SparkChannel>()) };
+    if channel.rc.release() {
         // Drop the sender.
         if !channel.sender.is_null() {
             drop(unsafe { Box::from_raw(channel.sender.cast::<SenderMutex>()) });

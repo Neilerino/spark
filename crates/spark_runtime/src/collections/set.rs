@@ -1,5 +1,8 @@
 //! Set runtime storage and operations.
 
+// TAG [SPARK-152]
+use crate::heap::RefCount;
+
 use std::mem::size_of;
 
 use crate::value::{buffer_align, value_desc_clone, value_desc_free, SparkValueDesc};
@@ -22,7 +25,7 @@ use super::storage::{alloc_buffer, byte_size, clone_buffer, copy_owned_slot, dea
 #[repr(C)]
 pub struct SparkSet {
     /// Reference count.
-    rc: usize,
+    rc: RefCount,
     elem_desc: *mut SparkValueDesc,
     /// Hash per slot (`HASH_EMPTY` = empty, `HASH_TOMBSTONE` = deleted, `≥ 2` = occupied).
     hashes: *mut u64,
@@ -59,7 +62,7 @@ pub extern "C" fn __spark_set_new(elem_desc: *mut u8) -> *mut u8 {
         std::process::abort();
     }
     let set = Box::new(SparkSet {
-        rc: 1,
+        rc: RefCount::new(),
         elem_desc: elem_desc.cast(),
         hashes: std::ptr::null_mut(),
         data: std::ptr::null_mut(),
@@ -285,9 +288,8 @@ pub unsafe extern "C" fn __spark_set_rc_dec(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    let set = unsafe { &mut *(ptr.cast::<SparkSet>()) };
-    set.rc -= 1;
-    if set.rc == 0 {
+    let set = unsafe { &*(ptr.cast::<SparkSet>()) };
+    if set.rc.release() {
         if set.elem().has_drop() && set.cap > 0 && !set.hashes.is_null() {
             unsafe {
                 for_occupied_slots(set.hashes, set.cap, |i| {
@@ -321,7 +323,7 @@ pub unsafe extern "C" fn __spark_set_cow(ptr: *mut u8) -> *mut u8 {
         return ptr;
     }
     let set = unsafe { &*(ptr.cast::<SparkSet>()) };
-    if set.rc == 1 {
+    if set.rc.get() == 1 {
         return ptr;
     }
     let elem_align = buffer_align(set.elem_align());
@@ -358,7 +360,7 @@ pub unsafe extern "C" fn __spark_set_cow(ptr: *mut u8) -> *mut u8 {
     }
 
     let new = Box::new(SparkSet {
-        rc: 1,
+        rc: RefCount::new(),
         elem_desc: unsafe { value_desc_clone(set.elem_desc) },
         hashes: new_hashes,
         data: new_data,
@@ -366,8 +368,6 @@ pub unsafe extern "C" fn __spark_set_cow(ptr: *mut u8) -> *mut u8 {
         cap: set.cap,
         tombstones: set.tombstones,
     });
-    // Decrement old rc.
-    let old = unsafe { &mut *(ptr.cast::<SparkSet>()) };
-    old.rc -= 1;
+    unsafe { __spark_set_rc_dec(ptr) };
     Box::into_raw(new).cast::<u8>()
 }

@@ -1,3 +1,6 @@
+// TAG [SPARK-152]
+use crate::heap::RefCount;
+
 use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
@@ -5,12 +8,15 @@ use std::task::{Context, Poll, Waker};
 
 use crate::__spark_env_rc_dec;
 
+mod completion;
+use completion::Completion;
+
 #[repr(C)]
 struct SparkFuture {
-    rc: usize,
+    rc: RefCount,
     result: *mut u8,
     result_size: usize,
-    handle: *mut std::ffi::c_void,
+    completion: Completion,
 }
 
 pub fn tokio_runtime() -> &'static tokio::runtime::Runtime {
@@ -45,7 +51,6 @@ pub unsafe extern "C" fn __spark_spawn(
 ) -> *mut u8 {
     let size = result_size as usize;
     let result_buf = alloc_result_buffer(size);
-    let future_ptr = new_future(result_buf, size);
 
     let fn_addr = fn_ptr as usize;
     let env_addr = env_ptr as usize;
@@ -74,8 +79,7 @@ pub unsafe extern "C" fn __spark_spawn(
         unsafe { __spark_env_rc_dec(env) };
     });
 
-    unsafe { (*future_ptr).handle = Box::into_raw(Box::new(handle)).cast() };
-    future_ptr.cast::<u8>()
+    new_future(result_buf, size, handle).cast::<u8>()
 }
 
 #[no_mangle]
@@ -89,8 +93,8 @@ pub unsafe extern "C" fn __spark_await(future_ptr: *mut u8) -> *mut u8 {
     if future_ptr.is_null() {
         return std::ptr::null_mut();
     }
-    let future = unsafe { &mut *(future_ptr.cast::<SparkFuture>()) };
-    join_future_if_needed(future, true);
+    let future = unsafe { &*(future_ptr.cast::<SparkFuture>()) };
+    future.completion.wait(true);
     future.result
 }
 
@@ -105,10 +109,9 @@ pub unsafe extern "C" fn __spark_future_rc_dec(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    let future = unsafe { &mut *(ptr.cast::<SparkFuture>()) };
-    future.rc -= 1;
-    if future.rc == 0 {
-        join_future_if_needed(future, false);
+    let future = unsafe { &*(ptr.cast::<SparkFuture>()) };
+    if future.rc.release() {
+        future.completion.wait(false);
         dealloc_result_buffer(future.result, future.result_size);
         drop(unsafe { Box::from_raw(ptr.cast::<SparkFuture>()) });
     }
@@ -124,7 +127,7 @@ struct SparkTask {
     state_size: usize,
     result_size: usize,
     result_offset: usize,
-    future_ptr: *mut u8,
+    result_ptr: *mut u8,
 }
 
 // Safety: each SparkTask owns its state allocation and poll function while scheduled.
@@ -144,12 +147,9 @@ impl Future for SparkTask {
         CURRENT_WAKER.set(None);
 
         if status == 1 {
-            if !self.future_ptr.is_null() && self.result_size > 0 {
-                let future = unsafe { &mut *(self.future_ptr.cast::<SparkFuture>()) };
-                if !future.result.is_null() {
-                    let src = unsafe { self.state_ptr.add(self.result_offset) };
-                    unsafe { std::ptr::copy_nonoverlapping(src, future.result, self.result_size) };
-                }
+            if self.result_size > 0 && !self.result_ptr.is_null() {
+                let src = unsafe { self.state_ptr.add(self.result_offset) };
+                unsafe { std::ptr::copy_nonoverlapping(src, self.result_ptr, self.result_size) };
             }
             Poll::Ready(())
         } else {
@@ -189,19 +189,18 @@ pub unsafe extern "C" fn __spark_spawn_coop(
     result_offset: i64,
 ) -> *mut u8 {
     let result_size = result_size as usize;
-    let future_ptr = new_future(alloc_result_buffer(result_size), result_size);
+    let result_buf = alloc_result_buffer(result_size);
     let task = SparkTask {
         poll_fn: poll_fn as usize,
         state_ptr,
         state_size: state_size as usize,
         result_size,
         result_offset: result_offset as usize,
-        future_ptr: future_ptr.cast(),
+        result_ptr: result_buf,
     };
 
     let handle = tokio_runtime().spawn(task);
-    unsafe { (*future_ptr).handle = Box::into_raw(Box::new(handle)).cast() };
-    future_ptr.cast::<u8>()
+    new_future(result_buf, result_size, handle).cast::<u8>()
 }
 
 #[no_mangle]
@@ -217,18 +216,13 @@ pub unsafe extern "C" fn __spark_try_poll(future_ptr: *mut u8) -> *mut u8 {
     }
 
     let future = unsafe { &*(future_ptr.cast::<SparkFuture>()) };
-    if future.handle.is_null() {
-        return future.result;
+    let waker = CURRENT_WAKER.take();
+    CURRENT_WAKER.set(waker.clone());
+    if future.completion.poll(waker.as_ref()) {
+        future.result
+    } else {
+        std::ptr::null_mut()
     }
-
-    let handle = unsafe { &*future.handle.cast::<tokio::task::JoinHandle<()>>() };
-    if !handle.is_finished() {
-        return std::ptr::null_mut();
-    }
-
-    let future = unsafe { &mut *(future_ptr.cast::<SparkFuture>()) };
-    join_future_if_needed(future, true);
-    future.result
 }
 
 #[no_mangle]
@@ -241,12 +235,16 @@ pub extern "C" fn __spark_wake_current() {
     });
 }
 
-fn new_future(result: *mut u8, result_size: usize) -> *mut SparkFuture {
+fn new_future(
+    result: *mut u8,
+    result_size: usize,
+    handle: tokio::task::JoinHandle<()>,
+) -> *mut SparkFuture {
     Box::into_raw(Box::new(SparkFuture {
-        rc: 1,
+        rc: RefCount::new(),
         result,
         result_size,
-        handle: std::ptr::null_mut(),
+        completion: Completion::new(handle),
     }))
 }
 
@@ -269,23 +267,6 @@ fn dealloc_result_buffer(ptr: *mut u8, size: usize) {
         let align = std::mem::align_of::<u64>();
         let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(size, align) };
         unsafe { std::alloc::dealloc(ptr, layout) };
-    }
-}
-
-fn join_future_if_needed(future: &mut SparkFuture, propagate_panic: bool) {
-    if future.handle.is_null() {
-        return;
-    }
-
-    let handle: Box<tokio::task::JoinHandle<()>> = unsafe { Box::from_raw(future.handle.cast()) };
-    future.handle = std::ptr::null_mut();
-
-    if propagate_panic {
-        tokio_runtime().block_on(async { handle.await.expect("spark: spawned task panicked") });
-    } else {
-        tokio_runtime().block_on(async {
-            let _ = handle.await;
-        });
     }
 }
 
@@ -328,6 +309,32 @@ mod tests {
                 __spark_future_rc_dec(pending);
             }
             assert_eq!(drops.load(Ordering::SeqCst), 1);
+        }
+    }
+    #[test]
+    fn concurrent_owned_aliases_await_the_same_result() {
+        for _ in 0..16 {
+            let pending =
+                unsafe { __spark_spawn(seven as *const () as *mut u8, std::ptr::null_mut(), 8, 0) };
+            for _ in 1..4 {
+                unsafe { crate::__spark_rc_inc(pending) };
+            }
+            let start = std::sync::Barrier::new(4);
+            std::thread::scope(|scope| {
+                for _ in 0..4 {
+                    let address = pending as usize;
+                    let start = &start;
+                    scope.spawn(move || {
+                        start.wait();
+                        let pending = address as *mut u8;
+                        unsafe {
+                            let result = __spark_await(pending);
+                            assert_eq!(*result.cast::<i64>(), 7);
+                            __spark_future_rc_dec(pending);
+                        }
+                    });
+                }
+            });
         }
     }
 }

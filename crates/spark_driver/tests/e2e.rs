@@ -6480,3 +6480,13 @@ fn future_spawn_preserves_float_callback_results() {
         assert_eq!(result.stdout.trim(), "1.5");
     }
 }
+
+// TAG [SPARK-152]
+#[test]
+fn future_captures_preserve_shared_owned_values_after_the_creator_returns() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/async/future_spawn_shared_owners.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "288");
+    }
+}
