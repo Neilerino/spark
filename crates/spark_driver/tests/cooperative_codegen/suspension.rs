@@ -9,8 +9,8 @@ use spark_codegen::{layout::LayoutCache, CodegenInput, TargetSpec};
 use spark_intern::{kw, sym};
 use spark_mir::async_transform::{transform, AsyncTransformInput};
 use spark_mir::{
-    BasicBlock, BlockId, Constant, Local, LocalDecl, Mir, MirFunction, Operand, Place, Projection,
-    Rvalue, Statement, Terminator,
+    AggregateKind, BasicBlock, BlockId, Constant, Local, LocalDecl, Mir, MirFunction, Operand,
+    Place, Projection, Rvalue, Statement, Terminator,
 };
 use spark_modules::ModulePath;
 use spark_opt::OptLevel;
@@ -18,12 +18,31 @@ use spark_resolve::{DefinitionInfo, DefinitionKind, DefinitionTable, Visibility}
 use spark_span::Span;
 use spark_types::{IntWidth, Ty, TypeTable};
 
-fn poll_object(opt_level: OptLevel) -> (Vec<u8>, u32, u32, u32) {
+#[derive(Clone, Copy, Debug)]
+enum Referent {
+    Scalar,
+    Tuple,
+}
+
+fn poll_object(
+    opt_level: OptLevel,
+    reference_parameter: bool,
+    referent: Referent,
+) -> (Vec<u8>, u32, u32, u32) {
     let mut table = TypeTable::new();
     let integer = table.intern(Ty::Int(IntWidth::I64));
     let future = table.intern(Ty::Future { inner: integer });
+    let source_type = match referent {
+        Referent::Scalar => integer,
+        Referent::Tuple => table.intern(Ty::Tuple(vec![integer, integer])),
+    };
     let reference = table.intern(Ty::Ref {
-        inner: integer,
+        inner: source_type,
+        mutable: false,
+        lifetime: spark_types::ty::LifetimeId::ANONYMOUS,
+    });
+    let future_reference = table.intern(Ty::Ref {
+        inner: future,
         mutable: false,
         lifetime: spark_types::ty::LifetimeId::ANONYMOUS,
     });
@@ -51,26 +70,47 @@ fn poll_object(opt_level: OptLevel) -> (Vec<u8>, u32, u32, u32) {
         rvalue,
         span: Span::DUMMY,
     };
-    let function = MirFunction {
+    let mut function = MirFunction {
         def_id: relay,
         param_count: 1,
         return_type: integer,
-        locals: [integer, future, integer, reference, integer, integer]
-            .into_iter()
-            .enumerate()
-            .map(|(index, ty)| LocalDecl {
-                local: Local(index as u32),
-                ty,
-                name: None,
-                is_user_variable: false,
-                mutable: false,
-                span: Span::DUMMY,
-            })
-            .collect(),
+        locals: [
+            integer,
+            future,
+            source_type,
+            reference,
+            integer,
+            integer,
+            future_reference,
+            future,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, ty)| LocalDecl {
+            local: Local(index as u32),
+            ty,
+            name: None,
+            is_user_variable: false,
+            mutable: false,
+            span: Span::DUMMY,
+        })
+        .collect(),
         blocks: vec![
             BasicBlock {
                 statements: vec![
-                    assign(2, Rvalue::Use(Operand::Constant(Constant::Int(10)))),
+                    assign(
+                        2,
+                        match referent {
+                            Referent::Scalar => Rvalue::Use(Operand::Constant(Constant::Int(10))),
+                            Referent::Tuple => Rvalue::Aggregate(
+                                AggregateKind::Tuple,
+                                vec![
+                                    Operand::Constant(Constant::Int(10)),
+                                    Operand::Constant(Constant::Int(20)),
+                                ],
+                            ),
+                        },
+                    ),
                     assign(
                         3,
                         Rvalue::Ref {
@@ -100,17 +140,28 @@ fn poll_object(opt_level: OptLevel) -> (Vec<u8>, u32, u32, u32) {
                 is_cleanup: false,
             },
             BasicBlock {
-                statements: vec![assign(
-                    0,
-                    Rvalue::BinaryOp(
-                        BinaryOp::Add,
-                        Operand::Copy(Place {
-                            local: Local(3),
-                            projections: vec![Projection::Deref],
-                        }),
-                        Operand::Copy(Place::from_local(Local(5))),
+                statements: vec![
+                    assign(
+                        0,
+                        Rvalue::BinaryOp(
+                            BinaryOp::Add,
+                            Operand::Copy(Place {
+                                local: Local(3),
+                                projections: match referent {
+                                    Referent::Scalar => vec![Projection::Deref],
+                                    Referent::Tuple => {
+                                        vec![Projection::Deref, Projection::Field(sym("0"))]
+                                    }
+                                },
+                            }),
+                            Operand::Copy(Place::from_local(Local(5))),
+                        ),
                     ),
-                )],
+                    Statement::Drop {
+                        place: Place::from_local(Local(1)),
+                        span: Span::DUMMY,
+                    },
+                ],
                 terminator: Terminator::Return,
                 is_cleanup: false,
             },
@@ -119,6 +170,36 @@ fn poll_object(opt_level: OptLevel) -> (Vec<u8>, u32, u32, u32) {
         is_async: true,
         span: Span::DUMMY,
     };
+    assert_eq!(function.locals[2].ty, source_type);
+    assert!(
+        matches!(table.resolve(function.locals[3].ty), Ty::Ref { inner, .. }
+        if *inner == function.locals[2].ty)
+    );
+    if reference_parameter {
+        function.blocks[0].statements.push(assign(
+            6,
+            Rvalue::Ref {
+                place: Place::from_local(Local(1)),
+                mutable: false,
+            },
+        ));
+        function.blocks[2].statements.splice(
+            1..1,
+            [
+                assign(
+                    7,
+                    Rvalue::Use(Operand::Copy(Place {
+                        local: Local(6),
+                        projections: vec![Projection::Deref],
+                    })),
+                ),
+                Statement::Drop {
+                    place: Place::from_local(Local(7)),
+                    span: Span::DUMMY,
+                },
+            ],
+        );
+    }
     let mut output = transform(AsyncTransformInput {
         mir: Mir {
             functions: HashMap::from([(relay, function)]),
@@ -194,11 +275,31 @@ fn poll_object(opt_level: OptLevel) -> (Vec<u8>, u32, u32, u32) {
 
 #[test]
 fn generated_poll_preserves_references_through_repeated_pending_and_wakeup() {
-    for opt_level in [OptLevel::None, OptLevel::Basic] {
-        let (object, size, parameter, result) = poll_object(opt_level);
+    assert_suspension(false);
+}
+
+#[test]
+fn generated_poll_releases_its_initialized_frame_owners() {
+    assert_suspension(true);
+}
+
+fn assert_suspension(check_owners: bool) {
+    for (opt_level, reference_parameter, referent) in [
+        (OptLevel::None, false, Referent::Scalar),
+        (OptLevel::Basic, false, Referent::Scalar),
+        (OptLevel::None, true, Referent::Scalar),
+        (OptLevel::Basic, true, Referent::Scalar),
+        (OptLevel::None, false, Referent::Tuple),
+        (OptLevel::Basic, false, Referent::Tuple),
+        (OptLevel::None, true, Referent::Tuple),
+        (OptLevel::Basic, true, Referent::Tuple),
+    ] {
+        let (object, size, parameter, result) =
+            poll_object(opt_level, reference_parameter, referent);
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("poll.o"), object).unwrap();
         let harness = include_str!("suspension.c")
+            .replace("CHECK_OWNERS", if check_owners { "1" } else { "0" })
             .replace("STATE_SIZE", &size.to_string())
             .replace("PARAMETER_OFFSET", &parameter.to_string())
             .replace("RESULT_OFFSET", &result.to_string());
@@ -222,9 +323,10 @@ fn generated_poll_preserves_references_through_repeated_pending_and_wakeup() {
         let run = Command::new(dir.path().join("program")).output().unwrap();
         assert!(
             run.status.success(),
-            "{opt_level:?}: {:?}: {}",
+            "{opt_level:?} {referent:?} parameter_ref={reference_parameter}: {:?}: {} stdout={}",
             run.status,
-            String::from_utf8_lossy(&run.stderr)
+            String::from_utf8_lossy(&run.stderr),
+            String::from_utf8_lossy(&run.stdout)
         );
         assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "17 2 1 1");
     }

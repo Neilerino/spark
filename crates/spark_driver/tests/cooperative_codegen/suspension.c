@@ -1,5 +1,6 @@
 // TAG [SPARK-154]
 #include <stdint.h>
+#include <stddef.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,12 +57,18 @@ __attribute__((constructor)) static void drive_generated_poll(void) {
     memcpy((char *)state + PARAMETER_OFFSET, &child, sizeof(child));
     void *parent = __spark_spawn_coop((void *)recording_poll, state, STATE_SIZE, 8, RESULT_OFFSET);
     while (atomic_load(&pending_count) != 2) sched_yield();
+    size_t pending_owners = atomic_load((_Atomic size_t *)child);
+    int pending_owners_ok = !CHECK_OWNERS || pending_owners == 2;
+    if (!pending_owners_ok) fprintf(stderr, "child owners while pending: %zu, expected 2\n", pending_owners);
     atomic_store(&release_child, 1);
     int64_t result = *(int64_t *)__spark_await(parent);
     __spark_future_rc_dec(parent);
-    // Keep an anchor until the generated parent is joined; cleanup is tested separately.
+    // The retained anchor keeps this observation valid after both tasks join.
+    size_t owners = atomic_load((_Atomic size_t *)child);
+    int owners_ok = !CHECK_OWNERS || owners == 1;
+    if (!owners_ok) fprintf(stderr, "child owners after frame cleanup: %zu, expected 1\n", owners);
     __spark_future_rc_dec(child);
     printf("%lld %d %d %d\n", (long long)result, atomic_load(&pending_count),
            atomic_load(&ready_count), atomic_load(&entered_count));
-    exit(result == 17 && atomic_load(&ready_count) == 1 && atomic_load(&entered_count) == 1 ? 0 : 1);
+    exit(pending_owners_ok && owners_ok && result == 17 && atomic_load(&ready_count) == 1 && atomic_load(&entered_count) == 1 ? 0 : 1);
 }

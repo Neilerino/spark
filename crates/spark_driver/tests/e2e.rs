@@ -6570,3 +6570,15 @@ fn repeated_await_borrows_its_future_and_preserves_copied_aliases() {
         "1\n0\n1\n0\n1\n2\n0\n2\n0\n2\n1\n1\n0\n1\n0\n1",
     );
 }
+
+// TAG [SPARK-154]
+#[test]
+fn cooperative_frame_ownership_survives_conditional_replacement() {
+    let native = "#include <stddef.h>\n#include <stdint.h>\n\
+        int64_t future_rc(const void *const *slot) { return *(const size_t *)*slot; }\n";
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/async/future_cooperative_frame_owners.spark"),
+        "1\n5\n17\n1\n1\n2\n17\n1",
+    );
+}

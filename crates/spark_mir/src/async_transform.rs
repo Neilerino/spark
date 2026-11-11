@@ -462,7 +462,6 @@ fn build_successor_map(func: &MirFunction) -> Vec<Vec<usize>> {
 ///
 /// Fields:
 /// - `__tag: Int32` — state dispatch tag
-/// - `__sub_future: ptr` — currently-awaited sub-future pointer
 /// - `__local_N: TypeN` — one per live-across-await local
 /// - `__result: ReturnType` — where the final result is stored
 fn build_state_fields(
@@ -475,10 +474,6 @@ fn build_state_fields(
     // Tag field (i32).
     let i32_ty = table.intern(Ty::Int(IntWidth::I32));
     fields.push((sym("__tag"), i32_ty));
-
-    // Sub-future pointer (i64 — opaque pointer).
-    let i64_ty = table.intern(Ty::Int(IntWidth::I64));
-    fields.push((sym("__sub_future"), i64_ty));
 
     // One field per live-across-await local, sorted by index for determinism.
     let mut live_locals: Vec<Local> = all_live.iter().copied().collect();
@@ -601,7 +596,7 @@ fn generate_poll_function(
         {
             blocks[1].statements.push(assign(
                 Place::from_local(local_map[&Local(index)]),
-                Rvalue::Use(Operand::Copy(field(name))),
+                Rvalue::Use(Operand::Move(field(name))),
             ));
         }
     }
@@ -642,15 +637,9 @@ fn generate_poll_function(
         for local in &saved {
             source.statements.push(assign(
                 field(sym(&format!("__local_{}", local.0))),
-                Rvalue::Use(Operand::Copy(Place::from_local(local_map[local]))),
+                Rvalue::Use(Operand::Move(Place::from_local(local_map[local]))),
             ));
         }
-        source.statements.push(assign(
-            field(sym("__sub_future")),
-            Rvalue::Use(Operand::Copy(Place::from_local(
-                local_map[&point.future_local],
-            ))),
-        ));
         source.statements.push(set_tag(
             i64::try_from(index + 1).expect("MIR await count fits i64"),
         ));
@@ -659,7 +648,10 @@ fn generate_poll_function(
             statements: vec![],
             terminator: Terminator::Call {
                 func: Operand::Constant(Constant::FunctionRef(try_poll)),
-                args: vec![Operand::Copy(field(sym("__sub_future")))],
+                args: vec![Operand::Copy(field(sym(&format!(
+                    "__local_{}",
+                    point.future_local.0
+                ))))],
                 destination: Place::from_local(result_pointer),
                 target: check_block,
                 span,
@@ -691,7 +683,7 @@ fn generate_poll_function(
         for local in saved {
             ready.push(assign(
                 Place::from_local(local_map[&local]),
-                Rvalue::Use(Operand::Copy(field(sym(&format!("__local_{}", local.0))))),
+                Rvalue::Use(Operand::Move(field(sym(&format!("__local_{}", local.0))))),
             ));
         }
         ready.push(assign(
@@ -1204,10 +1196,10 @@ mod tests {
         assert_eq!(poll_fn.param_count, 1);
         assert!(!poll_fn.is_async);
 
-        // State fields should include __tag, __sub_future, saved locals, __result.
+        // State fields should include __tag, saved locals, __result.
         assert!(
             poll_info.state_fields.len() >= 3,
-            "Expected at least tag + sub_future + result fields, got {}",
+            "Expected at least tag + saved future + result fields, got {}",
             poll_info.state_fields.len()
         );
         assert_eq!(poll_info.state_fields[0].0, sym("__tag"));
