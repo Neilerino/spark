@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Fact extraction from MIR.
 //!
 //! Walks each [`MirFunction`]'s CFG and extracts the borrow facts needed
@@ -202,7 +204,7 @@ fn extract_statement_facts(
             value,
             ..
         } => {
-            facts.uses.push((point, *root));
+            collect_place_read(root, point, facts);
             for &operand in indices.iter().chain(std::iter::once(value)) {
                 facts.uses.push((point, operand));
                 facts.moves.push((point, operand));

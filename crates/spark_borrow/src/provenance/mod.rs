@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Value-slot provenance for references carried across MIR control flow.
 
 mod address;
@@ -418,7 +420,7 @@ impl<'a> Flow<'a> {
                 value,
                 ..
             } => {
-                let mut ty = self.function.locals[root.index()].ty;
+                let mut ty = self.place_type(root);
                 let mut path = Vec::new();
                 for _ in indices {
                     let slot = index_slot(ty, self.table);
@@ -428,10 +430,12 @@ impl<'a> Flow<'a> {
                 let stored = state
                     .value(*value)
                     .sourced(&demand::Storage::Logical(*value))
-                    .prefixed_path(&path, self.function.locals[root.index()].ty, self.table);
-                let mut current = state.value(*root).sourced(&demand::Storage::Logical(*root));
+                    .prefixed_path(&path, self.place_type(root), self.table);
+                let mut accesses = Accesses::default();
+                let mut current = self.read_access(root, state, AccessKind::Value, &mut accesses);
+                self.record_accesses(point, accesses, state);
                 current.join(&stored);
-                self.store(&Place::from_local(*root), current, point, state);
+                self.store(root, current, point, state);
                 state.consume(*value);
                 self.record_consumed(point, *value);
             }

@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! MIR node definitions.
 //!
 //! The Mid-Level IR is a control-flow-graph-based representation where each
@@ -12,7 +14,7 @@ use spark_ast::{BinaryOp, UnaryOp};
 use spark_intern::Symbol;
 use spark_resolve::DefId;
 use spark_span::Span;
-use spark_types::TypeId;
+use spark_types::{Ty, TypeId, TypeTable};
 
 // ── Identifiers ──────────────────────────────────────────────────────────
 
@@ -196,8 +198,8 @@ pub enum Statement {
     },
     /// Write through a checked collection path, consuming the staged value and any map key.
     IndexedAssign {
-        /// Collection owner, read and updated by copy-on-write.
-        root: Local,
+        /// Collection owner place, read and updated by copy-on-write.
+        root: Place,
         /// Staged list indices and any terminal map key, in source order.
         indices: Vec<Local>,
         /// Staged value transferred to the destination slot.
@@ -558,4 +560,46 @@ mod tests {
         let _ = Constant::Null;
         let _ = Constant::Void;
     }
+}
+
+pub(crate) fn place_type(locals: &[LocalDecl], place: &Place, table: &TypeTable) -> Option<TypeId> {
+    let mut ty = locals.get(place.local.index())?.ty;
+    for projection in &place.projections {
+        while let Ty::Mutable(inner) = table.resolve(ty) {
+            ty = *inner;
+        }
+        ty = match (projection, table.resolve(ty)) {
+            (Projection::Deref, Ty::Ref { inner, .. })
+            | (Projection::Index(_), Ty::List(inner) | Ty::Map(_, inner)) => *inner,
+            (Projection::UnionPayload(payload), _) => *payload,
+            (Projection::EnumField { variant, index }, _) => {
+                table.get_variant_fields(*variant)?.get(*index as usize)?.1
+            }
+            (Projection::Field(name), Ty::AsyncState { fields, .. }) => {
+                fields.iter().find(|(field, _)| field == name)?.1
+            }
+            (Projection::Field(name), Ty::Tuple(fields)) => {
+                *fields.get(name.as_str().parse::<usize>().ok()?)?
+            }
+            (Projection::Field(name), Ty::Enum(def)) => table
+                .get_enum_variants(*def)?
+                .iter()
+                .find_map(|(_, variant)| {
+                    table
+                        .get_variant_fields(*variant)?
+                        .iter()
+                        .find(|(field, _)| field == name)
+                        .map(|(_, ty)| *ty)
+                })?,
+            (Projection::Field(name), _) => {
+                table
+                    .instantiated_struct_fields(ty)?
+                    .iter()
+                    .find(|(field, _)| field == name)?
+                    .1
+            }
+            _ => return None,
+        };
+    }
+    Some(ty)
 }

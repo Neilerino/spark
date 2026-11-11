@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Tests native coroutine dispatch through the complete compiler pipeline.
 
 use object::{Object, ObjectSection, ObjectSymbol, RelocationTarget};
@@ -112,6 +114,31 @@ fn cooperative_spawn_bindings_and_effectful_fallback_select_the_correct_routes()
             ),
             (
                 include_str!("../run-pass/async/future_cooperative_empty_child.spark"),
+                &["main"][..],
+                true,
+            ),
+            (
+                include_str!("../run-pass/async/future_cooperative_frame_reference.spark"),
+                &["main"][..],
+                true,
+            ),
+            (
+                include_str!("../run-pass/async/future_cooperative_frame_places.spark"),
+                &["main"][..],
+                true,
+            ),
+            (
+                include_str!("../run-pass/async/future_cooperative_frame_capture.spark"),
+                &["main"][..],
+                true,
+            ),
+            (
+                include_str!("../run-pass/async/future_cooperative_frame_indexed.spark"),
+                &["main"][..],
+                true,
+            ),
+            (
+                include_str!("../run-pass/async/future_cooperative_frame_cow.spark"),
                 &["main"][..],
                 true,
             ),

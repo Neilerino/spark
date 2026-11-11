@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Statement lowering: HIR statements → MIR statements.
 
 use spark_diagnostics::{Diagnostic, Label};
@@ -118,7 +120,7 @@ pub fn lower_stmt(
                 if let Some(indices) = indices {
                     let root = lower_expr(root, fb, mir, type_table, defs);
                     fb.push_stmt(Statement::IndexedAssign {
-                        root,
+                        root: Place::from_local(root),
                         indices,
                         value: staged,
                         span: value.span,

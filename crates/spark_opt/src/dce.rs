@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Pass 4: Dead code elimination.
 //!
 //! Two phases:
@@ -125,7 +127,8 @@ fn collect_used_in_statement(stmt: &Statement, used: &mut FxHashSet<Local>) {
             value,
             ..
         } => {
-            used.insert(*root);
+            used.insert(root.local);
+            collect_used_in_place_projections(root, used);
             used.extend(indices);
             used.insert(*value);
         }

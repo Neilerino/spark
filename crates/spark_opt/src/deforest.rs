@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Deforestation pass: eliminates intermediate data structures that are
 //! created only to be immediately consumed by iteration.
 //!
@@ -277,7 +279,7 @@ fn analyze_consumers(
                     value,
                     ..
                 } => {
-                    if is_alias(aliases, *root)
+                    if place_reads_alias(root, aliases)
                         || indices.iter().any(|&index| is_alias(aliases, index))
                         || is_alias(aliases, *value)
                     {

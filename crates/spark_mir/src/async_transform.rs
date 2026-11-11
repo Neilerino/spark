@@ -28,6 +28,7 @@ use crate::mir::{
 };
 
 mod forwarding;
+mod promotion;
 pub use forwarding::{SpawnAdapter, SpawnArgument};
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -84,7 +85,7 @@ pub fn transform(input: AsyncTransformInput) -> AsyncTransformOutput {
         mut definitions,
     } = input;
 
-    let diagnostics = Diagnostics::new();
+    let mut diagnostics = Diagnostics::new();
     let try_poll = definitions
         .iter()
         .find(|(_, info)| info.name == kw::TRY_POLL)
@@ -119,6 +120,7 @@ pub fn transform(input: AsyncTransformInput) -> AsyncTransformOutput {
             .iter()
             .flat_map(|s| s.iter().copied())
             .chain(await_points.iter().map(|point| point.future_local))
+            .chain(func.address_taken_locals())
             .collect();
         let state_fields = build_state_fields(func, &all_live, &mut table);
         let state_type = Ty::AsyncState {
@@ -159,6 +161,7 @@ pub fn transform(input: AsyncTransformInput) -> AsyncTransformOutput {
             &live_across,
             try_poll,
             &mut table,
+            &mut diagnostics,
         );
 
         poll_fn_map.insert(
@@ -298,7 +301,7 @@ fn compute_live_across_awaits(
                     value,
                     ..
                 } => {
-                    gen[idx].insert(*root);
+                    add_place_uses(root, &mut gen[idx]);
                     gen[idx].extend(indices);
                     gen[idx].insert(*value);
                 }
@@ -530,6 +533,7 @@ fn generate_poll_function(
     live_across: &[FxHashSet<Local>],
     try_poll: DefId,
     table: &mut TypeTable,
+    diagnostics: &mut Diagnostics,
 ) -> MirFunction {
     let status_ty = table.intern(Ty::Bool);
     let tag_ty = table.intern(Ty::Int(IntWidth::I32));
@@ -550,6 +554,7 @@ fn generate_poll_function(
         locals[local.index()].name = decl.name;
         local_map.insert(decl.local, local);
     }
+    let persistent = original.address_taken_locals();
     let result_pointer = poll_local(&mut locals, pointer_ty, span);
     let pending = poll_local(&mut locals, status_ty, span);
     let field = |name| Place {
@@ -591,7 +596,9 @@ fn generate_poll_function(
     ];
     for index in 1..=original.param_count {
         let name = sym(&format!("__local_{index}"));
-        if state_fields.iter().any(|(field, _)| *field == name) {
+        if !persistent.contains(&Local(index))
+            && state_fields.iter().any(|(field, _)| *field == name)
+        {
             blocks[1].statements.push(assign(
                 Place::from_local(local_map[&Local(index)]),
                 Rvalue::Use(Operand::Copy(field(name))),
@@ -630,6 +637,7 @@ fn generate_poll_function(
         saved.push(point.future_local);
         saved.sort_unstable_by_key(|local| local.0);
         saved.dedup();
+        saved.retain(|local| !persistent.contains(local));
         let source = &mut blocks[point.call_block_idx + 2];
         for local in &saved {
             source.statements.push(assign(
@@ -718,7 +726,7 @@ fn generate_poll_function(
         },
         is_cleanup: false,
     };
-    MirFunction {
+    let mut function = MirFunction {
         def_id: poll_def_id,
         param_count: 1,
         return_type: status_ty,
@@ -727,7 +735,13 @@ fn generate_poll_function(
         captures: vec![],
         is_async: false,
         span,
-    }
+    };
+    let roots = persistent
+        .into_iter()
+        .map(|local| (local_map[&local], sym(&format!("__local_{}", local.0))))
+        .collect();
+    promotion::promote(&mut function, &roots, table, diagnostics);
+    function
 }
 
 /// Clones a block with local and block ID remapping.
@@ -770,7 +784,7 @@ fn remap_statement(stmt: &Statement, local_remap: &FxHashMap<Local, Local>) -> S
             value,
             span,
         } => Statement::IndexedAssign {
-            root: *local_remap.get(root).unwrap_or(root),
+            root: remap_place(root, local_remap),
             indices: indices
                 .iter()
                 .map(|local| *local_remap.get(local).unwrap_or(local))
@@ -1782,6 +1796,113 @@ mod tests {
             };
             assert!(compute_live_across_awaits(&function, &[point])[0].contains(&Local(1)),
                 "projected access must preserve its index across suspension (reference={reference})");
+        }
+    }
+    // TAG [SPARK-154]
+    #[test]
+    fn references_across_await_are_created_in_persistent_frame_storage() {
+        for parameter in [true, false] {
+            let mut table = TypeTable::new();
+            let mut definitions = DefinitionTable::new();
+            let await_def = definitions.insert(DefinitionInfo::new(
+                DefinitionKind::BuiltinFunction,
+                kw::SPARK_AWAIT,
+                Span::DUMMY,
+                Visibility::Private,
+                spark_modules::ModulePath::root(),
+            ));
+            let def = definitions.insert(DefinitionInfo::new(
+                DefinitionKind::Function,
+                sym("frame_reference"),
+                Span::DUMMY,
+                Visibility::Private,
+                spark_modules::ModulePath::root(),
+            ));
+            let mut function = make_simple_async_fn(def, await_def, &mut table);
+            let integer = function.return_type;
+            let root = if parameter {
+                Local(1)
+            } else {
+                let local = poll_local(&mut function.locals, integer, Span::DUMMY);
+                function.blocks[0].statements.insert(
+                    0,
+                    Statement::Assign {
+                        place: Place::from_local(local),
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(10))),
+                        span: Span::DUMMY,
+                    },
+                );
+                local
+            };
+            let reference_ty = table.intern(Ty::Ref {
+                inner: integer,
+                mutable: false,
+                lifetime: spark_types::ty::LifetimeId::ANONYMOUS,
+            });
+            let reference = poll_local(&mut function.locals, reference_ty, Span::DUMMY);
+            let loaded = poll_local(&mut function.locals, integer, Span::DUMMY);
+            function.blocks[0].statements.push(Statement::Assign {
+                place: Place::from_local(reference),
+                rvalue: Rvalue::Ref {
+                    place: Place::from_local(root),
+                    mutable: false,
+                },
+                span: Span::DUMMY,
+            });
+            function.blocks[1].statements = vec![
+                Statement::Assign {
+                    place: Place::from_local(loaded),
+                    rvalue: Rvalue::Use(Operand::Copy(Place {
+                        local: reference,
+                        projections: vec![Projection::Deref],
+                    })),
+                    span: Span::DUMMY,
+                },
+                Statement::Assign {
+                    place: Place::from_local(Local::RETURN_PLACE),
+                    rvalue: Rvalue::BinaryOp(
+                        spark_ast::BinaryOp::Add,
+                        Operand::Copy(Place::from_local(loaded)),
+                        Operand::Copy(Place::from_local(Local(4))),
+                    ),
+                    span: Span::DUMMY,
+                },
+            ];
+            let output = transform(AsyncTransformInput {
+                mir: Mir {
+                    functions: HashMap::from([(def, function)]),
+                },
+                table,
+                definitions,
+            });
+            let info = &output.poll_fn_map[&def];
+            let field = sym(&format!("__local_{}", root.0));
+            assert!(
+                info.state_fields.iter().any(|(name, _)| *name == field),
+                "the referent needs its own persistent backing field (parameter={parameter})"
+            );
+            let poll = &output.mir.functions[&info.poll_def_id];
+            let references: Vec<_> = poll
+                .blocks
+                .iter()
+                .flat_map(|block| &block.statements)
+                .filter_map(|statement| match statement {
+                    Statement::Assign {
+                        rvalue: Rvalue::Ref { place, .. },
+                        ..
+                    } => Some(place),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(references.len(), 1);
+            assert_eq!(
+                references[0].local,
+                Local(1),
+                "the address must originate in the frame, not a poll stack slot"
+            );
+            assert!(
+                matches!(references[0].projections.as_slice(), [Projection::Deref, Projection::Field(name)] if *name == field)
+            );
         }
     }
 }

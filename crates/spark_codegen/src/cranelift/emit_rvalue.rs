@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Rvalue lowering: MIR rvalues → Cranelift IR instructions.
 //!
 //! Handles `Use`, `BinaryOp`, `UnaryOp`, `Ref`, `Aggregate`, `Discriminant`,
@@ -1281,7 +1283,7 @@ fn emit_closure_construction<M: Module>(
     let mut capture_offsets = Vec::with_capacity(operands.len());
     for operand in operands {
         let cap_ty = match operand {
-            Operand::Copy(place) | Operand::Move(place) => ctx.local_type_id(place.local),
+            Operand::Copy(place) | Operand::Move(place) => resolve_place_type(ctx, place, table),
             Operand::Constant(_) => {
                 capture_offsets.push(env_size);
                 env_size += 8; // fallback
@@ -1315,7 +1317,7 @@ fn emit_closure_construction<M: Module>(
     // Store each captured value into the environment.
     for (i, operand) in operands.iter().enumerate() {
         let cap_ty = match operand {
-            Operand::Copy(place) | Operand::Move(place) => ctx.local_type_id(place.local),
+            Operand::Copy(place) | Operand::Move(place) => resolve_place_type(ctx, place, table),
             Operand::Constant(_) => continue,
         };
         let val = emit_operand(ctx, operand, ecx, module)?;

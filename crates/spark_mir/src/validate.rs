@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! MIR structural validation.
 //!
 //! Runs between the optimization pass and codegen to catch invalid MIR
@@ -92,10 +94,16 @@ fn validate_block(
                         "DefId({func_id})/{block_id}/stmt[{stmt_idx}]: indexed assignment requires an index"
                     ));
                 }
-                for &local in std::iter::once(root)
-                    .chain(indices)
-                    .chain(std::iter::once(value))
-                {
+                check_place(
+                    root,
+                    num_locals,
+                    func_id,
+                    block_id,
+                    stmt_idx,
+                    "indexed owner",
+                    errors,
+                );
+                for &local in indices.iter().chain(std::iter::once(value)) {
                     check_place(
                         &Place::from_local(local),
                         num_locals,
@@ -132,12 +140,12 @@ fn has_lookup_layout(
     dest: &Place,
     collection: &Place,
 ) -> bool {
-    if !dest.projections.is_empty() || !collection.projections.is_empty() {
+    if !dest.projections.is_empty() {
         return false;
     }
     let (Some(dest), Some(collection)) = (
         func.locals.get(dest.local.index()),
-        func.locals.get(collection.local.index()),
+        crate::mir::place_type(&func.locals, collection, table),
     ) else {
         return false;
     };
@@ -145,7 +153,7 @@ fn has_lookup_layout(
         Ty::Mutable(inner) => *inner,
         _ => ty,
     };
-    let (Ty::List(value) | Ty::Map(_, value)) = table.resolve(storage_type(collection.ty)) else {
+    let (Ty::List(value) | Ty::Map(_, value)) = table.resolve(storage_type(collection)) else {
         return false;
     };
     matches!(table.resolve(dest.ty), Ty::Optional(inner) if storage_type(*inner) == storage_type(*value))
@@ -505,11 +513,40 @@ mod tests {
         func.locals[1].ty = list;
         func.locals[2].ty = int;
 
-        for (dest_ty, is_valid) in [(optional_bool, false), (optional_int, true)] {
-            func.locals[0].ty = dest_ty;
-            let mut errors = Vec::new();
-            validate_function(&func, &table, &mut errors);
-            assert_eq!(errors.is_empty(), is_valid, "{errors:?}");
+        let field = spark_intern::sym("items");
+        let state = table.intern(Ty::AsyncState {
+            func_def_id: DefId::new(0),
+            fields: vec![(field, list)],
+        });
+        let reference = table.intern(Ty::Ref {
+            inner: state,
+            mutable: true,
+            lifetime: spark_types::ty::LifetimeId::ANONYMOUS,
+        });
+        for projected in [false, true] {
+            func.locals[1].ty = if projected { reference } else { list };
+            let Statement::Assign {
+                rvalue: Rvalue::CollectionGetOptional { collection, .. },
+                ..
+            } = &mut func.blocks[0].statements[0]
+            else {
+                unreachable!()
+            };
+            collection.projections = if projected {
+                vec![Projection::Deref, Projection::Field(field)]
+            } else {
+                vec![]
+            };
+            for (dest_ty, is_valid) in [(optional_bool, false), (optional_int, true)] {
+                func.locals[0].ty = dest_ty;
+                let mut errors = Vec::new();
+                validate_function(&func, &table, &mut errors);
+                assert_eq!(
+                    errors.is_empty(),
+                    is_valid,
+                    "projected={projected}: {errors:?}"
+                );
+            }
         }
     }
 

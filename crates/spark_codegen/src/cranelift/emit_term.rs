@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Terminator lowering: MIR terminators → Cranelift IR.
 //!
 //! Handles `Goto`, `Return`, `SwitchInt`, `Call`, and `Unreachable` terminators.
@@ -555,7 +557,9 @@ fn compute_cb_kind_for_arg(
     table: &TypeTable,
 ) -> u8 {
     let cb_ty_id = match args.get(arg_idx) {
-        Some(Operand::Copy(place) | Operand::Move(place)) => ctx.local_type_id(place.local),
+        Some(Operand::Copy(place) | Operand::Move(place)) => {
+            emit_rvalue::resolve_place_type(ctx, place, table)
+        }
         _ => spark_types::TypeId::ERROR,
     };
     let (param_ty, ret_ty) = match table.resolve(cb_ty_id).clone() {
@@ -586,7 +590,9 @@ fn get_callback_return_type(
     table: &TypeTable,
 ) -> spark_types::TypeId {
     let cb_ty_id = match args.get(arg_idx) {
-        Some(Operand::Copy(place) | Operand::Move(place)) => ctx.local_type_id(place.local),
+        Some(Operand::Copy(place) | Operand::Move(place)) => {
+            emit_rvalue::resolve_place_type(ctx, place, table)
+        }
         _ => return spark_types::TypeId::ERROR,
     };
     match table.resolve(cb_ty_id).clone() {
@@ -615,7 +621,7 @@ fn emit_builtin_print<M: Module>(
         // Determine the argument's type from the MIR operand.
         let resolved_ty = match &args[0] {
             spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place) => {
-                table.resolve(ctx.local_type_id(place.local))
+                table.resolve(emit_rvalue::resolve_place_type(ctx, place, table))
             }
             spark_mir::Operand::Constant(c) => match c {
                 spark_mir::Constant::Float(_) => &Ty::Float(spark_types::FloatWidth::F64),
@@ -790,7 +796,7 @@ fn emit_parallel_call<M: Module>(
 
     // Determine elem_size from the list's element type.
     let list_ty_id = if let Some(Operand::Copy(place)) = args.first() {
-        ctx.local_type_id(place.local)
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -808,7 +814,7 @@ fn emit_parallel_call<M: Module>(
     // Bits 0-1: input kind (0 = int-like, 1 = float)
     // Bits 2-3: output kind (0 = int-like, 1 = float, 2 = void)
     let cb_ty_id = if let Some(Operand::Copy(place)) = args.get(1) {
-        ctx.local_type_id(place.local)
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -949,7 +955,7 @@ fn emit_parallel_map_reduce_call<M: Module>(
 
     // Determine elem_size from list element type
     let list_ty_id = if let Some(Operand::Copy(place)) = args.first() {
-        ctx.local_type_id(place.local)
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -965,7 +971,7 @@ fn emit_parallel_map_reduce_call<M: Module>(
 
     // Compute map_cb_kind from mapper type
     let map_cb_ty_id = if let Some(Operand::Copy(place)) = args.get(1) {
-        ctx.local_type_id(place.local)
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -986,7 +992,7 @@ fn emit_parallel_map_reduce_call<M: Module>(
 
     // Compute reduce_cb_kind from combiner type
     let reduce_cb_ty_id = if let Some(Operand::Copy(place)) = args.get(2) {
-        ctx.local_type_id(place.local)
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -1485,7 +1491,7 @@ fn emit_builtin_method<M: Module>(
     // args[0] is the receiver. Read its type to determine dispatch.
     let recv_ty_id = match &args[0] {
         spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place) => {
-            ctx.local_type_id(place.local)
+            emit_rvalue::resolve_place_type(ctx, place, table)
         }
         spark_mir::Operand::Constant(_) => {
             // Constant receiver — shouldn't happen for method calls
@@ -1521,14 +1527,9 @@ fn emit_builtin_method<M: Module>(
         return;
     }
 
-    // Helper: get the recv local for write-back after COW
-    let recv_local = match &args[0] {
-        spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place)
-            if place.projections.is_empty() =>
-        {
-            Some(place.local)
-        }
-        _ => None,
+    let recv_place = match &args[0] {
+        Operand::Copy(place) | Operand::Move(place) => Some(place),
+        Operand::Constant(_) => None,
     };
 
     // Is this a mutating method?
@@ -1606,8 +1607,15 @@ fn emit_builtin_method<M: Module>(
     if is_mutating {
         // COW: call the appropriate cow function and write back the new pointer.
         let cow_ptr = emit_cow(ctx, recv_ptr, stripped_ty, table, module);
-        if let Some(local) = recv_local {
-            ctx.write_local(local, cow_ptr);
+        if let Some(place) = recv_place {
+            if place.projections.is_empty() {
+                ctx.write_local(place.local, cow_ptr);
+            } else {
+                let (address, _) = emit_rvalue::emit_place_addr(ctx, place, table, module);
+                ctx.builder
+                    .ins()
+                    .store(MemFlags::new(), cow_ptr, address, 0);
+            }
         }
 
         match (stripped_ty, method_name) {
@@ -2002,4 +2010,165 @@ fn emit_indirect_call_sret<M: Module>(
 
     let sig_ref = ctx.builder.import_signature(sig);
     ctx.builder.ins().call_indirect(sig_ref, fn_ptr, &full_args);
+}
+
+// TAG [SPARK-154]
+#[cfg(test)]
+mod frame_mutation_tests {
+    use super::*;
+    use crate::layout::LayoutCache;
+    use crate::TargetSpec;
+    use cranelift_codegen::ir::{Function, InstructionData, Opcode};
+    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+    use rustc_hash::FxHashMap;
+    use spark_mir::{BasicBlock, Local, LocalDecl, MirFunction, Projection};
+    use spark_resolve::{DefId, DefinitionTable};
+    use spark_span::Span;
+    use spark_types::{IntWidth, TypeTable};
+
+    #[test]
+    fn projected_mutating_receiver_installs_its_cow_owner() {
+        let mut table = TypeTable::new();
+        let integer = table.intern(Ty::Int(IntWidth::I64));
+        let void = table.intern(Ty::Void);
+        let list = table.intern(Ty::List(integer));
+        let list = table.intern(Ty::Mutable(list));
+        let field = spark_intern::sym("items");
+        let state = table.intern(Ty::AsyncState {
+            func_def_id: DefId::new(0),
+            fields: vec![(field, list)],
+        });
+        let state_ref = table.intern(Ty::Ref {
+            inner: state,
+            mutable: true,
+            lifetime: spark_types::ty::LifetimeId::ANONYMOUS,
+        });
+        let mir = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 2,
+            return_type: void,
+            locals: [void, state_ref, integer]
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| LocalDecl {
+                    local: Local(index as u32),
+                    ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                })
+                .collect(),
+            blocks: vec![
+                BasicBlock {
+                    statements: vec![],
+                    terminator: Terminator::Goto { target: BlockId(1) },
+                    is_cleanup: false,
+                },
+                BasicBlock {
+                    statements: vec![],
+                    terminator: Terminator::Return,
+                    is_cleanup: false,
+                },
+            ],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+        let mut backend =
+            super::super::CraneliftBackend::new(&TargetSpec::host()).expect("native backend");
+        let pointer = backend.module.target_config().pointer_type();
+        let call_conv = backend.module.isa().default_call_conv();
+        let stubs =
+            super::super::runtime::RuntimeStubs::declare_all(&mut backend.module, call_conv);
+        let mut function = Function::new();
+        function.signature = Signature::new(call_conv);
+        function.signature.params = vec![AbiParam::new(pointer), AbiParam::new(types::I64)];
+        let mut builder_context = FunctionBuilderContext::new();
+        let builder = FunctionBuilder::new(&mut function, &mut builder_context);
+        let mut ctx = FunctionContext::new(
+            builder,
+            &mir,
+            &table,
+            pointer,
+            LayoutCache::new(pointer.bytes()),
+            &stubs,
+        );
+        let entry = ctx.clif_block(BlockId(0));
+        ctx.builder.append_block_params_for_function_params(entry);
+        ctx.builder.switch_to_block(entry);
+        let params = ctx.builder.block_params(entry).to_vec();
+        ctx.write_local(Local(1), params[0]);
+        ctx.write_local(Local(2), params[1]);
+        let definitions = DefinitionTable::new();
+        let functions = FxHashMap::default();
+        let elements = FxHashMap::default();
+        let polls = FxHashMap::default();
+        let callbacks = FxHashMap::default();
+        let ecx = EmitCtx {
+            table: &table,
+            definitions: &definitions,
+            func_ids: &functions,
+            thunk_ids: &functions,
+            dtor_ids: &functions,
+            elem_dtor_ids: &elements,
+            elem_retain_ids: &elements,
+            elem_eq_ids: &elements,
+            poll_fn_map: &polls,
+            lambda_to_async: &callbacks,
+        };
+        let cow_ref = backend
+            .module
+            .declare_func_in_func(stubs.list_cow, ctx.builder.func);
+        let cow_name = ctx.builder.func.dfg.ext_funcs[cow_ref].name.clone();
+        emit_builtin_method(
+            &mut ctx,
+            kw::APPEND,
+            &[
+                Operand::Copy(Place {
+                    local: Local(1),
+                    projections: vec![Projection::Deref, Projection::Field(field)],
+                }),
+                Operand::Copy(Place::from_local(Local(2))),
+            ],
+            &Place::from_local(Local(0)),
+            BlockId(1),
+            &ecx,
+            &mut backend.module,
+        );
+        let cow_value = ctx
+            .builder
+            .func
+            .layout
+            .blocks()
+            .flat_map(|block| ctx.builder.func.layout.block_insts(block))
+            .find_map(|inst| match &ctx.builder.func.dfg.insts[inst] {
+                InstructionData::Call { func_ref, .. }
+                    if ctx.builder.func.dfg.ext_funcs[*func_ref].name == cow_name =>
+                {
+                    ctx.builder.func.dfg.inst_results(inst).first().copied()
+                }
+                _ => None,
+            })
+            .expect("method must detach its collection owner");
+        let installed = ctx
+            .builder
+            .func
+            .layout
+            .blocks()
+            .flat_map(|block| ctx.builder.func.layout.block_insts(block))
+            .any(|inst| {
+                ctx.builder.func.dfg.insts[inst].opcode() == Opcode::Store
+                    && ctx.builder.func.dfg.inst_args(inst).first() == Some(&cow_value)
+            });
+        let target = ctx.clif_block(BlockId(1));
+        ctx.builder.switch_to_block(target);
+        ctx.builder.ins().return_(&[]);
+        ctx.builder.seal_all_blocks();
+        ctx.builder.finalize();
+        assert!(
+            installed,
+            "a projected owner must receive the detached COW pointer"
+        );
+    }
 }

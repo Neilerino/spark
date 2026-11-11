@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Conflict detection and borrow validation.
 //!
 //! Walks each program point and checks for violations of the borrowing rules:
@@ -120,7 +122,7 @@ fn check_indexed_write_loans(
                 continue;
             };
             let point = Point::new(spark_mir::BlockId(block_idx as u32), stmt_idx as u32);
-            reject_borrowed_collection_write(*root, point, *span, facts, regions, diagnostics);
+            reject_borrowed_collection_write(root.local, point, *span, facts, regions, diagnostics);
         }
     }
 }

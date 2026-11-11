@@ -6534,3 +6534,27 @@ fn cooperative_spawn_observes_zero_sized_child_completion() {
         "7",
     );
 }
+
+// TAG [SPARK-154]
+#[test]
+fn cooperative_frame_references_use_persistent_backing() {
+    for (fixture, expected) in [
+        (
+            "run-pass/async/future_cooperative_frame_reference.spark",
+            "17",
+        ),
+        ("run-pass/async/future_cooperative_frame_places.spark", "22"),
+        (
+            "run-pass/async/future_cooperative_frame_capture.spark",
+            "18",
+        ),
+        ("run-pass/async/future_cooperative_frame_indexed.spark", "9"),
+        ("run-pass/async/future_cooperative_frame_cow.spark", "28"),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout.trim(), expected);
+        }
+    }
+}

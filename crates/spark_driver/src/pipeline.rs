@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Full compilation pipeline: source code to native object bytes.
 //!
 //! Chains all 10 compiler phases with early exit on errors and diagnostic
@@ -227,6 +229,10 @@ pub fn compile(input: CompileInput) -> Result<CompileOutput, ()> {
             table: borrow_output.table,
             definitions,
         });
+    if async_output.diagnostics.has_errors() {
+        async_output.diagnostics.emit_all(&source_map);
+        return Err(());
+    }
     emit_warnings(&async_output.diagnostics, &source_map);
     let definitions = async_output.definitions;
 
