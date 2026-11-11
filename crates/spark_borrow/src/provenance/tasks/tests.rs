@@ -201,6 +201,34 @@ fn capturing_a_current_future_preserves_its_closed_owner_group_and_late_sources(
     assert_eq!(state.future_copies.witness(Local(1)).peers.len(), 2);
     assert!(state.future_owners.known_role(&capture));
 
+    let mut relocated = state.clone();
+    flow.transfer_statement(
+        &spark_mir::Statement::Assign {
+            place: spark_mir::Place::from_local(Local(3)),
+            rvalue: spark_mir::Rvalue::Use(spark_mir::Operand::Move(spark_mir::Place::from_local(
+                Local(2),
+            ))),
+            span: Span::DUMMY,
+        },
+        Point::new(BlockId::ENTRY, 9),
+        &mut relocated,
+    );
+    let relocated_capture = Role::capture(Local(3), callback, 0, future);
+    assert!(relocated
+        .value(Local(3))
+        .capture(callback, 0)
+        .origins()
+        .contains(&late));
+    assert!(!relocated.live.contains(&Local(2)));
+    assert!(
+        relocated.future_owners.known_role(&relocated_capture),
+        "moving an environment transfers its existing capture owner"
+    );
+    assert_eq!(
+        relocated.future_copies.witness(Local(1)).peers,
+        FxHashSet::from_iter([Role::root(Local(1)), relocated_capture])
+    );
+
     let mut opaque = state.clone();
     flow.transfer_statement(
         &spark_mir::Statement::Assign {
@@ -401,7 +429,7 @@ fn moving_two_aliases_into_a_closure_keeps_both_capture_owners_related() {
         def_id: DefId::new(9940),
         param_count: 0,
         return_type: int,
-        locals: [int, future, future, callable]
+        locals: [int, future, future, callable, callable]
             .into_iter()
             .enumerate()
             .map(|(index, ty)| LocalDecl {
@@ -463,4 +491,31 @@ fn moving_two_aliases_into_a_closure_keeps_both_capture_owners_related() {
         state.future_copies.role_peers(&second),
         FxHashSet::from_iter([first, second])
     );
+    let move_environment = |source, destination| spark_mir::Statement::Assign {
+        place: spark_mir::Place::from_local(Local(destination)),
+        rvalue: spark_mir::Rvalue::Use(spark_mir::Operand::Move(spark_mir::Place::from_local(
+            Local(source),
+        ))),
+        span: Span::DUMMY,
+    };
+    flow.transfer_statement(
+        &move_environment(3, 4),
+        Point::new(BlockId::ENTRY, 4),
+        &mut state,
+    );
+    let first = Role::capture(Local(4), callback, 0, future);
+    let second = Role::capture(Local(4), callback, 1, future);
+    let expected = FxHashSet::from_iter([first.clone(), second.clone()]);
+    assert!(!state.live.contains(&Local(3)));
+    assert_eq!(state.future_copies.role_peers(&first), expected);
+    assert_eq!(state.future_copies.role_peers(&second), expected);
+    assert!(state.future_owners.known_role(&first) && state.future_owners.known_role(&second));
+    flow.transfer_statement(
+        &move_environment(4, 4),
+        Point::new(BlockId::ENTRY, 5),
+        &mut state,
+    );
+    assert_eq!(state.future_copies.role_peers(&first), expected);
+    assert_eq!(state.future_copies.role_peers(&second), expected);
+    assert!(state.future_owners.known_role(&first) && state.future_owners.known_role(&second));
 }

@@ -28,6 +28,13 @@ impl Role {
         }
     }
 
+    pub fn capture_at(&self, local: Local) -> Option<Self> {
+        matches!(self.path.as_slice(), [Slot::Capture(..)]).then(|| Self {
+            local,
+            path: self.path.clone(),
+        })
+    }
+
     pub const fn local(&self) -> Local {
         self.local
     }
@@ -65,10 +72,13 @@ impl Witness {
 
 impl Copies {
     pub fn witness(&self, source: Local) -> Witness {
-        let source = Role::root(source);
+        self.role_witness(&Role::root(source))
+    }
+
+    pub fn role_witness(&self, source: &Role) -> Witness {
         Witness {
-            peers: self.role_peers(&source),
-            inputs: self.inputs.get(&source).cloned().unwrap_or_default(),
+            peers: self.role_peers(source),
+            inputs: self.inputs.get(source).cloned().unwrap_or_default(),
         }
     }
 

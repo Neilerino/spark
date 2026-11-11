@@ -78,6 +78,7 @@ impl CapturedOwner {
             })
             .collect();
         for (capture, peers) in captures.iter_mut().zip(peers) {
+            capture.witness.exclude(&[capture.role.local()]);
             capture.witness.peers.extend(peers);
         }
         for capture in captures {
@@ -226,12 +227,40 @@ impl Flow<'_> {
         .then_some((place.local, ty))
     }
 
+    fn moving_environment(&self, rvalue: &Rvalue, destination: &Place) -> Option<Local> {
+        let Rvalue::Use(Operand::Move(source)) = rvalue else {
+            return None;
+        };
+        if !source.projections.is_empty() || !destination.projections.is_empty() {
+            return None;
+        }
+        let source_ty = value::strip_mutable(self.place_type(source), self.table);
+        let destination_ty = value::strip_mutable(self.place_type(destination), self.table);
+        (source_ty == destination_ty
+            && matches!(self.table.resolve(source_ty), Ty::Function { .. }))
+        .then_some(source.local)
+    }
+
     pub(in crate::provenance) fn captured_future_owners(
         &self,
         rvalue: &Rvalue,
         destination: &Place,
         state: &State,
     ) -> Vec<CapturedOwner> {
+        if let Some(source) = self.moving_environment(rvalue, destination) {
+            return state
+                .future_copies
+                .anchored(source)
+                .iter()
+                .filter_map(|role| {
+                    Some(CapturedOwner {
+                        role: role.capture_at(destination.local)?,
+                        witness: state.future_copies.role_witness(role),
+                        closed: state.future_owners.known_role(role),
+                    })
+                })
+                .collect();
+        }
         let Rvalue::Aggregate(spark_mir::AggregateKind::Closure { func_def_id }, operands) = rvalue
         else {
             return Vec::new();
@@ -244,14 +273,10 @@ impl Flow<'_> {
             .enumerate()
             .filter_map(|(index, operand)| {
                 let (source, ty) = self.captured_future(operand)?;
-                state.live.contains(&source).then(|| {
-                    let mut witness = state.future_copies.witness(source);
-                    witness.exclude(&[destination.local]);
-                    CapturedOwner {
-                        role: Role::capture(destination.local, *func_def_id, index, ty),
-                        witness,
-                        closed: state.future_owners.known(source),
-                    }
+                state.live.contains(&source).then(|| CapturedOwner {
+                    role: Role::capture(destination.local, *func_def_id, index, ty),
+                    witness: state.future_copies.witness(source),
+                    closed: state.future_owners.known(source),
                 })
             })
             .collect()
@@ -263,6 +288,9 @@ impl Flow<'_> {
         destination: &Place,
         state: &mut State,
     ) -> bool {
+        if self.moving_environment(rvalue, destination).is_some() {
+            return false;
+        }
         let root_destination = destination.projections.is_empty()
             && matches!(
                 self.table.resolve(value::strip_mutable(
