@@ -183,6 +183,7 @@ fn a_captured_call_witness_cannot_complete_a_peer_written_during_the_prefix() {
     let proof = CallProof {
         completed: vec![state.future_copies.witness(Local(1))],
         returned: Some(state.future_copies.witness(Local(1))),
+        ..CallProof::default()
     };
     let mut flow = Flow::new(&function, &table, None);
     flow.ensure_transfer(point, &state);

@@ -630,6 +630,7 @@ fn returned_history_follows_only_live_unclobbered_pending_copy_witnesses() {
             future_proof: CallProof {
                 completed: Vec::new(),
                 returned: proved.then_some(witness),
+                ..CallProof::default()
             },
             returned_prefix: Default::default(),
             publications: PrefixWrites::default(),

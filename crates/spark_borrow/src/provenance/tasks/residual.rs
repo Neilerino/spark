@@ -232,6 +232,7 @@ impl Flow<'_> {
                 let proof = super::proofs::CallProof {
                     completed: Vec::new(),
                     returned: Some(witness),
+                    ..super::proofs::CallProof::default()
                 };
                 for peer in peers {
                     let mut current = state.value(peer);

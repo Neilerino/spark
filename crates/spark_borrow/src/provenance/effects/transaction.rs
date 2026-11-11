@@ -307,35 +307,65 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
-        for arg in args {
+        let released: Vec<_> = args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                let (Operand::Copy(place) | Operand::Move(place)) = arg else {
+                    return false;
+                };
+                place.projections.is_empty()
+                    && outcome
+                        .future_proof
+                        .released_owners
+                        .get(&index)
+                        .is_some_and(|witness| {
+                            witness.contains_local(place.local)
+                                && witness.peers.iter().all(|peer| {
+                                    !outcome.clobbered_copies.contains(&peer.local())
+                                        && !state.invalidated_copies.contains(&peer.local())
+                                })
+                        })
+            })
+            .collect();
+        for (arg, released) in args.iter().zip(&released) {
+            if *released {
+                continue;
+            }
             let borrowed_await = matches!(arg, Operand::Copy(place) if place.projections.is_empty()
                 && outcome.completed_task.as_ref().is_some_and(|(local, _)| *local == place.local));
             if !borrowed_await {
                 self.escape_input_owner_operand(arg, state);
             }
+            Self::lose_owning_operand(arg, state);
+        }
+        for (arg, released) in args.iter().zip(released) {
             if let Operand::Move(place) = arg {
-                let completed = outcome
-                    .future_proof
-                    .completed
-                    .iter()
-                    .any(|witness| witness.contains_local(place.local));
-                let returned = outcome
-                    .future_proof
-                    .returned
-                    .as_ref()
-                    .is_some_and(|witness| witness.contains_local(place.local));
-                let joined = outcome
-                    .completed_task
-                    .as_ref()
-                    .is_some_and(|(local, _)| *local == place.local);
-                if outcome.clobbered_copies.contains(&place.local)
-                    || !(completed || returned || joined)
-                {
-                    Self::lose_owning_operand(arg, state);
+                if released {
+                    state.input_owners.drop_local(place.local);
                     self.preserve_writer_loss(place, point, state);
+                } else {
+                    let completed = outcome
+                        .future_proof
+                        .completed
+                        .iter()
+                        .any(|witness| witness.contains_local(place.local));
+                    let returned = outcome
+                        .future_proof
+                        .returned
+                        .as_ref()
+                        .is_some_and(|witness| witness.contains_local(place.local));
+                    let joined = outcome
+                        .completed_task
+                        .as_ref()
+                        .is_some_and(|(local, _)| *local == place.local);
+                    if outcome.clobbered_copies.contains(&place.local)
+                        || !(completed || returned || joined)
+                    {
+                        self.preserve_writer_loss(place, point, state);
+                    }
                 }
             }
-            Self::lose_owning_operand(arg, state);
             if let Some(local) = crate::provenance::consume(arg, state) {
                 self.record_consumed(point, local);
             }
@@ -447,3 +477,6 @@ impl Flow<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod owner_tests;

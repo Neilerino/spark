@@ -7,6 +7,7 @@ use spark_modules::ModuleGraph;
 use std::collections::HashMap;
 
 mod history_transport;
+mod owner_calls;
 mod receive_snapshots;
 
 #[test]

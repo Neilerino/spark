@@ -157,6 +157,7 @@ impl Guarantee {
 pub(in crate::provenance) struct CallProof {
     pub completed: Vec<Witness>,
     pub returned: Option<Witness>,
+    pub released_owners: FxHashMap<usize, Witness>,
 }
 
 impl CallProof {
@@ -219,6 +220,14 @@ impl Flow<'_> {
         CallProof {
             completed: certificate.completed.iter().filter_map(witness).collect(),
             returned: certificate.returned.iter().find_map(witness),
+            released_owners: certificate
+                .retains_no_owner
+                .iter()
+                .filter_map(|input| {
+                    let index = input.index().checked_sub(1)?;
+                    Some((index, actual_witness(*input, args, state)?))
+                })
+                .collect(),
         }
     }
 
