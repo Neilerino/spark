@@ -65,6 +65,7 @@ impl Role {
 pub(in crate::provenance) struct Witness {
     pub peers: FxHashSet<Role>,
     pub fresh: bool,
+    pub output: Option<super::messages::Slot>,
     pub input: Option<std::sync::Arc<crate::provenance::aliases::Port>>,
 }
 
@@ -72,6 +73,7 @@ pub(in crate::provenance) struct Witness {
 pub(in crate::provenance) struct Copies {
     classes: Classes<Role>,
     fresh: FxHashSet<Role>,
+    outputs: FxHashMap<Role, super::messages::Slot>,
     inputs: FxHashMap<Role, std::sync::Arc<crate::provenance::aliases::Port>>,
 }
 
@@ -80,6 +82,7 @@ impl Copies {
         Witness {
             peers: self.classes.peers(source),
             fresh: self.fresh.contains(source),
+            output: self.outputs.get(source).cloned(),
             input: self.inputs.get(source).cloned(),
         }
     }
@@ -114,6 +117,7 @@ impl Copies {
         self.classes.retain(&keep);
         self.fresh.retain(&keep);
         self.inputs.retain(|role, _| keep(role));
+        self.outputs.retain(|role, _| keep(role));
     }
 
     pub fn forget(&mut self, local: Local) {
@@ -132,6 +136,10 @@ impl Copies {
             .collect();
         self.fresh.remove(&destination);
         self.inputs.remove(&destination);
+        self.outputs.remove(&destination);
+        if let Some(output) = witness.output {
+            self.outputs.insert(destination.clone(), output);
+        }
         if let Some(input) = witness.input {
             self.inputs.insert(destination.clone(), input);
         }
@@ -139,6 +147,24 @@ impl Copies {
             self.fresh.insert(destination.clone());
         }
         self.classes.assign(destination, peers);
+    }
+
+    pub fn reserve_output(&mut self, role: &Role, output: &super::messages::Slot) {
+        for peer in self.classes.peers(role) {
+            self.outputs.insert(peer, output.clone());
+        }
+    }
+
+    pub fn output_roles(&self, output: &super::messages::Slot) -> FxHashSet<Role> {
+        self.outputs
+            .iter()
+            .filter(|(_, found)| *found == output)
+            .map(|(role, _)| role.clone())
+            .collect()
+    }
+
+    pub fn forget_output(&mut self, output: &super::messages::Slot) {
+        self.outputs.retain(|_, found| found != output);
     }
 
     pub fn intersect(&mut self, other: &Self) -> bool {
@@ -150,6 +176,10 @@ impl Copies {
         self.inputs
             .retain(|role, input| other.inputs.get(role) == Some(input));
         changed |= before != self.inputs.len();
+        let before = self.outputs.len();
+        self.outputs
+            .retain(|role, output| other.outputs.get(role) == Some(output));
+        changed |= before != self.outputs.len();
         changed
     }
 }

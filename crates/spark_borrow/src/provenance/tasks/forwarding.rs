@@ -185,6 +185,7 @@ impl Flow<'_> {
                 peers: returned.peers.clone(),
                 inputs: returned.inputs.clone(),
                 birth: returned.birth,
+                produces: returned.produces.clone(),
             },
             covered,
             tokens,

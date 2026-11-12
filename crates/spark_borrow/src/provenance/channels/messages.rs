@@ -244,6 +244,9 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
+        state.queue_promises.remove(slot);
+        state.channel_copies.forget_output(slot);
+        state.future_copies.forget_output(slot);
         let Some(previous) = state.queue_current.get(slot).cloned() else {
             return;
         };

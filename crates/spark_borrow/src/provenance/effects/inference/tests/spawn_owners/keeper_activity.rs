@@ -60,7 +60,7 @@ fn replaced_child_kept_by_helper_has_no_pending_borrow_after_final_join() {
     });
 }
 
-fn with_source_flow(source: &str, run: impl FnOnce(&mut Flow<'_>)) {
+pub(super) fn with_source_flow(source: &str, run: impl FnOnce(&mut Flow<'_>)) {
     let output = lower_source(source);
     assert!(!output.diagnostics.has_errors());
     let facts = output
@@ -249,5 +249,277 @@ fn main(): Int {
             assert!(history.is_disjoint(&first_origins));
         }
         assert!(reached);
+    });
+}
+
+#[test]
+fn a_producer_spawn_reserves_its_certified_current_message_before_weak_imports() {
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_task_retained_child_memory_scoped.spark"
+    ));
+    with_source_flow(source, |flow| {
+        let named = |name: &str| {
+            flow.function
+                .locals
+                .iter()
+                .find(|decl| decl.name.is_some_and(|symbol| symbol.as_str() == name))
+                .unwrap()
+                .local
+        };
+        let parent = named("parent");
+        let retained = named("retained");
+        let (index, block) = flow
+            .function
+            .blocks
+            .iter()
+            .enumerate()
+            .find(|(_, block)| {
+                block.statements.iter().any(|statement| {
+                    matches!(statement,
+                Statement::Assign { place, .. } if place.local == parent)
+                })
+            })
+            .unwrap();
+        let statements = block.statements.clone();
+        let mut state = flow.entries[index]
+            .clone()
+            .expect("the producer spawn returns");
+        for (step, statement) in statements.iter().enumerate() {
+            flow.transfer_statement(
+                statement,
+                Point::new(BlockId(index as u32), step as u32),
+                &mut state,
+            );
+            if matches!(statement, Statement::Assign { place, .. } if place.local == parent) {
+                break;
+            }
+        }
+        let targets: FxHashSet<_> = state
+            .value(retained)
+            .queues
+            .values()
+            .flatten()
+            .flat_map(|handle| flow.queue_targets(&handle.target))
+            .collect();
+        assert_eq!(targets.len(), 1);
+        let messages: Vec<_> = state
+            .queue_current
+            .iter()
+            .filter(|(_, message)| !message.targets.is_disjoint(&targets))
+            .collect();
+        assert_eq!(messages.len(), 1,
+            "the certified producer's current output must be associated before sampled prefix imports become weak history");
+        let (slot, message) = messages[0];
+        assert!(
+            !state
+                .future_owners
+                .known_role(&crate::provenance::tasks::Role::message(slot.clone())),
+            "a pending producer has not discharged queue ownership"
+        );
+        assert!(message
+            .value
+            .futures
+            .values()
+            .flatten()
+            .any(|handle| handle.pending));
+        assert!(
+            !message.value.origins().is_empty(),
+            "full borrowed callback support remains backed"
+        );
+        assert!(
+            targets
+                .iter()
+                .all(|target| !state.queues.keys().any(|(stored, _)| stored == target)),
+            "the associated contribution must never be copied out of weak history after the fact"
+        );
+    });
+}
+
+#[test]
+fn a_producer_entry_requires_enumerated_aliases_and_no_prior_access() {
+    for (setup, tail, expected) in [
+        ("", "", true),
+        ("copy: Channel[Future[Int]] = out", "copy.close()", true),
+        ("borrowed: Ref[Channel[Future[Int]]] = out", "", false),
+        ("box: Box = Box { queue: out }", "box.queue.close()", false),
+        ("consumer: Future[Int] = spawn { consume(out) }", "", false),
+    ] {
+        let source = format!("struct Box {{ queue: Channel[Future[Int]] }}
+async fn work(): Int {{ return 7 }}
+async fn emit(out: Channel[Future[Int]]): Int {{ if true {{ child: Future[Int] = spawn {{ work() }} out.send(child) }} return 0 }}
+async fn consume(out: Channel[Future[Int]]): Int {{ child: Future[Int] = out.recv() return 0 }}
+fn main(): Int {{ out: Channel[Future[Int]] = Channel[Future[Int]]() {setup} parent: Future[Int] = spawn {{ emit(out) }} {tail} return 0 }}");
+        with_source_flow(&source, |flow| {
+            let out = flow
+                .function
+                .locals
+                .iter()
+                .find(|decl| decl.name.is_some_and(|name| name.as_str() == "out"))
+                .unwrap()
+                .local;
+            let mut entries = Vec::new();
+            let mut roots = Vec::new();
+            for (index, block) in flow.function.blocks.clone().iter().enumerate() {
+                let Terminator::Call { func, args, .. } = &block.terminator else {
+                    continue;
+                };
+                let Some(info) = flow
+                    .function
+                    .resolve_callee_def_id(func)
+                    .and_then(|id| flow.program.unwrap().definitions.unwrap().get(id))
+                else {
+                    continue;
+                };
+                if info.name != spark_intern::kw::SPARK_SPAWN {
+                    continue;
+                }
+                let Some(mut state) = flow.entries[index].clone() else {
+                    continue;
+                };
+                for (step, statement) in block.statements.iter().enumerate() {
+                    flow.transfer_statement(
+                        statement,
+                        Point::new(BlockId(index as u32), step as u32),
+                        &mut state,
+                    );
+                }
+                let target = state
+                    .value(out)
+                    .root_queue_handles()
+                    .next()
+                    .unwrap()
+                    .target
+                    .clone();
+                if flow
+                    .operand(&args[0], &state)
+                    .queues
+                    .values()
+                    .flatten()
+                    .any(|handle| handle.target == target)
+                {
+                    roots.push(
+                        state
+                            .live
+                            .iter()
+                            .map(|local| {
+                                (
+                                    *local,
+                                    format!(
+                                        "{:?}",
+                                        flow.table.resolve(flow.function.locals[local.index()].ty)
+                                    ),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    );
+                    if expected {
+                        let address = *state
+                            .live
+                            .iter()
+                            .find(|local| {
+                                matches!(
+                                    flow.table.resolve(flow.function.locals[local.index()].ty),
+                                    spark_types::Ty::Error
+                                ) && !state.value(**local).callees.is_empty()
+                            })
+                            .expect("the real spawn has an intrinsic function-address operand");
+                        let mut contaminated = state.clone();
+                        let mut address_value = state.value(address);
+                        address_value.join(&Value::reference(crate::provenance::Origin::Unproven(
+                            Point::new(BlockId(index as u32), 0),
+                        )));
+                        contaminated.set(address, address_value);
+                        assert!(
+                            flow.empty_queue_entry(
+                                &crate::provenance::channels::identity::Role::Local(out),
+                                &contaminated
+                            )
+                            .is_none(),
+                            "a known builtin target cannot hide additional reference support"
+                        );
+                    }
+                    entries.push(flow.empty_queue_entry(
+                        &crate::provenance::channels::identity::Role::Local(out),
+                        &state,
+                    ));
+                }
+            }
+            let entry = entries.pop().expect("actual producer spawn is reachable");
+            assert_eq!(entry.is_some(), expected, "{source}\n{roots:?}");
+            if let Some(entry) = entry {
+                assert_eq!(
+                    entry.queue,
+                    crate::provenance::channels::identity::Role::Local(out)
+                );
+                assert!(entry.witness.fresh);
+                assert!(matches!(
+                    entry.target,
+                    crate::provenance::channels::Target::Allocation { .. }
+                ));
+            }
+        });
+    }
+}
+
+#[test]
+fn the_retained_child_producer_starts_with_an_enumerated_empty_queue() {
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_task_retained_child_memory_scoped.spark"
+    ));
+    with_source_flow(source, |flow| {
+        let retained = flow
+            .function
+            .locals
+            .iter()
+            .find(|decl| decl.name.is_some_and(|name| name.as_str() == "retained"))
+            .unwrap()
+            .local;
+        let mut checked = 0;
+        for (index, block) in flow.function.blocks.clone().iter().enumerate() {
+            let Terminator::Call { func, args, .. } = &block.terminator else {
+                continue;
+            };
+            let Some(info) = flow
+                .function
+                .resolve_callee_def_id(func)
+                .and_then(|id| flow.program.unwrap().definitions.unwrap().get(id))
+            else {
+                continue;
+            };
+            if info.name != spark_intern::kw::SPARK_SPAWN {
+                continue;
+            }
+            let Some(mut state) = flow.entries[index].clone() else {
+                continue;
+            };
+            for (step, statement) in block.statements.iter().enumerate() {
+                flow.transfer_statement(
+                    statement,
+                    Point::new(BlockId(index as u32), step as u32),
+                    &mut state,
+                );
+            }
+            let targets: FxHashSet<_> = state
+                .value(retained)
+                .root_queue_handles()
+                .map(|handle| handle.target.clone())
+                .collect();
+            if targets.is_empty()
+                || !flow
+                    .operand(&args[0], &state)
+                    .queues
+                    .values()
+                    .flatten()
+                    .any(|handle| targets.contains(&handle.target))
+            {
+                continue;
+            }
+            assert!(flow.empty_queue_entry(&crate::provenance::channels::identity::Role::Local(retained), &state).is_some(),
+                "the unchanged safe public producer has a closed empty queue before its first spawn");
+            checked += 1;
+        }
+        assert_eq!(checked, 1);
     });
 }

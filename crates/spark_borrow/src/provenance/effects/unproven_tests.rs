@@ -786,6 +786,9 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
     flow.ensure_transfer(point, &state);
     let outcome = CallOutcome {
         fresh_outputs: Vec::new(),
+        spawn_outputs: Vec::new(),
+        producer_accesses: rustc_hash::FxHashSet::default(),
+        producer_events: Vec::new(),
         queue_accesses: crate::provenance::channels::access::Accesses::default(),
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         direct_queue_send: None,

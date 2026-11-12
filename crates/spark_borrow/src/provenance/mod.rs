@@ -50,6 +50,7 @@ struct State {
     queue_send_counts: channels::counts::Sends,
     queue_accesses: channels::access::Accesses,
     queue_current: FxHashMap<channels::messages::Slot, channels::messages::Contribution>,
+    queue_promises: channels::protocol::Promises,
     observations: observations::Samples,
     pending_memory: FxHashMap<std::sync::Arc<tasks::memory::Lane>, Value>,
     settled_memory: FxHashMap<observations::Sample, Value>,
@@ -211,6 +212,7 @@ impl State {
         );
         changed |= self.future_copies.intersect(&other.future_copies);
         changed |= self.channel_copies.intersect(&other.channel_copies);
+        changed |= channels::protocol::intersect(&mut self.queue_promises, &other.queue_promises);
         changed |= self.queue_accesses.join(&other.queue_accesses);
         changed |= self.input_owners.join(&other.input_owners);
         let before = self.joined_inputs.len();
@@ -508,7 +510,7 @@ impl<'a> Flow<'a> {
                     place: borrowed, ..
                 } = rvalue
                 {
-                    self.address_queue_access(borrowed, state);
+                    self.address_queue_access(borrowed, point, state);
                 }
                 let executions = self.moving_executions(rvalue, place, point, state);
                 let input_transfer = self.input_owner_transfer(rvalue, place, state);
@@ -594,6 +596,7 @@ impl<'a> Flow<'a> {
             }
             Statement::Nop => {}
         }
+        self.validate_queue_promises(point, state);
     }
 
     fn rvalue(&mut self, rvalue: &Rvalue, ty: TypeId, point: Point, state: &State) -> Value {

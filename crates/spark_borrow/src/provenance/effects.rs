@@ -3,8 +3,7 @@
 //! Direct function summaries use the same slot transfer engine as diagnostics.
 
 pub(in crate::provenance) mod fresh_output_binding;
-
-use crate::provenance::tasks::proofs::CallProof;
+pub(in crate::provenance) mod spawn_outputs;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_diagnostics::Diagnostics;
@@ -437,34 +436,13 @@ impl Flow<'_> {
             true,
         ));
         CallOutcome {
-            fresh_outputs: Vec::new(),
             queue_accesses: crate::provenance::channels::access::Accesses::unknown(),
             queue_send_counts: crate::provenance::channels::counts::Sends {
                 unknown: true,
                 ..Default::default()
             },
-            direct_queue_send: None,
-            fresh_birth: None,
-            fresh_leaf_task: false,
-            spawn_owners: None,
-            returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
-            retained_captures: Vec::new(),
-            returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
-            residuals: Vec::new(),
-            async_memory: Vec::new(),
-            tasks: Vec::new(),
-            completed_task: None,
-            clobbered_copies: Vec::new(),
-            future_proof: CallProof::default(),
-            returned_prefix: rustc_hash::FxHashSet::default(),
-            publications: crate::provenance::effects::PrefixWrites::default(),
-            place_writes: Vec::new(),
-            prefix_memory: Vec::new(),
-            prefix_residuals: Vec::new(),
             returned,
-            memory: Vec::new(),
-            queues: Vec::new(),
-            queue_contents: Vec::new(),
+            ..Default::default()
         }
     }
 

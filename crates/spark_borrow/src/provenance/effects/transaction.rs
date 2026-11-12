@@ -8,7 +8,6 @@ use super::{
     Aliases, CallActuals, Flow, Local, MemoryEvent, MirFunction, Operand, Point, PrefixWrites,
     State, Summary, TypeId, Value,
 };
-use crate::provenance::tasks::proofs::CallProof;
 
 #[derive(Default)]
 pub(in crate::provenance) struct Dispatch {
@@ -25,6 +24,7 @@ impl Dispatch {
     }
 }
 
+#[derive(Default)]
 pub(in crate::provenance) struct CallOutcome {
     pub returned: Value,
     pub tasks: Vec<(
@@ -40,6 +40,9 @@ pub(in crate::provenance) struct CallOutcome {
     pub memory: Vec<MemoryWrite>,
     pub async_memory: Vec<MemoryWrite>,
     pub fresh_outputs: Vec<crate::provenance::effects::fresh_output_binding::Bound>,
+    pub spawn_outputs: Vec<super::spawn_outputs::Reservation>,
+    pub producer_accesses: rustc_hash::FxHashSet<crate::provenance::channels::messages::Slot>,
+    pub producer_events: Vec<crate::provenance::channels::QueueEvent>,
     pub queue_accesses: crate::provenance::channels::access::Accesses,
     pub queue_send_counts: crate::provenance::channels::counts::Sends,
     pub direct_queue_send: Option<crate::provenance::channels::messages::Send>,
@@ -79,6 +82,35 @@ impl CallOutcome {
 
     fn apply_prefix(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
         self.import_observations(flow, point, state);
+        for output in &mut self.spawn_outputs {
+            if !output.reserve(flow, point, state) {
+                self.queues.append(&mut output.events);
+            }
+        }
+        if let Some((local, _)) = &self.completed_task {
+            if let Some(handles) = state.value(*local).futures.get(&Vec::new()) {
+                if handles.len() == 1 {
+                    if let Some(handle) = handles.iter().next() {
+                        let mut remaining = Vec::new();
+                        for mut event in self.queues.drain(..) {
+                            if flow.route_producer_queue_event(
+                                &crate::provenance::demand::Storage::Logical(*local),
+                                &[],
+                                handle,
+                                &mut event,
+                                point,
+                                state,
+                            ) {
+                                self.producer_events.push(event);
+                            } else {
+                                remaining.push(event);
+                            }
+                        }
+                        self.queues = remaining;
+                    }
+                }
+            }
+        }
         flow.apply_call_prefix(self, point, state);
         self.clobbered_copies
             .extend(state.invalidated_copies.iter().copied());
@@ -194,8 +226,36 @@ impl CallOutcome {
         }
     }
 
+    fn apply_writes(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        for write in self.queue_contents.drain(..) {
+            flow.import_queue_contents(&write.target, &write.value, write.ty, point, state);
+        }
+        if let Some(send) = &self.direct_queue_send {
+            flow.apply_direct_queue_send(send, &self.queues, point, state);
+        } else {
+            for write in self.queues.drain(..) {
+                flow.apply_queue_event(&write, point, state);
+            }
+        }
+        for write in self.async_memory.drain(..) {
+            flow.import_settled_memory(&write, point, state);
+        }
+        for write in self.memory.drain(..) {
+            flow.apply_memory_snapshot(&write.target, &write.value, write.ty, point, state);
+        }
+        for (place, value) in self.place_writes.drain(..) {
+            flow.store(&place, value, point, state);
+        }
+    }
+
     fn visit_values(&mut self, mut visit: impl FnMut(&mut Value)) {
         visit(&mut self.returned);
+        for event in &mut self.producer_events {
+            visit(&mut event.write.value);
+        }
+        for output in &mut self.spawn_outputs {
+            output.visit_values(&mut visit);
+        }
         for output in &mut self.fresh_outputs {
             output.visit_values(&mut visit);
         }
@@ -348,10 +408,6 @@ impl Flow<'_> {
             fresh_outputs,
             queue_accesses: self.bind_queue_accesses(summary, function, actuals),
             queue_send_counts: self.bind_normal_queue_sends(summary, function, actuals),
-            direct_queue_send: None,
-            fresh_birth: None,
-            fresh_leaf_task: false,
-            spawn_owners: None,
             returned_owner_tags: self.bind_owner_tags(
                 &summary.returned_owner_tags,
                 function,
@@ -364,17 +420,15 @@ impl Flow<'_> {
             async_memory,
             publications: prefix.publications,
             tasks,
-            completed_task: None,
             clobbered_copies,
-            future_proof: CallProof::default(),
             returned_prefix: prefix.returned,
-            place_writes: Vec::new(),
             prefix_memory: prefix.memory,
             prefix_residuals: prefix.residuals,
             returned,
             memory,
             queues: prefix.queues,
             queue_contents,
+            ..Default::default()
         }
     }
 
@@ -442,6 +496,13 @@ impl Flow<'_> {
             .chain(
                 outcome
                     .fresh_outputs
+                    .iter()
+                    .flat_map(|output| output.events.iter()),
+            )
+            .chain(outcome.producer_events.iter())
+            .chain(
+                outcome
+                    .spawn_outputs
                     .iter()
                     .flat_map(|output| output.events.iter()),
             )
@@ -606,6 +667,13 @@ impl Flow<'_> {
             self.transfers.insert(point, common.clone());
             let mut after = state.clone();
             let access = self.expand_queue_accesses(&alternative.queue_accesses, &after);
+            self.poison_queue_promises(
+                &access,
+                &alternative.producer_accesses,
+                &alternative.queue_send_counts,
+                point,
+                &mut after,
+            );
             after.queue_accesses.join(&access);
             after.queue_send_counts.then(&alternative.queue_send_counts);
             alternative.apply_prefix(self, point, &mut after);
@@ -634,37 +702,7 @@ impl Flow<'_> {
                 self.complete_future(local, &result, point, &mut after);
             }
 
-            for write in alternative.queue_contents.drain(..) {
-                self.import_queue_contents(
-                    &write.target,
-                    &write.value,
-                    write.ty,
-                    point,
-                    &mut after,
-                );
-            }
-            if let Some(send) = &alternative.direct_queue_send {
-                self.apply_direct_queue_send(send, &alternative.queues, point, &mut after);
-            } else {
-                for write in alternative.queues.drain(..) {
-                    self.apply_queue_event(&write, point, &mut after);
-                }
-            }
-            for write in alternative.async_memory.drain(..) {
-                self.import_settled_memory(&write, point, &mut after);
-            }
-            for write in alternative.memory.drain(..) {
-                self.apply_memory_snapshot(
-                    &write.target,
-                    &write.value,
-                    write.ty,
-                    point,
-                    &mut after,
-                );
-            }
-            for (place, value) in alternative.place_writes.drain(..) {
-                self.store(&place, value, point, &mut after);
-            }
+            alternative.apply_writes(self, point, &mut after);
             self.store(
                 destination,
                 std::mem::take(&mut alternative.returned),
@@ -685,7 +723,17 @@ impl Flow<'_> {
             for output in alternative.fresh_outputs.drain(..) {
                 output.install(self, point, &alternative.clobbered_copies, &mut after);
             }
+            for output in alternative.spawn_outputs.drain(..) {
+                output.finish(
+                    self,
+                    destination,
+                    &alternative.clobbered_copies,
+                    point,
+                    &mut after,
+                );
+            }
             self.retire_call_frames(point, &mut after);
+            self.validate_queue_promises(point, &mut after);
             let transfer = self.transfers[&point].clone();
             if let Some((joined, ledger)) = &mut alternatives {
                 joined.join(&after);

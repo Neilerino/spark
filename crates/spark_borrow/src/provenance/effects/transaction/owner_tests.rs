@@ -1,7 +1,7 @@
 // TAG [SPARK-114]
 
 use super::*;
-use crate::provenance::{tasks, value::Value};
+use crate::provenance::{tasks, tasks::proofs::CallProof, value::Value};
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_mir::{BlockId, LocalDecl};
 use spark_resolve::DefId;
@@ -63,6 +63,9 @@ fn outcome(state: &State, released_index: usize) -> CallOutcome {
         memory: vec![],
         async_memory: vec![],
         fresh_outputs: Vec::new(),
+        spawn_outputs: Vec::new(),
+        producer_accesses: rustc_hash::FxHashSet::default(),
+        producer_events: Vec::new(),
         queue_accesses: crate::provenance::channels::access::Accesses::default(),
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         direct_queue_send: None,

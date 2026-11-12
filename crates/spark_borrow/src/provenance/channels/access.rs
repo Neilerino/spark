@@ -52,7 +52,11 @@ pub(in crate::provenance) fn join_returns(
     }
 }
 
-fn may_contain_queue(ty: TypeId, table: &TypeTable, seen: &mut FxHashSet<TypeId>) -> bool {
+pub(in crate::provenance) fn may_contain_queue(
+    ty: TypeId,
+    table: &TypeTable,
+    seen: &mut FxHashSet<TypeId>,
+) -> bool {
     let ty = value::strip_mutable(ty, table);
     if !seen.insert(ty) {
         return false;
@@ -73,7 +77,11 @@ fn may_contain_queue(ty: TypeId, table: &TypeTable, seen: &mut FxHashSet<TypeId>
     }
 }
 
-fn may_reference_queue(ty: TypeId, table: &TypeTable, seen: &mut FxHashSet<TypeId>) -> bool {
+pub(super) fn may_reference_queue(
+    ty: TypeId,
+    table: &TypeTable,
+    seen: &mut FxHashSet<TypeId>,
+) -> bool {
     let ty = value::strip_mutable(ty, table);
     if !seen.insert(ty) {
         return false;
@@ -206,7 +214,12 @@ impl Flow<'_> {
         access
     }
 
-    pub(in crate::provenance) fn address_queue_access(&self, place: &Place, state: &mut State) {
+    pub(in crate::provenance) fn address_queue_access(
+        &mut self,
+        place: &Place,
+        point: crate::provenance::Point,
+        state: &mut State,
+    ) {
         if may_contain_queue(
             self.place_type(place),
             self.table,
@@ -214,6 +227,13 @@ impl Flow<'_> {
         ) {
             // References can hide the handle from ordinary argument queue traversal.
             state.queue_accesses.unknown = true;
+            self.poison_queue_promises(
+                &Accesses::unknown(),
+                &FxHashSet::default(),
+                &super::counts::Sends::default(),
+                point,
+                state,
+            );
         }
     }
 }

@@ -154,6 +154,7 @@ impl Bound {
                     peers: FxHashSet::default(),
                     inputs: FxHashSet::default(),
                     birth: Some(self.recipe.birth),
+                    produces: FxHashSet::default(),
                 },
                 &Live::new(&state.live, &state.queue_current),
             );
@@ -274,7 +275,7 @@ impl Flow<'_> {
     }
 }
 
-fn output_queue(
+pub(super) fn output_queue(
     recipe: &Recipe,
     function: &MirFunction,
     actuals: CallActuals<'_>,

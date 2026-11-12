@@ -6,8 +6,8 @@ pub(super) mod access;
 pub(super) mod counts;
 pub(super) mod identity;
 pub(super) mod messages;
+pub(super) mod protocol;
 
-use crate::provenance::tasks::proofs::CallProof;
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_intern::kw;
 use spark_mir::{Local, Operand};
@@ -436,7 +436,6 @@ impl Flow<'_> {
             ..Default::default()
         };
         Some(super::effects::CallOutcome {
-            fresh_outputs: Vec::new(),
             queue_accesses: if info.name == kw::SEND {
                 access::Accesses::default()
             } else {
@@ -444,27 +443,10 @@ impl Flow<'_> {
             },
             queue_send_counts: self.actual_queue_send_counts(&queues),
             direct_queue_send,
-            fresh_birth: None,
-            fresh_leaf_task: false,
-            spawn_owners: None,
-            returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
-            retained_captures: Vec::new(),
-            returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
-            residuals: Vec::new(),
-            async_memory: Vec::new(),
-            tasks: Vec::new(),
-            completed_task: None,
-            clobbered_copies: Vec::new(),
-            future_proof: CallProof::default(),
-            returned_prefix: rustc_hash::FxHashSet::default(),
             publications,
-            place_writes: Vec::new(),
-            prefix_memory: Vec::new(),
-            prefix_residuals: Vec::new(),
             returned,
-            memory: Vec::new(),
             queues,
-            queue_contents: Vec::new(),
+            ..Default::default()
         })
     }
 
@@ -803,7 +785,7 @@ impl Flow<'_> {
         }
     }
 
-    fn record_queue_event(&mut self, event: &QueueEvent) {
+    pub(in crate::provenance) fn record_queue_event(&mut self, event: &QueueEvent) {
         self.record_event_guard(
             super::effects::EventKey::Queue(event.site),
             &event.fence.inputs,
@@ -978,6 +960,15 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
+        let cancelled: Vec<_> = state
+            .queue_promises
+            .iter()
+            .filter(|(_, promise)| promise.queue == target)
+            .map(|(slot, _)| slot.clone())
+            .collect();
+        for slot in cancelled {
+            self.cancel_queue_promise(&slot, point, state);
+        }
         self.record_queue_send(&target, payload, point, state);
         if target.may_outlive_function() || state.exposed_queues.contains(&target) {
             self.expose_queue_handles(payload, state);

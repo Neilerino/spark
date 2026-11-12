@@ -29,6 +29,27 @@ impl Flow<'_> {
             })
     }
 
+    pub(super) fn queue_free_builtin(&self, args: &[Operand], actuals: CallActuals<'_>) -> bool {
+        self.is_builtin_callee(actuals.callee)
+            && actuals
+                .callee
+                .callees
+                .get(&Vec::new())
+                .is_some_and(|targets| {
+                    targets
+                        .known
+                        .iter()
+                        .any(|def| *actuals.callee == Value::function(*def))
+                })
+            && args.iter().all(|arg| {
+                !crate::provenance::channels::access::may_contain_queue(
+                    super::super::operand_type(arg, self.function),
+                    self.table,
+                    &mut FxHashSet::default(),
+                )
+            })
+    }
+
     pub(super) fn opaque_result(&mut self, args: &[Operand], actuals: CallActuals<'_>) -> Value {
         let CallActuals {
             callee,

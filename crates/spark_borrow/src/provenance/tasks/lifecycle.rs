@@ -172,6 +172,7 @@ impl CapturedOwner {
                 .any(|peer| peer.frame_clobbered(&[], &state.invalidated_copies))
         {
             self.witness.birth = None;
+            self.witness.produces.clear();
             self.coverage = None;
         }
         state.future_owners.forget_role(&self.role);

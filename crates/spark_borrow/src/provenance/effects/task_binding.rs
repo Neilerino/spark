@@ -1,6 +1,5 @@
 // TAG [SPARK-114]
 
-use crate::provenance::tasks::proofs::CallProof;
 use spark_intern::kw;
 use spark_resolve::DefinitionKind;
 use spark_types::Ty;
@@ -69,8 +68,13 @@ impl Flow<'_> {
         };
         let fresh_leaf_task = self.leaf_task(&record);
         let (target, mut returned) = super::super::tasks::birth(self.function.def_id, point, ty);
-        let facts = self.task_facts(&record, &target, point, state, *inner);
+        let mut facts = self.task_facts(&record, &target, point, state, *inner);
         self.observe_prefix(&facts.prefix, point, state);
+        let mut spawn_outputs =
+            self.spawn_queue_outputs(argument, &record, &target, *inner, point, state);
+        for output in &mut spawn_outputs {
+            output.partition(&mut facts.prefix.queues);
+        }
         returned.task_views.entry(Vec::new()).or_default().insert(
             super::super::tasks::views::Subject {
                 target: target.clone(),
@@ -81,10 +85,8 @@ impl Flow<'_> {
         returned.join(&callback.task_lineage());
         returned.join(&facts.returned.prefixed(Slot::Element, ty, self.table));
         Some(TaskDispatch::Returns(vec![CallOutcome {
-            fresh_outputs: Vec::new(),
+            spawn_outputs,
             queue_accesses: self.operand_queue_accesses(argument, state),
-            queue_send_counts: crate::provenance::channels::counts::Sends::default(),
-            direct_queue_send: None,
             fresh_birth: if fresh_leaf_task {
                 crate::provenance::tasks::fresh::Transfer::at_spawn(self, args, &record, ty, point)
             } else {
@@ -92,24 +94,12 @@ impl Flow<'_> {
             },
             fresh_leaf_task,
             spawn_owners: self.spawn_owner_transfer(args, fresh_leaf_task, state),
-            returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
-            retained_captures: Vec::new(),
-            returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals: facts.prefix.residuals,
-            async_memory: Vec::new(),
             returned,
             tasks: vec![(target, record)],
-            completed_task: None,
-            clobbered_copies: Vec::new(),
-            future_proof: CallProof::default(),
-            returned_prefix: rustc_hash::FxHashSet::default(),
-            publications: crate::provenance::effects::PrefixWrites::default(),
-            place_writes: Vec::new(),
             prefix_memory: facts.prefix.memory,
-            prefix_residuals: Vec::new(),
-            memory: Vec::new(),
             queues: facts.prefix.queues,
-            queue_contents: Vec::new(),
+            ..Default::default()
         }]))
     }
 
@@ -187,31 +177,20 @@ impl Flow<'_> {
             .is_empty()
             .then_some((place.local, returned.clone()));
         Some(TaskDispatch::Returns(vec![CallOutcome {
-            fresh_outputs: Vec::new(),
+            producer_accesses: if place.projections.is_empty()
+                && state.current_execution_record(place.local).is_some()
+            {
+                state.future_copies.produces(place.local)
+            } else {
+                rustc_hash::FxHashSet::default()
+            },
             queue_accesses: self.operand_queue_accesses(args.first()?, state),
-            queue_send_counts: crate::provenance::channels::counts::Sends::default(),
-            direct_queue_send: None,
-            fresh_birth: None,
-            fresh_leaf_task: false,
-            spawn_owners: None,
-            returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
-            retained_captures: Vec::new(),
-            returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals,
-            async_memory: Vec::new(),
             returned,
-            tasks: Vec::new(),
             completed_task,
-            clobbered_copies: Vec::new(),
-            future_proof: CallProof::default(),
-            returned_prefix: rustc_hash::FxHashSet::default(),
-            publications: crate::provenance::effects::PrefixWrites::default(),
-            place_writes: Vec::new(),
             prefix_memory,
-            prefix_residuals: Vec::new(),
-            memory: Vec::new(),
             queues,
-            queue_contents: Vec::new(),
+            ..Default::default()
         }]))
     }
 

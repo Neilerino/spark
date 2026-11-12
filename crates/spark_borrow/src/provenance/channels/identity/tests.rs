@@ -22,12 +22,23 @@ fn with_channels(run: impl FnOnce(&mut Flow<'_>, State)) {
         is_async: false,
     });
     let future = table.intern(Ty::Future { inner: int });
+    let queue_ref = table.intern(Ty::Ref {
+        inner: channel,
+        mutable: false,
+        lifetime: spark_types::LifetimeId::ANONYMOUS,
+    });
+    let int_ref = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: spark_types::LifetimeId::ANONYMOUS,
+    });
     let function = MirFunction {
         def_id: DefId::new(9988),
         param_count: 0,
         return_type: int,
         locals: [
-            int, channel, channel, channel, channel, callback, callback, future, future,
+            int, channel, channel, channel, channel, callback, callback, future, future, queue_ref,
+            int_ref,
         ]
         .into_iter()
         .enumerate()
@@ -658,6 +669,136 @@ fn entry_lineage_survives_supported_transfers_without_becoming_freshness() {
         assert_eq!(
             state.channel_copies.witness(&execution).input.as_deref(),
             Some(&port)
+        );
+    });
+}
+
+#[test]
+fn exclusive_queue_entry_distinguishes_current_copies_from_reused_labels() {
+    with_channels(|flow, mut state| {
+        fresh(flow, &mut state, Local(1));
+        copy(flow, &mut state, Local(2), Local(1), 2);
+        assert!(flow
+            .empty_queue_entry(&Role::Local(Local(1)), &state)
+            .is_some());
+        fresh(flow, &mut state, Local(1));
+        assert_eq!(state.value(Local(1)).queues, state.value(Local(2)).queues);
+        assert!(
+            flow.empty_queue_entry(&Role::Local(Local(1)), &state)
+                .is_none(),
+            "an old equal allocation label is an unenumerated current alias"
+        );
+        state.consume(Local(2));
+        assert!(flow
+            .empty_queue_entry(&Role::Local(Local(1)), &state)
+            .is_some());
+    });
+}
+
+#[test]
+fn exclusive_queue_entry_checks_rooted_memory_but_not_an_unrooted_task_catalog() {
+    use crate::provenance::{
+        observations::{FrameScope, Memory, Sample},
+        tasks::{birth, Record},
+    };
+    with_channels(|flow, mut state| {
+        fresh(flow, &mut state, Local(1));
+        let (target, _) = birth(
+            flow.function.def_id,
+            Point::new(BlockId::ENTRY, 3),
+            flow.function.locals[7].ty,
+        );
+        state.tasks.insert(
+            target,
+            Record {
+                callback: state.value(Local(1)),
+                callback_ty: flow.function.locals[5].ty,
+            },
+        );
+        assert!(
+            flow.empty_queue_entry(&Role::Local(Local(1)), &state)
+                .is_some(),
+            "a weak task catalog is not a physical alias root"
+        );
+        let ty = flow.function.locals[1].ty;
+        state.settled_memory.insert(
+            Sample {
+                memory: Memory::Frame {
+                    scope: FrameScope::Current,
+                    function: flow.function.def_id,
+                    local: Local(2),
+                    ty,
+                },
+                path: Vec::new(),
+                ty,
+            },
+            state.value(Local(1)),
+        );
+        assert!(
+            flow.empty_queue_entry(&Role::Local(Local(1)), &state)
+                .is_none(),
+            "retained settled memory is part of actual rooted activity"
+        );
+    });
+}
+
+#[test]
+fn exclusive_queue_entry_does_not_treat_missing_pending_support_as_empty_access() {
+    with_channels(|flow, mut state| {
+        fresh(flow, &mut state, Local(1));
+        let (_, pending) = crate::provenance::tasks::birth(
+            flow.function.def_id,
+            Point::new(BlockId::ENTRY, 3),
+            flow.function.locals[7].ty,
+        );
+        state.set(Local(7), pending);
+        assert!(flow
+            .empty_queue_entry(&Role::Local(Local(1)), &state)
+            .is_none());
+    });
+}
+
+#[test]
+fn exclusive_queue_entry_checks_reference_types_in_roots_and_retained_memory() {
+    use crate::provenance::observations::{FrameScope, Memory, Sample};
+    with_channels(|flow, mut state| {
+        fresh(flow, &mut state, Local(1));
+        let ty = flow.function.locals[9].ty;
+        let hidden = flow.symbolic_input(ty, Local(9), ty, &[]);
+        state.set(Local(9), hidden.clone());
+        assert!(
+            flow.empty_queue_entry(&Role::Local(Local(1)), &state)
+                .is_none(),
+            "an incoming typed reference is not an empty queue support root"
+        );
+        state.consume(Local(9));
+        let plain_ty = flow.function.locals[10].ty;
+        state.set(
+            Local(10),
+            flow.symbolic_input(plain_ty, Local(10), plain_ty, &[]),
+        );
+        assert!(
+            flow.empty_queue_entry(&Role::Local(Local(1)), &state)
+                .is_some(),
+            "plain data references do not poison an independent queue"
+        );
+        state.settled_memory.insert(
+            Sample {
+                memory: Memory::Frame {
+                    scope: FrameScope::Current,
+                    function: flow.function.def_id,
+                    local: Local(9),
+                    ty,
+                },
+                path: Vec::new(),
+                ty,
+            },
+            hidden,
+        );
+        assert!(
+            flow.empty_queue_entry(&Role::Local(Local(1)), &state)
+                .is_none(),
+            "the same typed reference in retained memory is also unknown queue support"
         );
     });
 }

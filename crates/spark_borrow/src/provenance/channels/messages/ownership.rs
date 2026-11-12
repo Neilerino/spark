@@ -140,6 +140,7 @@ impl Transfer {
                 peers: survivors,
                 inputs: self.witness.inputs.clone(),
                 birth: Some(self.birth),
+                produces: self.witness.produces.clone(),
             },
             &Live::new(&state.live, &state.queue_current),
         );

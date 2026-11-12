@@ -187,7 +187,13 @@ impl Flow<'_> {
                             )
                         });
                     publications.record(&storage, path, handle, &query);
-                    queries.writes.append(&mut query.writes);
+                    for mut write in query.writes.drain(..) {
+                        if !self.route_producer_queue_event(
+                            &storage, path, handle, &mut write, point, state,
+                        ) {
+                            queries.writes.push(write);
+                        }
+                    }
                     queries.residuals.append(&mut query.residuals);
                     if query.memory_support || !query.memory.is_empty() {
                         queries.memories.push((

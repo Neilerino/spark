@@ -283,6 +283,7 @@ impl super::Flow<'_> {
                         .any(|peer| peer.frame_clobbered(&[], &state.invalidated_copies))
                 {
                     witness.birth = None;
+                    witness.produces.clear();
                 }
                 state.future_copies.assign(
                     place.local,

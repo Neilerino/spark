@@ -139,12 +139,14 @@ pub(in crate::provenance) struct Copies {
     classes: Classes<Role>,
     inputs: FxHashMap<Role, FxHashSet<Local>>,
     births: FxHashMap<Role, super::fresh::Birth>,
+    produces: FxHashMap<Role, FxHashSet<crate::provenance::channels::messages::Slot>>,
 }
 
 pub(in crate::provenance) struct Witness {
     pub peers: FxHashSet<Role>,
     pub inputs: FxHashSet<Local>,
     pub birth: Option<super::fresh::Birth>,
+    pub produces: FxHashSet<crate::provenance::channels::messages::Slot>,
 }
 
 impl Witness {
@@ -155,6 +157,7 @@ impl Witness {
             .any(|role| role.local().is_some_and(|local| clobbered.contains(&local)))
         {
             self.birth = None;
+            self.produces.clear();
         }
         self.peers
             .retain(|role| !role.local().is_some_and(|local| clobbered.contains(&local)));
@@ -179,6 +182,7 @@ impl Copies {
             peers: self.role_peers(source),
             inputs: self.inputs.get(source).cloned().unwrap_or_default(),
             birth: self.births.get(source).copied(),
+            produces: self.produces.get(source).cloned().unwrap_or_default(),
         }
     }
 
@@ -193,6 +197,7 @@ impl Copies {
         let role = Role::root(input);
         self.classes.insert(role.clone());
         self.births.remove(&role);
+        self.produces.remove(&role);
         self.inputs.insert(role, FxHashSet::from_iter([input]));
     }
 
@@ -235,12 +240,14 @@ impl Copies {
         self.classes.retain(|role| role.local() != Some(local));
         self.inputs.retain(|role, _| role.local() != Some(local));
         self.births.retain(|role, _| role.local() != Some(local));
+        self.produces.retain(|role, _| role.local() != Some(local));
     }
 
     pub fn forget_role(&mut self, role: &Role) {
         self.classes.retain(|other| other != role);
         self.inputs.remove(role);
         self.births.remove(role);
+        self.produces.remove(role);
     }
 
     pub fn forget_execution(&mut self, local: Local, ty: TypeId) {
@@ -263,6 +270,10 @@ impl Copies {
     pub fn assign_role(&mut self, destination: Role, witness: Witness, live: &impl RoleLiveness) {
         self.inputs.remove(&destination);
         self.births.remove(&destination);
+        self.produces.remove(&destination);
+        if !witness.produces.is_empty() {
+            self.produces.insert(destination.clone(), witness.produces);
+        }
         if let Some(birth) = witness.birth {
             self.births.insert(destination.clone(), birth);
         }
@@ -277,12 +288,59 @@ impl Copies {
         self.classes.assign(destination, peers);
     }
 
+    pub fn produces(&self, local: Local) -> FxHashSet<crate::provenance::channels::messages::Slot> {
+        self.role_witness(&Role::root(local)).produces
+    }
+
+    pub fn reserve_output(
+        &mut self,
+        local: Local,
+        output: &crate::provenance::channels::messages::Slot,
+    ) {
+        self.classes.insert(Role::root(local));
+        for peer in self.role_peers(&Role::root(local)) {
+            self.produces
+                .entry(peer)
+                .or_default()
+                .insert(output.clone());
+        }
+    }
+
+    pub fn producer_roles(
+        &self,
+        output: &crate::provenance::channels::messages::Slot,
+    ) -> FxHashSet<Role> {
+        self.produces
+            .iter()
+            .filter(|(_, found)| found.contains(output))
+            .map(|(role, _)| role.clone())
+            .collect()
+    }
+
+    pub fn forget_output(&mut self, output: &crate::provenance::channels::messages::Slot) {
+        self.produces.retain(|_, outputs| {
+            outputs.remove(output);
+            !outputs.is_empty()
+        });
+    }
+
     pub fn intersect(&mut self, other: &Self) -> bool {
         let mut changed = self.classes.intersect(&other.classes);
         let before = self.births.len();
         self.births
             .retain(|role, birth| other.births.get(role) == Some(birth));
         changed |= before != self.births.len();
+        self.produces.retain(|role, outputs| {
+            let before = outputs.len();
+            outputs.retain(|output| {
+                other
+                    .produces
+                    .get(role)
+                    .is_some_and(|found| found.contains(output))
+            });
+            changed |= before != outputs.len();
+            !outputs.is_empty()
+        });
         self.inputs.retain(|role, inputs| {
             let before = inputs.len();
             inputs.retain(|input| {

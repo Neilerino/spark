@@ -2,13 +2,12 @@
 
 //! Carrier contents changed by collection builtins.
 
-use crate::provenance::tasks::proofs::CallProof;
 use spark_intern::kw;
 use spark_mir::Operand;
 use spark_resolve::DefinitionKind;
 use spark_types::Ty;
 
-use super::{value, Flow, Slot, State, Value};
+use super::{value, Flow, Slot, State};
 
 impl Flow<'_> {
     pub(super) fn collection_call(
@@ -39,31 +38,8 @@ impl Flow<'_> {
                 .prefixed(Slot::Element, ty, self.table),
         );
         Some(super::effects::CallOutcome {
-            fresh_outputs: Vec::new(),
-            queue_accesses: crate::provenance::channels::access::Accesses::default(),
-            queue_send_counts: crate::provenance::channels::counts::Sends::default(),
-            direct_queue_send: None,
-            fresh_birth: None,
-            fresh_leaf_task: false,
-            spawn_owners: None,
-            returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
-            retained_captures: Vec::new(),
-            returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
-            residuals: Vec::new(),
-            async_memory: Vec::new(),
-            tasks: Vec::new(),
-            completed_task: None,
-            clobbered_copies: Vec::new(),
-            future_proof: CallProof::default(),
-            returned_prefix: rustc_hash::FxHashSet::default(),
-            publications: crate::provenance::effects::PrefixWrites::default(),
-            returned: Value::default(),
             place_writes: vec![(place.clone(), contents)],
-            prefix_memory: Vec::new(),
-            prefix_residuals: Vec::new(),
-            memory: Vec::new(),
-            queues: Vec::new(),
-            queue_contents: Vec::new(),
+            ..Default::default()
         })
     }
 }
