@@ -9,6 +9,7 @@ mod channels;
 mod collections;
 mod demand;
 mod effects;
+mod identity;
 mod obligations;
 mod observations;
 mod read;
@@ -55,6 +56,7 @@ struct State {
     executions: FxHashMap<(Local, TypeId), Value>,
     execution_backing_must: FxHashSet<(Local, TypeId)>,
     future_copies: tasks::Copies,
+    channel_copies: channels::identity::Copies,
     future_owners: tasks::lifecycle::Owners,
     input_owners: tasks::lifecycle::InputOwners,
     // Cleared at each MIR point; qualifies entry-captured call witnesses within its alternatives.
@@ -103,6 +105,7 @@ impl State {
         self.values.remove(&local);
         self.live.remove(&local);
         self.future_copies.forget(local);
+        self.channel_copies.forget(local);
         self.future_owners.forget(local);
     }
 
@@ -156,6 +159,7 @@ impl State {
             &other.future_copies,
         );
         changed |= self.future_copies.intersect(&other.future_copies);
+        changed |= self.channel_copies.intersect(&other.channel_copies);
         changed |= self.input_owners.join(&other.input_owners);
         let before = self.joined_inputs.len();
         self.joined_inputs
@@ -427,6 +431,7 @@ impl<'a> Flow<'a> {
                 let owned = self.owning_rvalue(rvalue, place, state);
                 let captures = self.captured_future_owners(rvalue, place, state);
                 let future_copy = self.future_copy_witness(rvalue, state);
+                let channel_transfer = self.channel_transfer(rvalue, place, state);
                 let result = self.rvalue(rvalue, self.place_type(place), point, state);
                 let result = self.freeze_sources(point, result);
                 let mut accesses = Accesses::default();
@@ -442,6 +447,9 @@ impl<'a> Flow<'a> {
                 }
                 self.store(place, result, point, state);
                 self.store_future_copy(place, future_copy, state);
+                if let Some(transfer) = channel_transfer {
+                    transfer.install(place.local, state);
+                }
                 state.future_owners.forget(place.local);
                 if owned {
                     state.future_owners.grant(place.local, &state.future_copies);
@@ -679,6 +687,7 @@ impl<'a> Flow<'a> {
         self.retire_execution_owner(place.local, point, state);
         state.input_owners.escape_local(place.local);
         state.future_copies.forget(place.local);
+        state.channel_copies.forget(place.local);
         self.record_store(point, place, &value);
         if place.projections.is_empty() {
             state

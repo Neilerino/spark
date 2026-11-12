@@ -324,6 +324,7 @@ impl Flow<'_> {
         }
         state.future_owners.invalidate(local, &state.future_copies);
         state.future_copies.forget(local);
+        state.channel_copies.forget(local);
     }
 
     pub(in crate::provenance) fn owner_tags(&self, operand: &Operand, state: &State) -> Tags {

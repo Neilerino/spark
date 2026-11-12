@@ -99,16 +99,11 @@ impl CapturedOwner {
     }
 
     pub fn install_excluding(mut captures: Vec<Self>, excluded: &[Local], state: &mut State) {
-        let peers: Vec<Vec<Role>> = captures
-            .iter()
-            .map(|capture| {
-                captures
-                    .iter()
-                    .filter(|other| !capture.witness.peers.is_disjoint(&other.witness.peers))
-                    .map(|other| other.role.clone())
-                    .collect()
-            })
-            .collect();
+        let peers = crate::provenance::identity::transferred_peers(
+            captures
+                .iter()
+                .map(|capture| (&capture.role, &capture.witness.peers)),
+        );
         for (capture, peers) in captures.iter_mut().zip(peers) {
             capture.witness.exclude(excluded);
             capture.witness.exclude(&[capture.role.local()]);

@@ -143,13 +143,36 @@ fn a_nonleaf_producer_without_future_captures_has_complete_callback_backing() {
             !state.future_owners.known(parent),
             "complete callback backing does not imply closed ownership of a nonleaf producer"
         );
-        let record = state.current_execution_record(parent).expect(
+        let (crate::provenance::demand::Storage::ExecutionCallback(anchor, _), record) = state.current_execution(parent).expect(
             "a known nonleaf producer has a current complete callback even without Future captures",
-        );
+        ) else { unreachable!() };
         let targets = flow.callee_targets(&record.callback, record.callback_ty);
         assert_eq!(targets.known.len(), 1);
         assert!(!targets.open && !targets.unresolved);
         assert!(record.callback.futures.is_empty());
         assert!(!flow.leaf_task(&record));
+        use crate::provenance::channels::identity::Role as ChannelRole;
+        let retained = flow
+            .function
+            .locals
+            .iter()
+            .find(|decl| {
+                decl.name
+                    .is_some_and(|symbol| symbol.as_str() == "retained")
+            })
+            .unwrap()
+            .local;
+        let channel_ty = flow.function.locals[retained.index()].ty;
+        let role = state
+            .channel_copies
+            .anchored(anchor)
+            .find(|role| {
+                matches!(role, ChannelRole::Capture { capture, callback_ty: Some(ty), .. }
+                if capture.ty == channel_ty && *ty == record.callback_ty)
+            })
+            .expect("the producer retains the actual channel identity in its current callback");
+        let witness = state.channel_copies.witness(role);
+        assert!(witness.fresh);
+        assert!(witness.peers.contains(&ChannelRole::Local(retained)));
     });
 }

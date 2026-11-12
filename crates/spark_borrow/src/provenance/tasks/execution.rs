@@ -61,6 +61,7 @@ impl State {
         callback: Value,
         complete: bool,
     ) {
+        self.channel_copies.forget_execution(local, ty);
         if complete {
             self.execution_backing_must.insert((local, ty));
         } else {
@@ -71,6 +72,7 @@ impl State {
 
     fn remove_execution_callback(&mut self, local: Local, ty: TypeId) -> Option<Value> {
         self.execution_backing_must.remove(&(local, ty));
+        self.channel_copies.forget_execution(local, ty);
         self.executions.remove(&(local, ty))
     }
 
@@ -86,6 +88,7 @@ impl State {
         self.future_owners.forget_execution(local, ty);
         self.future_copies.forget_execution(local, ty);
         self.invalidated_copies.insert(local);
+        self.channel_copies.forget_execution(local, ty);
         self.executions.insert((local, ty), callback);
     }
 }
@@ -95,6 +98,7 @@ pub(in crate::provenance) struct ExecutionTransfer {
     callback_ty: TypeId,
     callback: Value,
     captures: Vec<CapturedOwner>,
+    channels: Vec<crate::provenance::channels::identity::Captured>,
     tokens: Transfer,
     backing_complete: bool,
 }
@@ -133,6 +137,13 @@ impl ExecutionTransfer {
             callback_ty: ty,
             callback,
             captures,
+            channels: crate::provenance::channels::identity::Captured::execution(
+                source,
+                destination,
+                ty,
+                adopting,
+                state,
+            ),
             tokens: Transfer::execution(source, destination, ty, &state.input_owners, adopting),
         }
     }
@@ -234,6 +245,12 @@ impl ExecutionTransfer {
                 .iter()
                 .all(|local| !state.invalidated_copies.contains(local));
         state.install_execution_callback(destination, self.callback_ty, self.callback, complete);
+        crate::provenance::channels::identity::Captured::install_all(
+            self.channels,
+            destination,
+            &[self.source],
+            state,
+        );
     }
 }
 

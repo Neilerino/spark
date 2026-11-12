@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub(in crate::provenance) struct Basis {
     backing: FxHashSet<(Local, TypeId)>,
     copies: Copies,
+    channels: crate::provenance::channels::identity::Copies,
     invalidated: FxHashSet<Local>,
     live: FxHashSet<Local>,
     pending: FxHashMap<Arc<Lane>, Value>,
@@ -32,6 +33,7 @@ impl State {
         Basis {
             backing: self.execution_backing_must.clone(),
             copies: self.future_copies.clone(),
+            channels: self.channel_copies.clone(),
             invalidated: self.invalidated_copies.clone(),
             live: self.live.clone(),
             pending: self

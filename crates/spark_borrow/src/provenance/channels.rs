@@ -2,6 +2,8 @@
 
 //! Shared channel handles and weak payload storage.
 
+pub(super) mod identity;
+
 use crate::provenance::tasks::proofs::CallProof;
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_intern::kw;

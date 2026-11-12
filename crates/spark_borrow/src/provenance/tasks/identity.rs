@@ -5,7 +5,7 @@ use spark_mir::Local;
 use spark_resolve::DefId;
 use spark_types::TypeId;
 
-use crate::provenance::{Path, Slot};
+use crate::provenance::{identity::Classes, Path, Slot};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::provenance) struct Role {
@@ -72,8 +72,7 @@ impl Role {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Copies {
-    roles: FxHashSet<Role>,
-    equal: FxHashSet<(Role, Role)>,
+    classes: Classes<Role>,
     inputs: FxHashMap<Role, FxHashSet<Local>>,
 }
 
@@ -110,7 +109,7 @@ impl Copies {
 
     pub fn seed_input(&mut self, input: Local) {
         let role = Role::root(input);
-        self.roles.insert(role.clone());
+        self.classes.insert(role.clone());
         self.inputs.insert(role, FxHashSet::from_iter([input]));
     }
 
@@ -130,16 +129,12 @@ impl Copies {
     }
 
     pub fn role_peers(&self, source: &Role) -> FxHashSet<Role> {
-        self.equal
-            .iter()
-            .filter_map(|(left, right)| (left == source).then_some(right.clone()))
-            .chain(std::iter::once(source.clone()))
-            .collect()
+        self.classes.peers(source)
     }
 
     pub fn anchored(&self, local: Local) -> FxHashSet<Role> {
-        self.roles
-            .iter()
+        self.classes
+            .roles()
             .filter(|role| role.local == local)
             .cloned()
             .chain(std::iter::once(Role::root(local)))
@@ -147,23 +142,19 @@ impl Copies {
     }
 
     pub fn forget(&mut self, local: Local) {
-        self.roles.retain(|role| role.local != local);
+        self.classes.retain(|role| role.local != local);
         self.inputs.retain(|role, _| role.local != local);
-        self.equal
-            .retain(|(left, right)| left.local != local && right.local != local);
     }
 
     pub fn forget_role(&mut self, role: &Role) {
-        self.roles.remove(role);
+        self.classes.retain(|other| other != role);
         self.inputs.remove(role);
-        self.equal
-            .retain(|(left, right)| left != role && right != role);
     }
 
     pub fn forget_execution(&mut self, local: Local, ty: TypeId) {
         let roles: Vec<_> = self
-            .roles
-            .iter()
+            .classes
+            .roles()
             .filter(|role| role.local == local && role.callback_ty == Some(ty))
             .cloned()
             .collect();
@@ -178,33 +169,20 @@ impl Copies {
     }
 
     pub fn assign_role(&mut self, destination: Role, witness: Witness, live: &FxHashSet<Local>) {
-        self.forget_role(&destination);
-        let mut peers: FxHashSet<_> = witness
+        self.inputs.remove(&destination);
+        let peers = witness
             .peers
             .into_iter()
             .filter(|peer| *peer != destination && live.contains(&peer.local))
             .collect();
-        peers.insert(destination.clone());
-        self.roles.extend(peers.iter().cloned());
         if !witness.inputs.is_empty() {
-            self.inputs.insert(destination, witness.inputs);
+            self.inputs.insert(destination.clone(), witness.inputs);
         }
-        for left in &peers {
-            for right in &peers {
-                if left != right {
-                    self.equal.insert((left.clone(), right.clone()));
-                }
-            }
-        }
+        self.classes.assign(destination, peers);
     }
 
     pub fn intersect(&mut self, other: &Self) -> bool {
-        let before = self.roles.len();
-        self.roles.retain(|role| other.roles.contains(role));
-        let mut changed = before != self.roles.len();
-        let before = self.equal.len();
-        self.equal.retain(|pair| other.equal.contains(pair));
-        changed |= before != self.equal.len();
+        let mut changed = self.classes.intersect(&other.classes);
         self.inputs.retain(|role, inputs| {
             let before = inputs.len();
             inputs.retain(|input| {
