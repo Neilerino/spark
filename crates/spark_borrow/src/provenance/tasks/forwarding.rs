@@ -32,7 +32,7 @@ impl ForwardInput {
             if !place.projections.is_empty() || !roots.contains(&place.local) {
                 continue;
             }
-            for token in state.input_owners.tags(&Role::root(place.local)) {
+            for token in state.input_owners.value_tags(&Role::root(place.local)) {
                 if covered.contains(&index) {
                     tokens.insert(if matches!(argument, Operand::Copy(_)) {
                         token.derived()

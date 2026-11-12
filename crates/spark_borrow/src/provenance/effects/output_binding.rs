@@ -43,7 +43,7 @@ impl Flow<'_> {
                         if !place.projections.is_empty() {
                             continue;
                         }
-                        for actual in state.input_owners.tags(&Role::root(place.local)) {
+                        for actual in state.input_owners.value_tags(&Role::root(place.local)) {
                             mapped.insert(
                                 if matches!(tag, Token::Derived(_))
                                     || matches!(operand, Operand::Copy(_))

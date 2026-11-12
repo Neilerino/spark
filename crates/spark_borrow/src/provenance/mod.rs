@@ -286,14 +286,16 @@ impl<'a> Flow<'a> {
             let external = decl.local.0 > 0
                 && decl.local.0 <= self.function.param_count + self.function.captures.len() as u32;
             if external {
-                if decl.local.0 <= self.function.param_count
-                    && matches!(
-                        self.table.resolve(strip_mutable(decl.ty, self.table)),
-                        Ty::Future { .. }
-                    )
-                {
+                if matches!(
+                    self.table.resolve(strip_mutable(decl.ty, self.table)),
+                    Ty::Future { .. }
+                ) {
                     state.future_copies.seed_input(decl.local);
-                    state.input_owners.seed(decl.local);
+                    if decl.local.0 <= self.function.param_count {
+                        state.input_owners.seed(decl.local);
+                    } else {
+                        state.input_owners.seed_ambient(decl.local);
+                    }
                 }
                 state.set(
                     decl.local,

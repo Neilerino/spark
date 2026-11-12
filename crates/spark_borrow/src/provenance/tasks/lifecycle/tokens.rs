@@ -35,6 +35,7 @@ impl Token {
 #[derive(Clone, Debug, Default)]
 pub(in crate::provenance) struct InputOwners {
     locations: FxHashMap<Role, Tags>,
+    ambient: FxHashMap<Role, FxHashSet<Local>>,
     escaped: Tags,
 }
 
@@ -45,13 +46,40 @@ impl InputOwners {
             FxHashSet::from_iter([Token::Provided(input)]),
         );
     }
+    pub fn seed_ambient(&mut self, input: Local) {
+        self.ambient
+            .insert(Role::root(input), FxHashSet::from_iter([input]));
+    }
+    fn ambient_tags(&self, role: &Role) -> Tags {
+        self.ambient
+            .get(role)
+            .into_iter()
+            .flatten()
+            .copied()
+            .map(Token::Derived)
+            .collect()
+    }
+    pub fn value_tags(&self, role: &Role) -> Tags {
+        let mut tags = self.tags(role);
+        tags.extend(self.ambient_tags(role));
+        tags
+    }
     pub fn tags(&self, role: &Role) -> Tags {
         self.locations.get(role).cloned().unwrap_or_default()
     }
     pub fn drop_local(&mut self, local: Local) {
         self.locations.retain(|role, _| role.local() != local);
+        self.ambient.retain(|role, _| role.local() != local);
     }
     pub fn escape_local(&mut self, local: Local) {
+        self.ambient.retain(|role, inputs| {
+            if role.local() != local {
+                return true;
+            }
+            self.escaped
+                .extend(inputs.iter().copied().map(Token::Derived));
+            false
+        });
         self.locations.retain(|role, tags| {
             if role.local() != local {
                 return true;
@@ -99,6 +127,12 @@ impl InputOwners {
         let before = self.escaped.len();
         self.escaped.extend(other.escaped.iter().copied());
         let mut changed = before != self.escaped.len();
+        for (role, inputs) in &other.ambient {
+            let current = self.ambient.entry(role.clone()).or_default();
+            let before = current.len();
+            current.extend(inputs.iter().copied());
+            changed |= before != current.len();
+        }
         for (role, tags) in &other.locations {
             let current = self.locations.entry(role.clone()).or_default();
             let before = current.len();
@@ -176,6 +210,7 @@ impl Transfer {
     pub fn detach(&self, owners: &mut InputOwners) {
         for role in &self.moved {
             owners.locations.remove(role);
+            owners.ambient.remove(role);
         }
         owners.escaped.extend(self.escaped.iter().copied());
     }
@@ -188,11 +223,14 @@ impl Transfer {
     }
     fn assign(&mut self, source: Role, destination: Role, operand: &Operand, owners: &InputOwners) {
         let mut tags = owners.tags(&source);
+        let ambient = owners.ambient_tags(&source);
         if matches!(operand, Operand::Move(_)) {
+            self.escaped.extend(ambient.iter().copied());
             self.moved.insert(source);
         } else {
             tags = tags.into_iter().map(Token::derived).collect();
         }
+        tags.extend(ambient);
         self.values.entry(destination).or_default().extend(tags);
     }
 }
@@ -231,13 +269,19 @@ impl Flow<'_> {
                 }
             }
         }
-        state
+        let mut tags: Tags = state
             .input_owners
             .locations
             .iter()
             .filter(|(role, _)| roots.contains(&role.local()))
             .flat_map(|(_, tags)| tags.iter().copied())
-            .collect()
+            .collect();
+        for (role, inputs) in &state.input_owners.ambient {
+            if roots.contains(&role.local()) {
+                tags.extend(inputs.iter().copied().map(Token::Derived));
+            }
+        }
+        tags
     }
 
     fn escaped_owner_tags(&self, operand: &Operand, state: &State) -> Tags {
@@ -381,5 +425,69 @@ impl Flow<'_> {
             | Rvalue::ReadFutureResult { .. } => {}
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_ambient_view_never_becomes_a_provided_owner() {
+        for moving in [false, true] {
+            let input = Local(1);
+            let copy = Local(2);
+            let mut owners = InputOwners::default();
+            owners.seed_ambient(input);
+            assert!(owners.tags(&Role::root(input)).is_empty());
+            assert!(owners.retains_no_owner(input));
+            let source = Place::from_local(input);
+            let operand = if moving {
+                Operand::Move(source)
+            } else {
+                Operand::Copy(source)
+            };
+            let mut transfer = Transfer::default();
+            transfer.assign(Role::root(input), Role::root(copy), &operand, &owners);
+            transfer.detach(&mut owners);
+            transfer.install(&mut owners);
+            assert_eq!(
+                owners.tags(&Role::root(copy)),
+                Tags::from_iter([Token::Derived(input)])
+            );
+            assert!(owners.released_provided(input));
+            assert!(!owners.retains_no_owner(input));
+            owners.drop_local(copy);
+            assert_eq!(
+                owners.retains_no_owner(input),
+                !moving,
+                "a malformed Move from a borrowed view cannot certify cleanup"
+            );
+        }
+    }
+
+    #[test]
+    fn a_branch_retaining_a_copy_preserves_its_ambient_lineage() {
+        let mut left = InputOwners::default();
+        left.seed_ambient(Local(1));
+        let mut right = left.clone();
+        let mut transfer = Transfer::default();
+        transfer.assign(
+            Role::root(Local(1)),
+            Role::root(Local(2)),
+            &Operand::Copy(Place::from_local(Local(1))),
+            &right,
+        );
+        transfer.detach(&mut right);
+        transfer.install(&mut right);
+        right.drop_local(Local(1));
+        assert!(left.join(&right));
+        assert!(!left.retains_no_owner(Local(1)));
+        assert_eq!(
+            left.value_tags(&Role::root(Local(1))),
+            Tags::from_iter([Token::Derived(Local(1))])
+        );
+        left.drop_local(Local(2));
+        assert!(left.retains_no_owner(Local(1)));
     }
 }
