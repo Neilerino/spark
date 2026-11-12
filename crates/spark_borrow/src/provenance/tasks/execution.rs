@@ -319,6 +319,7 @@ impl Flow<'_> {
     pub(in crate::provenance) fn spawn_owner_transfer(
         &self,
         args: &[Operand],
+        fresh_leaf_task: bool,
         state: &State,
     ) -> Option<ExecutionTransfer> {
         let Operand::Move(source) = args.first()? else {
@@ -337,7 +338,7 @@ impl Flow<'_> {
         }
         let transfer =
             ExecutionTransfer::prepare(source.local, source.local, ty, callback, state, true);
-        (!transfer.captures.is_empty()).then_some(transfer)
+        (!fresh_leaf_task || !transfer.captures.is_empty()).then_some(transfer)
     }
 
     pub(in crate::provenance) fn moving_executions(

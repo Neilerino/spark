@@ -181,6 +181,10 @@ fn spawning_a_keeper_transfers_its_captured_child_owner_to_the_execution() {
         assert!(state.future_copies.witness(child).peers.contains(&captured));
         assert!(state.future_owners.known(child));
         assert!(state.future_owners.known_role(&captured));
+        assert!(
+            !state.executions.keys().any(|(local, _)| *local == child),
+            "plain leaf backing stays in its owned view when its captured peer survives"
+        );
     });
 }
 
