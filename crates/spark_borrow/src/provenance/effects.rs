@@ -356,7 +356,7 @@ impl Flow<'_> {
                     ..actuals
                 };
                 self.observe_writes(summary, function, actuals);
-                let prefix = self.bind_prefix(summary, function, actuals, &key, Some(args));
+                let prefix = self.bind_prefix(summary, function, actuals, &key, Some(args), None);
                 self.observe_prefix(&prefix, point, state);
                 if !summary.normal_return {
                     dispatch.diverging.push(PrefixWrites {

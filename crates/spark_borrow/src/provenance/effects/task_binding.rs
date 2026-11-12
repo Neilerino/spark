@@ -22,6 +22,7 @@ pub(in crate::provenance) struct TaskFacts {
     pub prefix: super::prefix::Prefix,
     pub normal_return: bool,
     pub memory_support: bool,
+    pub clean_captures: FxHashSet<Slot>,
 }
 
 impl Flow<'_> {
@@ -262,13 +263,31 @@ impl Flow<'_> {
             };
             let roots = &context.ports[def];
             let locations = self.call_locations(roots, function, actuals);
+            let mut clean: FxHashSet<_> = function
+                .captures
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, ty))| {
+                    matches!(
+                        self.table
+                            .resolve(super::value::strip_mutable(*ty, self.table)),
+                        Ty::Future { .. }
+                    )
+                })
+                .map(|(index, (_, ty))| Slot::Capture(*def, index, *ty))
+                .collect();
+            let mut observed = false;
             for aliases in Aliases::call_variants(roots, self.table, &locations, &self.aliases) {
                 let key = Key {
                     function: *def,
                     aliases,
                     callables: self.callback_inputs(function, actuals),
                 };
+                observed = true;
+                let proven = self.clean_task_capture_slots(function, &key);
+                clean.retain(|slot| proven.contains(slot));
                 let Some(summary) = context.summaries.get(&key) else {
+                    clean.clear();
                     self.requests.insert(key);
                     continue;
                 };
@@ -276,9 +295,27 @@ impl Flow<'_> {
                     aliases: Some(&key.aliases),
                     ..actuals
                 };
-                facts
-                    .prefix
-                    .merge(self.bind_prefix(summary, function, actuals, &key, None));
+                let resident = clean
+                    .iter()
+                    .filter_map(|slot| {
+                        let Slot::Capture(_, index, _) = slot else {
+                            return None;
+                        };
+                        callee
+                            .futures
+                            .get(&vec![slot.clone()])
+                            .filter(|handles| !handles.is_empty())
+                            .map(|_| spark_mir::Local(function.param_count + 1 + *index as u32))
+                    })
+                    .collect();
+                facts.prefix.merge(self.bind_prefix(
+                    summary,
+                    function,
+                    actuals,
+                    &key,
+                    None,
+                    Some(&resident),
+                ));
                 facts.normal_return |= summary.normal_return;
                 facts.memory_support |=
                     !summary.prefix_memory.is_empty() || summary.unknown_copy_clobber;
@@ -288,8 +325,38 @@ impl Flow<'_> {
                         .join(&self.bind(&summary.returned, function, actuals));
                 }
             }
+            if observed && !targets.open && !targets.unresolved {
+                facts.clean_captures.extend(clean);
+            }
         }
         facts
+    }
+
+    fn clean_task_capture_slots(&self, function: &MirFunction, key: &Key) -> FxHashSet<Slot> {
+        let Some(certificate) = self
+            .program
+            .and_then(|context| context.proofs)
+            .and_then(|proofs| proofs.get(key))
+            .and_then(crate::provenance::tasks::proofs::Proof::certificate)
+        else {
+            return FxHashSet::default();
+        };
+        function
+            .captures
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (_, ty))| {
+                (certificate
+                    .clean_ambient_captures
+                    .contains(&spark_mir::Local(function.param_count + 1 + index as u32))
+                    && matches!(
+                        self.table
+                            .resolve(super::value::strip_mutable(*ty, self.table)),
+                        Ty::Future { .. }
+                    ))
+                .then_some(Slot::Capture(function.def_id, index, *ty))
+            })
+            .collect()
     }
 
     pub(super) fn bind_task_target(

@@ -230,8 +230,118 @@ fn parent_handle_aliases_rehome_one_execution_graph_and_preserve_borrow_sources(
 }
 
 #[test]
+fn completing_a_clean_parent_releases_its_capture_without_exposing_an_external_child_owner() {
+    with_keeper(KEEPER, |flow, mut state, parent, child, captured, _, _| {
+        flow.complete_future(
+            parent,
+            &Value::default(),
+            Point::new(BlockId::ENTRY, 100),
+            &mut state,
+        );
+        assert!(state.executions.is_empty());
+        assert!(!state.future_copies.witness(child).peers.contains(&captured));
+        assert!(state.future_owners.known(child));
+        assert!(state
+            .value(child)
+            .futures
+            .values()
+            .flatten()
+            .any(|handle| handle.pending));
+        assert!(state.residuals.is_empty());
+    });
+}
+
+#[test]
+fn completing_a_clean_parent_joins_its_last_captured_child_owner() {
+    with_keeper(
+        KEEPER,
+        |flow, mut state, parent, child, captured, _, origins| {
+            drop(flow, &mut state, child, 100);
+            assert_eq!(state.future_copies.role_peers(&captured).len(), 1);
+            assert!(state.future_owners.known_role(&captured));
+            assert!(
+                state.residuals.is_empty(),
+                "root retirement should transfer its activity to the surviving capture: {:?}",
+                state.residuals.keys().collect::<Vec<_>>()
+            );
+            flow.complete_future(
+                parent,
+                &Value::default(),
+                Point::new(BlockId::ENTRY, 101),
+                &mut state,
+            );
+            assert!(state.executions.is_empty());
+            assert!(!state
+                .residuals
+                .values()
+                .any(|value| !origins.is_disjoint(&value.origins())
+                    && value
+                        .futures
+                        .values()
+                        .flatten()
+                        .any(|handle| handle.pending)));
+        },
+    );
+}
+
+#[test]
+fn duplicate_clean_captures_release_without_erasing_an_older_residual() {
+    use crate::provenance::{
+        address::OpaqueSite,
+        tasks::{residual, views::Subject},
+    };
+    use std::sync::Arc;
+    let source = KEEPER
+        .replace(
+            "hold(child: Future[Int], release:",
+            "hold(child: Future[Int], other: Future[Int], release:",
+        )
+        .replace(
+            "    keeper: Future[Int]",
+            "    childAlias: Future[Int] = child\n    keeper: Future[Int]",
+        )
+        .replace("hold(child, release)", "hold(child, childAlias, release)");
+    with_keeper(&source, |flow, mut state, parent, child, captured, _, _| {
+        let roots: Vec<_> = state.future_copies.witness(child).locals().collect();
+        for (index, root) in roots.into_iter().enumerate() {
+            drop(flow, &mut state, root, 100 + index as u32);
+        }
+        assert_eq!(state.future_copies.role_peers(&captured).len(), 2);
+        assert!(state.residuals.is_empty());
+        let old = flow.current_role_value(&captured, &state).unwrap();
+        let handle = old.futures[&Vec::new()].iter().next().unwrap();
+        let key = Arc::new(residual::Key {
+            site: OpaqueSite {
+                function: flow.function.def_id,
+                point: Point::new(BlockId::ENTRY, 50),
+            },
+            role: Vec::new(),
+            ty: handle.target.ty(),
+            actor: Subject::from(handle),
+        });
+        state.residuals.insert(key.clone(), old.clone());
+        flow.complete_future(
+            parent,
+            &Value::default(),
+            Point::new(BlockId::ENTRY, 110),
+            &mut state,
+        );
+        assert!(state.executions.is_empty());
+        assert_eq!(state.residuals.len(), 1);
+        assert_eq!(
+            state.residuals[&key], old,
+            "the same static target does not identify an older occurrence"
+        );
+    });
+}
+
+#[test]
 fn completing_a_parent_without_a_cleanup_certificate_keeps_the_child_pending() {
     with_keeper(KEEPER, |flow, mut state, parent, child, _, _, origins| {
+        flow.program = flow.program.map(|context| Context {
+            proofs: None,
+            ..context
+        });
         flow.complete_future(
             parent,
             &Value::default(),
@@ -251,6 +361,44 @@ fn completing_a_parent_without_a_cleanup_certificate_keeps_the_child_pending() {
             .values()
             .any(|value| origins.is_subset(&value.origins())));
     });
+}
+
+#[test]
+fn a_dirty_capture_revokes_its_clean_alias_before_parent_cleanup() {
+    for arguments in ["child, childAlias", "childAlias, child"] {
+        let source = KEEPER.replace(
+            "async fn hold(child: Future[Int], release: Channel[Int]): Int { return release.recv() }",
+            "async fn hold(child: Future[Int], other: Future[Int], release: Channel[Int]): Future[Int] { return child }",
+        ).replace(
+            "keeper: Future[Int] = spawn { hold(child, release) }",
+            &format!("childAlias: Future[Int] = child\nkeeper: Future[Future[Int]] = spawn {{ hold({arguments}, release) }}"),
+        );
+        with_keeper(&source, |flow, mut state, parent, child, _, _, origins| {
+            flow.complete_future(
+                parent,
+                &Value::default(),
+                Point::new(BlockId::ENTRY, 100),
+                &mut state,
+            );
+            assert!(!state.future_owners.known(child), "{arguments}");
+            assert!(
+                state
+                    .value(child)
+                    .futures
+                    .values()
+                    .flatten()
+                    .any(|handle| handle.pending),
+                "{arguments}"
+            );
+            assert!(
+                state
+                    .residuals
+                    .values()
+                    .any(|value| !origins.is_disjoint(&value.origins())),
+                "{arguments}"
+            );
+        });
+    }
 }
 
 #[test]

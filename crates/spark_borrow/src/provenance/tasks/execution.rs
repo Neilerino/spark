@@ -2,6 +2,8 @@
 
 //! Function-typed backing for the current callback of a task execution.
 
+mod cleanup;
+
 use spark_mir::{Local, Operand, Place, Rvalue};
 use spark_types::TypeId;
 

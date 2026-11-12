@@ -176,24 +176,81 @@ impl Flow<'_> {
         actuals: CallActuals<'_>,
         context: &super::Key,
         args: Option<&[spark_mir::Operand]>,
+        resident_captures: Option<&FxHashSet<spark_mir::Local>>,
     ) -> Vec<crate::provenance::tasks::residual::Import> {
         let mut result = Vec::new();
         for (key, activity) in &summary.prefix_residuals {
+            let resident = resident_captures
+                .is_some_and(|captures| resident_capture_activity(key, function, captures));
             let fence = self.event_fence(
                 context,
                 &super::EventKey::Residual(key.clone()),
                 args,
                 actuals.read.state,
             );
-            result.extend(self.bind_residual_activity(
+            let bound = self.bind_residual_activity(
                 key,
                 activity,
                 function,
                 actuals,
                 &crate::provenance::tasks::residual::Visibility::Occurrence(fence),
-            ));
+            );
+            for activity in bound {
+                if !resident || !self.capture_contains_activity(key, &activity, function, actuals) {
+                    result.push(activity);
+                }
+            }
         }
         result
+    }
+
+    fn capture_contains_activity(
+        &self,
+        key: &crate::provenance::tasks::residual::Key,
+        activity: &crate::provenance::tasks::residual::Import,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> bool {
+        let crate::provenance::tasks::Target::Input { input, ty, .. } = key.actor.target else {
+            return false;
+        };
+        let capture = crate::provenance::tasks::Capture {
+            owner: function.def_id,
+            index: input.index() - function.param_count as usize - 1,
+            ty,
+        };
+        let selected = self
+            .select_input_value(
+                &super::Selector {
+                    input,
+                    selection: Vec::new(),
+                    intent: super::Intent::Value,
+                    expected: Some(ty),
+                    capture: None,
+                    channel_capture: None,
+                    queue: None,
+                },
+                function,
+                actuals,
+            )
+            .with_future_capture(capture);
+        let mut covered = selected.clone();
+        if covered.join(&activity.value.with_future_capture(capture)) {
+            return false;
+        }
+        let Some(view) = selected.task_views.get(&Vec::new()).and_then(|views| {
+            views.get(&crate::provenance::tasks::views::Subject {
+                target: activity.key.actor.target.clone(),
+                capture: Some(capture),
+            })
+        }) else {
+            return activity.callbacks.is_empty();
+        };
+        activity.callbacks.iter().all(|(ty, callback)| {
+            view.callbacks
+                .get(ty)
+                .is_some_and(|current| !current.value().join(callback))
+        })
     }
 
     fn bind_external_sample(
@@ -321,6 +378,38 @@ impl Flow<'_> {
         }
         bound
     }
+}
+
+fn resident_capture_activity(
+    key: &crate::provenance::tasks::residual::Key,
+    function: &MirFunction,
+    resident: &FxHashSet<spark_mir::Local>,
+) -> bool {
+    let crate::provenance::tasks::Target::Input {
+        input,
+        path,
+        ty,
+        capture,
+        queue,
+    } = &key.actor.target
+    else {
+        return false;
+    };
+    if !resident.contains(input) || !path.is_empty() || queue.is_some() {
+        return false;
+    }
+    let Some(index) = input.index().checked_sub(function.param_count as usize + 1) else {
+        return false;
+    };
+    function
+        .captures
+        .get(index)
+        .is_some_and(|(_, captured_ty)| {
+            *ty == *captured_ty
+                && capture.is_none_or(|capture| {
+                    capture.owner == function.def_id && capture.index == index && capture.ty == *ty
+                })
+        })
 }
 
 #[cfg(test)]

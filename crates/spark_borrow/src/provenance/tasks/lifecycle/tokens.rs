@@ -91,6 +91,10 @@ impl InputOwners {
         self.locations.retain(|role, _| role.local() != local);
         self.ambient.retain(|role, _| role.local() != local);
     }
+    pub fn drop_role(&mut self, role: &Role) {
+        self.locations.remove(role);
+        self.ambient.remove(role);
+    }
     pub fn escape_local(&mut self, local: Local) {
         self.unresolved_environments.remove(&local);
         self.ambient.retain(|role, inputs| {

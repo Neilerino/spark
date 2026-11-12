@@ -153,7 +153,7 @@ impl Copies {
             .retain(|(left, right)| left.local != local && right.local != local);
     }
 
-    fn forget_role(&mut self, role: &Role) {
+    pub fn forget_role(&mut self, role: &Role) {
         self.roles.remove(role);
         self.inputs.remove(role);
         self.equal

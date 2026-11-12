@@ -305,6 +305,7 @@ impl super::Flow<'_> {
         self.ensure_transfer(point, state);
         witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
         self.settle_task_memory(&witness, &[], point, state);
+        self.cleanup_completed_executions(&witness, point, state);
         for role in witness
             .peers
             .iter()
@@ -315,7 +316,6 @@ impl super::Flow<'_> {
         let peers: Vec<_> = witness.locals().collect();
         state.joined_inputs.extend(witness.inputs);
         for peer in peers {
-            self.demote_completed_execution(peer, point, state);
             if !state.live.contains(&peer) {
                 continue;
             }
