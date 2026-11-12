@@ -2,6 +2,7 @@
 
 //! Shared channel handles and weak payload storage.
 
+pub(super) mod counts;
 pub(super) mod identity;
 pub(super) mod messages;
 
@@ -419,6 +420,7 @@ impl Flow<'_> {
             ..Default::default()
         };
         Some(super::effects::CallOutcome {
+            queue_send_counts: self.actual_queue_send_counts(&queues),
             direct_queue_send: messages::direct_send_receiver(info.name, receiver_operand),
             fresh_leaf_task: false,
             spawn_owners: None,

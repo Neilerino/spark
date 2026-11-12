@@ -10,6 +10,7 @@ mod ambient_captures;
 mod history_transport;
 mod output_contracts;
 mod owner_calls;
+mod queue_counts;
 mod receive_snapshots;
 mod spawn_owners;
 
@@ -1031,7 +1032,7 @@ fn lower_source(source: &str) -> MirOutput {
 
     let tokens = Lexer::new(file_id, source).tokenize();
     let (ast, diagnostics) = parse(tokens, file_id);
-    assert!(!diagnostics.has_errors());
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
     let graph = make_graph(file_id, &ast);
     let mut asts = HashMap::new();
     asts.insert(file_id, ast);

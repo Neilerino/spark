@@ -46,6 +46,9 @@ impl Flow<'_> {
                 }
             }
         }
+        if let Some(counts) = &mut summary.normal_queue_sends {
+            counts.remap(&bindings);
+        }
         remap_handles(&mut summary.returned, &bindings);
         for record in summary.tasks.values_mut() {
             remap_handles(&mut record.callback, &bindings);
@@ -160,7 +163,11 @@ impl Flow<'_> {
         pending
     }
 
-    pub(super) fn export_queue_contents(&self, state: &super::State, summary: &mut super::Summary) {
+    pub(super) fn export_queue_state(&self, state: &super::State, summary: &mut super::Summary) {
+        crate::provenance::channels::counts::join_returns(
+            &mut summary.normal_queue_sends,
+            Some(&state.queue_send_counts),
+        );
         for (target, ty, _, value) in state.queue_entries() {
             summary
                 .queue_contents
@@ -247,6 +254,10 @@ impl Flow<'_> {
             });
         }
         super::CallOutcome {
+            queue_send_counts: crate::provenance::channels::counts::Sends {
+                unknown: true,
+                ..Default::default()
+            },
             direct_queue_send: None,
             fresh_leaf_task: false,
             spawn_owners: None,
@@ -453,5 +464,48 @@ fn remap_handles(value: &mut Value, bindings: &FxHashMap<Target, Target>) {
         for callback in view.callbacks.values_mut() {
             callback.remap_queues(bindings);
         }
+    }
+}
+
+impl Flow<'_> {
+    pub(super) fn bind_normal_queue_sends(
+        &self,
+        summary: &super::Summary,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> crate::provenance::channels::counts::Sends {
+        use crate::provenance::channels::counts::{Count, Sends};
+        let Some(counts) = &summary.normal_queue_sends else {
+            return Sends {
+                unknown: true,
+                ..Sends::default()
+            };
+        };
+        let mut bound = Sends {
+            unknown: counts.unknown,
+            ..Sends::default()
+        };
+        for target in counts.targets.keys() {
+            let count = counts.get(target);
+            let targets: FxHashSet<_> = self
+                .bind_queue_target(target, function, actuals)
+                .iter()
+                .flat_map(|target| self.queue_targets(target))
+                .collect();
+            if targets.is_empty() {
+                bound.unknown = true;
+            }
+            let count = if targets.len() == 1 {
+                count
+            } else {
+                count.union(Count::ZERO)
+            };
+            for target in targets {
+                bound.unknown |=
+                    matches!(target, Target::Unknown { .. } | Target::Validation { .. });
+                bound.add(target, count);
+            }
+        }
+        bound
     }
 }

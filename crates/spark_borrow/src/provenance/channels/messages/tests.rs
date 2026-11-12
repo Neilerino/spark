@@ -327,3 +327,27 @@ fn a_send_import_that_clobbers_its_receiver_archives_both_messages() {
             .is_empty());
     });
 }
+
+#[test]
+fn resampling_queue_effects_does_not_advance_execution_send_counts() {
+    with_messages(|flow, mut state, queue, _, _| {
+        let point = Point::new(BlockId::ENTRY, 10);
+        flow.ensure_transfer(point, &state);
+        let sample = event(flow, &state, &queue, Local(2));
+        let actual = flow.actual_queue_send_counts(std::slice::from_ref(&sample));
+        state.queue_send_counts.then(&actual);
+        assert_eq!(
+            state.queue_send_counts.get(&queue),
+            super::super::counts::Count::ONE
+        );
+        let before = state.queue_send_counts.clone();
+        flow.apply_queue_event(&sample, point, &mut state);
+        flow.apply_queue_event(&sample, point, &mut state);
+        assert_eq!(state.queue_send_counts, before);
+        state.queue_send_counts.then(&actual);
+        assert_eq!(
+            state.queue_send_counts.get(&queue),
+            super::super::counts::Count::MANY
+        );
+    });
+}

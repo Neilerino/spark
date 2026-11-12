@@ -47,6 +47,7 @@ type Origins = FxHashSet<Origin>;
 #[derive(Clone, Debug, Default)]
 struct State {
     queues: FxHashMap<(channels::Target, TypeId), Value>,
+    queue_send_counts: channels::counts::Sends,
     queue_current: FxHashMap<channels::messages::Slot, channels::messages::Contribution>,
     observations: observations::Samples,
     pending_memory: FxHashMap<std::sync::Arc<tasks::memory::Lane>, Value>,
@@ -73,6 +74,50 @@ struct State {
     external_defined: writes::Coverage,
     modified_views: FxHashSet<aliases::View>,
     invalidated: FxHashMap<(Local, Path), FxHashSet<Point>>,
+}
+
+fn literal_successor(function: &MirFunction, block: &spark_mir::BasicBlock) -> Option<BlockId> {
+    let Terminator::SwitchInt {
+        discriminant,
+        targets,
+        otherwise,
+    } = &block.terminator
+    else {
+        return None;
+    };
+    let literal = match discriminant {
+        Operand::Constant(literal) => literal,
+        Operand::Copy(place) | Operand::Move(place) if place.projections.is_empty() => {
+            let declaration = &function.locals[place.local.index()];
+            if declaration.is_user_variable || declaration.mutable || declaration.name.is_some() {
+                return None;
+            }
+            let Statement::Assign {
+                place: destination,
+                rvalue: Rvalue::Use(Operand::Constant(literal)),
+                ..
+            } = block.statements.last()?
+            else {
+                return None;
+            };
+            if destination.local != place.local || !destination.projections.is_empty() || function.blocks.iter().flat_map(|body| &body.statements).any(|statement|
+                matches!(statement, Statement::Assign { rvalue: Rvalue::Ref { place: borrowed, .. }, .. } if borrowed.local == place.local)) {
+                return None;
+            }
+            literal
+        }
+        _ => return None,
+    };
+    let spark_mir::Constant::Bool(value) = literal else {
+        return None;
+    };
+    let value = i128::from(u8::from(*value));
+    Some(
+        targets
+            .iter()
+            .find_map(|(pattern, target)| (*pattern == value).then_some(*target))
+            .unwrap_or(*otherwise),
+    )
 }
 
 impl State {
@@ -186,6 +231,7 @@ impl State {
         for (target, value) in &other.queues {
             changed |= self.queues.entry(target.clone()).or_default().join(value);
         }
+        changed |= self.queue_send_counts.join(&other.queue_send_counts);
         for (slot, message) in &other.queue_current {
             if let Some(current) = self.queue_current.get_mut(slot) {
                 changed |= current.join(message);
@@ -340,6 +386,8 @@ impl<'a> Flow<'a> {
         for (from, to) in &facts.cfg_edges {
             if from.index as usize == self.function.blocks[from.block.index()].statements.len()
                 && to.index == 0
+                && literal_successor(self.function, &self.function.blocks[from.block.index()])
+                    .is_none_or(|selected| selected == to.block)
             {
                 successors[from.block.index()].push(to.block);
             }

@@ -81,6 +81,7 @@ impl Flow<'_> {
         returned.join(&callback.task_lineage());
         returned.join(&facts.returned.prefixed(Slot::Element, ty, self.table));
         Some(TaskDispatch::Returns(vec![CallOutcome {
+            queue_send_counts: crate::provenance::channels::counts::Sends::default(),
             direct_queue_send: None,
             fresh_leaf_task,
             spawn_owners: self.spawn_owner_transfer(args, fresh_leaf_task, state),
@@ -179,6 +180,7 @@ impl Flow<'_> {
             .is_empty()
             .then_some((place.local, returned.clone()));
         Some(TaskDispatch::Returns(vec![CallOutcome {
+            queue_send_counts: crate::provenance::channels::counts::Sends::default(),
             direct_queue_send: None,
             fresh_leaf_task: false,
             spawn_owners: None,

@@ -27,6 +27,7 @@ pub(super) struct Summary {
     queue_contents: FxHashMap<(super::channels::Target, TypeId), Value>,
     tasks: FxHashMap<super::tasks::Target, super::tasks::Record>,
     normal_return: bool,
+    normal_queue_sends: Option<super::channels::counts::Sends>,
     memory: FxHashMap<Port, Value>,
     prefix_memory: PrefixMemory,
     normal_prefix: ReachedPrefix,
@@ -44,8 +45,21 @@ pub(super) struct Summary {
 }
 
 impl Summary {
+    fn join_normal_returns(&mut self, other: &Self) -> bool {
+        let mut changed = super::channels::counts::join_returns(
+            &mut self.normal_queue_sends,
+            other.normal_queue_sends.as_ref(),
+        );
+        changed |= !self.normal_return && other.normal_return;
+        self.normal_return |= other.normal_return;
+        changed |= join_prefix(&mut self.normal_prefix, &other.normal_prefix);
+        changed |= self.normal_publications.join(&other.normal_publications);
+        changed
+    }
+
     fn join(&mut self, other: &Self) -> bool {
-        let mut changed = self.returned.join(&other.returned);
+        let mut changed = self.join_normal_returns(other);
+        changed |= self.returned.join(&other.returned);
         let before = self.returned_owner_tags.len();
         self.returned_owner_tags
             .extend(other.returned_owner_tags.iter().copied());
@@ -57,8 +71,6 @@ impl Summary {
         for (ty, output) in &other.returned_callbacks {
             changed |= self.returned_callbacks.entry(*ty).or_default().join(output);
         }
-        changed |= join_prefix(&mut self.normal_prefix, &other.normal_prefix);
-        changed |= self.normal_publications.join(&other.normal_publications);
         for (receive, values) in &other.receive_snapshots {
             let missing = !self.receive_snapshots.contains_key(receive);
             changed |= self
@@ -89,8 +101,6 @@ impl Summary {
         }
         changed |= !self.unknown_copy_clobber && other.unknown_copy_clobber;
         self.unknown_copy_clobber |= other.unknown_copy_clobber;
-        changed |= !self.normal_return && other.normal_return;
-        self.normal_return |= other.normal_return;
         for (event, value) in &other.prefix_memory {
             let existed = self.prefix_memory.contains_key(event);
             changed |= self
@@ -417,6 +427,10 @@ impl Flow<'_> {
             true,
         ));
         CallOutcome {
+            queue_send_counts: crate::provenance::channels::counts::Sends {
+                unknown: true,
+                ..Default::default()
+            },
             direct_queue_send: None,
             fresh_leaf_task: false,
             spawn_owners: None,
@@ -609,7 +623,7 @@ impl Flow<'_> {
             summary
                 .normal_publications
                 .join(&state.publications.exported(self.function.def_id));
-            self.export_queue_contents(&state, &mut summary);
+            self.export_queue_state(&state, &mut summary);
             self.export_tasks(&state, &mut summary);
             self.export_callback_outputs(&state, &mut summary);
             summary
