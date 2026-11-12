@@ -39,6 +39,7 @@ pub(in crate::provenance) struct CallOutcome {
     pub place_writes: Vec<(spark_mir::Place, Value)>,
     pub memory: Vec<MemoryWrite>,
     pub async_memory: Vec<MemoryWrite>,
+    pub direct_queue_send: Option<Local>,
     pub fresh_leaf_task: bool,
     pub returned_owner_tags: crate::provenance::tasks::lifecycle::Tags,
     pub retained_captures: Vec<crate::provenance::tasks::Witness>,
@@ -319,6 +320,7 @@ impl Flow<'_> {
         let clobbered_copies = self.bound_copy_clobbers(summary, function, actuals);
         let residuals = self.bind_residuals(summary, function, actuals, context, Some(args));
         CallOutcome {
+            direct_queue_send: None,
             fresh_leaf_task: false,
             spawn_owners: None,
             returned_owner_tags: self.bind_owner_tags(
@@ -595,8 +597,12 @@ impl Flow<'_> {
                     &mut after,
                 );
             }
-            for write in alternative.queues.drain(..) {
-                self.apply_queue_event(&write, point, &mut after);
+            if let Some(receiver) = alternative.direct_queue_send {
+                self.apply_direct_queue_send(receiver, &alternative.queues, point, &mut after);
+            } else {
+                for write in alternative.queues.drain(..) {
+                    self.apply_queue_event(&write, point, &mut after);
+                }
             }
             for write in alternative.async_memory.drain(..) {
                 self.import_settled_memory(&write, point, &mut after);

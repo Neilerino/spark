@@ -39,6 +39,7 @@ impl Flow<'_> {
                 .prefixed(Slot::Element, ty, self.table),
         );
         Some(super::effects::CallOutcome {
+            direct_queue_send: None,
             fresh_leaf_task: false,
             spawn_owners: None,
             returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),

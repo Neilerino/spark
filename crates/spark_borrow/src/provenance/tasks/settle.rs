@@ -421,6 +421,12 @@ impl Flow<'_> {
             Storage::Queue(target, ty) => {
                 state.queues.insert((target.clone(), *ty), current);
             }
+            Storage::QueueCurrent(slot) => {
+                let Some(message) = state.queue_current.get_mut(slot) else {
+                    return false;
+                };
+                message.value = current;
+            }
             Storage::Task(target, _) => {
                 let Some(record) = state.tasks.get_mut(target) else {
                     return false;

@@ -47,6 +47,7 @@ type Origins = FxHashSet<Origin>;
 #[derive(Clone, Debug, Default)]
 struct State {
     queues: FxHashMap<(channels::Target, TypeId), Value>,
+    queue_current: FxHashMap<channels::messages::Slot, channels::messages::Contribution>,
     observations: observations::Samples,
     pending_memory: FxHashMap<std::sync::Arc<tasks::memory::Lane>, Value>,
     settled_memory: FxHashMap<observations::Sample, Value>,
@@ -184,6 +185,14 @@ impl State {
         changed |= self.join_task_backing(other);
         for (target, value) in &other.queues {
             changed |= self.queues.entry(target.clone()).or_default().join(value);
+        }
+        for (slot, message) in &other.queue_current {
+            if let Some(current) = self.queue_current.get_mut(slot) {
+                changed |= current.join(message);
+            } else {
+                self.queue_current.insert(slot.clone(), message.clone());
+                changed = true;
+            }
         }
         for (key, value) in &other.residuals {
             let absent = !self.residuals.contains_key(key);

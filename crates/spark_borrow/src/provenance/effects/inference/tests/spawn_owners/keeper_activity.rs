@@ -176,3 +176,78 @@ fn a_nonleaf_producer_without_future_captures_has_complete_callback_backing() {
         assert!(witness.peers.contains(&ChannelRole::Local(retained)));
     });
 }
+
+#[test]
+fn actual_sends_have_current_storage_but_bound_helper_samples_remain_history() {
+    let source = r#"
+fn enqueue(channel: Channel[Ref[String]], value: Ref[String]): Int {
+    channel.send(value)
+    return 0
+}
+fn main(): Int {
+    first: String = " first ".trim()
+    firstRef: Ref[String] = first
+    second: String = " second ".trim()
+    secondRef: Ref[String] = second
+    direct: Channel[Ref[String]] = Channel[Ref[String]]()
+    indirect: Channel[Ref[String]] = Channel[Ref[String]]()
+    direct.send(firstRef)
+    sent: Int = enqueue(indirect, secondRef)
+    found: Ref[String] = direct.recv()
+    print(found.len())
+    return 0
+}
+"#;
+    with_source_flow(source, |flow| {
+        let named = |name: &str| {
+            flow.function
+                .locals
+                .iter()
+                .find(|decl| decl.name.is_some_and(|symbol| symbol.as_str() == name))
+                .unwrap()
+                .local
+        };
+        let direct = named("direct");
+        let indirect = named("indirect");
+        let first = named("firstRef");
+        let second = named("secondRef");
+        let mut reached = false;
+        for (index, block) in flow.function.blocks.clone().iter().enumerate() {
+            if !matches!(block.terminator, Terminator::Return) {
+                continue;
+            }
+            let Some(mut state) = flow.entries[index].clone() else {
+                continue;
+            };
+            let direct_handles: Vec<_> =
+                state.value(direct).root_queue_handles().cloned().collect();
+            let indirect_handles: Vec<_> = state
+                .value(indirect)
+                .root_queue_handles()
+                .cloned()
+                .collect();
+            let first_origins = state.value(first).origins();
+            let second_origins = state.value(second).origins();
+            assert!(!first_origins.is_empty() && !second_origins.is_empty());
+            assert!(flow.transfer_block(BlockId(index as u32), &mut state));
+            reached = true;
+            assert_eq!(
+                state.queue_current.len(),
+                1,
+                "only the actual builtin SEND is current"
+            );
+            let message = state.queue_current.values().next().unwrap();
+            assert!(!message.value.origins().is_disjoint(&first_origins));
+            assert!(direct_handles
+                .iter()
+                .all(|handle| message.targets.contains(&handle.target)));
+            assert!(indirect_handles
+                .iter()
+                .all(|handle| !message.targets.contains(&handle.target)));
+            let history: Origins = state.queues.values().flat_map(Value::origins).collect();
+            assert!(!history.is_disjoint(&second_origins));
+            assert!(history.is_disjoint(&first_origins));
+        }
+        assert!(reached);
+    });
+}

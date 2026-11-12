@@ -3,6 +3,7 @@
 //! Shared channel handles and weak payload storage.
 
 pub(super) mod identity;
+pub(super) mod messages;
 
 use crate::provenance::tasks::proofs::CallProof;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -346,25 +347,24 @@ impl Flow<'_> {
         if !matches!(info.kind, DefinitionKind::BuiltinMethod) {
             return None;
         }
-        let receiver = args.first()?;
-        let Ty::Channel { inner } = self.table.resolve(value::strip_mutable(
-            super::operand_type(receiver, self.function),
-            self.table,
-        )) else {
+        let receiver_operand = args.first()?;
+        let receiver_ty = super::operand_type(receiver_operand, self.function);
+        let Ty::Channel { inner } = self
+            .table
+            .resolve(value::strip_mutable(receiver_ty, self.table))
+        else {
             return None;
         };
-        let source = self.operand(receiver, state);
+        let source = self.operand(receiver_operand, state);
         let mut targets: FxHashSet<_> = source
             .root_queue_handles()
-            .filter(|handle| {
-                self.queue_type_matches(handle.ty(), super::operand_type(receiver, self.function))
-            })
+            .filter(|handle| self.queue_type_matches(handle.ty(), receiver_ty))
             .cloned()
             .collect();
         if targets.is_empty() {
             targets.extend(
                 opaque_handles(
-                    super::operand_type(args.first()?, self.function),
+                    receiver_ty,
                     super::address::OpaqueSite {
                         function: self.function.def_id,
                         point,
@@ -415,11 +415,11 @@ impl Flow<'_> {
             return None;
         };
         let publications = super::effects::PrefixWrites {
-            residuals: Vec::new(),
-            memory: Vec::new(),
             queues: queues.clone(),
+            ..Default::default()
         };
         Some(super::effects::CallOutcome {
+            direct_queue_send: messages::direct_send_receiver(info.name, receiver_operand),
             fresh_leaf_task: false,
             spawn_owners: None,
             returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
@@ -725,6 +725,7 @@ impl Flow<'_> {
     ) {
         let mut prefix = State {
             queues: state.queues.clone(),
+            queue_current: state.queue_current.clone(),
             exposed_queues: state.exposed_queues.clone(),
             ..State::default()
         };
@@ -814,7 +815,7 @@ impl Flow<'_> {
                 if !state.exposed_queues.insert(target.clone()) {
                     continue;
                 }
-                for ((candidate, _), payload) in &state.queues {
+                for (candidate, _, _, payload) in state.queue_entries() {
                     if *candidate == target {
                         pending.extend(
                             payload

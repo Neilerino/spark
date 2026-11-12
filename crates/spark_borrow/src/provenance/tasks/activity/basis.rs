@@ -18,6 +18,10 @@ pub(in crate::provenance) struct Basis {
     invalidated: FxHashSet<Local>,
     live: FxHashSet<Local>,
     pending: FxHashMap<Arc<Lane>, Value>,
+    messages: FxHashMap<
+        crate::provenance::channels::messages::Slot,
+        crate::provenance::channels::messages::Contribution,
+    >,
     settled: FxHashMap<Sample, Value>,
 }
 
@@ -36,6 +40,19 @@ impl State {
             channels: self.channel_copies.clone(),
             invalidated: self.invalidated_copies.clone(),
             live: self.live.clone(),
+            messages: self
+                .queue_current
+                .iter()
+                .map(|(slot, message)| {
+                    (
+                        slot.clone(),
+                        crate::provenance::channels::messages::Contribution {
+                            targets: message.targets.clone(),
+                            value: data(&message.value),
+                        },
+                    )
+                })
+                .collect(),
             pending: self
                 .pending_memory
                 .iter()

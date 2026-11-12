@@ -161,10 +161,10 @@ impl Flow<'_> {
     }
 
     pub(super) fn export_queue_contents(&self, state: &super::State, summary: &mut super::Summary) {
-        for (target, value) in &state.queues {
+        for (target, ty, _, value) in state.queue_entries() {
             summary
                 .queue_contents
-                .entry(target.clone())
+                .entry((target.clone(), ty))
                 .or_default()
                 .join(&super::export_value(value, self.function.def_id));
         }
@@ -247,6 +247,7 @@ impl Flow<'_> {
             });
         }
         super::CallOutcome {
+            direct_queue_send: None,
             fresh_leaf_task: false,
             spawn_owners: None,
             returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),

@@ -70,6 +70,9 @@ impl State {
                 .chain(self.queues.iter().map(|((target, ty), value)| {
                     (Storage::Queue(target.clone(), *ty), value.clone())
                 }))
+                .chain(self.queue_current.iter().map(|(slot, message)| {
+                    (Storage::QueueCurrent(slot.clone()), message.value.clone())
+                }))
                 .chain(self.executions.iter().map(|((local, ty), value)| {
                     (Storage::ExecutionCallback(*local, *ty), value.clone())
                 }))

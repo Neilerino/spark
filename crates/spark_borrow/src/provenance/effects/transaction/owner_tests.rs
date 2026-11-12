@@ -62,6 +62,7 @@ fn outcome(state: &State, released_index: usize) -> CallOutcome {
         place_writes: vec![],
         memory: vec![],
         async_memory: vec![],
+        direct_queue_send: None,
         fresh_leaf_task: false,
         spawn_owners: None,
         returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),

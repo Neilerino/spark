@@ -188,6 +188,7 @@ impl Flow<'_> {
                 },
                 Storage::External(port) => Memory::External(port),
                 Storage::Queue(_, _)
+                | Storage::QueueCurrent(_)
                 | Storage::Task(_, _)
                 | Storage::ExecutionCallback(_, _)
                 | Storage::Observation(_)

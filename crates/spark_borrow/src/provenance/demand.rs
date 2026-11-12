@@ -22,6 +22,7 @@ pub(super) enum Storage {
     Cell(Local),
     External(Port),
     Queue(super::channels::Target, spark_types::TypeId),
+    QueueCurrent(super::channels::messages::Slot),
     Task(super::tasks::Target, spark_types::TypeId),
     ExecutionCallback(Local, spark_types::TypeId),
     Observation(std::sync::Arc<super::observations::Lane>),
@@ -223,6 +224,7 @@ impl super::Flow<'_> {
     pub(super) fn storage_type(&self, storage: &Storage) -> spark_types::TypeId {
         match storage {
             Storage::CallbackNode(location) => location.ty(),
+            Storage::QueueCurrent(slot) => slot.ty,
             Storage::Logical(local) | Storage::Cell(local) => {
                 self.function.locals[local.index()].ty
             }
@@ -476,6 +478,11 @@ impl super::State {
                     .map(|((target, ty), value)| (Storage::Queue(target.clone(), *ty), value)),
             )
             .chain(
+                self.queue_current
+                    .iter()
+                    .map(|(slot, message)| (Storage::QueueCurrent(slot.clone()), &message.value)),
+            )
+            .chain(
                 self.executions.iter().map(|((local, ty), callback)| {
                     (Storage::ExecutionCallback(*local, *ty), callback)
                 }),
@@ -546,6 +553,9 @@ impl super::State {
             Storage::Cell(local) => self.cells.get(local),
             Storage::External(port) => self.external.get(port),
             Storage::Queue(target, ty) => self.queues.get(&(target.clone(), *ty)),
+            Storage::QueueCurrent(slot) => {
+                self.queue_current.get(slot).map(|message| &message.value)
+            }
             Storage::Task(target, _) => self.tasks.get(target).map(|record| &record.callback),
             Storage::ExecutionCallback(local, ty) => self.executions.get(&(*local, *ty)),
             Storage::Observation(lane) => self.observations.get(lane),
