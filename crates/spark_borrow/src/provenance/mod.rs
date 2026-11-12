@@ -53,6 +53,7 @@ struct State {
     residual_callbacks: FxHashMap<(std::sync::Arc<tasks::residual::Key>, TypeId), Value>,
     tasks: FxHashMap<tasks::Target, tasks::Record>,
     executions: FxHashMap<(Local, TypeId), Value>,
+    execution_backing_must: FxHashSet<(Local, TypeId)>,
     future_copies: tasks::Copies,
     future_owners: tasks::lifecycle::Owners,
     input_owners: tasks::lifecycle::InputOwners,
@@ -96,6 +97,8 @@ impl State {
     }
 
     fn consume(&mut self, local: Local) {
+        self.execution_backing_must
+            .retain(|(anchor, _)| *anchor != local);
         self.input_owners.escape_local(local);
         self.values.remove(&local);
         self.live.remove(&local);
@@ -141,6 +144,10 @@ impl State {
         let before = self.live.len();
         self.live.extend(other.live.iter().copied());
         let mut changed = before != self.live.len();
+        let before = self.execution_backing_must.len();
+        self.execution_backing_must
+            .retain(|key| other.execution_backing_must.contains(key));
+        changed |= before != self.execution_backing_must.len();
         changed |= effects::join_prefix(&mut self.reached_prefix, &other.reached_prefix);
         changed |= self.publications.join(&other.publications);
         changed |= self.future_owners.intersect(

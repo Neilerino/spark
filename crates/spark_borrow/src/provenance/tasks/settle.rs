@@ -198,7 +198,8 @@ impl Flow<'_> {
             return query;
         };
         let subject = Subject::from(handle);
-        let (mut records, unknown) = views::pending_records(carrier, path, handle, state);
+        let (mut records, unknown) =
+            views::pending_records_at(carrier, path, handle, state, carrier_storage);
         if unknown {
             query.memory_support = true;
             let mut accesses = crate::provenance::Accesses::default();

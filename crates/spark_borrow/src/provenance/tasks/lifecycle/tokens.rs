@@ -311,6 +311,7 @@ impl Flow<'_> {
     }
 
     pub(in crate::provenance) fn clobber_input_owners(&self, local: Local, state: &mut State) {
+        state.revoke_execution_backing(local);
         state.input_owners.escape_local(local);
         if matches!(
             self.table.resolve(value::strip_mutable(

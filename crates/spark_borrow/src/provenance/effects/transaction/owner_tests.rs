@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::provenance::{tasks, value::Value};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use spark_mir::{BlockId, LocalDecl};
 use spark_resolve::DefId;
 use spark_span::Span;
@@ -327,6 +327,140 @@ fn a_forwarded_root_reserves_the_parent_across_all_released_alias_arguments() {
         assert!(
             state.joined_inputs.is_empty(),
             "forwarded parent is not a final release in either order"
+        );
+    }
+}
+
+#[test]
+fn returned_callback_imports_cannot_restore_invalidated_identity_or_owner_coverage() {
+    use crate::provenance::{
+        address::OpaqueSite,
+        demand::Storage,
+        observations::{FrameScope, Memory, Sample},
+        tasks::{
+            lifecycle::Token,
+            memory::Lane,
+            outputs::{CallbackOutput, CallbackRecipe},
+            views::{Subject, View},
+            Role,
+        },
+        Slot,
+    };
+    for target in [Some(Local(1)), Some(Local(2)), None, Some(Local(3))] {
+        let (mut table, mut function) = fixture();
+        let future = function.locals[1].ty;
+        function.locals.push(LocalDecl {
+            local: Local(3),
+            ty: future,
+            name: None,
+            is_user_variable: false,
+            mutable: false,
+            span: Span::DUMMY,
+        });
+        let callback_ty = table.intern(Ty::Function {
+            params: Vec::new(),
+            ret: function.return_type,
+            is_async: false,
+        });
+        let mut flow = Flow::new(&function, &table, None);
+        let point = Point::new(BlockId::ENTRY, 100);
+        let mut state = pending(&flow, point);
+        state.set(
+            Local(3),
+            tasks::birth(function.def_id, Point::new(BlockId::ENTRY, 99), future).1,
+        );
+        let callback_def = DefId::new(9969);
+        let path = vec![Slot::Capture(callback_def, 0, future)];
+        let recipe = CallbackRecipe {
+            parent_ty: future,
+            callback_ty,
+            callback: callback_def,
+            slots: FxHashMap::from_iter([(path.clone(), Token::Derived(Local(1)))]),
+        };
+        let bound = flow
+            .bind_output_recipe(&recipe, &[copied()], &state)
+            .unwrap();
+        let payload = state.value(Local(1)).sourced(&Storage::Logical(Local(1)));
+        let mut callback = Value::function(callback_def);
+        callback.join(&payload.prefixed_path(&path, callback_ty, &table));
+        let actor = Subject::from(callback.futures[&path].iter().next().unwrap());
+        let site = OpaqueSite {
+            function: function.def_id,
+            point,
+        };
+        let memory = target.map_or(Memory::Unavailable(site), |local| Memory::Frame {
+            scope: FrameScope::Current,
+            function: function.def_id,
+            local,
+            ty: future,
+        });
+        let mut view = View::unknown();
+        view.memory.import(
+            std::sync::Arc::new(Lane {
+                event: site,
+                actor: actor.clone(),
+                location: Sample {
+                    memory,
+                    path: Vec::new(),
+                    ty: future,
+                },
+            }),
+            tasks::birth(function.def_id, Point::new(BlockId::ENTRY, 150), future).1,
+        );
+        callback
+            .task_views
+            .entry(path.clone())
+            .or_default()
+            .insert(actor, view);
+        state.set(Local(2), tasks::birth(function.def_id, point, future).1);
+        flow.ensure_transfer(point, &state);
+        flow.install_callback_outputs(
+            FxHashMap::from_iter([(
+                callback_ty,
+                CallbackOutput {
+                    callback,
+                    lineage: FxHashMap::from_iter([(
+                        path,
+                        FxHashSet::from_iter([Token::Derived(Local(1))]),
+                    )]),
+                },
+            )]),
+            &Place::from_local(Local(2)),
+            point,
+            &mut state,
+        );
+        assert!(state
+            .invalidated_copies
+            .contains(&target.unwrap_or(Local(2))));
+        bound.install(Local(2), &mut state);
+        let role = Role::capture(Local(2), callback_def, 0, future)
+            .in_execution(Local(2), callback_ty)
+            .unwrap();
+        let valid = target == Some(Local(3));
+        assert_eq!(
+            state.future_owners.known_role(&role),
+            valid,
+            "only an unrelated imported write may preserve captured owner coverage"
+        );
+        assert_eq!(
+            state.future_owners.known(Local(1)),
+            valid,
+            "an untracked returned capture must revoke source owner closure"
+        );
+        assert_eq!(
+            state.future_copies.witness(Local(1)).peers.contains(&role),
+            valid,
+            "invalidated entry witnesses cannot be reconnected"
+        );
+        flow.transfer_statement(
+            &spark_mir::Statement::Nop,
+            Point::new(BlockId::ENTRY, 101),
+            &mut state,
+        );
+        assert_eq!(
+            state.current_execution_record(Local(2)).is_some(),
+            valid,
+            "MUST backing may survive only unrelated import-time invalidation"
         );
     }
 }

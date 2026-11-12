@@ -139,8 +139,17 @@ impl Flow<'_> {
                 normal = true;
                 continue;
             }
-            let (records, unknown) =
-                super::super::tasks::views::pending_records(&future, &path, &handle, state);
+            let (records, unknown) = if place.projections.is_empty() {
+                super::super::tasks::views::pending_records_at(
+                    &future,
+                    &path,
+                    &handle,
+                    state,
+                    &super::super::demand::Storage::Logical(place.local),
+                )
+            } else {
+                super::super::tasks::views::pending_records(&future, &path, &handle, state)
+            };
             normal |= records.is_empty() || unknown;
             for record in records {
                 let facts = self.task_facts(&record, &handle.target, point, state, ty);

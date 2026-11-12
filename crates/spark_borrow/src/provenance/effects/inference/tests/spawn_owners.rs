@@ -176,7 +176,8 @@ fn copied(local: Local) -> Operand {
 
 #[test]
 fn spawning_a_keeper_transfers_its_captured_child_owner_to_the_execution() {
-    with_keeper(KEEPER, |_, state, _, child, captured, _, _| {
+    with_keeper(KEEPER, |_, state, parent, child, captured, _, _| {
+        assert!(state.current_execution_record(parent).is_some());
         assert!(state.future_copies.witness(child).peers.contains(&captured));
         assert!(state.future_owners.known(child));
         assert!(state.future_owners.known_role(&captured));
@@ -192,6 +193,7 @@ fn parent_handle_aliases_rehome_one_execution_graph_and_preserve_borrow_sources(
                 unreachable!()
             };
             assign(flow, &mut state, alias, copied(parent), 100);
+            assert!(state.current_execution_record(alias).is_some());
             assert_eq!(
                 state.executions.len(),
                 1,
@@ -199,10 +201,15 @@ fn parent_handle_aliases_rehome_one_execution_graph_and_preserve_borrow_sources(
             );
             assert_eq!(state.future_copies.witness(child).peers.len(), 2);
             drop(flow, &mut state, parent, 101);
+            assert!(state.current_execution_record(parent).is_none());
+            assert!(state.current_execution_record(alias).is_some());
             let role = captured.reanchor(alias);
             assert!(state.future_copies.witness(child).peers.contains(&role));
             assign(flow, &mut state, alias, moved(alias), 102);
+            assert!(state.current_execution_record(alias).is_some());
             assign(flow, &mut state, moved_parent, moved(alias), 103);
+            assert!(state.current_execution_record(alias).is_none());
+            assert!(state.current_execution_record(moved_parent).is_some());
             let role = captured.reanchor(moved_parent);
             assert!(state.future_copies.witness(child).peers.contains(&role));
             assert_eq!(state.executions.len(), 1);
@@ -213,6 +220,7 @@ fn parent_handle_aliases_rehome_one_execution_graph_and_preserve_borrow_sources(
             assert!(state.future_owners.known_role(&role));
             drop(flow, &mut state, moved_parent, 105);
             assert!(state.executions.is_empty());
+            assert!(state.execution_backing_must.is_empty());
             assert!(
                 state
                     .residuals
@@ -652,6 +660,8 @@ fn helper_return_transports_the_execution_owned_child_graph() {
         let mut state = flow.entries[index].clone().unwrap();
         assert!(flow.transfer_block(BlockId(index as u32), &mut state));
         if name == "identityCompleted" {
+            assert!(state.current_execution_record(destination.local).is_none());
+            assert!(state.execution_backing_must.is_empty());
             assert!(
                 state.executions.is_empty(),
                 "a completed parent must not regain its callback"
@@ -662,6 +672,10 @@ fn helper_return_transports_the_execution_owned_child_graph() {
             assert!(handles.iter().all(|handle| !handle.pending));
             continue;
         }
+        assert!(
+            state.current_execution_record(destination.local).is_some(),
+            "{name}: complete backing is independent of closed child ownership"
+        );
         let origins = state.value(child).origins();
         assert!(!origins.is_empty());
         assert!(origins.is_subset(&state.value(destination.local).origins()));
@@ -714,3 +728,5 @@ fn helper_return_transports_the_execution_owned_child_graph() {
         }
     }
 }
+
+mod execution_backing;

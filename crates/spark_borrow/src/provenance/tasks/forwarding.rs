@@ -76,7 +76,18 @@ impl ForwardInput {
         for graph in self.graphs {
             graph.install(flow, destination, point, state);
         }
-        if self.closed {
+        let valid = !state.invalidated_copies.contains(&destination)
+            && self
+                .witness
+                .peers
+                .iter()
+                .all(|peer| !state.invalidated_copies.contains(&peer.local()));
+        if !valid {
+            state
+                .future_owners
+                .revoke(&self.witness, &state.future_copies);
+            state.future_owners.forget_role(&Role::root(destination));
+        } else if self.closed {
             state.future_owners.grant(destination, &state.future_copies);
         }
     }

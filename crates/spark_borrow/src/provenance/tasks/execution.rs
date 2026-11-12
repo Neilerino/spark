@@ -14,12 +14,64 @@ use crate::provenance::{
 };
 
 impl State {
+    pub(in crate::provenance) fn current_execution_record(
+        &self,
+        local: Local,
+    ) -> Option<super::Record> {
+        if !self.live.contains(&local) || self.invalidated_copies.contains(&local) {
+            return None;
+        }
+        let peers = self.future_copies.witness(local);
+        let mut facets = self.executions.iter().filter(|((anchor, _), _)| {
+            peers.contains_local(*anchor)
+                && self.live.contains(anchor)
+                && !self.invalidated_copies.contains(anchor)
+        });
+        let (&(anchor, ty), callback) = facets.next()?;
+        if facets.next().is_some() || !self.execution_backing_must.contains(&(anchor, ty)) {
+            return None;
+        }
+        Some(super::Record {
+            callback: callback
+                .clone()
+                .sourced(&Storage::ExecutionCallback(anchor, ty)),
+            callback_ty: ty,
+        })
+    }
+
+    pub(in crate::provenance) fn revoke_execution_backing(&mut self, local: Local) {
+        let witness = self.future_copies.witness(local);
+        self.execution_backing_must
+            .retain(|(anchor, _)| !witness.contains_local(*anchor));
+    }
+
+    pub(in crate::provenance) fn install_execution_callback(
+        &mut self,
+        local: Local,
+        ty: TypeId,
+        callback: Value,
+        complete: bool,
+    ) {
+        if complete {
+            self.execution_backing_must.insert((local, ty));
+        } else {
+            self.execution_backing_must.remove(&(local, ty));
+        }
+        self.executions.insert((local, ty), callback);
+    }
+
+    fn remove_execution_callback(&mut self, local: Local, ty: TypeId) -> Option<Value> {
+        self.execution_backing_must.remove(&(local, ty));
+        self.executions.remove(&(local, ty))
+    }
+
     pub(in crate::provenance) fn clobber_execution_callback(
         &mut self,
         local: Local,
         ty: TypeId,
         callback: Value,
     ) {
+        self.revoke_execution_backing(local);
         self.input_owners.escape_execution(local, ty);
         self.future_owners.invalidate(local, &self.future_copies);
         self.future_owners.forget_execution(local, ty);
@@ -35,6 +87,7 @@ pub(in crate::provenance) struct ExecutionTransfer {
     callback: Value,
     captures: Vec<CapturedOwner>,
     tokens: Transfer,
+    backing_complete: bool,
 }
 
 impl ExecutionTransfer {
@@ -67,6 +120,7 @@ impl ExecutionTransfer {
             .collect();
         Self {
             source,
+            backing_complete: adopting || state.execution_backing_must.contains(&(source, ty)),
             callback_ty: ty,
             callback,
             captures,
@@ -75,6 +129,9 @@ impl ExecutionTransfer {
     }
 
     pub fn restrict_coverage(&mut self, state: &State) {
+        self.backing_complete &= state
+            .execution_backing_must
+            .contains(&(self.source, self.callback_ty));
         for capture in &mut self.captures {
             capture.closed &= capture
                 .witness
@@ -91,8 +148,7 @@ impl ExecutionTransfer {
     pub fn detach(&self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
         self.tokens.detach(&mut state.input_owners);
         if state
-            .executions
-            .remove(&(self.source, self.callback_ty))
+            .remove_execution_callback(self.source, self.callback_ty)
             .is_some()
         {
             flow.record_path_store(
@@ -135,6 +191,12 @@ impl ExecutionTransfer {
             capture.role = capture.role.reanchor(destination);
         }
         self.tokens.reanchor(destination);
+        let backing_inputs: Vec<_> = self
+            .captures
+            .iter()
+            .flat_map(|capture| capture.witness.peers.iter().map(super::Role::local))
+            .chain([self.source, destination])
+            .collect();
         CapturedOwner::install_excluding(self.captures, &[self.source], state);
         self.tokens.install(&mut state.input_owners);
         if let Some(existing) = state.executions.get(&(destination, self.callback_ty)) {
@@ -158,9 +220,11 @@ impl ExecutionTransfer {
             true,
         );
         self.callback.clear_sources();
-        state
-            .executions
-            .insert((destination, self.callback_ty), self.callback);
+        let complete = self.backing_complete
+            && backing_inputs
+                .iter()
+                .all(|local| !state.invalidated_copies.contains(local));
+        state.install_execution_callback(destination, self.callback_ty, self.callback, complete);
     }
 }
 
@@ -388,7 +452,7 @@ impl Flow<'_> {
         state.future_owners.forget_execution(local, ty);
         state.future_copies.forget_execution(local, ty);
         self.preserve_pending_loss(callback, &vec![], point, state, true);
-        state.executions.remove(&(local, ty));
+        state.remove_execution_callback(local, ty);
     }
 
     pub(in crate::provenance) fn demote_completed_execution(

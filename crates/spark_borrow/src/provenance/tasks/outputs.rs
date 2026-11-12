@@ -115,9 +115,7 @@ impl Flow<'_> {
                 true,
             );
             output.callback.clear_sources();
-            state
-                .executions
-                .insert((destination.local, ty), output.callback);
+            state.install_execution_callback(destination.local, ty, output.callback, false);
         }
     }
 }
@@ -188,6 +186,7 @@ impl CallbackRecipe {
 
 pub(in crate::provenance) struct BoundOutput {
     parent_ty: TypeId,
+    callback_ty: TypeId,
     pub covered: FxHashSet<usize>,
     captures: Vec<CapturedOwner>,
 }
@@ -270,10 +269,37 @@ impl BoundOutput {
         }
     }
     pub fn install(mut self, destination: Local, state: &mut State) {
+        if state.invalidated_copies.contains(&destination)
+            || self.captures.iter().any(|capture| {
+                capture
+                    .witness
+                    .peers
+                    .iter()
+                    .any(|peer| state.invalidated_copies.contains(&peer.local()))
+            })
+        {
+            for capture in self.captures {
+                state
+                    .future_owners
+                    .revoke(&capture.witness, &state.future_copies);
+            }
+            state
+                .execution_backing_must
+                .remove(&(destination, self.callback_ty));
+            return;
+        }
         for capture in &mut self.captures {
             capture.role = capture.role.reanchor(destination);
         }
         CapturedOwner::install_all(self.captures, state);
+        if state
+            .executions
+            .contains_key(&(destination, self.callback_ty))
+        {
+            state
+                .execution_backing_must
+                .insert((destination, self.callback_ty));
+        }
     }
 }
 
@@ -285,6 +311,7 @@ impl Flow<'_> {
         if !state.future_copies.inputs(Local::RETURN_PLACE).is_empty() {
             return None;
         }
+        state.current_execution_record(Local::RETURN_PLACE)?;
         let mut summary = Summary::default();
         self.export_callback_outputs(state, &mut summary);
         let recipe = CallbackRecipe::candidate(
@@ -357,6 +384,7 @@ impl Flow<'_> {
         }
         Some(BoundOutput {
             parent_ty: recipe.parent_ty,
+            callback_ty: recipe.callback_ty,
             covered: recipe
                 .formals()
                 .iter()

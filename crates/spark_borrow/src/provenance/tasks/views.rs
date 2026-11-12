@@ -195,6 +195,29 @@ pub(in crate::provenance) fn map(
     result
 }
 
+pub(in crate::provenance) fn pending_records_at(
+    value: &Value,
+    path: &[crate::provenance::Slot],
+    handle: &Handle,
+    state: &crate::provenance::State,
+    storage: &crate::provenance::demand::Storage,
+) -> (Vec<super::Record>, bool) {
+    if handle.pending && path.is_empty() {
+        if let crate::provenance::demand::Storage::Logical(local) = storage {
+            let resident = state
+                .values
+                .get(local)
+                .and_then(|value| value.futures.get(path));
+            if resident.is_some_and(|handles| handles.contains(handle)) {
+                if let Some(record) = state.current_execution_record(*local) {
+                    return (vec![record], false);
+                }
+            }
+        }
+    }
+    pending_records(value, path, handle, state)
+}
+
 pub(in crate::provenance) fn pending_records(
     value: &Value,
     path: &[crate::provenance::Slot],
