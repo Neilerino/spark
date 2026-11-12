@@ -14,7 +14,7 @@ pub(in crate::provenance) struct ForwardInput {
     covered: FxHashSet<usize>,
     tokens: Tags,
     graphs: Vec<ExecutionTransfer>,
-    closed: bool,
+    coverage: Option<super::lifecycle::Coverage>,
 }
 
 impl ForwardInput {
@@ -56,11 +56,9 @@ impl ForwardInput {
     }
 
     pub fn detach(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
-        self.closed &= self
-            .witness
-            .peers
-            .iter()
-            .all(|peer| state.future_owners.known_role(peer));
+        self.coverage = self.coverage.take().and_then(|coverage| {
+            coverage.meet(state.future_owners.group_coverage(&self.witness.peers)?)
+        });
         for graph in &mut self.graphs {
             graph.restrict_coverage(state);
         }
@@ -87,8 +85,12 @@ impl ForwardInput {
                 .future_owners
                 .revoke(&self.witness, &state.future_copies);
             state.future_owners.forget_role(&Role::root(destination));
-        } else if self.closed {
-            state.future_owners.grant(destination, &state.future_copies);
+        } else if let Some(coverage) = self.coverage {
+            state.future_owners.install_role(
+                Role::root(destination),
+                coverage,
+                &state.future_copies,
+            );
         }
     }
 }
@@ -176,8 +178,9 @@ impl Flow<'_> {
             return None;
         }
         Some(ForwardInput {
-            closed: !covered.is_empty()
-                && roots.iter().all(|root| state.future_owners.known(*root)),
+            coverage: (!covered.is_empty())
+                .then(|| state.future_owners.group_coverage(&returned.peers))
+                .flatten(),
             witness: Witness {
                 peers: returned.peers.clone(),
                 inputs: returned.inputs.clone(),

@@ -2,6 +2,8 @@
 
 //! Source-backed send contributions; presence grants no receipt or ownership proof.
 
+mod ownership;
+
 use crate::provenance::{address::OpaqueSite, demand::Storage, Flow, Point, State, Value};
 use rustc_hash::FxHashSet;
 use spark_intern::{kw, Symbol};
@@ -38,6 +40,7 @@ impl Contribution {
 
 pub(in crate::provenance) struct Send {
     receiver: Local,
+    owner: Option<ownership::Transfer>,
     birth: Option<(crate::provenance::tasks::fresh::Birth, FxHashSet<Local>)>,
 }
 
@@ -46,7 +49,29 @@ impl Send {
     fn untracked(receiver: Local) -> Self {
         Self {
             receiver,
+            owner: None,
             birth: None,
+        }
+    }
+
+    pub(in crate::provenance) fn prepare(
+        &mut self,
+        events: &[super::QueueEvent],
+        clobbered: &[Local],
+        state: &State,
+    ) {
+        if let Some(owner) = &mut self.owner {
+            owner.prepare(events, clobbered, state);
+        }
+    }
+    pub(in crate::provenance) fn reserves_move(&self) -> bool {
+        self.owner
+            .as_ref()
+            .is_some_and(ownership::Transfer::reserves_move)
+    }
+    fn abandon(&self, state: &mut State) {
+        if let Some(owner) = &self.owner {
+            owner.abandon(state);
         }
     }
 
@@ -99,6 +124,9 @@ pub(super) fn direct_send(
     });
     Some(Send {
         receiver: receiver.local,
+        owner: args.get(1).and_then(|payload| {
+            ownership::Transfer::snapshot(flow, receiver.local, payload, state)
+        }),
         birth,
     })
 }
@@ -132,12 +160,14 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         let Some(first) = events.first() else {
+            send.abandon(state);
             return;
         };
         if events
             .iter()
             .any(|event| event.site != first.site || event.write.ty != first.write.ty)
         {
+            send.abandon(state);
             for event in events {
                 self.apply_queue_event(event, point, state);
             }
@@ -169,9 +199,14 @@ impl Flow<'_> {
             site: first.site,
             ty: first.write.ty,
         };
+        let occupied = state.queue_current.contains_key(&slot);
         self.archive_previous_message(&slot, point, state);
+        if occupied {
+            send.abandon(state);
+        }
         if !state.live.contains(&send.receiver) || state.invalidated_copies.contains(&send.receiver)
         {
+            send.abandon(state);
             for target in message.targets {
                 self.queue_send_one(target, &message.value, slot.ty, point, state);
             }
@@ -194,7 +229,13 @@ impl Flow<'_> {
         );
         message.births.extend(send.birth(state, &message.value));
         message.value.clear_sources();
-        state.queue_current.insert(slot, message);
+        let payload = message.value.clone();
+        state.queue_current.insert(slot.clone(), message);
+        if !occupied {
+            if let Some(owner) = &send.owner {
+                owner.install(&slot, &payload, state);
+            }
+        }
     }
 
     fn archive_previous_message(&mut self, slot: &Slot, point: Point, state: &mut State) {

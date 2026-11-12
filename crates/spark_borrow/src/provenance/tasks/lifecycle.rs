@@ -5,16 +5,34 @@
 mod tokens;
 pub(in crate::provenance) use tokens::{InputOwners, Tags, Token, Transfer};
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use spark_mir::{Constant, Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator};
 use spark_types::{Ty, TypeId, TypeTable};
 
 use super::{Anchor, Copies, Record, Role, Witness};
 use crate::provenance::{value, Flow, State};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::provenance) enum Coverage {
+    Closed,
+    ThroughQueue(std::sync::Arc<crate::provenance::aliases::Port>),
+}
+
+impl Coverage {
+    pub fn meet(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (Self::Closed, coverage) | (coverage, Self::Closed) => Some(coverage),
+            (Self::ThroughQueue(left), Self::ThroughQueue(right)) if left == right => {
+                Some(Self::ThroughQueue(left))
+            }
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Owners {
-    closed: FxHashSet<Role>,
+    coverage: FxHashMap<Role, Coverage>,
     exposed: FxHashSet<Anchor>,
 }
 
@@ -23,35 +41,52 @@ impl Owners {
         self.known_role(&Role::root(local))
     }
     pub fn known_role(&self, role: &Role) -> bool {
-        self.closed.contains(role)
+        self.coverage.get(role) == Some(&Coverage::Closed)
+    }
+    pub fn coverage(&self, role: &Role) -> Option<Coverage> {
+        self.coverage.get(role).cloned()
+    }
+    pub fn group_coverage(&self, peers: &FxHashSet<Role>) -> Option<Coverage> {
+        if peers.is_empty() {
+            return None;
+        }
+        peers.iter().try_fold(Coverage::Closed, |current, peer| {
+            current.meet(self.coverage(peer)?)
+        })
+    }
+    pub fn exposed_role(&self, role: &Role) -> bool {
+        self.exposed.contains(role.anchor())
     }
     pub fn grant(&mut self, local: Local, copies: &Copies) {
         self.grant_role(Role::root(local), copies);
     }
     pub fn grant_role(&mut self, role: Role, copies: &Copies) {
-        if self.exposed.contains(role.anchor()) {
+        self.install_role(role, Coverage::Closed, copies);
+    }
+    pub fn install_role(&mut self, role: Role, coverage: Coverage, copies: &Copies) {
+        if self.exposed_role(&role) {
             self.invalidate_at(role.anchor().clone(), copies);
         } else {
-            self.closed.insert(role);
+            self.coverage.insert(role, coverage);
         }
     }
     pub fn forget(&mut self, local: Local) {
-        self.closed.retain(|role| role.local() != Some(local));
+        self.coverage.retain(|role, _| role.local() != Some(local));
     }
     pub fn revoke(&mut self, witness: &Witness, copies: &Copies) {
         for role in &witness.peers {
-            self.closed.remove(role);
+            self.coverage.remove(role);
             for peer in copies.role_peers(role) {
-                self.closed.remove(&peer);
+                self.coverage.remove(&peer);
             }
         }
     }
     pub fn forget_execution(&mut self, local: Local, ty: TypeId) {
-        self.closed
-            .retain(|role| role.local() != Some(local) || role.callback_type() != Some(ty));
+        self.coverage
+            .retain(|role, _| role.local() != Some(local) || role.callback_type() != Some(ty));
     }
     pub fn forget_role(&mut self, role: &Role) {
-        self.closed.remove(role);
+        self.coverage.remove(role);
     }
     pub fn invalidate(&mut self, local: Local, copies: &Copies) {
         self.invalidate_at(Anchor::Local(local), copies);
@@ -65,7 +100,7 @@ impl Owners {
             }
             for role in copies.anchored_at(&root) {
                 for peer in copies.role_peers(&role) {
-                    self.closed.remove(&peer);
+                    self.coverage.remove(&peer);
                     if let Some(anchor) = peer.as_anchor() {
                         pending.push(anchor.clone());
                     }
@@ -78,22 +113,31 @@ impl Owners {
         self.invalidate(local, copies);
     }
     pub fn intersect(&mut self, copies: &Copies, other: &Self, other_copies: &Copies) -> bool {
-        let before = self.closed.clone();
-        self.closed.retain(|role| {
-            other.closed.contains(role) && copies.role_peers(role) == other_copies.role_peers(role)
+        let before = self.clone();
+        self.coverage.retain(|role, coverage| {
+            if copies.role_peers(role) != other_copies.role_peers(role) {
+                return false;
+            }
+            let Some(next) = other
+                .coverage(role)
+                .and_then(|other| coverage.clone().meet(other))
+            else {
+                return false;
+            };
+            *coverage = next;
+            true
         });
-        let before_exposed = self.exposed.len();
         self.exposed.extend(other.exposed.iter().cloned());
-        self.closed
-            .retain(|role| !self.exposed.contains(role.anchor()));
-        self.closed != before || before_exposed != self.exposed.len()
+        self.coverage
+            .retain(|role, _| !self.exposed.contains(role.anchor()));
+        *self != before
     }
 }
 
 pub(in crate::provenance) struct CapturedOwner {
     pub(super) role: Role,
     pub(super) witness: Witness,
-    pub(super) closed: bool,
+    pub(super) coverage: Option<Coverage>,
 }
 
 impl CapturedOwner {
@@ -128,6 +172,7 @@ impl CapturedOwner {
                 .any(|peer| peer.frame_clobbered(&[], &state.invalidated_copies))
         {
             self.witness.birth = None;
+            self.coverage = None;
         }
         state.future_owners.forget_role(&self.role);
         state.future_copies.assign_role(
@@ -135,10 +180,10 @@ impl CapturedOwner {
             self.witness,
             &crate::provenance::tasks::Live::new(&state.live, &state.queue_current),
         );
-        if self.closed {
+        if let Some(coverage) = self.coverage {
             state
                 .future_owners
-                .grant_role(self.role, &state.future_copies);
+                .install_role(self.role, coverage, &state.future_copies);
         }
     }
 }
@@ -312,7 +357,7 @@ impl Flow<'_> {
                     Some(CapturedOwner {
                         role: role.capture_at(destination.local)?,
                         witness: state.future_copies.role_witness(role),
-                        closed: state.future_owners.known_role(role),
+                        coverage: state.future_owners.coverage(role),
                     })
                 })
                 .collect();
@@ -332,7 +377,7 @@ impl Flow<'_> {
                 state.live.contains(&source).then(|| CapturedOwner {
                     role: Role::capture(destination.local, *func_def_id, index, ty),
                     witness: state.future_copies.witness(source),
-                    closed: state.future_owners.known(source),
+                    coverage: state.future_owners.coverage(&Role::root(source)),
                 })
             })
             .collect()
@@ -343,9 +388,9 @@ impl Flow<'_> {
         rvalue: &Rvalue,
         destination: &Place,
         state: &mut State,
-    ) -> bool {
+    ) -> Option<Coverage> {
         if self.moving_environment(rvalue, destination).is_some() {
-            return false;
+            return None;
         }
         let root_destination = destination.projections.is_empty()
             && matches!(
@@ -358,7 +403,7 @@ impl Flow<'_> {
         if root_destination {
             if let Rvalue::Use(Operand::Copy(source) | Operand::Move(source)) = rvalue {
                 if source.projections.is_empty() {
-                    return state.future_owners.known(source.local);
+                    return state.future_owners.coverage(&Role::root(source.local));
                 }
             }
         }
@@ -385,7 +430,7 @@ impl Flow<'_> {
             }
             _ => {}
         }
-        false
+        None
     }
 
     pub(in crate::provenance) fn lose_owning_operand(operand: &Operand, state: &mut State) {

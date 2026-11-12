@@ -67,6 +67,14 @@ impl CallOutcome {
                 .is_some_and(|output| output.covered.contains(&index))
     }
 
+    fn reserves_queue_move(&self, index: usize) -> bool {
+        index == 1
+            && self
+                .direct_queue_send
+                .as_ref()
+                .is_some_and(crate::provenance::channels::messages::Send::reserves_move)
+    }
+
     fn apply_prefix(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
         self.import_observations(flow, point, state);
         flow.apply_call_prefix(self, point, state);
@@ -93,6 +101,9 @@ impl CallOutcome {
         point: Point,
         state: &mut State,
     ) {
+        if let Some(send) = &mut self.direct_queue_send {
+            send.prepare(&self.queues, &self.clobbered_copies, state);
+        }
         self.future_proof.forwarded = flow.forward_input(
             &self.future_proof,
             args,
@@ -510,7 +521,7 @@ impl Flow<'_> {
                     }
                     continue;
                 }
-                if outcome.transfers_argument(index) {
+                if outcome.reserves_queue_move(index) || outcome.transfers_argument(index) {
                     state.input_owners.drop_local(place.local);
                 } else if released {
                     state.input_owners.drop_local(place.local);

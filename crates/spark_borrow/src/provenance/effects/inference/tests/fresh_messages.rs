@@ -8,6 +8,7 @@ use crate::provenance::{
 };
 use spark_mir::{BlockId, Local, Operand, Terminator};
 
+mod conditional;
 mod message_roles;
 
 fn with_fresh_producer(run: impl FnOnce(&mut Flow<'_>, State, Local, Birth)) {
@@ -370,15 +371,80 @@ fn late_spawn_and_send_imports_cannot_restore_fresh_birth_provenance() {
         );
         flow.apply_call_outcomes(&args, &destination, vec![outcome], point, &mut state);
         assert!(state.invalidated_copies.contains(&child));
-        let message = state
+        let (slot, message) = state
             .queue_current
-            .values()
-            .find(|message| birth.record(&message.value).is_some())
+            .iter()
+            .find(|(_, message)| birth.record(&message.value).is_some())
             .expect("the real queued callback backing remains present");
         assert!(
             message.births.is_empty(),
             "send origin snapshot cannot survive its source's late physical clobber"
         );
+        assert!(
+            state
+                .future_owners
+                .coverage(&crate::provenance::tasks::Role::message(slot.clone()))
+                .is_none(),
+            "a late clobber cannot restore even conditional coverage"
+        );
         assert!(!message.value.origins().is_empty());
+    });
+}
+
+#[test]
+fn an_internally_born_message_preserves_conditional_owner_evidence() {
+    with_fresh_producer(|flow, _, child, birth| {
+        let mut checked = 0;
+        for (index, block) in flow.function.blocks.clone().iter().enumerate() {
+            if !matches!(block.terminator, Terminator::Return) {
+                continue;
+            }
+            let Some(mut state) = flow.entries[index].clone() else {
+                continue;
+            };
+            assert!(flow.transfer_block(BlockId(index as u32), &mut state));
+            assert!(!state.live.contains(&child));
+            let (slot, message) = state
+                .queue_current
+                .iter()
+                .find(|(_, message)| message.births.contains(&birth))
+                .unwrap();
+            let role = crate::provenance::tasks::Role::message(slot.clone());
+            assert!(
+                !state.future_owners.known_role(&role),
+                "a formal queue never supplies unconditional cleanup authority"
+            );
+            assert_eq!(state.future_copies.role_witness(&role).birth, Some(birth), "the actual sent child must retain its conditional output identity after the sender drops");
+            let retained = flow
+                .function
+                .locals
+                .iter()
+                .find(|decl| decl.name.is_some_and(|name| name.as_str() == "retained"))
+                .unwrap()
+                .local;
+            let input = flow
+                .initial_state()
+                .channel_copies
+                .witness(&crate::provenance::channels::identity::Role::Local(
+                    retained,
+                ))
+                .input
+                .unwrap();
+            assert_eq!(
+                state.future_owners.coverage(&role),
+                Some(crate::provenance::tasks::lifecycle::Coverage::ThroughQueue(
+                    input
+                ))
+            );
+            assert_eq!(
+                state.future_copies.role_witness(&role).peers,
+                FxHashSet::from_iter([role.clone()])
+            );
+            assert!(state.input_owners.tags(&role).is_empty());
+            assert!(!message.value.origins().is_empty());
+            assert!(!state.residuals.values().any(|value| value.futures.values().flatten().any(|handle| matches!(&handle.target, crate::provenance::tasks::Target::Birth { constructor, .. } if *constructor == birth.site))), "the represented conditional output retains activity without duplicate loss debt");
+            checked += 1;
+        }
+        assert!(checked > 0);
     });
 }

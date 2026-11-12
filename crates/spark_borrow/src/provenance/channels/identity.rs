@@ -6,7 +6,7 @@ mod transfer;
 pub(in crate::provenance) use transfer::Captured;
 
 use crate::provenance::identity::Classes;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use spark_mir::Local;
 use spark_types::TypeId;
 
@@ -65,12 +65,14 @@ impl Role {
 pub(in crate::provenance) struct Witness {
     pub peers: FxHashSet<Role>,
     pub fresh: bool,
+    pub input: Option<std::sync::Arc<crate::provenance::aliases::Port>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Copies {
     classes: Classes<Role>,
     fresh: FxHashSet<Role>,
+    inputs: FxHashMap<Role, std::sync::Arc<crate::provenance::aliases::Port>>,
 }
 
 impl Copies {
@@ -78,6 +80,7 @@ impl Copies {
         Witness {
             peers: self.classes.peers(source),
             fresh: self.fresh.contains(source),
+            input: self.inputs.get(source).cloned(),
         }
     }
 
@@ -94,9 +97,23 @@ impl Copies {
         self.fresh.insert(role);
     }
 
+    pub fn seed_input(&mut self, local: Local, port: crate::provenance::aliases::Port) {
+        self.forget(local);
+        let peers = self
+            .inputs
+            .iter()
+            .filter(|(_, found)| ***found == port)
+            .map(|(role, _)| role.clone())
+            .collect();
+        let role = Role::Local(local);
+        self.classes.assign(role.clone(), peers);
+        self.inputs.insert(role, std::sync::Arc::new(port));
+    }
+
     fn retain(&mut self, keep: impl Fn(&Role) -> bool) {
         self.classes.retain(&keep);
-        self.fresh.retain(keep);
+        self.fresh.retain(&keep);
+        self.inputs.retain(|role, _| keep(role));
     }
 
     pub fn forget(&mut self, local: Local) {
@@ -114,6 +131,10 @@ impl Copies {
             .filter(|peer| *peer != destination && live.contains(&peer.local()))
             .collect();
         self.fresh.remove(&destination);
+        self.inputs.remove(&destination);
+        if let Some(input) = witness.input {
+            self.inputs.insert(destination.clone(), input);
+        }
         if witness.fresh {
             self.fresh.insert(destination.clone());
         }
@@ -125,6 +146,10 @@ impl Copies {
         let before = self.fresh.len();
         self.fresh.retain(|role| other.fresh.contains(role));
         changed |= before != self.fresh.len();
+        let before = self.inputs.len();
+        self.inputs
+            .retain(|role, input| other.inputs.get(role) == Some(input));
+        changed |= before != self.inputs.len();
         changed
     }
 }

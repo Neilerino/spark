@@ -127,7 +127,7 @@ impl ExecutionTransfer {
                 Some(CapturedOwner {
                     role: role.in_execution(destination, ty)?,
                     witness: state.future_copies.role_witness(role),
-                    closed: state.future_owners.known_role(role),
+                    coverage: state.future_owners.coverage(role),
                 })
             })
             .collect();
@@ -153,11 +153,9 @@ impl ExecutionTransfer {
             .execution_backing_must
             .contains(&(self.source, self.callback_ty));
         for capture in &mut self.captures {
-            capture.closed &= capture
-                .witness
-                .peers
-                .iter()
-                .all(|peer| state.future_owners.known_role(peer));
+            capture.coverage = capture.coverage.take().and_then(|coverage| {
+                coverage.meet(state.future_owners.group_coverage(&capture.witness.peers)?)
+            });
         }
     }
 

@@ -573,3 +573,91 @@ fn execution_imports_revalidate_channel_captures_at_the_final_installation() {
         });
     }
 }
+
+#[test]
+fn entry_lineage_survives_supported_transfers_without_becoming_freshness() {
+    with_channels(|flow, mut state| {
+        let ty = flow.function.locals[1].ty;
+        let input = flow.symbolic_input(ty, Local(1), ty, &[]);
+        let port = input
+            .root_queue_handles()
+            .next()
+            .unwrap()
+            .target
+            .port(flow.table)
+            .unwrap();
+        state.set(Local(1), input);
+        state.channel_copies.seed_input(Local(1), port.clone());
+        copy(flow, &mut state, Local(2), Local(1), 2);
+        assign(
+            flow,
+            &mut state,
+            Local(3),
+            Rvalue::Use(Operand::Move(Place::from_local(Local(2)))),
+            3,
+        );
+        let witness = state.channel_copies.witness(&Role::Local(Local(3)));
+        assert_eq!(witness.input.as_deref(), Some(&port));
+        assert!(!witness.fresh);
+        assert!(!state.live.contains(&Local(2)));
+        assign(
+            flow,
+            &mut state,
+            Local(5),
+            Rvalue::Aggregate(
+                AggregateKind::Closure {
+                    func_def_id: DefId::new(9990),
+                },
+                vec![Operand::Copy(Place::from_local(Local(3)))],
+            ),
+            4,
+        );
+        assign(
+            flow,
+            &mut state,
+            Local(6),
+            Rvalue::Use(Operand::Move(Place::from_local(Local(5)))),
+            5,
+        );
+        let roles: Vec<_> = state.channel_copies.anchored(Local(6)).cloned().collect();
+        assert_eq!(roles.len(), 1);
+        assert_eq!(
+            state.channel_copies.witness(&roles[0]).input.as_deref(),
+            Some(&port)
+        );
+        let callback_ty = flow.function.locals[6].ty;
+        let captures = Captured::execution(Local(6), Local(7), callback_ty, true, &state);
+        state.live.insert(Local(7));
+        Captured::install_all(captures, Local(7), &[Local(6)], &mut state);
+        let execution = roles[0].in_execution(Local(7), callback_ty).unwrap();
+        assert_eq!(
+            state.channel_copies.witness(&execution).input.as_deref(),
+            Some(&port)
+        );
+        fresh(flow, &mut state, Local(1));
+        assert!(state
+            .channel_copies
+            .witness(&Role::Local(Local(1)))
+            .input
+            .is_none());
+        assert_eq!(
+            state
+                .channel_copies
+                .witness(&Role::Local(Local(3)))
+                .input
+                .as_deref(),
+            Some(&port),
+            "replacing the formal coordinate does not retarget an old equal copy"
+        );
+        flow.clobber_input_owners(Local(3), &mut state);
+        assert!(state
+            .channel_copies
+            .witness(&Role::Local(Local(3)))
+            .input
+            .is_none());
+        assert_eq!(
+            state.channel_copies.witness(&execution).input.as_deref(),
+            Some(&port)
+        );
+    });
+}

@@ -262,11 +262,9 @@ impl BoundOutput {
 
     pub fn restrict_coverage(&mut self, state: &State) {
         for capture in &mut self.captures {
-            capture.closed &= capture
-                .witness
-                .peers
-                .iter()
-                .all(|peer| state.future_owners.known_role(peer));
+            capture.coverage = capture.coverage.take().and_then(|coverage| {
+                coverage.meet(state.future_owners.group_coverage(&capture.witness.peers)?)
+            });
         }
     }
     pub fn install(mut self, destination: Local, state: &mut State) {
@@ -380,7 +378,9 @@ impl Flow<'_> {
             captures.push(CapturedOwner {
                 role: output_role(Local::RETURN_PLACE, recipe.callback_ty, path)?,
                 witness: state.future_copies.witness(place.local),
-                closed: state.future_owners.known(place.local),
+                coverage: state
+                    .future_owners
+                    .coverage(&super::Role::root(place.local)),
             });
         }
         Some(BoundOutput {

@@ -373,10 +373,21 @@ impl<'a> Flow<'a> {
                         state.input_owners.seed_ambient(decl.local);
                     }
                 }
-                state.set(
-                    decl.local,
-                    self.symbolic_input(decl.ty, decl.local, decl.ty, &[]),
-                );
+                let input = self.symbolic_input(decl.ty, decl.local, decl.ty, &[]);
+                if matches!(
+                    self.table.resolve(strip_mutable(decl.ty, self.table)),
+                    Ty::Channel { .. }
+                ) {
+                    let handles: Vec<_> = input.root_queue_handles().collect();
+                    if let [handle] = handles.as_slice() {
+                        if let Some(port) = handle.target.port(self.table) {
+                            state
+                                .channel_copies
+                                .seed_input(decl.local, self.aliases.representative(&port));
+                        }
+                    }
+                }
+                state.set(decl.local, input);
             }
         }
         state
@@ -512,8 +523,12 @@ impl<'a> Flow<'a> {
                     transfer.install(place.local, state);
                 }
                 state.future_owners.forget(place.local);
-                if owned {
-                    state.future_owners.grant(place.local, &state.future_copies);
+                if let Some(coverage) = owned {
+                    state.future_owners.install_role(
+                        tasks::Role::root(place.local),
+                        coverage,
+                        &state.future_copies,
+                    );
                 }
                 tasks::lifecycle::CapturedOwner::install_all(captures, state);
                 input_transfer.install(&mut state.input_owners);
