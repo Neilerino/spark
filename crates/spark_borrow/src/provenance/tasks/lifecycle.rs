@@ -114,7 +114,16 @@ impl CapturedOwner {
         }
     }
 
-    fn install(self, state: &mut State) {
+    fn install(mut self, state: &mut State) {
+        if state.invalidated_copies.contains(&self.role.local())
+            || self
+                .witness
+                .peers
+                .iter()
+                .any(|peer| state.invalidated_copies.contains(&peer.local()))
+        {
+            self.witness.birth = None;
+        }
         state.future_owners.forget_role(&self.role);
         state
             .future_copies

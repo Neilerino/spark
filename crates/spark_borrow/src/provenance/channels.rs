@@ -335,6 +335,36 @@ impl Flow<'_> {
         )
     }
 
+    fn queue_send_events(
+        &self,
+        targets: FxHashSet<Handle>,
+        payload: &Operand,
+        ty: TypeId,
+        point: Point,
+        state: &State,
+    ) -> Vec<QueueEvent> {
+        let payload = self.operand(payload, state);
+        let site = super::address::OpaqueSite {
+            function: self.function.def_id,
+            point,
+        };
+        targets
+            .into_iter()
+            .map(|handle| QueueEvent {
+                site,
+                write: Write {
+                    target: handle.target,
+                    ty,
+                    value: payload.clone(),
+                },
+                fence: super::tasks::proofs::EventFence {
+                    inputs: state.joined_inputs.clone(),
+                    ..Default::default()
+                },
+            })
+            .collect()
+    }
+
     pub(super) fn channel_call(
         &mut self,
         func: &Operand,
@@ -356,6 +386,7 @@ impl Flow<'_> {
         else {
             return None;
         };
+        let direct_queue_send = messages::direct_send(self, info.name, args, state);
         let source = self.operand(receiver_operand, state);
         let mut targets: FxHashSet<_> = source
             .root_queue_handles()
@@ -385,23 +416,7 @@ impl Flow<'_> {
         }
         let mut queues = Vec::new();
         let returned = if info.name == kw::SEND {
-            let payload = self.operand(args.get(1)?, state);
-            let site = super::address::OpaqueSite {
-                function: self.function.def_id,
-                point,
-            };
-            queues.extend(targets.into_iter().map(|handle| QueueEvent {
-                site,
-                write: Write {
-                    target: handle.target,
-                    ty: *inner,
-                    value: payload.clone(),
-                },
-                fence: super::tasks::proofs::EventFence {
-                    inputs: state.joined_inputs.clone(),
-                    ..Default::default()
-                },
-            }));
+            queues = self.queue_send_events(targets, args.get(1)?, *inner, point, state);
             Value::default()
         } else if info.name == kw::RECV || info.name == kw::TRY_RECV {
             let payload = self.receive_payload(&receiver, *inner, point, state);
@@ -421,7 +436,8 @@ impl Flow<'_> {
         };
         Some(super::effects::CallOutcome {
             queue_send_counts: self.actual_queue_send_counts(&queues),
-            direct_queue_send: messages::direct_send_receiver(info.name, receiver_operand),
+            direct_queue_send,
+            fresh_birth: None,
             fresh_leaf_task: false,
             spawn_owners: None,
             returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),

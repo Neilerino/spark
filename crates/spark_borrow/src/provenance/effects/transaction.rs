@@ -40,7 +40,8 @@ pub(in crate::provenance) struct CallOutcome {
     pub memory: Vec<MemoryWrite>,
     pub async_memory: Vec<MemoryWrite>,
     pub queue_send_counts: crate::provenance::channels::counts::Sends,
-    pub direct_queue_send: Option<Local>,
+    pub direct_queue_send: Option<crate::provenance::channels::messages::Send>,
+    pub fresh_birth: Option<crate::provenance::tasks::fresh::Transfer>,
     pub fresh_leaf_task: bool,
     pub returned_owner_tags: crate::provenance::tasks::lifecycle::Tags,
     pub retained_captures: Vec<crate::provenance::tasks::Witness>,
@@ -174,6 +175,9 @@ impl CallOutcome {
         );
         if let Some(output) = output {
             output.install(destination.local, state);
+        }
+        if let Some(birth) = self.fresh_birth.take() {
+            birth.install(flow, destination, &self.clobbered_copies, state);
         }
     }
 
@@ -323,6 +327,7 @@ impl Flow<'_> {
         CallOutcome {
             queue_send_counts: self.bind_normal_queue_sends(summary, function, actuals),
             direct_queue_send: None,
+            fresh_birth: None,
             fresh_leaf_task: false,
             spawn_owners: None,
             returned_owner_tags: self.bind_owner_tags(
@@ -600,8 +605,8 @@ impl Flow<'_> {
                     &mut after,
                 );
             }
-            if let Some(receiver) = alternative.direct_queue_send {
-                self.apply_direct_queue_send(receiver, &alternative.queues, point, &mut after);
+            if let Some(send) = &alternative.direct_queue_send {
+                self.apply_direct_queue_send(send, &alternative.queues, point, &mut after);
             } else {
                 for write in alternative.queues.drain(..) {
                     self.apply_queue_event(&write, point, &mut after);

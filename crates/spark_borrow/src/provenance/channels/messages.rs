@@ -19,6 +19,8 @@ pub(in crate::provenance) struct Slot {
 pub(in crate::provenance) struct Contribution {
     pub targets: FxHashSet<super::Target>,
     pub value: Value,
+    /// MAY birth shapes from actual sends, not owner or producer coverage.
+    pub births: FxHashSet<crate::provenance::tasks::fresh::Birth>,
 }
 
 impl Contribution {
@@ -27,19 +29,78 @@ impl Contribution {
         self.targets.extend(other.targets.iter().cloned());
         let mut changed = before != self.targets.len();
         changed |= self.value.join(&other.value);
+        let before = self.births.len();
+        self.births.extend(other.births.iter().copied());
+        changed |= before != self.births.len();
         changed
     }
 }
 
-pub(super) fn direct_send_receiver(method: Symbol, receiver: &Operand) -> Option<Local> {
-    match receiver {
-        Operand::Copy(place) | Operand::Move(place)
-            if method == kw::SEND && place.projections.is_empty() =>
-        {
-            Some(place.local)
+pub(in crate::provenance) struct Send {
+    receiver: Local,
+    birth: Option<(crate::provenance::tasks::fresh::Birth, FxHashSet<Local>)>,
+}
+
+impl Send {
+    #[cfg(test)]
+    fn untracked(receiver: Local) -> Self {
+        Self {
+            receiver,
+            birth: None,
         }
-        _ => None,
     }
+
+    fn birth(
+        &self,
+        state: &State,
+        payload: &Value,
+    ) -> Option<crate::provenance::tasks::fresh::Birth> {
+        let (birth, peers) = self.birth.as_ref()?;
+        if peers
+            .iter()
+            .any(|peer| state.invalidated_copies.contains(peer))
+            || birth.record(payload).is_none()
+        {
+            return None;
+        }
+        Some(*birth)
+    }
+}
+
+pub(super) fn direct_send(
+    flow: &Flow<'_>,
+    method: Symbol,
+    args: &[Operand],
+    state: &State,
+) -> Option<Send> {
+    let (Operand::Copy(receiver) | Operand::Move(receiver)) = args.first()? else {
+        return None;
+    };
+    if method != kw::SEND || !receiver.projections.is_empty() {
+        return None;
+    }
+    let birth = args.get(1).and_then(|payload| {
+        let (Operand::Copy(source) | Operand::Move(source)) = payload else {
+            return None;
+        };
+        if !source.projections.is_empty() {
+            return None;
+        }
+        Some((
+            flow.current_leaf_birth(source.local, state)?,
+            state
+                .future_copies
+                .witness(source.local)
+                .peers
+                .iter()
+                .map(crate::provenance::tasks::Role::local)
+                .collect(),
+        ))
+    });
+    Some(Send {
+        receiver: receiver.local,
+        birth,
+    })
 }
 
 impl State {
@@ -65,7 +126,7 @@ impl State {
 impl Flow<'_> {
     pub(in crate::provenance) fn apply_direct_queue_send(
         &mut self,
-        receiver: Local,
+        send: &Send,
         events: &[super::QueueEvent],
         point: Point,
         state: &mut State,
@@ -86,6 +147,7 @@ impl Flow<'_> {
         let mut message = Contribution {
             targets: FxHashSet::default(),
             value: Value::default(),
+            births: FxHashSet::default(),
         };
         for event in events {
             self.record_queue_event(event);
@@ -103,12 +165,13 @@ impl Flow<'_> {
         message.value = self.freeze_sources(point, message.value);
         self.import_task_sources(&mut message.value, point, state);
         let slot = Slot {
-            queue: super::identity::Role::Local(receiver),
+            queue: super::identity::Role::Local(send.receiver),
             site: first.site,
             ty: first.write.ty,
         };
         self.archive_previous_message(&slot, point, state);
-        if !state.live.contains(&receiver) || state.invalidated_copies.contains(&receiver) {
+        if !state.live.contains(&send.receiver) || state.invalidated_copies.contains(&send.receiver)
+        {
             for target in message.targets {
                 self.queue_send_one(target, &message.value, slot.ty, point, state);
             }
@@ -129,6 +192,7 @@ impl Flow<'_> {
             &message.value,
             true,
         );
+        message.births.extend(send.birth(state, &message.value));
         message.value.clear_sources();
         state.queue_current.insert(slot, message);
     }

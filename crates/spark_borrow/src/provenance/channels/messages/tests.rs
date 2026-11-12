@@ -138,7 +138,7 @@ fn an_actual_send_owns_one_writable_contribution_and_preserves_its_entry_sources
         let point = Point::new(BlockId::ENTRY, 10);
         flow.ensure_transfer(point, &state);
         let event = event(flow, &state, &queue, Local(2));
-        flow.apply_direct_queue_send(Local(1), &[event], point, &mut state);
+        flow.apply_direct_queue_send(&Send::untracked(Local(1)), &[event], point, &mut state);
         assert!(
             state.queues.is_empty(),
             "current contribution must not also be an independent history root"
@@ -206,14 +206,14 @@ fn repeating_a_real_send_keeps_old_activity_and_sources_in_history() {
         let first = Point::new(BlockId::ENTRY, 10);
         let sent = event(flow, &state, &queue, Local(2));
         flow.ensure_transfer(first, &state);
-        flow.apply_direct_queue_send(Local(1), &[sent], first, &mut state);
+        flow.apply_direct_queue_send(&Send::untracked(Local(1)), &[sent], first, &mut state);
         assert_eq!(state.queue_current.len(), 1);
         let slot = state.queue_current.keys().next().unwrap().clone();
         let previous = state.queue_current[&slot].value.clone();
         let point = Point::new(BlockId::ENTRY, 20);
         let sent = event(flow, &state, &queue, Local(3));
         flow.ensure_transfer(point, &state);
-        flow.apply_direct_queue_send(Local(1), &[sent], point, &mut state);
+        flow.apply_direct_queue_send(&Send::untracked(Local(1)), &[sent], point, &mut state);
         assert!(state.queue_current[&slot].value.origins().contains(&new));
         assert!(!state.queue_current[&slot].value.origins().contains(&old));
         let history = &state.queues[&(queue.clone(), slot.ty)];
@@ -243,7 +243,7 @@ fn unassociated_samples_do_not_replace_a_current_contribution() {
         let point = Point::new(BlockId::ENTRY, 10);
         flow.ensure_transfer(point, &state);
         let sent = event(flow, &state, &queue, Local(2));
-        flow.apply_direct_queue_send(Local(1), &[sent], point, &mut state);
+        flow.apply_direct_queue_send(&Send::untracked(Local(1)), &[sent], point, &mut state);
         assert_eq!(state.queue_current.len(), 1);
         let before = state.queue_current.clone();
         let sample = event(flow, &state, &queue, Local(3));
@@ -266,7 +266,7 @@ fn a_send_import_that_clobbers_its_receiver_archives_both_messages() {
         let first = Point::new(BlockId::ENTRY, 10);
         flow.ensure_transfer(first, &state);
         let sent = event(flow, &state, &queue, Local(2));
-        flow.apply_direct_queue_send(Local(1), &[sent], first, &mut state);
+        flow.apply_direct_queue_send(&Send::untracked(Local(1)), &[sent], first, &mut state);
         let slot = state.queue_current.keys().next().unwrap().clone();
         let previous = state.queue_current[&slot].value.clone();
         let point = Point::new(BlockId::ENTRY, 20);
@@ -302,7 +302,7 @@ fn a_send_import_that_clobbers_its_receiver_archives_both_messages() {
             }),
             super::super::allocation(flow.function.def_id, point, channel_ty),
         );
-        flow.apply_direct_queue_send(Local(1), &[sent], point, &mut state);
+        flow.apply_direct_queue_send(&Send::untracked(Local(1)), &[sent], point, &mut state);
         assert!(state.invalidated_copies.contains(&Local(1)));
         assert!(
             state.queue_current.is_empty(),

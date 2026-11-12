@@ -259,6 +259,7 @@ impl Flow<'_> {
                 ..Default::default()
             },
             direct_queue_send: None,
+            fresh_birth: None,
             fresh_leaf_task: false,
             spawn_owners: None,
             returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),

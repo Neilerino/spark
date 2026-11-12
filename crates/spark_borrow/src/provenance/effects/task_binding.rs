@@ -83,6 +83,11 @@ impl Flow<'_> {
         Some(TaskDispatch::Returns(vec![CallOutcome {
             queue_send_counts: crate::provenance::channels::counts::Sends::default(),
             direct_queue_send: None,
+            fresh_birth: if fresh_leaf_task {
+                crate::provenance::tasks::fresh::Transfer::at_spawn(self, args, &record, ty, point)
+            } else {
+                None
+            },
             fresh_leaf_task,
             spawn_owners: self.spawn_owner_transfer(args, fresh_leaf_task, state),
             returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
@@ -182,6 +187,7 @@ impl Flow<'_> {
         Some(TaskDispatch::Returns(vec![CallOutcome {
             queue_send_counts: crate::provenance::channels::counts::Sends::default(),
             direct_queue_send: None,
+            fresh_birth: None,
             fresh_leaf_task: false,
             spawn_owners: None,
             returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),

@@ -12,6 +12,7 @@ use super::{address::OpaqueSite, value, Path, Point, Slot, Value};
 pub(in crate::provenance) mod activity;
 pub(super) mod execution;
 pub(super) mod forwarding;
+pub(super) mod fresh;
 mod identity;
 pub(super) mod lifecycle;
 pub(super) mod memory;
@@ -273,7 +274,15 @@ impl super::Flow<'_> {
                 Ty::Future { .. }
             )
         {
-            if let Some(witness) = witness {
+            if let Some(mut witness) = witness {
+                if state.invalidated_copies.contains(&place.local)
+                    || witness
+                        .peers
+                        .iter()
+                        .any(|peer| state.invalidated_copies.contains(&peer.local()))
+                {
+                    witness.birth = None;
+                }
                 state
                     .future_copies
                     .assign(place.local, witness, &state.live);

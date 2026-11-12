@@ -181,6 +181,7 @@ impl Flow<'_> {
             witness: Witness {
                 peers: returned.peers.clone(),
                 inputs: returned.inputs.clone(),
+                birth: returned.birth,
             },
             covered,
             tokens,

@@ -618,6 +618,7 @@ fn returned_history_follows_only_live_unclobbered_pending_copy_witnesses() {
         let outcome = CallOutcome {
             queue_send_counts: crate::provenance::channels::counts::Sends::default(),
             direct_queue_send: None,
+            fresh_birth: None,
             fresh_leaf_task: false,
             spawn_owners: None,
             returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
@@ -811,6 +812,7 @@ fn a_returned_capture_keeps_progress_learned_after_the_entry_snapshot() {
         },
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         direct_queue_send: None,
+        fresh_birth: None,
         fresh_leaf_task: false,
         spawn_owners: None,
         tasks: vec![],

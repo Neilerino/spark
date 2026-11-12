@@ -48,6 +48,7 @@ impl State {
                         slot.clone(),
                         crate::provenance::channels::messages::Contribution {
                             targets: message.targets.clone(),
+                            births: message.births.clone(),
                             value: data(&message.value),
                         },
                     )

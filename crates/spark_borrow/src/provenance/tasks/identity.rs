@@ -74,15 +74,24 @@ impl Role {
 pub(in crate::provenance) struct Copies {
     classes: Classes<Role>,
     inputs: FxHashMap<Role, FxHashSet<Local>>,
+    births: FxHashMap<Role, super::fresh::Birth>,
 }
 
 pub(in crate::provenance) struct Witness {
     pub peers: FxHashSet<Role>,
     pub inputs: FxHashSet<Local>,
+    pub birth: Option<super::fresh::Birth>,
 }
 
 impl Witness {
     pub fn exclude(&mut self, clobbered: &[Local]) {
+        if self
+            .peers
+            .iter()
+            .any(|role| clobbered.contains(&role.local))
+        {
+            self.birth = None;
+        }
         self.peers.retain(|role| !clobbered.contains(&role.local));
     }
 
@@ -104,12 +113,21 @@ impl Copies {
         Witness {
             peers: self.role_peers(source),
             inputs: self.inputs.get(source).cloned().unwrap_or_default(),
+            birth: self.births.get(source).copied(),
         }
+    }
+
+    pub fn seed_birth(&mut self, local: Local, birth: super::fresh::Birth) {
+        self.forget(local);
+        let role = Role::root(local);
+        self.classes.insert(role.clone());
+        self.births.insert(role, birth);
     }
 
     pub fn seed_input(&mut self, input: Local) {
         let role = Role::root(input);
         self.classes.insert(role.clone());
+        self.births.remove(&role);
         self.inputs.insert(role, FxHashSet::from_iter([input]));
     }
 
@@ -144,11 +162,13 @@ impl Copies {
     pub fn forget(&mut self, local: Local) {
         self.classes.retain(|role| role.local != local);
         self.inputs.retain(|role, _| role.local != local);
+        self.births.retain(|role, _| role.local != local);
     }
 
     pub fn forget_role(&mut self, role: &Role) {
         self.classes.retain(|other| other != role);
         self.inputs.remove(role);
+        self.births.remove(role);
     }
 
     pub fn forget_execution(&mut self, local: Local, ty: TypeId) {
@@ -170,6 +190,10 @@ impl Copies {
 
     pub fn assign_role(&mut self, destination: Role, witness: Witness, live: &FxHashSet<Local>) {
         self.inputs.remove(&destination);
+        self.births.remove(&destination);
+        if let Some(birth) = witness.birth {
+            self.births.insert(destination.clone(), birth);
+        }
         let peers = witness
             .peers
             .into_iter()
@@ -183,6 +207,10 @@ impl Copies {
 
     pub fn intersect(&mut self, other: &Self) -> bool {
         let mut changed = self.classes.intersect(&other.classes);
+        let before = self.births.len();
+        self.births
+            .retain(|role, birth| other.births.get(role) == Some(birth));
+        changed |= before != self.births.len();
         self.inputs.retain(|role, inputs| {
             let before = inputs.len();
             inputs.retain(|input| {
