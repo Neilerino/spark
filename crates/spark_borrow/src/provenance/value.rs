@@ -289,7 +289,7 @@ impl Value {
     }
 
     pub fn sourced(mut self, storage: &Storage) -> Self {
-        self.sources.clear();
+        self.clear_sources();
         for (path, origin, capture) in self.leaves.keys() {
             if *origin == Origin::ValidationHole {
                 continue;
@@ -306,7 +306,13 @@ impl Value {
                     capture: *capture,
                 }));
         }
+        self.source_callback_nodes(storage);
         self
+    }
+
+    pub(super) fn clear_sources(&mut self) {
+        self.sources = Sources::default();
+        self.visit_callback_sources(std::collections::HashMap::clear);
     }
 
     pub fn function(def: DefId) -> Self {

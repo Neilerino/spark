@@ -81,7 +81,7 @@ impl State {
     }
 
     fn set(&mut self, local: Local, mut value: Value) {
-        value.sources.clear();
+        value.clear_sources();
         self.live.insert(local);
         Self::set_value(&mut self.cells, local, value.clone());
         Self::set_value(&mut self.values, local, value);

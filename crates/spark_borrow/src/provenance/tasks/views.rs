@@ -239,6 +239,60 @@ impl Carrier {
 mod tests;
 
 impl Value {
+    pub(in crate::provenance) fn callback_storage_values(
+        &self,
+        storage: &crate::provenance::demand::Storage,
+    ) -> Vec<(crate::provenance::demand::Storage, Self)> {
+        use crate::provenance::{demand::Storage, tasks::activity::Location};
+        let mut result = Vec::new();
+        for (path, subjects) in &self.task_views {
+            for (actor, view) in subjects {
+                for (ty, callback) in &view.callbacks {
+                    let location = Location::new(storage, path.clone(), actor.clone(), *ty);
+                    result.extend(callback.source_values().map(|(key, value)| {
+                        let selected = key
+                            .map_or_else(|| location.clone(), |key| location.for_node(key.clone()));
+                        (Storage::CallbackNode(Box::new(selected)), value)
+                    }));
+                }
+            }
+        }
+        result
+    }
+
+    pub(in crate::provenance) fn source_callback_nodes(
+        &mut self,
+        storage: &crate::provenance::demand::Storage,
+    ) {
+        for (path, subjects) in &mut self.task_views {
+            for (actor, view) in subjects {
+                for (ty, callback) in &mut view.callbacks {
+                    callback.source_at(&crate::provenance::tasks::activity::Location::new(
+                        storage,
+                        path.clone(),
+                        actor.clone(),
+                        *ty,
+                    ));
+                }
+            }
+        }
+    }
+
+    pub(in crate::provenance) fn visit_callback_sources(
+        &mut self,
+        mut visit: impl FnMut(&mut crate::provenance::demand::Sources),
+    ) {
+        for view in self
+            .task_views
+            .values_mut()
+            .flat_map(|subjects| subjects.values_mut())
+        {
+            for callback in view.callbacks.values_mut() {
+                callback.visit_sources(&mut visit);
+            }
+        }
+    }
+
     pub(in crate::provenance) fn visit_task_progress(
         &mut self,
         mut visit: impl FnMut(

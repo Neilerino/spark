@@ -194,7 +194,7 @@ impl Flow<'_> {
         for destination in self.write_targets(&event.write.target).all {
             if let Storage::External(port) = destination.storage {
                 let mut value = event.write.value.clone();
-                value.sources.clear();
+                value.clear_sources();
                 value.clear_task_imports();
                 publications
                     .entry((
@@ -293,7 +293,7 @@ impl Flow<'_> {
                     path: destination.path.clone(),
                 };
                 let mut data = value.clone();
-                data.sources.clear();
+                data.clear_sources();
                 data.clear_task_imports();
                 let event = (site, view);
                 self.record_event_guard(super::effects::EventKey::Memory(event.clone()), joined);
@@ -332,6 +332,7 @@ impl Flow<'_> {
                     | Storage::PendingWrite(_)
                     | Storage::SettledMemory(_)
                     | Storage::Residual(_)
+                    | Storage::CallbackNode(_)
                     | Storage::ResidualCallback(_, _) => false,
                 };
             self.record_path_store(point, destination.clone(), value, strong);
@@ -353,12 +354,13 @@ impl Flow<'_> {
                     .retain(|stored, _| !super::storage::prefix(path, stored));
             }
             current.join(&value.prefixed_path(path, root, self.table));
-            current.sources.clear();
+            current.clear_sources();
             match storage {
                 Storage::Observation(_)
                 | Storage::PendingWrite(_)
                 | Storage::SettledMemory(_)
                 | Storage::Residual(_)
+                | Storage::CallbackNode(_)
                 | Storage::ResidualCallback(_, _) => {}
                 Storage::ExecutionCallback(local, ty) => {
                     state.clobber_execution_callback(*local, *ty, current);
@@ -418,13 +420,20 @@ impl Flow<'_> {
             | Storage::PendingWrite(_)
             | Storage::SettledMemory(_)
             | Storage::Residual(_)
+            | Storage::CallbackNode(_)
             | Storage::ResidualCallback(_, _) => (
                 self.storage_type(storage),
-                state.stored_value(storage).cloned().unwrap_or_default(),
+                state
+                    .stored_value(storage)
+                    .map(std::borrow::Cow::into_owned)
+                    .unwrap_or_default(),
             ),
             Storage::Observation(lane) => (
                 lane.sample.ty,
-                state.stored_value(storage).cloned().unwrap_or_default(),
+                state
+                    .stored_value(storage)
+                    .map(std::borrow::Cow::into_owned)
+                    .unwrap_or_default(),
             ),
             Storage::Task(target, ty) => (
                 *ty,

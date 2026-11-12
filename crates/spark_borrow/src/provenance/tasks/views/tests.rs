@@ -137,6 +137,26 @@ fn callback_node_joins_preserve_an_untracked_pending_alternative() {
 }
 
 #[test]
+fn exact_peer_progress_keeps_the_source_views_fallback() {
+    let mut table = TypeTable::new();
+    let (target, mut destination, _) = pending(&mut table, 1);
+    let mut source = destination.clone();
+    let subject = Subject {
+        target,
+        capture: None,
+    };
+    source
+        .task_views
+        .get_mut(&Vec::new())
+        .unwrap()
+        .get_mut(&subject)
+        .unwrap()
+        .fallback = true;
+    destination.merge_task_progress(&source);
+    assert!(destination.task_views[&Vec::new()][&subject].fallback);
+}
+
+#[test]
 fn pending_memory_views_include_execution_backing_without_a_catalog_entry() {
     let mut table = TypeTable::new();
     let (_, mut child, callback_ty) = pending(&mut table, 1);

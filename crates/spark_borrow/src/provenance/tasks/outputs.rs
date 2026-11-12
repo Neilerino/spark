@@ -114,7 +114,7 @@ impl Flow<'_> {
                 &output.callback,
                 true,
             );
-            output.callback.sources.clear();
+            output.callback.clear_sources();
             state
                 .executions
                 .insert((destination.local, ty), output.callback);
@@ -236,11 +236,14 @@ impl BoundOutput {
                     && !clobbered.contains(peer)
                     && !state.invalidated_copies.contains(peer)
             }) {
-                let current = state.value(peer).with_future_capture(super::Capture {
-                    owner: *owner,
-                    index: *index,
-                    ty: *child_ty,
-                });
+                let current = state
+                    .value(peer)
+                    .sourced(&Storage::Logical(peer))
+                    .with_future_capture(super::Capture {
+                        owner: *owner,
+                        index: *index,
+                        ty: *child_ty,
+                    });
                 child.merge_task_progress(&current);
             }
             output.callback.clear_path(capture.role.selection());

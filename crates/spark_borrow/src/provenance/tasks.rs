@@ -9,6 +9,7 @@ use spark_types::{Ty, TypeId, TypeTable};
 
 use super::{address::OpaqueSite, value, Path, Point, Slot, Value};
 
+pub(in crate::provenance) mod activity;
 pub(super) mod execution;
 pub(super) mod forwarding;
 mod identity;
@@ -349,7 +350,11 @@ impl super::Flow<'_> {
                 && !state.invalidated_copies.contains(peer)
         }) {
             if let Some(current) = state.values.get(&peer) {
-                returned.merge_task_progress(current);
+                returned.merge_task_progress(
+                    &current
+                        .clone()
+                        .sourced(&super::demand::Storage::Logical(peer)),
+                );
             }
         }
     }
@@ -398,8 +403,7 @@ impl Value {
                     .or_default()
                     .entry(subject)
                     .or_insert_with(views::View::unknown);
-                returned_view.history.join(&view.history);
-                returned_view.memory.join(&view.memory);
+                returned_view.join(view);
             }
         }
     }
@@ -466,7 +470,7 @@ impl super::Flow<'_> {
                 &record.callback,
                 false,
             );
-            record.callback.sources.clear();
+            record.callback.clear_sources();
             if let Some(current) = state.tasks.get_mut(&target) {
                 current.join(&record);
             } else {

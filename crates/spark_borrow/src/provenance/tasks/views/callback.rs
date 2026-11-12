@@ -28,6 +28,7 @@ type FlatViews = FxHashMap<Path, FxHashMap<Subject, Progress>>;
 struct Node {
     carrier: Carrier,
     progress: FlatViews,
+    sources: crate::provenance::demand::Sources,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -67,12 +68,40 @@ impl Callback {
                     .join(&progress);
             }
         }
+        result.root.sources = std::mem::take(&mut value.sources);
         result.root.carrier = Carrier::seal(value);
         result
     }
 
     pub fn value(&self) -> Value {
         self.expand(&self.root, false)
+    }
+
+    pub fn node_value(&self, key: Option<&NodeKey>) -> Option<Value> {
+        let node = match key {
+            None => &self.root,
+            Some(key) => self.nodes.get(key)?,
+        };
+        Some(self.expand(node, false))
+    }
+
+    pub fn replace_node(&mut self, key: Option<&NodeKey>, value: Value) -> bool {
+        if key.is_some_and(|key| !self.nodes.contains_key(key)) {
+            return false;
+        }
+        let replacement = Self::seal(value);
+        let before = self.clone();
+        match key {
+            None => *self = replacement,
+            Some(key) => {
+                for (key, node) in replacement.nodes {
+                    self.nodes.entry(key).or_default().join(&node);
+                }
+                self.nodes.insert(key.clone(), replacement.root);
+                self.prune();
+            }
+        }
+        *self != before
     }
 
     pub fn shallow_value(&self) -> Value {
@@ -83,6 +112,14 @@ impl Callback {
         self.nodes
             .iter()
             .map(|(key, node)| (key, self.expand(node, true)))
+    }
+
+    pub fn source_values(&self) -> impl Iterator<Item = (Option<&NodeKey>, Value)> {
+        std::iter::once((None, self.root.data_value())).chain(
+            self.nodes
+                .iter()
+                .map(|(key, node)| (Some(key), node.data_value())),
+        )
     }
 
     pub fn prune(&mut self) {
@@ -104,6 +141,36 @@ impl Callback {
             {
                 visit(&mut progress.history, &mut progress.memory);
             }
+        }
+    }
+
+    pub fn visit_sources(
+        &mut self,
+        mut visit: impl FnMut(&mut crate::provenance::demand::Sources),
+    ) {
+        visit(&mut self.root.sources);
+        for node in self.nodes.values_mut() {
+            visit(&mut node.sources);
+        }
+    }
+
+    pub fn source_at(&mut self, location: &crate::provenance::tasks::activity::Location) {
+        self.root.sources = self
+            .root
+            .carrier
+            .value()
+            .sourced(&crate::provenance::demand::Storage::CallbackNode(Box::new(
+                location.clone(),
+            )))
+            .sources;
+        for (key, node) in &mut self.nodes {
+            node.sources = node
+                .carrier
+                .value()
+                .sourced(&crate::provenance::demand::Storage::CallbackNode(Box::new(
+                    location.for_node(key.clone()),
+                )))
+                .sources;
         }
     }
 
@@ -147,7 +214,7 @@ impl Callback {
     }
 
     fn expand(&self, node: &Node, shallow: bool) -> Value {
-        let mut value = node.carrier.value();
+        let mut value = node.data_value();
         value.task_views = node
             .progress
             .iter()
@@ -172,6 +239,7 @@ impl Callback {
                                         root: Node {
                                             carrier: node.carrier.clone(),
                                             progress: FlatViews::default(),
+                                            sources: node.sources.clone(),
                                         },
                                         nodes: FxHashMap::default(),
                                     }
@@ -243,8 +311,20 @@ impl Progress {
 }
 
 impl Node {
+    fn data_value(&self) -> Value {
+        let mut value = self.carrier.value();
+        value.sources.clone_from(&self.sources);
+        value
+    }
+
     fn join(&mut self, other: &Self) -> bool {
         let mut changed = false;
+        for (key, incoming) in &other.sources {
+            let current = self.sources.entry(key.clone()).or_default();
+            let before = current.len();
+            current.extend(incoming.iter().cloned());
+            changed |= current.len() != before;
+        }
         for (path, subjects) in &other.progress {
             let current = self.progress.entry(path.clone()).or_default();
             for (subject, progress) in subjects {

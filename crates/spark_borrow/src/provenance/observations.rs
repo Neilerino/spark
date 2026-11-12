@@ -434,7 +434,7 @@ impl Flow<'_> {
         let mut value = read
             .state
             .stored_value(&storage)
-            .cloned()
+            .map(std::borrow::Cow::into_owned)
             .unwrap_or_default()
             .sourced(&storage);
         if let Some(prefix) = read.envelope.and_then(|envelope| envelope.get(&storage)) {
@@ -487,7 +487,7 @@ impl Flow<'_> {
                 &value,
                 false,
             );
-            value.sources.clear();
+            value.clear_sources();
             state
                 .observations
                 .entry(lane.clone())

@@ -953,7 +953,7 @@ fn execution_callback_uses_function_typed_capture_sources_after_creator_consumpt
         true,
     );
     let mut stored = callback;
-    stored.sources.clear();
+    stored.clear_sources();
     state.executions.insert((Local(1), callback_ty), stored);
     state.consume(Local(2));
     assert_eq!(flow.storage_type(&storage), callback_ty);
@@ -991,6 +991,6 @@ fn execution_callback_uses_function_typed_capture_sources_after_creator_consumpt
         .iter()
         .any(|(location, ty, value)| location == &storage
             && *ty == callback_ty
-            && value == stored));
+            && value == stored.as_ref()));
     assert!(!state.live.contains(&Local(2)));
 }

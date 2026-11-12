@@ -261,7 +261,10 @@ impl Flow<'_> {
         history: &History,
         state: &mut State,
     ) -> bool {
-        let Some(mut current) = state.stored_value(storage).cloned() else {
+        let Some(mut current) = state
+            .stored_value(storage)
+            .map(std::borrow::Cow::into_owned)
+        else {
             return false;
         };
         let view = current
@@ -332,7 +335,10 @@ impl Flow<'_> {
         self.import_task_sources(&mut result, point, state);
         let result = &result;
         path.push(Slot::Element);
-        let mut current = state.stored_value(storage).cloned().unwrap_or_default();
+        let mut current = state
+            .stored_value(storage)
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_default();
         self.record_path_store(
             point,
             Coordinate {
@@ -354,11 +360,11 @@ impl Flow<'_> {
             );
         }
         let mut cached = result.prefixed_path(&path, root_ty, self.table);
-        cached.sources.clear();
+        cached.clear_sources();
         if !current.join(&cached) {
             return false;
         }
-        current.sources.clear();
+        current.clear_sources();
         Self::replace_task_carrier(storage, current, state)
     }
 
@@ -368,10 +374,32 @@ impl Flow<'_> {
         state: &mut State,
     ) -> bool {
         match storage {
-            Storage::Observation(_)
-            | Storage::PendingWrite(_)
-            | Storage::SettledMemory(_)
-            | Storage::ResidualCallback(_, _) => return false,
+            Storage::CallbackNode(location) => {
+                let Some(mut root) = state
+                    .stored_value(location.root())
+                    .map(std::borrow::Cow::into_owned)
+                else {
+                    return false;
+                };
+                let Some(callback) = root
+                    .task_views
+                    .get_mut(location.path())
+                    .and_then(|subjects| subjects.get_mut(location.actor()))
+                    .and_then(|view| view.callbacks.get_mut(&location.callback_type()))
+                else {
+                    return false;
+                };
+                if !callback.replace_node(location.node(), current) {
+                    return false;
+                }
+                return Self::replace_task_carrier(location.root(), root, state);
+            }
+            Storage::Observation(_) | Storage::PendingWrite(_) | Storage::SettledMemory(_) => {
+                return false
+            }
+            Storage::ResidualCallback(key, ty) => {
+                state.residual_callbacks.insert((key.clone(), *ty), current);
+            }
             Storage::Residual(key) => {
                 state.residuals.insert(key.clone(), current);
             }

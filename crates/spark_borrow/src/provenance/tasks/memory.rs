@@ -165,7 +165,7 @@ impl Flow<'_> {
             &value,
             false,
         );
-        value.sources.clear();
+        value.clear_sources();
         state.pending_memory.entry(lane).or_default().join(&value);
     }
 
@@ -193,6 +193,7 @@ impl Flow<'_> {
                 | Storage::PendingWrite(_)
                 | Storage::SettledMemory(_)
                 | Storage::Residual(_)
+                | Storage::CallbackNode(_)
                 | Storage::ResidualCallback(_, _) => continue,
             };
             locations.push(Sample {
@@ -261,7 +262,7 @@ impl Flow<'_> {
                 false,
             );
             let mut stored = value.clone();
-            stored.sources.clear();
+            stored.clear_sources();
             state
                 .settled_memory
                 .entry(location)
@@ -321,7 +322,10 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) -> bool {
-        let Some(mut current) = state.stored_value(storage).cloned() else {
+        let Some(mut current) = state
+            .stored_value(storage)
+            .map(std::borrow::Cow::into_owned)
+        else {
             return false;
         };
         let mut effects = Effects {
@@ -446,7 +450,7 @@ impl Flow<'_> {
                 &value,
                 false,
             );
-            value.sources.clear();
+            value.clear_sources();
             state
                 .settled_memory
                 .entry(location)

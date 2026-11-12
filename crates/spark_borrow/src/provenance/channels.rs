@@ -851,7 +851,7 @@ impl Flow<'_> {
             );
             let stored = state.queues.entry((target, ty)).or_default();
             stored.join(payload);
-            stored.sources.clear();
+            stored.clear_sources();
         }
     }
 
@@ -959,7 +959,7 @@ impl Flow<'_> {
         );
         let stored = state.queues.entry((target, ty)).or_default();
         stored.join(payload);
-        stored.sources.clear();
+        stored.clear_sources();
     }
 }
 

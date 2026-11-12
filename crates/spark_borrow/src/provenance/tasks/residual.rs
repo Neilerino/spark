@@ -166,9 +166,9 @@ impl Flow<'_> {
             value: value.clone(),
             callbacks: rustc_hash::FxHashMap::default(),
         };
-        activity.value.sources.clear();
+        activity.value.clear_sources();
         activity.value.clear_task_imports();
-        value.sources.clear();
+        value.clear_sources();
         let mut changed = state.residuals.entry(key.clone()).or_default().join(&value);
         for (ty, mut callback) in callbacks {
             self.import_task_sources(&mut callback, point, state);
@@ -181,7 +181,7 @@ impl Flow<'_> {
                 &callback,
                 false,
             );
-            callback.sources.clear();
+            callback.clear_sources();
             let mut recipe = callback.clone();
             recipe.clear_task_imports();
             activity.callbacks.entry(ty).or_default().join(&recipe);
@@ -235,8 +235,9 @@ impl Flow<'_> {
                     ..super::proofs::CallProof::default()
                 };
                 for peer in peers {
-                    let mut current = state.value(peer);
+                    let mut current = state.value(peer).sourced(&Storage::Logical(peer));
                     Self::preserve_returned_task_progress(&mut current, &proof, &[], state);
+                    self.record_store(point, &Place::from_local(peer), &current);
                     state.set(peer, current);
                 }
                 return;
@@ -348,7 +349,7 @@ impl Flow<'_> {
                 &value,
                 false,
             );
-            value.sources.clear();
+            value.clear_sources();
             state
                 .settled_memory
                 .entry(location)

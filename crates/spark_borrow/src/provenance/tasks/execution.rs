@@ -157,7 +157,7 @@ impl ExecutionTransfer {
             &self.callback,
             true,
         );
-        self.callback.sources.clear();
+        self.callback.clear_sources();
         state
             .executions
             .insert((destination, self.callback_ty), self.callback);
@@ -184,7 +184,7 @@ impl Flow<'_> {
         ) {
             return None;
         }
-        let mut current = state.stored_value(&storage)?.clone().sourced(&storage);
+        let mut current = state.stored_value(&storage)?.into_owned().sourced(&storage);
         for slot in role.selection() {
             current = current.project(slot);
         }
@@ -205,7 +205,10 @@ impl Flow<'_> {
             || Storage::Logical(role.local()),
             |ty| Storage::ExecutionCallback(role.local(), ty),
         );
-        let Some(mut callback) = state.stored_value(&storage).cloned() else {
+        let Some(mut callback) = state
+            .stored_value(&storage)
+            .map(std::borrow::Cow::into_owned)
+        else {
             return;
         };
         let Some(mut child) = self.current_role_value(role, state) else {
@@ -232,7 +235,7 @@ impl Flow<'_> {
             self.storage_type(&storage),
             self.table,
         ));
-        callback.sources.clear();
+        callback.clear_sources();
         if let Some(ty) = role.callback_type() {
             state.executions.insert((role.local(), ty), callback);
         } else {
