@@ -81,6 +81,7 @@ impl Flow<'_> {
         returned.join(&callback.task_lineage());
         returned.join(&facts.returned.prefixed(Slot::Element, ty, self.table));
         Some(TaskDispatch::Returns(vec![CallOutcome {
+            fresh_outputs: Vec::new(),
             queue_accesses: self.operand_queue_accesses(argument, state),
             queue_send_counts: crate::provenance::channels::counts::Sends::default(),
             direct_queue_send: None,
@@ -186,6 +187,7 @@ impl Flow<'_> {
             .is_empty()
             .then_some((place.local, returned.clone()));
         Some(TaskDispatch::Returns(vec![CallOutcome {
+            fresh_outputs: Vec::new(),
             queue_accesses: self.operand_queue_accesses(args.first()?, state),
             queue_send_counts: crate::provenance::channels::counts::Sends::default(),
             direct_queue_send: None,

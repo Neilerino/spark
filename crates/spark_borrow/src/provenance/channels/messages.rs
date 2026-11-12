@@ -238,7 +238,12 @@ impl Flow<'_> {
         }
     }
 
-    fn archive_previous_message(&mut self, slot: &Slot, point: Point, state: &mut State) {
+    pub(in crate::provenance) fn archive_previous_message(
+        &mut self,
+        slot: &Slot,
+        point: Point,
+        state: &mut State,
+    ) {
         let Some(previous) = state.queue_current.get(slot).cloned() else {
             return;
         };

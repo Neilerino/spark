@@ -32,8 +32,7 @@ impl Flow<'_> {
             };
             let witness = state.future_copies.role_witness(&role);
             let Some(birth) = witness.birth else { continue };
-            if birth.site.function != self.function.def_id
-                || witness.peers != FxHashSet::from_iter([role.clone()])
+            if witness.peers != FxHashSet::from_iter([role.clone()])
                 || !state.input_owners.tags(&role).is_empty()
                 || crate::provenance::value::strip_mutable(queue.pointee, self.table)
                     != birth.future_ty
@@ -62,6 +61,21 @@ impl Flow<'_> {
             );
         }
         outputs
+    }
+
+    pub(in crate::provenance) fn prefix_output_is_single(&self, recipe: &Recipe) -> bool {
+        let Some(target) = Target::from_port(&recipe.queue) else {
+            return false;
+        };
+        !self.has_diverging_call
+            && self.entries.iter().flatten().all(|state| {
+                let count = state.queue_send_counts.get(&target);
+                (count == Count::ZERO
+                    || count == Count::ONE
+                    || count == Count::ZERO.union(Count::ONE))
+                    && state.queue_accesses.allows(&target)
+                    && !state.exposed_queues.contains(&target)
+            })
     }
 
     pub(in crate::provenance) fn observed_fresh_outputs(&self, state: &State) -> FxHashSet<Recipe> {
@@ -111,12 +125,15 @@ impl Flow<'_> {
         state: &State,
         summary: &mut crate::provenance::effects::Summary,
     ) {
-        for (recipe, value) in self.fresh_output_candidates(state) {
-            summary
-                .fresh_outputs
-                .entry(recipe)
-                .or_default()
-                .join(&value);
+        for (recipe, value) in self
+            .fresh_output_candidates
+            .iter()
+            .map(|(recipe, value)| (recipe.clone(), value.clone()))
+            .chain(self.fresh_output_candidates(state))
+        {
+            summary.fresh_outputs.entry(recipe).or_default().join(
+                &crate::provenance::effects::export_value(&value, self.function.def_id),
+            );
         }
     }
 }

@@ -1059,7 +1059,11 @@ fn lower_source(source: &str) -> MirOutput {
         builtins: type_output.builtins,
     });
 
-    assert!(!hir_output.diagnostics.has_errors());
+    assert!(
+        !hir_output.diagnostics.has_errors(),
+        "{source}\n{:?}",
+        hir_output.diagnostics
+    );
     lower(MirInput {
         hir: hir_output.hir,
         table: hir_output.table,
@@ -1068,3 +1072,5 @@ fn lower_source(source: &str) -> MirOutput {
 }
 
 mod fresh_certificates;
+
+mod fresh_helper_bindings;

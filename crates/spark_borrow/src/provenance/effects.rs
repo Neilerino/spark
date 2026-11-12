@@ -2,6 +2,8 @@
 
 //! Direct function summaries use the same slot transfer engine as diagnostics.
 
+pub(in crate::provenance) mod fresh_output_binding;
+
 use crate::provenance::tasks::proofs::CallProof;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -435,6 +437,7 @@ impl Flow<'_> {
             true,
         ));
         CallOutcome {
+            fresh_outputs: Vec::new(),
             queue_accesses: crate::provenance::channels::access::Accesses::unknown(),
             queue_send_counts: crate::provenance::channels::counts::Sends {
                 unknown: true,

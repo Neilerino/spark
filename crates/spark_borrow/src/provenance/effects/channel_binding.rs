@@ -59,6 +59,7 @@ impl Flow<'_> {
         for value in summary
             .memory
             .values_mut()
+            .chain(summary.fresh_outputs.values_mut())
             .chain(summary.prefix_memory.values_mut())
             .chain(summary.obligations.values_mut())
         {
@@ -261,6 +262,7 @@ impl Flow<'_> {
             });
         }
         super::CallOutcome {
+            fresh_outputs: Vec::new(),
             queue_accesses: crate::provenance::channels::access::Accesses::unknown(),
             queue_send_counts: crate::provenance::channels::counts::Sends {
                 unknown: true,

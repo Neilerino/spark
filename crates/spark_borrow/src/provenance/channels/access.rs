@@ -73,6 +73,26 @@ fn may_contain_queue(ty: TypeId, table: &TypeTable, seen: &mut FxHashSet<TypeId>
     }
 }
 
+fn may_reference_queue(ty: TypeId, table: &TypeTable, seen: &mut FxHashSet<TypeId>) -> bool {
+    let ty = value::strip_mutable(ty, table);
+    if !seen.insert(ty) {
+        return false;
+    }
+    match table.resolve(ty) {
+        Ty::Param(_) | Ty::Error => true,
+        Ty::Ref { inner, .. } => may_contain_queue(*inner, table, &mut FxHashSet::default()),
+        Ty::List(inner) | Ty::Set(inner) | Ty::Optional(inner) => {
+            may_reference_queue(*inner, table, seen)
+        }
+        Ty::Map(key, payload) => {
+            may_reference_queue(*key, table, seen) || may_reference_queue(*payload, table, seen)
+        }
+        _ => value::inline_slots(ty, table)
+            .into_iter()
+            .any(|(_, child)| may_reference_queue(child, table, seen)),
+    }
+}
+
 impl Flow<'_> {
     pub(in crate::provenance) fn queue_accesses(&self, value: &Value, state: &State) -> Accesses {
         let mut access = Accesses::default();
@@ -84,8 +104,10 @@ impl Flow<'_> {
                 continue;
             }
             access.blocked.insert(target.clone());
-            for (stored, _, _, payload) in state.queue_entries() {
+            for (stored, ty, _, payload) in state.queue_entries() {
                 if *stored == target {
+                    access.unknown |=
+                        may_reference_queue(ty, self.table, &mut FxHashSet::default());
                     self.queue_access_roots(payload, &mut pending, &mut access);
                 }
             }
@@ -107,6 +129,12 @@ impl Flow<'_> {
 
     fn queue_access_roots(&self, value: &Value, pending: &mut Vec<Target>, access: &mut Accesses) {
         let mut visit = |value: &Value| {
+            access.unknown |= value.leaves.keys().any(|(path, _, _)| {
+                path.iter().any(|slot| {
+                    matches!(slot, value::Slot::Capture(_, _, ty)
+                    if may_reference_queue(*ty, self.table, &mut FxHashSet::default()))
+                })
+            });
             for handle in value.queues.values().flatten() {
                 let targets = self.queue_targets(&handle.target);
                 access.unknown |= targets.is_empty()
@@ -161,6 +189,11 @@ impl Flow<'_> {
         state: &State,
     ) -> Accesses {
         let mut access = self.queue_accesses(&self.operand(operand, state), state);
+        access.unknown |= may_reference_queue(
+            crate::provenance::operand_type(operand, self.function),
+            self.table,
+            &mut FxHashSet::default(),
+        );
         if matches!(
             self.table.resolve(value::strip_mutable(
                 crate::provenance::operand_type(operand, self.function),
@@ -191,6 +224,15 @@ mod tests {
     use spark_mir::{LocalDecl, MirFunction, Operand};
     use spark_resolve::DefId;
     use spark_span::Span;
+
+    #[test]
+    fn unresolved_types_cannot_prove_reference_free_access() {
+        let mut table = TypeTable::new();
+        let param = table.intern(Ty::Param(DefId::new(9972)));
+        for ty in [param, TypeId::ERROR] {
+            assert!(may_reference_queue(ty, &table, &mut FxHashSet::default()));
+        }
+    }
 
     #[test]
     fn pending_or_opaque_value_support_never_counts_as_empty_access() {

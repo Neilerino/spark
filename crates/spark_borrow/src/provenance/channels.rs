@@ -436,6 +436,7 @@ impl Flow<'_> {
             ..Default::default()
         };
         Some(super::effects::CallOutcome {
+            fresh_outputs: Vec::new(),
             queue_accesses: if info.name == kw::SEND {
                 access::Accesses::default()
             } else {
@@ -778,7 +779,13 @@ impl Flow<'_> {
         }
     }
 
-    fn record_queue_send(&mut self, target: &Target, payload: &Value, point: Point, state: &State) {
+    pub(in crate::provenance) fn record_queue_send(
+        &mut self,
+        target: &Target,
+        payload: &Value,
+        point: Point,
+        state: &State,
+    ) {
         self.ensure_transfer(point, state);
         if let Some(port) = target.port(self.table) {
             self.queue_ports.insert(port);

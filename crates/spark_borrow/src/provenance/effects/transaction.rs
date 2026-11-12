@@ -39,6 +39,7 @@ pub(in crate::provenance) struct CallOutcome {
     pub place_writes: Vec<(spark_mir::Place, Value)>,
     pub memory: Vec<MemoryWrite>,
     pub async_memory: Vec<MemoryWrite>,
+    pub fresh_outputs: Vec<crate::provenance::effects::fresh_output_binding::Bound>,
     pub queue_accesses: crate::provenance::channels::access::Accesses,
     pub queue_send_counts: crate::provenance::channels::counts::Sends,
     pub direct_queue_send: Option<crate::provenance::channels::messages::Send>,
@@ -195,6 +196,9 @@ impl CallOutcome {
 
     fn visit_values(&mut self, mut visit: impl FnMut(&mut Value)) {
         visit(&mut self.returned);
+        for output in &mut self.fresh_outputs {
+            output.visit_values(&mut visit);
+        }
         for output in self.returned_callbacks.values_mut() {
             visit(&mut output.callback);
         }
@@ -315,7 +319,7 @@ impl Flow<'_> {
         actuals: CallActuals<'_>,
         context: &super::Key,
         args: &[Operand],
-        prefix: super::prefix::Prefix,
+        mut prefix: super::prefix::Prefix,
     ) -> CallOutcome {
         let returned = self.bind(&summary.returned, function, actuals);
         let memory = self.bind_memory_snapshots(
@@ -332,11 +336,16 @@ impl Flow<'_> {
             actuals,
             &context.aliases,
         );
-        let queue_contents = self.bind_queue_contents(summary, function, actuals);
+        let mut queue_contents = self.bind_queue_contents(summary, function, actuals);
+        let mut fresh_outputs = self.bind_fresh_outputs(summary, function, actuals, context, args);
+        for output in &mut fresh_outputs {
+            output.partition(&mut prefix.queues, &mut queue_contents);
+        }
         let tasks = self.bind_tasks(summary, function, actuals);
         let clobbered_copies = self.bound_copy_clobbers(summary, function, actuals);
         let residuals = self.bind_residuals(summary, function, actuals, context, Some(args));
         CallOutcome {
+            fresh_outputs,
             queue_accesses: self.bind_queue_accesses(summary, function, actuals),
             queue_send_counts: self.bind_normal_queue_sends(summary, function, actuals),
             direct_queue_send: None,
@@ -377,6 +386,7 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) -> bool {
+        self.has_diverging_call |= !dispatch.diverging.is_empty();
         for mut events in dispatch.diverging {
             if events.memory.is_empty() && events.queues.is_empty() && events.residuals.is_empty() {
                 continue;
@@ -426,10 +436,21 @@ impl Flow<'_> {
     }
 
     fn apply_call_prefix(&mut self, outcome: &CallOutcome, point: Point, state: &mut State) {
+        let queues: Vec<_> = outcome
+            .queues
+            .iter()
+            .chain(
+                outcome
+                    .fresh_outputs
+                    .iter()
+                    .flat_map(|output| output.events.iter()),
+            )
+            .cloned()
+            .collect();
         if outcome.prefix_residuals.is_empty() {
             self.apply_prefix_writes(
                 &outcome.prefix_memory,
-                &outcome.queues,
+                &queues,
                 &outcome.residuals,
                 point,
                 state,
@@ -440,7 +461,7 @@ impl Flow<'_> {
         let entry_transfer = self.transfers[&point].clone();
         self.apply_prefix_writes(
             &outcome.prefix_memory,
-            &outcome.queues,
+            &queues,
             &outcome.residuals,
             point,
             state,
@@ -450,7 +471,7 @@ impl Flow<'_> {
         self.transfers.insert(point, entry_transfer);
         self.apply_prefix_writes(
             &outcome.prefix_memory,
-            &outcome.queues,
+            &queues,
             &outcome.prefix_residuals,
             point,
             state,
@@ -660,6 +681,9 @@ impl Flow<'_> {
             alternative.install_owner_outputs(self, destination, output_owners, point, &mut after);
             if let Some(forwarded) = forwarded {
                 forwarded.install(self, destination.local, point, &mut after);
+            }
+            for output in alternative.fresh_outputs.drain(..) {
+                output.install(self, point, &alternative.clobbered_copies, &mut after);
             }
             self.retire_call_frames(point, &mut after);
             let transfer = self.transfers[&point].clone();

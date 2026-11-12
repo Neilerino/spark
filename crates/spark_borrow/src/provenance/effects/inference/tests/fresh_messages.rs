@@ -495,3 +495,71 @@ fn a_fresh_queue_output_participates_in_proofs_without_future_formals() {
         }
     });
 }
+
+#[test]
+fn a_known_wrapper_binds_its_producers_fresh_queue_recipe() {
+    with_fresh_producer(|flow, _, _, _| {
+        let context = flow.program.unwrap();
+        let producer = flow.function.def_id;
+        let wrappers: FxHashSet<_> = context.mir.functions.values().filter(|function| function.def_id != producer && function.blocks.iter().any(|block| matches!(&block.terminator, Terminator::Call { func, .. } if function.resolve_callee_def_id(func) == Some(producer)))).map(|function| function.def_id).collect();
+        assert!(
+            !wrappers.is_empty(),
+            "the actual spawn callback calls the producer through a known wrapper"
+        );
+        let returning: Vec<_> = context
+            .proofs
+            .unwrap()
+            .iter()
+            .filter(|(key, proof)| {
+                wrappers.contains(&key.function) && proof.certificate().is_some()
+            })
+            .collect();
+        assert!(!returning.is_empty());
+        for (key, proof) in returning {
+            let certificate = proof.certificate().unwrap();
+            assert_eq!(certificate.fresh_messages.len(), 1, "the actual known wrapper must bind and export its producer's conditional fresh queue output");
+            let recipe = certificate.fresh_messages.iter().next().unwrap();
+            assert!(certificate.prefix_messages.contains(recipe));
+            assert_eq!(recipe.birth.site.function, producer);
+            let payload = &context.summaries[key].fresh_outputs[recipe];
+            let record = recipe.birth.record(payload).unwrap();
+            assert!(!record.callback.origins().is_empty());
+            assert!(flow.leaf_task(&record));
+            let function = &context.mir.functions[&key.function];
+            let mut wrapper = Flow::new(function, flow.table, Some(context));
+            wrapper.aliases = key.aliases.clone();
+            wrapper.callables = key.callables.clone();
+            wrapper.solve(&crate::facts::extract_facts(function));
+            let mut exits = 0;
+            for (index, block) in function.blocks.iter().enumerate() {
+                if !matches!(block.terminator, Terminator::Return) {
+                    continue;
+                }
+                let Some(mut state) = wrapper.entries[index].clone() else {
+                    continue;
+                };
+                assert!(wrapper.transfer_block(BlockId(index as u32), &mut state));
+                let (slot, message) = state
+                    .queue_current
+                    .iter()
+                    .find(|(slot, _)| slot.site == recipe.send)
+                    .unwrap();
+                let role = crate::provenance::tasks::Role::message(slot.clone());
+                assert_eq!(
+                    state.future_owners.coverage(&role),
+                    Some(crate::provenance::tasks::lifecycle::Coverage::ThroughQueue(
+                        recipe.queue.clone()
+                    ))
+                );
+                assert!(!state.future_owners.known_role(&role));
+                assert_eq!(
+                    state.future_copies.role_witness(&role).birth,
+                    Some(recipe.birth)
+                );
+                assert!(recipe.birth.record(&message.value).is_some());
+                exits += 1;
+            }
+            assert!(exits > 0);
+        }
+    });
+}

@@ -61,6 +61,9 @@ impl Proof {
     ) {
         if let Guarantee::Returns(certificate) = &mut self.returns {
             certificate.fresh_messages.extend(recipes);
+            certificate
+                .prefix_messages
+                .clone_from(&certificate.fresh_messages);
         }
     }
 
@@ -141,6 +144,7 @@ fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witne
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Certificate {
     pub fresh_messages: FxHashSet<super::fresh_outputs::Recipe>,
+    pub prefix_messages: FxHashSet<super::fresh_outputs::Recipe>,
     pub returned_owners: Option<Box<super::outputs::CallbackRecipe>>,
     pub forwarded_provided: FxHashSet<Local>,
     pub clean_ambient_captures: FxHashSet<Local>,
@@ -177,6 +181,7 @@ impl Guarantee {
             .collect();
         Self::Returns(Box::new(Certificate {
             fresh_messages: FxHashSet::default(),
+            prefix_messages: FxHashSet::default(),
             returned_owners: None,
             clean_ambient_captures: FxHashSet::default(),
             forwarded_provided: returned.clone(),
@@ -198,6 +203,8 @@ impl Guarantee {
             (Self::Returns(left), Self::Returns(right)) => {
                 left.fresh_messages
                     .retain(|recipe| right.fresh_messages.contains(recipe));
+                left.prefix_messages
+                    .retain(|recipe| right.prefix_messages.contains(recipe));
                 if left.returned_owners != right.returned_owners {
                     left.returned_owners = None;
                 }
@@ -271,8 +278,14 @@ impl Flow<'_> {
                 .filter(|input| state.input_owners.retains_no_owner(*input))
                 .collect();
             let fresh_messages = self.observed_fresh_outputs(&state);
+            let prefix_messages = fresh_messages
+                .iter()
+                .filter(|recipe| self.prefix_output_is_single(recipe))
+                .cloned()
+                .collect();
             let candidate = Guarantee::Returns(Box::new(Certificate {
                 fresh_messages,
+                prefix_messages,
                 clean_ambient_captures,
                 forwarded_provided,
                 returned_owners: self.observed_callback_recipe(&state).map(Box::new),
