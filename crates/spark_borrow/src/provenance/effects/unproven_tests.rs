@@ -785,6 +785,7 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
     let mut flow = Flow::new(&function, &table, None);
     flow.ensure_transfer(point, &state);
     let outcome = CallOutcome {
+        queue_accesses: crate::provenance::channels::access::Accesses::default(),
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         direct_queue_send: None,
         fresh_birth: None,

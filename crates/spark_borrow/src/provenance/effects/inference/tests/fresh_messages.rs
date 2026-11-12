@@ -448,3 +448,50 @@ fn an_internally_born_message_preserves_conditional_owner_evidence() {
         assert!(checked > 0);
     });
 }
+
+#[test]
+fn a_fresh_queue_output_participates_in_proofs_without_future_formals() {
+    with_fresh_producer(|flow, _, _, _| {
+        assert!(flow
+            .function
+            .locals
+            .iter()
+            .skip(1)
+            .take(flow.function.param_count as usize)
+            .all(|decl| !matches!(
+                flow.table
+                    .resolve(crate::provenance::value::strip_mutable(decl.ty, flow.table)),
+                spark_types::Ty::Future { .. }
+            )));
+        let proofs = flow.program.unwrap().proofs.unwrap();
+        let returning: Vec<_> = proofs
+            .iter()
+            .filter(|(key, proof)| {
+                key.function == flow.function.def_id && proof.certificate().is_some()
+            })
+            .collect();
+        assert!(!returning.is_empty());
+        for (key, proof) in returning {
+            assert!(proof.has_effect(), "a normal-return fresh queue output must enter the existing proof solver even without a Future formal");
+            let recipes = &proof.certificate().unwrap().fresh_messages;
+            assert_eq!(recipes.len(), 1);
+            let recipe = recipes.iter().next().unwrap();
+            assert_eq!(recipe.send.function, flow.function.def_id);
+            assert_eq!(recipe.birth.site.function, flow.function.def_id);
+            assert_eq!(
+                flow.function.locals[recipe.queue.input.index()]
+                    .name
+                    .unwrap()
+                    .as_str(),
+                "retained"
+            );
+            let payload = &flow.program.unwrap().summaries[key].fresh_outputs[recipe];
+            let record = recipe
+                .birth
+                .record(payload)
+                .expect("the guaranteed output retains its actual closed callback");
+            assert!(!record.callback.origins().is_empty());
+            assert!(flow.leaf_task(&record));
+        }
+    });
+}

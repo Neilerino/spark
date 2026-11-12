@@ -44,10 +44,23 @@ impl Proof {
     ) {
         if let Guarantee::Returns(certificate) = &mut self.returns {
             certificate.released_provided = future_inputs(function, table);
-            certificate.retains_no_owner = certificate.released_provided.clone();
+            certificate
+                .retains_no_owner
+                .clone_from(&certificate.released_provided);
             certificate.returned_owners = output.map(Box::new);
-            certificate.forwarded_provided = certificate.returned.clone();
+            certificate
+                .forwarded_provided
+                .clone_from(&certificate.returned);
             certificate.clean_ambient_captures = future_captures(function, table);
+        }
+    }
+
+    pub fn seed_fresh_outputs(
+        &mut self,
+        recipes: impl Iterator<Item = super::fresh_outputs::Recipe>,
+    ) {
+        if let Guarantee::Returns(certificate) = &mut self.returns {
+            certificate.fresh_messages.extend(recipes);
         }
     }
 
@@ -127,6 +140,7 @@ fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witne
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Certificate {
+    pub fresh_messages: FxHashSet<super::fresh_outputs::Recipe>,
     pub returned_owners: Option<Box<super::outputs::CallbackRecipe>>,
     pub forwarded_provided: FxHashSet<Local>,
     pub clean_ambient_captures: FxHashSet<Local>,
@@ -140,7 +154,7 @@ pub(in crate::provenance) struct Certificate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::provenance) enum Guarantee {
     NoReturn,
-    Returns(Certificate),
+    Returns(Box<Certificate>),
 }
 
 impl Guarantee {
@@ -161,7 +175,8 @@ impl Guarantee {
                     == value::strip_mutable(function.return_type, table)
             })
             .collect();
-        Self::Returns(Certificate {
+        Self::Returns(Box::new(Certificate {
+            fresh_messages: FxHashSet::default(),
             returned_owners: None,
             clean_ambient_captures: FxHashSet::default(),
             forwarded_provided: returned.clone(),
@@ -169,11 +184,11 @@ impl Guarantee {
             retains_no_owner: completed.clone(),
             completed,
             returned,
-        })
+        }))
     }
 
     pub fn has_effect(&self) -> bool {
-        matches!(self, Self::Returns(certificate) if certificate.returned_owners.is_some() || !certificate.completed.is_empty() || !certificate.returned.is_empty()
+        matches!(self, Self::Returns(certificate) if !certificate.fresh_messages.is_empty() || certificate.returned_owners.is_some() || !certificate.completed.is_empty() || !certificate.returned.is_empty()
             || !certificate.released_provided.is_empty() || !certificate.retains_no_owner.is_empty() || !certificate.forwarded_provided.is_empty() || !certificate.clean_ambient_captures.is_empty())
     }
 
@@ -181,6 +196,8 @@ impl Guarantee {
         let before = self.clone();
         match (&mut *self, other) {
             (Self::Returns(left), Self::Returns(right)) => {
+                left.fresh_messages
+                    .retain(|recipe| right.fresh_messages.contains(recipe));
                 if left.returned_owners != right.returned_owners {
                     left.returned_owners = None;
                 }
@@ -253,7 +270,9 @@ impl Flow<'_> {
                 .into_iter()
                 .filter(|input| state.input_owners.retains_no_owner(*input))
                 .collect();
-            let candidate = Guarantee::Returns(Certificate {
+            let fresh_messages = self.observed_fresh_outputs(&state);
+            let candidate = Guarantee::Returns(Box::new(Certificate {
+                fresh_messages,
                 clean_ambient_captures,
                 forwarded_provided,
                 returned_owners: self.observed_callback_recipe(&state).map(Box::new),
@@ -267,7 +286,7 @@ impl Flow<'_> {
                     .into_iter()
                     .filter(|input| state.input_owners.retains_no_owner(*input))
                     .collect(),
-            });
+            }));
             if let Some(result) = &mut result {
                 result.intersect(&candidate);
             } else {
@@ -362,16 +381,16 @@ mod tests {
 
     #[test]
     fn a_normal_return_without_a_join_removes_the_guarantee() {
-        let mut proof = Guarantee::Returns(Certificate {
+        let mut proof = Guarantee::Returns(Box::new(Certificate {
             completed: FxHashSet::from_iter([Local(1)]),
             returned: FxHashSet::from_iter([Local(1)]),
             ..Certificate::default()
-        });
-        let different_return = Guarantee::Returns(Certificate {
+        }));
+        let different_return = Guarantee::Returns(Box::new(Certificate {
             completed: FxHashSet::default(),
             returned: FxHashSet::from_iter([Local(2)]),
             ..Certificate::default()
-        });
+        }));
         assert!(proof.intersect(&different_return));
         assert!(!proof.has_effect());
         assert!(!proof.intersect(&different_return));
@@ -380,11 +399,11 @@ mod tests {
     #[test]
     fn a_nonreturning_function_does_not_publish_vacuous_completion() {
         let mut proof = Guarantee::NoReturn;
-        assert!(!proof.intersect(&Guarantee::Returns(Certificate {
+        assert!(!proof.intersect(&Guarantee::Returns(Box::new(Certificate {
             completed: FxHashSet::from_iter([Local(1)]),
             returned: FxHashSet::default(),
             ..Certificate::default()
-        })));
+        }))));
         assert_eq!(proof, Guarantee::NoReturn);
         assert!(!proof.has_effect());
     }

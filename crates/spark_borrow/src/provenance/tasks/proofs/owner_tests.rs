@@ -73,7 +73,7 @@ fn returns(table: &TypeTable, types: &[TypeId], statements: Vec<Statement>) -> C
         certificate.completed.is_empty(),
         "release evidence cannot manufacture a join"
     );
-    certificate
+    *certificate
 }
 fn fixture() -> (TypeTable, TypeId, TypeId, TypeId) {
     let mut table = TypeTable::new();
@@ -288,19 +288,19 @@ fn unknown_calls_preserve_escaped_owner_possibilities() {
 
 #[test]
 fn release_only_certificates_participate_in_the_descending_proof_lattice() {
-    let mut proof = Guarantee::Returns(Certificate {
+    let mut proof = Guarantee::Returns(Box::new(Certificate {
         released_provided: FxHashSet::from_iter([Local(1)]),
         ..Certificate::default()
-    });
+    }));
     assert!(proof.has_effect());
-    assert!(proof.intersect(&Guarantee::Returns(Certificate::default())));
+    assert!(proof.intersect(&Guarantee::Returns(Box::default())));
     assert!(!proof.has_effect());
     assert!(
-        !Guarantee::NoReturn.intersect(&Guarantee::Returns(Certificate {
+        !Guarantee::NoReturn.intersect(&Guarantee::Returns(Box::new(Certificate {
             released_provided: FxHashSet::from_iter([Local(1)]),
             retains_no_owner: FxHashSet::from_iter([Local(1)]),
             ..Certificate::default()
-        }))
+        })))
     );
 }
 

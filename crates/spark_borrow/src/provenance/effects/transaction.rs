@@ -39,6 +39,7 @@ pub(in crate::provenance) struct CallOutcome {
     pub place_writes: Vec<(spark_mir::Place, Value)>,
     pub memory: Vec<MemoryWrite>,
     pub async_memory: Vec<MemoryWrite>,
+    pub queue_accesses: crate::provenance::channels::access::Accesses,
     pub queue_send_counts: crate::provenance::channels::counts::Sends,
     pub direct_queue_send: Option<crate::provenance::channels::messages::Send>,
     pub fresh_birth: Option<crate::provenance::tasks::fresh::Transfer>,
@@ -336,6 +337,7 @@ impl Flow<'_> {
         let clobbered_copies = self.bound_copy_clobbers(summary, function, actuals);
         let residuals = self.bind_residuals(summary, function, actuals, context, Some(args));
         CallOutcome {
+            queue_accesses: self.bind_queue_accesses(summary, function, actuals),
             queue_send_counts: self.bind_normal_queue_sends(summary, function, actuals),
             direct_queue_send: None,
             fresh_birth: None,
@@ -582,6 +584,8 @@ impl Flow<'_> {
         for mut alternative in outcome {
             self.transfers.insert(point, common.clone());
             let mut after = state.clone();
+            let access = self.expand_queue_accesses(&alternative.queue_accesses, &after);
+            after.queue_accesses.join(&access);
             after.queue_send_counts.then(&alternative.queue_send_counts);
             alternative.apply_prefix(self, point, &mut after);
             for witness in &alternative.future_proof.completed {

@@ -22,12 +22,14 @@ pub(super) struct Summary {
     returned: Value,
     returned_owner_tags: super::tasks::lifecycle::Tags,
     retained_owner_tags: super::tasks::lifecycle::Tags,
+    pub(super) fresh_outputs: super::tasks::fresh_outputs::Outputs,
     pub(super) returned_callbacks: super::tasks::outputs::CallbackOutputs,
     queues: FxHashMap<super::channels::QueueKey, Value>,
     queue_contents: FxHashMap<(super::channels::Target, TypeId), Value>,
     tasks: FxHashMap<super::tasks::Target, super::tasks::Record>,
     normal_return: bool,
     normal_queue_sends: Option<super::channels::counts::Sends>,
+    normal_queue_accesses: Option<super::channels::access::Accesses>,
     memory: FxHashMap<Port, Value>,
     prefix_memory: PrefixMemory,
     normal_prefix: ReachedPrefix,
@@ -50,6 +52,10 @@ impl Summary {
             &mut self.normal_queue_sends,
             other.normal_queue_sends.as_ref(),
         );
+        changed |= super::channels::access::join_returns(
+            &mut self.normal_queue_accesses,
+            other.normal_queue_accesses.as_ref(),
+        );
         changed |= !self.normal_return && other.normal_return;
         self.normal_return |= other.normal_return;
         changed |= join_prefix(&mut self.normal_prefix, &other.normal_prefix);
@@ -68,6 +74,7 @@ impl Summary {
         self.retained_owner_tags
             .extend(other.retained_owner_tags.iter().copied());
         changed |= before != self.retained_owner_tags.len();
+        changed |= self.join_fresh_outputs(other);
         for (ty, output) in &other.returned_callbacks {
             changed |= self.returned_callbacks.entry(*ty).or_default().join(output);
         }
@@ -377,6 +384,7 @@ impl Flow<'_> {
                     continue;
                 }
                 let mut outcome = self.bind_outcome(summary, function, actuals, &key, args, prefix);
+                outcome.queue_accesses.unknown |= self.environment_sources(func, state).1;
                 outcome.future_proof = self.call_future_proof(&key, args, state);
                 dispatch.returning.push(outcome);
             }
@@ -427,6 +435,7 @@ impl Flow<'_> {
             true,
         ));
         CallOutcome {
+            queue_accesses: crate::provenance::channels::access::Accesses::unknown(),
             queue_send_counts: crate::provenance::channels::counts::Sends {
                 unknown: true,
                 ..Default::default()
@@ -624,6 +633,7 @@ impl Flow<'_> {
             summary
                 .normal_publications
                 .join(&state.publications.exported(self.function.def_id));
+            self.export_fresh_outputs(&state, &mut summary);
             self.export_queue_state(&state, &mut summary);
             self.export_tasks(&state, &mut summary);
             self.export_callback_outputs(&state, &mut summary);

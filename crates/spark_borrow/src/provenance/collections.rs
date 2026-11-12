@@ -39,6 +39,7 @@ impl Flow<'_> {
                 .prefixed(Slot::Element, ty, self.table),
         );
         Some(super::effects::CallOutcome {
+            queue_accesses: crate::provenance::channels::access::Accesses::default(),
             queue_send_counts: crate::provenance::channels::counts::Sends::default(),
             direct_queue_send: None,
             fresh_birth: None,

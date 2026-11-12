@@ -2,6 +2,7 @@
 
 //! Shared channel handles and weak payload storage.
 
+pub(super) mod access;
 pub(super) mod counts;
 pub(super) mod identity;
 pub(super) mod messages;
@@ -153,7 +154,7 @@ impl Target {
         })
     }
 
-    fn from_port(port: &super::aliases::Port) -> Option<Self> {
+    pub(in crate::provenance) fn from_port(port: &super::aliases::Port) -> Option<Self> {
         let super::aliases::StorageKind::Channel(ty) = port.kind else {
             return None;
         };
@@ -435,6 +436,11 @@ impl Flow<'_> {
             ..Default::default()
         };
         Some(super::effects::CallOutcome {
+            queue_accesses: if info.name == kw::SEND {
+                access::Accesses::default()
+            } else {
+                self.queue_accesses(&source, state)
+            },
             queue_send_counts: self.actual_queue_send_counts(&queues),
             direct_queue_send,
             fresh_birth: None,

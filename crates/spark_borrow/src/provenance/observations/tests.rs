@@ -616,6 +616,7 @@ fn returned_history_follows_only_live_unclobbered_pending_copy_witnesses() {
             })
             .collect();
         let outcome = CallOutcome {
+            queue_accesses: crate::provenance::channels::access::Accesses::default(),
             queue_send_counts: crate::provenance::channels::counts::Sends::default(),
             direct_queue_send: None,
             fresh_birth: None,
@@ -810,6 +811,7 @@ fn a_returned_capture_keeps_progress_learned_after_the_entry_snapshot() {
             output_owners,
             ..Default::default()
         },
+        queue_accesses: crate::provenance::channels::access::Accesses::default(),
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         direct_queue_send: None,
         fresh_birth: None,

@@ -48,6 +48,7 @@ type Origins = FxHashSet<Origin>;
 struct State {
     queues: FxHashMap<(channels::Target, TypeId), Value>,
     queue_send_counts: channels::counts::Sends,
+    queue_accesses: channels::access::Accesses,
     queue_current: FxHashMap<channels::messages::Slot, channels::messages::Contribution>,
     observations: observations::Samples,
     pending_memory: FxHashMap<std::sync::Arc<tasks::memory::Lane>, Value>,
@@ -210,6 +211,7 @@ impl State {
         );
         changed |= self.future_copies.intersect(&other.future_copies);
         changed |= self.channel_copies.intersect(&other.channel_copies);
+        changed |= self.queue_accesses.join(&other.queue_accesses);
         changed |= self.input_owners.join(&other.input_owners);
         let before = self.joined_inputs.len();
         self.joined_inputs
@@ -498,6 +500,12 @@ impl<'a> Flow<'a> {
         self.settle_pending_tasks(point, state);
         match statement {
             Statement::Assign { place, rvalue, .. } => {
+                if let Rvalue::Ref {
+                    place: borrowed, ..
+                } = rvalue
+                {
+                    self.address_queue_access(borrowed, state);
+                }
                 let executions = self.moving_executions(rvalue, place, point, state);
                 let input_transfer = self.input_owner_transfer(rvalue, place, state);
                 let owned = self.owning_rvalue(rvalue, place, state);

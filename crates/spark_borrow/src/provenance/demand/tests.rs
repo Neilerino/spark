@@ -818,6 +818,7 @@ fn call_transaction_preserves_moved_argument_sources_in_return_and_queue() {
     let mut flow = Flow::new(&function, &table, None);
     flow.ensure_transfer(point, &state);
     let outcome = CallOutcome {
+        queue_accesses: crate::provenance::channels::access::Accesses::default(),
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         direct_queue_send: None,
         fresh_birth: None,

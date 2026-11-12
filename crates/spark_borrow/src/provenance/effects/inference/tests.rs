@@ -1047,7 +1047,11 @@ fn lower_source(source: &str) -> MirOutput {
         graph: ModuleGraph::default(),
     });
 
-    assert!(!type_output.diagnostics.has_errors());
+    assert!(
+        !type_output.diagnostics.has_errors(),
+        "{source}\n{:?}",
+        type_output.diagnostics
+    );
     let hir_output = spark_hir::lower(spark_hir::HirInput {
         resolved: resolver_output.resolved,
         definitions: resolver_output.definitions,
@@ -1062,3 +1066,5 @@ fn lower_source(source: &str) -> MirOutput {
         definitions: hir_output.definitions,
     })
 }
+
+mod fresh_certificates;

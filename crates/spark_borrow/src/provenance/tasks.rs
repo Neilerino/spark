@@ -13,6 +13,7 @@ pub(in crate::provenance) mod activity;
 pub(super) mod execution;
 pub(super) mod forwarding;
 pub(super) mod fresh;
+pub(super) mod fresh_outputs;
 mod identity;
 pub(super) mod lifecycle;
 pub(super) mod memory;

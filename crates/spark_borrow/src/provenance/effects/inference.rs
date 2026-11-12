@@ -9,16 +9,23 @@ use super::{
 
 type EventVocabulary = FxHashMap<Key, FxHashSet<EventKey>>;
 
-type OutputVocabulary = FxHashMap<Key, crate::provenance::tasks::outputs::CallbackOutputs>;
+#[derive(Default)]
+struct Outputs {
+    callbacks: crate::provenance::tasks::outputs::CallbackOutputs,
+    messages: FxHashSet<crate::provenance::tasks::fresh_outputs::Recipe>,
+}
+type OutputVocabulary = FxHashMap<Key, Outputs>;
 
 fn discover_outputs(outputs: &mut OutputVocabulary, key: &Key, summary: &Summary) -> bool {
-    if summary.returned_callbacks.is_empty() {
+    if summary.returned_callbacks.is_empty() && summary.fresh_outputs.is_empty() {
         return false;
     }
     let known = outputs.entry(key.clone()).or_default();
-    let mut changed = false;
+    let before = known.messages.len();
+    known.messages.extend(summary.fresh_outputs.keys().cloned());
+    let mut changed = before != known.messages.len();
     for (ty, output) in &summary.returned_callbacks {
-        changed |= known.entry(*ty).or_default().join(output);
+        changed |= known.callbacks.entry(*ty).or_default().join(output);
     }
     changed
 }
@@ -150,20 +157,7 @@ fn infer_summaries_with_definitions(
             ports = discovered;
             continue;
         }
-        for (key, proof) in &mut proofs {
-            proof.seed_owner_outputs(
-                &mir.functions[&key.function],
-                table,
-                outputs.get(key).and_then(|output| {
-                    crate::provenance::tasks::outputs::CallbackRecipe::candidate(
-                        output,
-                        &mir.functions[&key.function],
-                        mir,
-                        table,
-                    )
-                }),
-            );
-        }
+        program.seed_output_proofs(&mut proofs, &outputs);
         let (owners, discovered, requests, new_events) = program.proofs(
             &base,
             &frozen_ports,
@@ -229,6 +223,29 @@ struct Program<'a> {
 }
 
 impl Program<'_> {
+    fn seed_output_proofs(&self, proofs: &mut Proofs, outputs: &OutputVocabulary) {
+        for (key, proof) in proofs {
+            proof.seed_owner_outputs(
+                &self.mir.functions[&key.function],
+                self.table,
+                outputs.get(key).and_then(|output| {
+                    crate::provenance::tasks::outputs::CallbackRecipe::candidate(
+                        &output.callbacks,
+                        &self.mir.functions[&key.function],
+                        self.mir,
+                        self.table,
+                    )
+                }),
+            );
+            proof.seed_fresh_outputs(
+                outputs
+                    .get(key)
+                    .into_iter()
+                    .flat_map(|output| output.messages.iter().cloned()),
+            );
+        }
+    }
+
     fn expand_keys(&self, keys: &mut FxHashSet<Key>, ports: &Ports) {
         let mut expanded = FxHashSet::default();
         for key in keys.iter() {

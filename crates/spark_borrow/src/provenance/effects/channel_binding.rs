@@ -46,6 +46,9 @@ impl Flow<'_> {
                 }
             }
         }
+        if let Some(accesses) = &mut summary.normal_queue_accesses {
+            accesses.remap(&bindings);
+        }
         if let Some(counts) = &mut summary.normal_queue_sends {
             counts.remap(&bindings);
         }
@@ -168,6 +171,10 @@ impl Flow<'_> {
             &mut summary.normal_queue_sends,
             Some(&state.queue_send_counts),
         );
+        crate::provenance::channels::access::join_returns(
+            &mut summary.normal_queue_accesses,
+            Some(&state.queue_accesses),
+        );
         for (target, ty, _, value) in state.queue_entries() {
             summary
                 .queue_contents
@@ -254,6 +261,7 @@ impl Flow<'_> {
             });
         }
         super::CallOutcome {
+            queue_accesses: crate::provenance::channels::access::Accesses::unknown(),
             queue_send_counts: crate::provenance::channels::counts::Sends {
                 unknown: true,
                 ..Default::default()
@@ -506,6 +514,37 @@ impl Flow<'_> {
                     matches!(target, Target::Unknown { .. } | Target::Validation { .. });
                 bound.add(target, count);
             }
+        }
+        bound
+    }
+}
+
+impl Flow<'_> {
+    pub(super) fn bind_queue_accesses(
+        &self,
+        summary: &super::Summary,
+        function: &MirFunction,
+        actuals: super::CallActuals<'_>,
+    ) -> crate::provenance::channels::access::Accesses {
+        use crate::provenance::channels::access::Accesses;
+        let Some(access) = &summary.normal_queue_accesses else {
+            return Accesses::unknown();
+        };
+        let mut bound = Accesses {
+            unknown: access.unknown,
+            ..Accesses::default()
+        };
+        for target in &access.blocked {
+            let targets: FxHashSet<_> = self
+                .bind_queue_target(target, function, actuals)
+                .iter()
+                .flat_map(|target| self.queue_targets(target))
+                .collect();
+            bound.unknown |= targets.is_empty()
+                || targets.iter().any(|target| {
+                    matches!(target, Target::Unknown { .. } | Target::Validation { .. })
+                });
+            bound.blocked.extend(targets);
         }
         bound
     }
