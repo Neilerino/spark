@@ -82,6 +82,7 @@ fn callback_copies_remain_owned_until_their_actual_helper_disposition() {
         ("identity", "identity(child)", identity.to_owned(), "Future[Int]", false),
         ("keep", "keep(child, release)", keep.to_owned(), "Future[Int]", false),
         ("publish", "publish(child, out)", "async fn publish(child: Future[Int], out: Channel[Future[Int]]): Int { out.send(child) return 0 }".to_owned(), "Int", false),
+        ("maybePublish", "maybePublish(child, out, true)", "async fn maybePublish(child: Future[Int], out: Channel[Future[Int]], choose: Bool): Int { if choose { out.send(child) } return 0 }".to_owned(), "Int", false),
         ("forwardDrop", "forwardDrop(child)", "fn pass(child: Future[Int]): Future[Int] { return child }\nasync fn forwardDrop(child: Future[Int]): Int { copy: Future[Int] = pass(child) return 0 }".to_owned(), "Int", true),
     ] {
         let source = AMBIENT.replace("fn main(): Int {", &format!("{helpers}\nfn main(): Int {{"))
@@ -113,6 +114,10 @@ fn callback_copies_remain_owned_until_their_actual_helper_disposition() {
             assert_eq!(state.input_owners.retains_no_owner(capture), clean, "{name}: only actual owned copies count against the borrowed capture");
         }
         assert!(returns > 0, "{name}");
+        let crate::provenance::tasks::proofs::Guarantee::Returns(certificate) = flow.future_guarantee() else { panic!("{name}: expected normal return"); };
+        assert_eq!(certificate.clean_ambient_captures.contains(&capture), clean, "{name}: body cleanliness is an all-normal-return guarantee");
+        assert_eq!(proofs[&Key::distinct(function.def_id)].certificate().is_some_and(|certificate| certificate.clean_ambient_captures.contains(&capture)), clean, "{name}: the inferred guarantee survives refined MAY rechecking");
+
     }
 }
 
@@ -499,4 +504,49 @@ fn main(): Int {{
             "{expression}: physical capture retention is independent of mapped label emptiness"
         );
     }
+}
+
+#[test]
+fn a_nonreturning_callback_has_no_capture_cleanup_certificate() {
+    let source = AMBIENT.replace("return release.recv()", "loop {} return 0");
+    let output = lower_source(&source);
+    let function = output
+        .mir
+        .functions
+        .values()
+        .find(|function| {
+            function
+                .captures
+                .iter()
+                .any(|(_, ty)| matches!(output.table.resolve(*ty), Ty::Future { .. }))
+        })
+        .unwrap();
+    let facts = output
+        .mir
+        .functions
+        .iter()
+        .map(|(id, function)| (*id, crate::facts::extract_facts(function)))
+        .collect();
+    let (summaries, ports, proofs) = infer_summaries_with_definitions(
+        &output.mir,
+        &output.table,
+        &facts,
+        Some(&output.definitions),
+    );
+    let context = Context {
+        mir: &output.mir,
+        summaries: &summaries,
+        ports: &ports,
+        definitions: Some(&output.definitions),
+        proofs: Some(&proofs),
+    };
+    let mut flow = Flow::new(function, &output.table, Some(context));
+    flow.solve(&facts[&function.def_id]);
+    assert_eq!(
+        flow.future_guarantee(),
+        crate::provenance::tasks::proofs::Guarantee::NoReturn
+    );
+    assert!(proofs[&Key::distinct(function.def_id)]
+        .certificate()
+        .is_none());
 }

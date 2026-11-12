@@ -841,3 +841,108 @@ fn completing_a_reused_static_task_does_not_retire_an_older_residual_writer() {
         })])
     );
 }
+
+#[test]
+fn a_capture_only_child_settles_its_last_write_before_its_backing_is_removed() {
+    use crate::provenance::{tasks::Role, Slot};
+    for empty_support in [false, true] {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let reference = table.intern(Ty::Ref {
+            inner: int,
+            mutable: false,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
+        let future = table.intern(Ty::Future { inner: int });
+        let callback = table.intern(Ty::Function {
+            params: vec![],
+            ret: int,
+            is_async: false,
+        });
+        let function = function(&[future, reference, reference, reference, future]);
+        let issued = Point::new(BlockId::ENTRY, 0);
+        let point = Point::new(BlockId::ENTRY, 1);
+        let origin = Origin::Loan(issued);
+        let (_, child) = tasks::birth(function.def_id, issued, future);
+        let capture = tasks::Capture {
+            owner: DefId::new(10030),
+            index: 0,
+            ty: future,
+        };
+        let path = vec![Slot::Capture(capture.owner, capture.index, future)];
+        let qualified = child.clone().with_future_capture(capture);
+        let actor = Subject::from(qualified.futures[&vec![]].iter().next().unwrap());
+        let (_, parent) = tasks::birth(function.def_id, point, future);
+        let mut state = State::default();
+        state.set(Local(0), parent);
+        state.set(Local(1), Value::reference(origin.clone()));
+        state.set(Local(2), Value::default());
+        state.set(Local(4), child);
+        let role = Role::capture(Local(0), capture.owner, capture.index, future)
+            .in_execution(Local(0), callback)
+            .unwrap();
+        state.future_copies.assign_role(
+            role.clone(),
+            state.future_copies.witness(Local(4)),
+            &state.live,
+        );
+        state.executions.insert(
+            (Local(0), callback),
+            qualified.prefixed_path(&path, callback, &table),
+        );
+        state.consume(Local(4));
+        let witness = state.future_copies.role_witness(&role);
+        assert!(witness.locals().next().is_none());
+        let mut flow = Flow::new(&function, &table, None);
+        flow.ensure_transfer(point, &state);
+        let mut rhs = flow.freeze_sources(
+            point,
+            state.value(Local(1)).sourced(&Storage::Logical(Local(1))),
+        );
+        if empty_support {
+            for sources in rhs.sources.values_mut() {
+                sources.clear();
+            }
+        }
+        let write = lane(&function, point, &actor, Local(2));
+        flow.cache_pending_memory(
+            &Storage::ExecutionCallback(Local(0), callback),
+            path,
+            actor,
+            (vec![(write.clone(), rhs)], true),
+            point,
+            &mut state,
+        );
+        flow.settle_task_memory(&witness, &[], point, &mut state);
+        assert!(
+            state
+                .settled_memory
+                .get(&write.location)
+                .is_some_and(|value| value.origins().contains(&origin)),
+            "the sole captured owner must settle its RHS before callback storage disappears"
+        );
+        state.executions.remove(&(Local(0), callback));
+        state.consume(Local(1));
+        flow.record_consumed(point, Local(1));
+        let read = flow.read(&Place::from_local(Local(2)), &state);
+        assert!(read.origins().contains(&origin));
+        flow.record_store(point, &Place::from_local(Local(3)), &read);
+        let atom = |local| Atom {
+            coordinate: Coordinate {
+                storage: Storage::Logical(local),
+                path: vec![],
+            },
+            origin: origin.clone(),
+            capture: None,
+        };
+        let expected = if empty_support {
+            Demand::default()
+        } else {
+            Demand::from_iter([atom(Local(1))])
+        };
+        assert_eq!(
+            flow.transfers[&point].before(&Demand::from_iter([atom(Local(3))])),
+            expected
+        );
+    }
+}

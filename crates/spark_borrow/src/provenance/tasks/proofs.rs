@@ -47,6 +47,14 @@ impl Proof {
             certificate.retains_no_owner = certificate.released_provided.clone();
             certificate.returned_owners = output.map(Box::new);
             certificate.forwarded_provided = certificate.returned.clone();
+            certificate.clean_ambient_captures = future_captures(function, table);
+        }
+    }
+
+    pub const fn certificate(&self) -> Option<&Certificate> {
+        match &self.returns {
+            Guarantee::Returns(certificate) => Some(certificate),
+            Guarantee::NoReturn => None,
         }
     }
 
@@ -91,6 +99,21 @@ fn future_inputs(function: &MirFunction, table: &TypeTable) -> FxHashSet<Local> 
         .collect()
 }
 
+fn future_captures(function: &MirFunction, table: &TypeTable) -> FxHashSet<Local> {
+    function
+        .captures
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, ty))| {
+            matches!(
+                table.resolve(value::strip_mutable(*ty, table)),
+                Ty::Future { .. }
+            )
+            .then_some(Local(function.param_count + 1 + index as u32))
+        })
+        .collect()
+}
+
 fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witness> {
     let (Operand::Copy(place) | Operand::Move(place)) = args.get(input.index().checked_sub(1)?)?
     else {
@@ -106,6 +129,7 @@ fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witne
 pub(in crate::provenance) struct Certificate {
     pub returned_owners: Option<Box<super::outputs::CallbackRecipe>>,
     pub forwarded_provided: FxHashSet<Local>,
+    pub clean_ambient_captures: FxHashSet<Local>,
     pub completed: FxHashSet<Local>,
     pub returned: FxHashSet<Local>,
     pub released_provided: FxHashSet<Local>,
@@ -139,6 +163,7 @@ impl Guarantee {
             .collect();
         Self::Returns(Certificate {
             returned_owners: None,
+            clean_ambient_captures: FxHashSet::default(),
             forwarded_provided: returned.clone(),
             released_provided: completed.clone(),
             retains_no_owner: completed.clone(),
@@ -149,7 +174,7 @@ impl Guarantee {
 
     pub fn has_effect(&self) -> bool {
         matches!(self, Self::Returns(certificate) if certificate.returned_owners.is_some() || !certificate.completed.is_empty() || !certificate.returned.is_empty()
-            || !certificate.released_provided.is_empty() || !certificate.retains_no_owner.is_empty() || !certificate.forwarded_provided.is_empty())
+            || !certificate.released_provided.is_empty() || !certificate.retains_no_owner.is_empty() || !certificate.forwarded_provided.is_empty() || !certificate.clean_ambient_captures.is_empty())
     }
 
     pub fn intersect(&mut self, other: &Self) -> bool {
@@ -159,6 +184,8 @@ impl Guarantee {
                 if left.returned_owners != right.returned_owners {
                     left.returned_owners = None;
                 }
+                left.clean_ambient_captures
+                    .retain(|input| right.clean_ambient_captures.contains(input));
                 left.completed
                     .retain(|input| right.completed.contains(input));
                 left.returned.retain(|input| right.returned.contains(input));
@@ -222,7 +249,12 @@ impl Flow<'_> {
                             .retains_only(*input, &FxHashSet::from_iter([output_role.clone()]))
                 })
                 .collect();
+            let clean_ambient_captures = future_captures(self.function, self.table)
+                .into_iter()
+                .filter(|input| state.input_owners.retains_no_owner(*input))
+                .collect();
             let candidate = Guarantee::Returns(Certificate {
+                clean_ambient_captures,
                 forwarded_provided,
                 returned_owners: self.observed_callback_recipe(&state).map(Box::new),
                 completed: state.joined_inputs,
@@ -251,11 +283,11 @@ impl Flow<'_> {
         args: &[Operand],
         state: &State,
     ) -> CallProof {
-        let Some(Guarantee::Returns(certificate)) = self
+        let Some(certificate) = self
             .program
             .and_then(|context| context.proofs)
             .and_then(|proofs| proofs.get(key))
-            .map(|proof| &proof.returns)
+            .and_then(Proof::certificate)
         else {
             return CallProof::default();
         };

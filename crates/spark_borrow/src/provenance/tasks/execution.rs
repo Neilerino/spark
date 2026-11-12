@@ -163,6 +163,32 @@ impl ExecutionTransfer {
 }
 
 impl Flow<'_> {
+    pub(in crate::provenance) fn current_role_value(
+        &self,
+        role: &super::Role,
+        state: &State,
+    ) -> Option<Value> {
+        if !state.live.contains(&role.local()) {
+            return None;
+        }
+        let storage = role.callback_type().map_or_else(
+            || Storage::Logical(role.local()),
+            |ty| Storage::ExecutionCallback(role.local(), ty),
+        );
+        let ty = self.selected_type(self.storage_type(&storage), role.selection());
+        if !matches!(
+            self.table.resolve(value::strip_mutable(ty, self.table)),
+            spark_types::Ty::Future { .. }
+        ) {
+            return None;
+        }
+        let mut current = state.stored_value(&storage)?.clone().sourced(&storage);
+        for slot in role.selection() {
+            current = current.project(slot);
+        }
+        Some(current)
+    }
+
     pub(in crate::provenance) fn complete_owned_capture(
         &mut self,
         role: &super::Role,
@@ -180,10 +206,9 @@ impl Flow<'_> {
         let Some(mut callback) = state.stored_value(&storage).cloned() else {
             return;
         };
-        let mut child = callback.clone().sourced(&storage);
-        for slot in role.selection() {
-            child = child.project(slot);
-        }
+        let Some(mut child) = self.current_role_value(role, state) else {
+            return;
+        };
         child.mark_future_completed();
         if let Some(result) = result {
             child.join(&result.prefixed(crate::provenance::Slot::Element, *child_ty, self.table));

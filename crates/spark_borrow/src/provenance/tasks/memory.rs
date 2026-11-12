@@ -416,12 +416,12 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         let mut values = Vec::new();
-        for peer in witness.locals().filter(|peer| {
-            state.live.contains(peer)
-                && !clobbered.contains(peer)
-                && !state.invalidated_copies.contains(peer)
+        for role in witness.peers.iter().filter(|role| {
+            !clobbered.contains(&role.local()) && !state.invalidated_copies.contains(&role.local())
         }) {
-            let current = state.value(peer);
+            let Some(current) = self.current_role_value(role, state) else {
+                continue;
+            };
             for handle in current
                 .futures
                 .get(&Vec::new())
