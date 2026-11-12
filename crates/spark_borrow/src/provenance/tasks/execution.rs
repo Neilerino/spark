@@ -193,10 +193,11 @@ impl ExecutionTransfer {
         !clobbered.contains(&self.source)
             && !state.invalidated_copies.contains(&self.source)
             && self.captures.iter().all(|capture| {
-                capture.witness.peers.iter().all(|peer| {
-                    !clobbered.contains(&peer.local())
-                        && !state.invalidated_copies.contains(&peer.local())
-                })
+                capture
+                    .witness
+                    .peers
+                    .iter()
+                    .all(|peer| !peer.frame_clobbered(clobbered, &state.invalidated_copies))
             })
     }
 
@@ -214,7 +215,7 @@ impl ExecutionTransfer {
         let backing_inputs: Vec<_> = self
             .captures
             .iter()
-            .flat_map(|capture| capture.witness.peers.iter().map(super::Role::local))
+            .flat_map(|capture| capture.witness.peers.iter().filter_map(super::Role::local))
             .chain([self.source, destination])
             .collect();
         CapturedOwner::install_excluding(self.captures, &[self.source], state);
@@ -260,13 +261,10 @@ impl Flow<'_> {
         role: &super::Role,
         state: &State,
     ) -> Option<Value> {
-        if !state.live.contains(&role.local()) {
+        if !state.role_live(role) {
             return None;
         }
-        let storage = role.callback_type().map_or_else(
-            || Storage::Logical(role.local()),
-            |ty| Storage::ExecutionCallback(role.local(), ty),
-        );
+        let storage = role.storage();
         let ty = self.selected_type(self.storage_type(&storage), role.selection());
         if !matches!(
             self.table.resolve(value::strip_mutable(ty, self.table)),
@@ -281,56 +279,61 @@ impl Flow<'_> {
         Some(current)
     }
 
-    pub(in crate::provenance) fn complete_owned_capture(
+    pub(in crate::provenance) fn store_role_value(
+        &mut self,
+        role: &super::Role,
+        mut value: Value,
+        point: Point,
+        state: &mut State,
+    ) -> bool {
+        let storage = role.storage();
+        let Some(mut carrier) = state
+            .stored_value(&storage)
+            .map(std::borrow::Cow::into_owned)
+        else {
+            return false;
+        };
+        value = self.freeze_sources(point, value);
+        self.import_task_sources(&mut value, point, state);
+        if let Some(local) = role.as_local() {
+            self.record_store(point, &Place::from_local(local), &value);
+        } else {
+            self.record_path_store(
+                point,
+                Coordinate {
+                    storage: storage.clone(),
+                    path: role.selection().to_vec(),
+                },
+                &value,
+                true,
+            );
+        }
+        carrier.clear_path(role.selection());
+        carrier.join(&value.prefixed_path(
+            role.selection(),
+            self.storage_type(&storage),
+            self.table,
+        ));
+        carrier.clear_sources();
+        Self::replace_task_carrier(&storage, carrier, state)
+    }
+
+    pub(in crate::provenance) fn complete_owned_role(
         &mut self,
         role: &super::Role,
         result: Option<&Value>,
         point: Point,
         state: &mut State,
     ) {
-        let Some(crate::provenance::Slot::Capture(_, _, child_ty)) = role.selection().last() else {
-            return;
-        };
-        let storage = role.callback_type().map_or_else(
-            || Storage::Logical(role.local()),
-            |ty| Storage::ExecutionCallback(role.local(), ty),
-        );
-        let Some(mut callback) = state
-            .stored_value(&storage)
-            .map(std::borrow::Cow::into_owned)
-        else {
-            return;
-        };
         let Some(mut child) = self.current_role_value(role, state) else {
             return;
         };
+        let ty = self.selected_type(self.storage_type(&role.storage()), role.selection());
         child.mark_future_completed();
         if let Some(result) = result {
-            child.join(&result.prefixed(crate::provenance::Slot::Element, *child_ty, self.table));
+            child.join(&result.prefixed(crate::provenance::Slot::Element, ty, self.table));
         }
-        child = self.freeze_sources(point, child);
-        self.import_task_sources(&mut child, point, state);
-        self.record_path_store(
-            point,
-            Coordinate {
-                storage: storage.clone(),
-                path: role.selection().to_vec(),
-            },
-            &child,
-            true,
-        );
-        callback.clear_path(role.selection());
-        callback.join(&child.prefixed_path(
-            role.selection(),
-            self.storage_type(&storage),
-            self.table,
-        ));
-        callback.clear_sources();
-        if let Some(ty) = role.callback_type() {
-            state.executions.insert((role.local(), ty), callback);
-        } else {
-            state.set(role.local(), callback);
-        }
+        self.store_role_value(role, child, point, state);
     }
 
     pub(in crate::provenance) fn spawn_owner_transfer(

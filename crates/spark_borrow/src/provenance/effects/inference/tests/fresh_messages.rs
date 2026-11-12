@@ -8,6 +8,8 @@ use crate::provenance::{
 };
 use spark_mir::{BlockId, Local, Operand, Terminator};
 
+mod message_roles;
+
 fn with_fresh_producer(run: impl FnOnce(&mut Flow<'_>, State, Local, Birth)) {
     let source = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

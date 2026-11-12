@@ -88,8 +88,8 @@ impl InputOwners {
     }
     pub fn drop_local(&mut self, local: Local) {
         self.unresolved_environments.remove(&local);
-        self.locations.retain(|role, _| role.local() != local);
-        self.ambient.retain(|role, _| role.local() != local);
+        self.locations.retain(|role, _| role.local() != Some(local));
+        self.ambient.retain(|role, _| role.local() != Some(local));
     }
     pub fn drop_role(&mut self, role: &Role) {
         self.locations.remove(role);
@@ -98,7 +98,7 @@ impl InputOwners {
     pub fn escape_local(&mut self, local: Local) {
         self.unresolved_environments.remove(&local);
         self.ambient.retain(|role, inputs| {
-            if role.local() != local {
+            if role.local() != Some(local) {
                 return true;
             }
             self.escaped
@@ -106,7 +106,7 @@ impl InputOwners {
             false
         });
         self.locations.retain(|role, tags| {
-            if role.local() != local {
+            if role.local() != Some(local) {
                 return true;
             }
             self.escaped.extend(tags.iter().copied());
@@ -115,7 +115,7 @@ impl InputOwners {
     }
     pub fn escape_execution(&mut self, local: Local, ty: TypeId) {
         self.locations.retain(|role, tags| {
-            if role.local() != local || role.callback_type() != Some(ty) {
+            if role.local() != Some(local) || role.callback_type() != Some(ty) {
                 return true;
             }
             self.escaped.extend(tags.iter().copied());
@@ -130,7 +130,7 @@ impl InputOwners {
     ) -> FxHashMap<crate::provenance::Path, Tags> {
         self.locations
             .iter()
-            .filter(|(role, _)| role.local() == local && role.callback_type() == Some(ty))
+            .filter(|(role, _)| role.local() == Some(local) && role.callback_type() == Some(ty))
             .map(|(role, tags)| (role.selection().to_vec(), tags.clone()))
             .collect()
     }
@@ -198,7 +198,7 @@ impl Transfer {
         for (role, tags) in owners
             .locations
             .iter()
-            .filter(|(role, _)| role.local() == source)
+            .filter(|(role, _)| role.local() == Some(source))
         {
             if let Some(target) = role.capture_at(destination) {
                 if moving {
@@ -219,7 +219,7 @@ impl Transfer {
     ) -> Self {
         let mut result = Self::default();
         for (role, tags) in &owners.locations {
-            if role.local() == source
+            if role.local() == Some(source)
                 && (if adopting {
                     role.callback_type().is_none()
                 } else {
@@ -333,11 +333,11 @@ impl Flow<'_> {
             .input_owners
             .locations
             .iter()
-            .filter(|(role, _)| roots.contains(&role.local()))
+            .filter(|(role, _)| role.local().is_some_and(|local| roots.contains(&local)))
             .flat_map(|(_, tags)| tags.iter().copied())
             .collect();
         for (role, inputs) in &state.input_owners.ambient {
-            if roots.contains(&role.local()) {
+            if role.local().is_some_and(|local| roots.contains(&local)) {
                 tags.extend(inputs.iter().copied().map(Token::Derived));
             }
         }
@@ -405,7 +405,7 @@ impl Flow<'_> {
             result.unresolved_environments.insert(destination);
         }
         for (role, tags) in &state.input_owners.locations {
-            if roots.contains(&role.local()) {
+            if role.local().is_some_and(|local| roots.contains(&local)) {
                 if let Some(target) = role.capture_at(destination) {
                     result
                         .values

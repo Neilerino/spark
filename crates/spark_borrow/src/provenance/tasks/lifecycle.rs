@@ -9,13 +9,13 @@ use rustc_hash::FxHashSet;
 use spark_mir::{Constant, Local, MirFunction, Operand, Place, Rvalue, Statement, Terminator};
 use spark_types::{Ty, TypeId, TypeTable};
 
-use super::{Copies, Record, Role, Witness};
+use super::{Anchor, Copies, Record, Role, Witness};
 use crate::provenance::{value, Flow, State};
 
 #[derive(Clone, Debug, Default)]
 pub(in crate::provenance) struct Owners {
     closed: FxHashSet<Role>,
-    exposed: FxHashSet<Local>,
+    exposed: FxHashSet<Anchor>,
 }
 
 impl Owners {
@@ -29,14 +29,14 @@ impl Owners {
         self.grant_role(Role::root(local), copies);
     }
     pub fn grant_role(&mut self, role: Role, copies: &Copies) {
-        if self.exposed.contains(&role.local()) {
-            self.invalidate(role.local(), copies);
+        if self.exposed.contains(role.anchor()) {
+            self.invalidate_at(role.anchor().clone(), copies);
         } else {
             self.closed.insert(role);
         }
     }
     pub fn forget(&mut self, local: Local) {
-        self.closed.retain(|role| role.local() != local);
+        self.closed.retain(|role| role.local() != Some(local));
     }
     pub fn revoke(&mut self, witness: &Witness, copies: &Copies) {
         for role in &witness.peers {
@@ -48,30 +48,33 @@ impl Owners {
     }
     pub fn forget_execution(&mut self, local: Local, ty: TypeId) {
         self.closed
-            .retain(|role| role.local() != local || role.callback_type() != Some(ty));
+            .retain(|role| role.local() != Some(local) || role.callback_type() != Some(ty));
     }
     pub fn forget_role(&mut self, role: &Role) {
         self.closed.remove(role);
     }
     pub fn invalidate(&mut self, local: Local, copies: &Copies) {
+        self.invalidate_at(Anchor::Local(local), copies);
+    }
+    fn invalidate_at(&mut self, anchor: Anchor, copies: &Copies) {
         let mut visited = FxHashSet::default();
-        let mut pending = vec![local];
+        let mut pending = vec![anchor];
         while let Some(root) = pending.pop() {
-            if !visited.insert(root) {
+            if !visited.insert(root.clone()) {
                 continue;
             }
-            for role in copies.anchored(root) {
+            for role in copies.anchored_at(&root) {
                 for peer in copies.role_peers(&role) {
                     self.closed.remove(&peer);
-                    if let Some(local) = peer.as_local() {
-                        pending.push(local);
+                    if let Some(anchor) = peer.as_anchor() {
+                        pending.push(anchor.clone());
                     }
                 }
             }
         }
     }
     pub fn expose(&mut self, local: Local, copies: &Copies) {
-        self.exposed.insert(local);
+        self.exposed.insert(Anchor::Local(local));
         self.invalidate(local, copies);
     }
     pub fn intersect(&mut self, copies: &Copies, other: &Self, other_copies: &Copies) -> bool {
@@ -80,9 +83,9 @@ impl Owners {
             other.closed.contains(role) && copies.role_peers(role) == other_copies.role_peers(role)
         });
         let before_exposed = self.exposed.len();
-        self.exposed.extend(other.exposed.iter().copied());
+        self.exposed.extend(other.exposed.iter().cloned());
         self.closed
-            .retain(|role| !self.exposed.contains(&role.local()));
+            .retain(|role| !self.exposed.contains(role.anchor()));
         self.closed != before || before_exposed != self.exposed.len()
     }
 }
@@ -106,7 +109,9 @@ impl CapturedOwner {
         );
         for (capture, peers) in captures.iter_mut().zip(peers) {
             capture.witness.exclude(excluded);
-            capture.witness.exclude(&[capture.role.local()]);
+            if let Some(local) = capture.role.local() {
+                capture.witness.exclude(&[local]);
+            }
             capture.witness.peers.extend(peers);
         }
         for capture in captures {
@@ -115,19 +120,21 @@ impl CapturedOwner {
     }
 
     fn install(mut self, state: &mut State) {
-        if state.invalidated_copies.contains(&self.role.local())
+        if self.role.frame_clobbered(&[], &state.invalidated_copies)
             || self
                 .witness
                 .peers
                 .iter()
-                .any(|peer| state.invalidated_copies.contains(&peer.local()))
+                .any(|peer| peer.frame_clobbered(&[], &state.invalidated_copies))
         {
             self.witness.birth = None;
         }
         state.future_owners.forget_role(&self.role);
-        state
-            .future_copies
-            .assign_role(self.role.clone(), self.witness, &state.live);
+        state.future_copies.assign_role(
+            self.role.clone(),
+            self.witness,
+            &crate::provenance::tasks::Live::new(&state.live, &state.queue_current),
+        );
         if self.closed {
             state
                 .future_owners

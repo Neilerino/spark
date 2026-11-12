@@ -81,7 +81,7 @@ impl ForwardInput {
                 .witness
                 .peers
                 .iter()
-                .all(|peer| !state.invalidated_copies.contains(&peer.local()));
+                .all(|peer| !peer.frame_clobbered(&[], &state.invalidated_copies));
         if !valid {
             state
                 .future_owners
@@ -112,10 +112,10 @@ impl Flow<'_> {
         }
         let returned = proof.returned.as_ref()?;
         let valid = |witness: &Witness| {
-            witness.peers.iter().all(|peer| {
-                !clobbered.contains(&peer.local())
-                    && !state.invalidated_copies.contains(&peer.local())
-            })
+            witness
+                .peers
+                .iter()
+                .all(|peer| !peer.frame_clobbered(clobbered, &state.invalidated_copies))
         };
         if !valid(returned) {
             return None;

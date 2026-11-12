@@ -696,7 +696,8 @@ fn helper_return_transports_the_execution_owned_child_graph() {
                 .witness(child)
                 .peers
                 .iter()
-                .any(|role| role.local() == destination.local && role.callback_type().is_some()),
+                .any(|role| role.local() == Some(destination.local)
+                    && role.callback_type().is_some()),
             "the returned execution must retain its bound child owner"
         );
         assert_eq!(

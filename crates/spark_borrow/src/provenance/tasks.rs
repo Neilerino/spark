@@ -21,7 +21,7 @@ pub(super) mod proofs;
 pub(super) mod residual;
 mod settle;
 pub(super) mod views;
-pub(super) use identity::{Copies, Role, Witness};
+pub(super) use identity::{Anchor, Copies, Live, Role, Witness};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Capture {
@@ -279,13 +279,15 @@ impl super::Flow<'_> {
                     || witness
                         .peers
                         .iter()
-                        .any(|peer| state.invalidated_copies.contains(&peer.local()))
+                        .any(|peer| peer.frame_clobbered(&[], &state.invalidated_copies))
                 {
                     witness.birth = None;
                 }
-                state
-                    .future_copies
-                    .assign(place.local, witness, &state.live);
+                state.future_copies.assign(
+                    place.local,
+                    witness,
+                    &crate::provenance::tasks::Live::new(&state.live, &state.queue_current),
+                );
             }
         }
     }
@@ -326,7 +328,7 @@ impl super::Flow<'_> {
             .iter()
             .filter(|role| role.as_local().is_none())
         {
-            self.complete_owned_capture(role, result, point, state);
+            self.complete_owned_role(role, result, point, state);
         }
         let peers: Vec<_> = witness.locals().collect();
         state.joined_inputs.extend(witness.inputs);

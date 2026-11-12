@@ -442,9 +442,11 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         let mut values = Vec::new();
-        for role in witness.peers.iter().filter(|role| {
-            !clobbered.contains(&role.local()) && !state.invalidated_copies.contains(&role.local())
-        }) {
+        for role in witness
+            .peers
+            .iter()
+            .filter(|role| !role.frame_clobbered(clobbered, &state.invalidated_copies))
+        {
             let Some(current) = self.current_role_value(role, state) else {
                 continue;
             };

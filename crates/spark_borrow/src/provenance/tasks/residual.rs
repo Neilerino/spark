@@ -223,22 +223,21 @@ impl Flow<'_> {
         if place.projections.is_empty() {
             let witness = state.future_copies.witness(place.local);
             let peers: Vec<_> = witness
-                .locals()
-                .filter(|peer| *peer != place.local && state.live.contains(peer))
+                .peers
+                .iter()
+                .filter(|peer| **peer != super::Role::root(place.local) && state.role_live(peer))
+                .cloned()
                 .collect();
-            if witness.peers.iter().any(|peer| {
-                peer != &super::Role::root(place.local) && state.live.contains(&peer.local())
-            }) {
+            if !peers.is_empty() {
                 let proof = super::proofs::CallProof {
-                    completed: Vec::new(),
                     returned: Some(witness),
                     ..super::proofs::CallProof::default()
                 };
                 for peer in peers {
-                    let mut current = state.value(peer).sourced(&Storage::Logical(peer));
-                    Self::preserve_returned_task_progress(&mut current, &proof, &[], state);
-                    self.record_store(point, &Place::from_local(peer), &current);
-                    state.set(peer, current);
+                    if let Some(mut current) = self.current_role_value(&peer, state) {
+                        Self::preserve_returned_task_progress(&mut current, &proof, &[], state);
+                        self.store_role_value(&peer, current, point, state);
+                    }
                 }
                 return;
             }

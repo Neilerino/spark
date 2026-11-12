@@ -8,8 +8,14 @@ use spark_types::TypeId;
 use crate::provenance::{identity::Classes, Path, Slot};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(in crate::provenance) enum Anchor {
+    Local(Local),
+    Message(crate::provenance::channels::messages::Slot),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::provenance) struct Role {
-    local: Local,
+    anchor: Anchor,
     path: Path,
     callback_ty: Option<TypeId>,
 }
@@ -17,56 +23,114 @@ pub(in crate::provenance) struct Role {
 impl Role {
     pub const fn root(local: Local) -> Self {
         Self {
-            local,
+            anchor: Anchor::Local(local),
             path: Vec::new(),
             callback_ty: None,
         }
     }
-
+    pub const fn message(slot: crate::provenance::channels::messages::Slot) -> Self {
+        Self {
+            anchor: Anchor::Message(slot),
+            path: Vec::new(),
+            callback_ty: None,
+        }
+    }
     pub fn capture(local: Local, owner: DefId, index: usize, ty: TypeId) -> Self {
         Self {
-            local,
+            anchor: Anchor::Local(local),
             path: vec![Slot::Capture(owner, index, ty)],
             callback_ty: None,
         }
     }
-
     pub fn reanchor(&self, local: Local) -> Self {
         Self {
-            local,
+            anchor: Anchor::Local(local),
             path: self.path.clone(),
             callback_ty: self.callback_ty,
         }
     }
-
     pub fn capture_at(&self, local: Local) -> Option<Self> {
-        matches!(self.path.as_slice(), [Slot::Capture(..)]).then(|| Self {
-            local,
-            path: self.path.clone(),
-            callback_ty: self.callback_ty,
-        })
+        matches!(self.path.as_slice(), [Slot::Capture(..)]).then(|| self.reanchor(local))
     }
-
     pub fn selection(&self) -> &[Slot] {
         &self.path
     }
-
     pub fn in_execution(&self, local: Local, callback_ty: TypeId) -> Option<Self> {
         let mut role = self.capture_at(local)?;
         role.callback_ty = Some(callback_ty);
         Some(role)
     }
-
     pub const fn callback_type(&self) -> Option<TypeId> {
         self.callback_ty
     }
-
-    pub const fn local(&self) -> Local {
-        self.local
+    pub const fn anchor(&self) -> &Anchor {
+        &self.anchor
     }
-
+    pub const fn local(&self) -> Option<Local> {
+        match self.anchor {
+            Anchor::Local(local) => Some(local),
+            Anchor::Message(_) => None,
+        }
+    }
+    pub fn as_anchor(&self) -> Option<&Anchor> {
+        (self.callback_ty.is_none() && self.path.is_empty()).then_some(&self.anchor)
+    }
     pub fn as_local(&self) -> Option<Local> {
-        (self.callback_ty.is_none() && self.path.is_empty()).then_some(self.local)
+        self.as_anchor().and_then(|_| self.local())
+    }
+    pub fn frame_clobbered(&self, clobbered: &[Local], invalidated: &FxHashSet<Local>) -> bool {
+        self.local()
+            .is_some_and(|local| clobbered.contains(&local) || invalidated.contains(&local))
+    }
+    pub fn storage(&self) -> crate::provenance::demand::Storage {
+        use crate::provenance::demand::Storage;
+        match &self.anchor {
+            Anchor::Message(slot) => Storage::QueueCurrent(slot.clone()),
+            Anchor::Local(local) => self.callback_ty.map_or(Storage::Logical(*local), |ty| {
+                Storage::ExecutionCallback(*local, ty)
+            }),
+        }
+    }
+}
+
+pub(in crate::provenance) trait RoleLiveness {
+    fn contains_role(&self, role: &Role) -> bool;
+}
+
+pub(in crate::provenance) struct Live<'a> {
+    locals: &'a FxHashSet<Local>,
+    messages: &'a FxHashMap<
+        crate::provenance::channels::messages::Slot,
+        crate::provenance::channels::messages::Contribution,
+    >,
+}
+
+impl<'a> Live<'a> {
+    pub const fn new(
+        locals: &'a FxHashSet<Local>,
+        messages: &'a FxHashMap<
+            crate::provenance::channels::messages::Slot,
+            crate::provenance::channels::messages::Contribution,
+        >,
+    ) -> Self {
+        Self { locals, messages }
+    }
+    pub fn contains(&self, role: &Role) -> bool {
+        match role.anchor() {
+            Anchor::Local(local) => self.locals.contains(local),
+            Anchor::Message(slot) => self.messages.contains_key(slot),
+        }
+    }
+}
+impl RoleLiveness for Live<'_> {
+    fn contains_role(&self, role: &Role) -> bool {
+        self.contains(role)
+    }
+}
+#[cfg(test)]
+impl RoleLiveness for FxHashSet<Local> {
+    fn contains_role(&self, role: &Role) -> bool {
+        role.local().is_some_and(|local| self.contains(&local))
     }
 }
 
@@ -88,11 +152,12 @@ impl Witness {
         if self
             .peers
             .iter()
-            .any(|role| clobbered.contains(&role.local))
+            .any(|role| role.local().is_some_and(|local| clobbered.contains(&local)))
         {
             self.birth = None;
         }
-        self.peers.retain(|role| !clobbered.contains(&role.local));
+        self.peers
+            .retain(|role| !role.local().is_some_and(|local| clobbered.contains(&local)));
     }
 
     pub fn locals(&self) -> impl Iterator<Item = Local> + '_ {
@@ -151,18 +216,25 @@ impl Copies {
     }
 
     pub fn anchored(&self, local: Local) -> FxHashSet<Role> {
+        self.anchored_at(&Anchor::Local(local))
+    }
+    pub fn anchored_at(&self, anchor: &Anchor) -> FxHashSet<Role> {
         self.classes
             .roles()
-            .filter(|role| role.local == local)
+            .filter(|role| role.anchor() == anchor)
             .cloned()
-            .chain(std::iter::once(Role::root(local)))
+            .chain(std::iter::once(Role {
+                anchor: anchor.clone(),
+                path: Vec::new(),
+                callback_ty: None,
+            }))
             .collect()
     }
 
     pub fn forget(&mut self, local: Local) {
-        self.classes.retain(|role| role.local != local);
-        self.inputs.retain(|role, _| role.local != local);
-        self.births.retain(|role, _| role.local != local);
+        self.classes.retain(|role| role.local() != Some(local));
+        self.inputs.retain(|role, _| role.local() != Some(local));
+        self.births.retain(|role, _| role.local() != Some(local));
     }
 
     pub fn forget_role(&mut self, role: &Role) {
@@ -175,7 +247,7 @@ impl Copies {
         let roles: Vec<_> = self
             .classes
             .roles()
-            .filter(|role| role.local == local && role.callback_ty == Some(ty))
+            .filter(|role| role.local() == Some(local) && role.callback_ty == Some(ty))
             .cloned()
             .collect();
         for role in roles {
@@ -183,12 +255,12 @@ impl Copies {
         }
     }
 
-    pub fn assign(&mut self, destination: Local, witness: Witness, live: &FxHashSet<Local>) {
+    pub fn assign(&mut self, destination: Local, witness: Witness, live: &impl RoleLiveness) {
         self.forget(destination);
         self.assign_role(Role::root(destination), witness, live);
     }
 
-    pub fn assign_role(&mut self, destination: Role, witness: Witness, live: &FxHashSet<Local>) {
+    pub fn assign_role(&mut self, destination: Role, witness: Witness, live: &impl RoleLiveness) {
         self.inputs.remove(&destination);
         self.births.remove(&destination);
         if let Some(birth) = witness.birth {
@@ -197,7 +269,7 @@ impl Copies {
         let peers = witness
             .peers
             .into_iter()
-            .filter(|peer| *peer != destination && live.contains(&peer.local))
+            .filter(|peer| *peer != destination && live.contains_role(peer))
             .collect();
         if !witness.inputs.is_empty() {
             self.inputs.insert(destination.clone(), witness.inputs);

@@ -121,6 +121,10 @@ fn literal_successor(function: &MirFunction, block: &spark_mir::BasicBlock) -> O
 }
 
 impl State {
+    fn role_live(&self, role: &tasks::Role) -> bool {
+        tasks::Live::new(&self.live, &self.queue_current).contains(role)
+    }
+
     fn value(&self, local: Local) -> Value {
         self.values.get(&local).cloned().unwrap_or_default()
     }

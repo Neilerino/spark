@@ -93,7 +93,7 @@ pub(super) fn direct_send(
                 .witness(source.local)
                 .peers
                 .iter()
-                .map(crate::provenance::tasks::Role::local)
+                .filter_map(crate::provenance::tasks::Role::local)
                 .collect(),
         ))
     });
@@ -218,6 +218,11 @@ impl Flow<'_> {
             &Value::default(),
             true,
         );
+        let role = crate::provenance::tasks::Role::message(slot.clone());
+        let witness = state.future_copies.role_witness(&role);
+        state.future_owners.revoke(&witness, &state.future_copies);
+        state.future_owners.forget_role(&role);
+        state.future_copies.forget_role(&role);
         state.queue_current.remove(slot);
     }
 }

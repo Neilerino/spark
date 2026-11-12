@@ -202,10 +202,11 @@ impl BoundOutput {
         crate::provenance::value::strip_mutable(flow.place_type(destination), flow.table)
             == self.parent_ty
             && self.captures.iter().all(|capture| {
-                capture.witness.peers.iter().all(|peer| {
-                    !clobbered.contains(&peer.local())
-                        && !state.invalidated_copies.contains(&peer.local())
-                })
+                capture
+                    .witness
+                    .peers
+                    .iter()
+                    .all(|peer| !peer.frame_clobbered(clobbered, &state.invalidated_copies))
             })
     }
     pub fn carry_progress(
@@ -275,7 +276,7 @@ impl BoundOutput {
                     .witness
                     .peers
                     .iter()
-                    .any(|peer| state.invalidated_copies.contains(&peer.local()))
+                    .any(|peer| peer.frame_clobbered(&[], &state.invalidated_copies))
             })
         {
             for capture in self.captures {

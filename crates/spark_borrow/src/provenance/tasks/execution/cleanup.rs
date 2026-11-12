@@ -87,8 +87,8 @@ impl Flow<'_> {
                         && clean.contains(&role.selection()[0])
                         && self.current_role_value(&role, state).is_some()
                         && witness.peers.iter().all(|peer| {
-                            state.live.contains(&peer.local())
-                                && !state.invalidated_copies.contains(&peer.local())
+                            state.role_live(peer)
+                                && !peer.frame_clobbered(&[], &state.invalidated_copies)
                                 && state.future_owners.known_role(peer)
                                 && peer.as_local().is_none_or(|peer| !roots.contains(&peer))
                         });
@@ -149,8 +149,11 @@ impl Flow<'_> {
         let Some(ty) = role.callback_type() else {
             return;
         };
-        let storage = Storage::ExecutionCallback(role.local(), ty);
-        let Some(callback) = state.executions.get_mut(&(role.local(), ty)) else {
+        let Some(local) = role.local() else {
+            return;
+        };
+        let storage = Storage::ExecutionCallback(local, ty);
+        let Some(callback) = state.executions.get_mut(&(local, ty)) else {
             return;
         };
         callback.clear_path(role.selection());

@@ -473,8 +473,10 @@ impl Flow<'_> {
                         .is_some_and(|witness| {
                             witness.contains_local(place.local)
                                 && witness.peers.iter().all(|peer| {
-                                    !outcome.clobbered_copies.contains(&peer.local())
-                                        && !state.invalidated_copies.contains(&peer.local())
+                                    !peer.frame_clobbered(
+                                        &outcome.clobbered_copies,
+                                        &state.invalidated_copies,
+                                    )
                                 })
                         })
             })
