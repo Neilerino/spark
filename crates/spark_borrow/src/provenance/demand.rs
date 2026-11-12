@@ -110,14 +110,10 @@ impl Transfer {
 
     pub(super) fn freeze(&self, mut value: super::Value) -> super::Value {
         self.freeze_annotations(&mut value.sources);
-        for view in value
-            .task_views
-            .values_mut()
-            .flat_map(|views| views.values_mut())
-        {
-            view.history.freeze_imports(self);
-            view.memory.freeze_imports(self);
-        }
+        value.visit_task_progress(|history, memory| {
+            history.freeze_imports(self);
+            memory.freeze_imports(self);
+        });
         value
     }
 

@@ -10,6 +10,9 @@ use crate::provenance::{
 use rustc_hash::FxHashMap;
 use spark_types::TypeId;
 
+mod callback;
+pub(in crate::provenance) use callback::{Callback, NodeKey};
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::provenance) struct Subject {
     pub target: Target,
@@ -72,7 +75,7 @@ impl Carrier {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct View {
-    pub callbacks: FxHashMap<TypeId, Carrier>,
+    pub callbacks: FxHashMap<TypeId, Callback>,
     pub fallback: bool,
     pub history: crate::provenance::observations::History,
     pub memory: super::memory::Effects,
@@ -81,7 +84,7 @@ pub(in crate::provenance) struct View {
 impl View {
     pub fn pending(callback: Value, ty: TypeId) -> Self {
         Self {
-            callbacks: FxHashMap::from_iter([(ty, Carrier::seal(callback))]),
+            callbacks: FxHashMap::from_iter([(ty, Callback::seal(callback))]),
             ..Self::default()
         }
     }
@@ -236,15 +239,30 @@ impl Carrier {
 mod tests;
 
 impl Value {
-    pub(in crate::provenance) fn clear_task_imports(&mut self) {
+    pub(in crate::provenance) fn visit_task_progress(
+        &mut self,
+        mut visit: impl FnMut(
+            &mut crate::provenance::observations::History,
+            &mut super::memory::Effects,
+        ),
+    ) {
         for view in self
             .task_views
             .values_mut()
-            .flat_map(|views| views.values_mut())
+            .flat_map(|subjects| subjects.values_mut())
         {
-            view.history.clear_imports();
-            view.memory.clear_imports();
+            visit(&mut view.history, &mut view.memory);
+            for callback in view.callbacks.values_mut() {
+                callback.visit_progress(&mut visit);
+            }
         }
+    }
+
+    pub(in crate::provenance) fn clear_task_imports(&mut self) {
+        self.visit_task_progress(|history, memory| {
+            history.clear_imports();
+            memory.clear_imports();
+        });
     }
 }
 
@@ -255,6 +273,7 @@ impl crate::provenance::State {
             .chain(self.residuals.values())
             .chain(self.external.values())
             .chain(self.queues.values())
+            .chain(self.executions.values())
             .chain(self.tasks.values().map(|record| &record.callback))
             .flat_map(|value| value.task_views.values())
             .flat_map(|subjects| subjects.values())

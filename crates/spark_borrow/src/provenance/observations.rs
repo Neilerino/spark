@@ -385,14 +385,10 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
-        for view in value
-            .task_views
-            .values_mut()
-            .flat_map(|views| views.values_mut())
-        {
-            let imports = view.history.take_imports();
-            self.remember_samples(imports, &mut view.history, point, state);
-        }
+        value.visit_task_progress(|history, _| {
+            let imports = history.take_imports();
+            self.remember_samples(imports, history, point, state);
+        });
     }
 
     pub(super) fn import_prefix_observations(

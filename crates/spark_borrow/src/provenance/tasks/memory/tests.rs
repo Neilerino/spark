@@ -1,5 +1,7 @@
 // TAG [SPARK-114]
 
+mod callback_progress;
+
 use super::*;
 use crate::provenance::{
     demand::{Atom, Demand},

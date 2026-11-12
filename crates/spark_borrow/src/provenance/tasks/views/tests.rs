@@ -47,6 +47,127 @@ fn completed(value: &mut Value) {
 }
 
 #[test]
+fn a_callback_keeps_its_captured_child_view_progress() {
+    let mut table = TypeTable::new();
+    let (_, mut child, callback_ty) = pending(&mut table, 1);
+    child
+        .task_views
+        .values_mut()
+        .flat_map(|subjects| subjects.values_mut())
+        .next()
+        .unwrap()
+        .memory
+        .may_write = true;
+    let future = child.futures[&Vec::new()]
+        .iter()
+        .next()
+        .unwrap()
+        .target
+        .ty();
+    let captured = child.prefixed(
+        Slot::Capture(DefId::new(9968), 0, future),
+        callback_ty,
+        &table,
+    );
+    let parent = View::pending(captured.clone(), callback_ty);
+    let restored = parent.callbacks[&callback_ty].value();
+    assert_eq!(
+        restored, captured,
+        "flattening a callback must preserve its child progress and callback recipes"
+    );
+}
+
+#[test]
+fn recursive_callback_progress_uses_a_finite_flat_node_table() {
+    let mut table = TypeTable::new();
+    let (target, mut value, callback_ty) = pending(&mut table, 1);
+    let future = target.ty();
+    for _ in 0..32 {
+        let callback = value.prefixed(
+            Slot::Capture(DefId::new(9968), 0, future),
+            callback_ty,
+            &table,
+        );
+        let mut outer = tasks::birth(DefId::new(9970), Point::new(BlockId::ENTRY, 0), future).1;
+        outer.task_views.entry(Vec::new()).or_default().insert(
+            Subject {
+                target: target.clone(),
+                capture: None,
+            },
+            View::pending(callback, callback_ty),
+        );
+        value = outer;
+    }
+    let callback = &value.task_views[&Vec::new()]
+        .values()
+        .next()
+        .unwrap()
+        .callbacks[&callback_ty];
+    assert_eq!(callback.nodes().count(), 1);
+    assert_eq!(Callback::seal(callback.value()), *callback);
+    let mut joined = callback.clone();
+    assert!(!joined.join(callback));
+}
+
+#[test]
+fn callback_node_joins_preserve_an_untracked_pending_alternative() {
+    let mut table = TypeTable::new();
+    let (target, known, _) = pending(&mut table, 1);
+    let mut unknown = known.clone();
+    unknown.task_views.clear();
+    let mut done = known.clone();
+    completed(&mut done);
+    for (first, second) in [
+        (&known, &unknown),
+        (&unknown, &known),
+        (&done, &unknown),
+        (&unknown, &done),
+    ] {
+        let mut callback = Callback::seal(first.clone());
+        callback.join(&Callback::seal(second.clone()));
+        let merged = callback.value();
+        assert!(
+            merged.task_views[&Vec::new()][&Subject {
+                target: target.clone(),
+                capture: None
+            }]
+                .fallback
+        );
+    }
+}
+
+#[test]
+fn pending_memory_views_include_execution_backing_without_a_catalog_entry() {
+    let mut table = TypeTable::new();
+    let (_, mut child, callback_ty) = pending(&mut table, 1);
+    child
+        .task_views
+        .values_mut()
+        .flat_map(|views| views.values_mut())
+        .next()
+        .unwrap()
+        .memory
+        .may_write = true;
+    let mut state = State::default();
+    let future = child.futures[&Vec::new()]
+        .iter()
+        .next()
+        .unwrap()
+        .target
+        .ty();
+    state.executions.insert(
+        (spark_mir::Local(1), callback_ty),
+        child.prefixed(
+            Slot::Capture(DefId::new(9969), 0, future),
+            callback_ty,
+            &table,
+        ),
+    );
+    assert!(state.tasks.is_empty());
+    assert!(state.current_task_views().any(|view| view.memory.may_write));
+}
+
+#[test]
 fn a_new_current_contribution_does_not_query_an_old_weak_callback() {
     let mut table = TypeTable::new();
     let (target, old, ty) = pending(&mut table, 1);

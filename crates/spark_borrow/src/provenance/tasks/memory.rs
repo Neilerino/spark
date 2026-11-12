@@ -113,18 +113,13 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
-        for effects in value
-            .task_views
-            .values_mut()
-            .flat_map(|views| views.values_mut())
-            .map(|view| &mut view.memory)
-        {
+        value.visit_task_progress(|_, effects| {
             for (lane, sources) in std::mem::take(&mut effects.imports) {
                 let mut value = effects.facts[&lane].value();
                 value.sources = sources;
                 self.remember_pending_write(lane, value, point, state);
             }
-        }
+        });
     }
 
     fn remember_pending_write(
