@@ -198,7 +198,7 @@ impl Flow<'_> {
             return query;
         };
         let subject = Subject::from(handle);
-        let (records, unknown) = views::pending_records(carrier, path, handle, state);
+        let (mut records, unknown) = views::pending_records(carrier, path, handle, state);
         if unknown {
             query.memory_support = true;
             let mut accesses = crate::provenance::Accesses::default();
@@ -215,14 +215,23 @@ impl Flow<'_> {
             self.resample_history(&history, ReadView::current(state).with_envelope(envelope));
         let mut changed = self.remember_samples(resampled, &mut history, point, state);
         let trace = RefCell::default();
-        for mut record in records {
-            let source = match carrier_storage {
-                Storage::Residual(key) => {
-                    Storage::ResidualCallback(key.clone(), record.callback_ty)
-                }
-                _ => Storage::Task(handle.target.clone(), record.callback_ty),
-            };
-            record.callback = record.callback.sourced(&source);
+        if let Storage::Residual(key) = carrier_storage {
+            if path.is_empty() && key.actor == subject {
+                records.extend(
+                    state
+                        .residual_callbacks
+                        .iter()
+                        .filter(|((owner, _), _)| owner == key)
+                        .map(|((_, ty), callback)| super::Record {
+                            callback: callback
+                                .clone()
+                                .sourced(&Storage::ResidualCallback(key.clone(), *ty)),
+                            callback_ty: *ty,
+                        }),
+                );
+            }
+        }
+        for record in records {
             let read = ReadView::task(state, &subject, &history, &trace).with_envelope(envelope);
             let mut facts = self.task_facts_in(&record, &handle.target, point, read, inner);
             self.import_prefix_observations(

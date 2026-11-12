@@ -142,13 +142,7 @@ impl Flow<'_> {
             let (records, unknown) =
                 super::super::tasks::views::pending_records(&future, &path, &handle, state);
             normal |= records.is_empty() || unknown;
-            for mut record in records {
-                record.callback = record
-                    .callback
-                    .sourced(&super::super::demand::Storage::Task(
-                        handle.target.clone(),
-                        record.callback_ty,
-                    ));
+            for record in records {
                 let facts = self.task_facts(&record, &handle.target, point, state, ty);
                 self.observe_prefix(&facts.prefix, point, state);
                 queues.extend(facts.prefix.queues);

@@ -215,7 +215,15 @@ pub(in crate::provenance) fn pending_records(
     let mut unknown = false;
     if view.is_none_or(|v| v.fallback) {
         if let Some(record) = state.tasks.get(&handle.target) {
-            records.push(record.clone());
+            records.push(super::Record {
+                callback: record.callback.clone().sourced(
+                    &crate::provenance::demand::Storage::Task(
+                        handle.target.clone(),
+                        record.callback_ty,
+                    ),
+                ),
+                callback_ty: record.callback_ty,
+            });
         } else {
             unknown = true;
         }
