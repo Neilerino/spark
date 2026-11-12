@@ -80,6 +80,12 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         if !destination.projections.is_empty() {
+            state.input_owners.escape_tags(
+                outputs
+                    .into_values()
+                    .flat_map(|output| output.lineage.into_values().flatten())
+                    .collect(),
+            );
             return;
         }
         for (ty, mut output) in outputs {

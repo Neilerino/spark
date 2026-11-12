@@ -420,6 +420,8 @@ impl Flow<'_> {
         Some(super::effects::CallOutcome {
             fresh_leaf_task: false,
             spawn_owners: None,
+            returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
+            retained_captures: Vec::new(),
             returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals: Vec::new(),
             async_memory: Vec::new(),

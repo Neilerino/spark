@@ -36,6 +36,7 @@ impl Token {
 pub(in crate::provenance) struct InputOwners {
     locations: FxHashMap<Role, Tags>,
     ambient: FxHashMap<Role, FxHashSet<Local>>,
+    unresolved_environments: FxHashSet<Local>,
     escaped: Tags,
 }
 
@@ -45,6 +46,24 @@ impl InputOwners {
             Role::root(input),
             FxHashSet::from_iter([Token::Provided(input)]),
         );
+    }
+    pub fn unresolved_environment(&self, local: Local) -> bool {
+        self.unresolved_environments.contains(&local)
+    }
+    pub fn mark_unresolved_environment(&mut self, local: Local) {
+        self.unresolved_environments.insert(local);
+    }
+    pub fn escape_tags(&mut self, tags: Tags) {
+        self.escaped.extend(tags);
+    }
+    pub fn retained_tags(&self) -> Tags {
+        self.tokens().copied().collect()
+    }
+    pub fn all_value_tags(&self) -> Tags {
+        self.tokens()
+            .copied()
+            .chain(self.ambient.values().flatten().copied().map(Token::Derived))
+            .collect()
     }
     pub fn seed_ambient(&mut self, input: Local) {
         self.ambient
@@ -68,10 +87,12 @@ impl InputOwners {
         self.locations.get(role).cloned().unwrap_or_default()
     }
     pub fn drop_local(&mut self, local: Local) {
+        self.unresolved_environments.remove(&local);
         self.locations.retain(|role, _| role.local() != local);
         self.ambient.retain(|role, _| role.local() != local);
     }
     pub fn escape_local(&mut self, local: Local) {
+        self.unresolved_environments.remove(&local);
         self.ambient.retain(|role, inputs| {
             if role.local() != local {
                 return true;
@@ -127,6 +148,10 @@ impl InputOwners {
         let before = self.escaped.len();
         self.escaped.extend(other.escaped.iter().copied());
         let mut changed = before != self.escaped.len();
+        let before = self.unresolved_environments.len();
+        self.unresolved_environments
+            .extend(other.unresolved_environments.iter().copied());
+        changed |= before != self.unresolved_environments.len();
         for (role, inputs) in &other.ambient {
             let current = self.ambient.entry(role.clone()).or_default();
             let before = current.len();
@@ -155,20 +180,26 @@ impl InputOwners {
 #[derive(Default)]
 pub(in crate::provenance) struct Transfer {
     moved: FxHashSet<Role>,
+    unresolved_environments: FxHashSet<Local>,
     values: FxHashMap<Role, Tags>,
     escaped: Tags,
 }
 
 impl Transfer {
-    fn move_environment(source: Local, destination: Local, owners: &InputOwners) -> Self {
+    fn environment(source: Local, destination: Local, owners: &InputOwners, moving: bool) -> Self {
         let mut result = Self::default();
+        if owners.unresolved_environment(source) {
+            result.unresolved_environments.insert(destination);
+        }
         for (role, tags) in owners
             .locations
             .iter()
             .filter(|(role, _)| role.local() == source)
         {
             if let Some(target) = role.capture_at(destination) {
-                result.moved.insert(role.clone());
+                if moving {
+                    result.moved.insert(role.clone());
+                }
                 result.values.insert(target, tags.clone());
             }
         }
@@ -215,6 +246,9 @@ impl Transfer {
         owners.escaped.extend(self.escaped.iter().copied());
     }
     pub fn install(self, owners: &mut InputOwners) {
+        owners
+            .unresolved_environments
+            .extend(self.unresolved_environments);
         for (role, tags) in self.values {
             if !tags.is_empty() {
                 owners.locations.entry(role).or_default().extend(tags);
@@ -236,9 +270,9 @@ impl Transfer {
 }
 
 impl Flow<'_> {
-    fn owner_tags(&self, operand: &Operand, state: &State) -> Tags {
+    fn owner_roots(&self, operand: &Operand, state: &State) -> FxHashSet<Local> {
         let (Operand::Copy(place) | Operand::Move(place)) = operand else {
-            return Tags::default();
+            return FxHashSet::default();
         };
         let mut roots = FxHashSet::from_iter([place.local]);
         let mut pending = vec![place.local];
@@ -269,6 +303,26 @@ impl Flow<'_> {
                 }
             }
         }
+        roots
+    }
+
+    pub(in crate::provenance) fn clobber_input_owners(&self, local: Local, state: &mut State) {
+        state.input_owners.escape_local(local);
+        if matches!(
+            self.table.resolve(value::strip_mutable(
+                self.function.locals[local.index()].ty,
+                self.table
+            )),
+            Ty::Function { .. }
+        ) {
+            state.input_owners.mark_unresolved_environment(local);
+        }
+        state.future_owners.invalidate(local, &state.future_copies);
+        state.future_copies.forget(local);
+    }
+
+    pub(in crate::provenance) fn owner_tags(&self, operand: &Operand, state: &State) -> Tags {
+        let roots = self.owner_roots(operand, state);
         let mut tags: Tags = state
             .input_owners
             .locations
@@ -309,6 +363,58 @@ impl Flow<'_> {
         state.input_owners.escaped.extend(tags);
     }
 
+    pub(in crate::provenance) fn environment_sources(
+        &self,
+        operand: &Operand,
+        state: &State,
+    ) -> (FxHashSet<Local>, bool) {
+        let roots: FxHashSet<_> = self
+            .owner_roots(operand, state)
+            .into_iter()
+            .filter(|local| {
+                matches!(
+                    self.table.resolve(value::strip_mutable(
+                        self.function.locals[local.index()].ty,
+                        self.table
+                    )),
+                    Ty::Function { .. }
+                )
+            })
+            .collect();
+        let function_reference = matches!(
+            operand,
+            Operand::Constant(spark_mir::Constant::FunctionRef(_))
+        );
+        let unresolved = (!function_reference && roots.is_empty())
+            || roots.iter().any(|root| {
+                !state.live.contains(root) || state.input_owners.unresolved_environment(*root)
+            });
+        (roots, unresolved)
+    }
+
+    fn read_environment(&self, operand: &Operand, destination: Local, state: &State) -> Transfer {
+        let (roots, unresolved) = self.environment_sources(operand, state);
+        let mut result = Transfer::default();
+        if unresolved {
+            result.unresolved_environments.insert(destination);
+        }
+        for (role, tags) in &state.input_owners.locations {
+            if roots.contains(&role.local()) {
+                if let Some(target) = role.capture_at(destination) {
+                    result
+                        .values
+                        .entry(target)
+                        .or_default()
+                        .extend(tags.iter().copied());
+                }
+            }
+        }
+        result
+            .escaped
+            .extend(self.escaped_owner_tags(operand, state));
+        result
+    }
+
     fn input_value_transfer(
         &self,
         operand: &Operand,
@@ -320,6 +426,12 @@ impl Flow<'_> {
         let destination_ty = value::strip_mutable(self.place_type(destination), self.table);
         let identity_cast =
             target.is_none_or(|target| value::strip_mutable(target, self.table) == destination_ty);
+        if identity_cast
+            && destination.projections.is_empty()
+            && matches!(self.table.resolve(destination_ty), Ty::Function { .. })
+        {
+            return self.read_environment(operand, destination.local, state);
+        }
         if let Operand::Copy(source) | Operand::Move(source) = operand {
             if identity_cast
                 && matches!(
@@ -361,7 +473,17 @@ impl Flow<'_> {
     ) -> Transfer {
         let mut result = Transfer::default();
         if let Some(source) = self.moving_environment(rvalue, destination) {
-            return Transfer::move_environment(source, destination.local, &state.input_owners);
+            return Transfer::environment(source, destination.local, &state.input_owners, true);
+        }
+        if let Rvalue::Use(operand @ Operand::Copy(source)) = rvalue {
+            if let Some(source) = self.environment_source(source, destination) {
+                result =
+                    Transfer::environment(source, destination.local, &state.input_owners, false);
+                result
+                    .escaped
+                    .extend(self.escaped_owner_tags(operand, state));
+                return result;
+            }
         }
         match rvalue {
             Rvalue::Use(operand) => {
@@ -385,6 +507,10 @@ impl Flow<'_> {
                         result
                             .escaped
                             .extend(self.escaped_owner_tags(operand, state));
+                        let ty = crate::provenance::operand_type(operand, self.function);
+                        if super::may_own_future(ty, self.table, &mut FxHashSet::default()) {
+                            result.unresolved_environments.insert(destination.local);
+                        }
                     }
                 }
             }

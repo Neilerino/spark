@@ -820,6 +820,8 @@ fn call_transaction_preserves_moved_argument_sources_in_return_and_queue() {
     let outcome = CallOutcome {
         fresh_leaf_task: false,
         spawn_owners: None,
+        returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
+        retained_captures: Vec::new(),
         returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
         residuals: Vec::new(),
         async_memory: Vec::new(),

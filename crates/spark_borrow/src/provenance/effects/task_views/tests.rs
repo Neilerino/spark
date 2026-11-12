@@ -68,6 +68,7 @@ fn binding_collapsed_targets_preserves_an_untracked_pending_alternative() {
         &summary,
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &[],
             ty: future,
@@ -176,6 +177,7 @@ fn callable_resolution_reads_the_task_envelope_and_retained_cells() {
     let during = flow.callback_inputs(
         &worker,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &arguments,
             ty: int,
@@ -201,6 +203,7 @@ fn callable_resolution_reads_the_task_envelope_and_retained_cells() {
     let retained = flow.callback_inputs(
         &worker,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &arguments,
             ty: int,
@@ -319,6 +322,7 @@ fn a_bound_empty_history_uses_caller_storage_and_installs_observation_backing() 
         &summary,
         &callee,
         CallActuals {
+            callee_place: None,
             callee: &callee_value,
             arguments: &[pointer],
             ty: future,

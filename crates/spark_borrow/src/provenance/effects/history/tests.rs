@@ -73,6 +73,7 @@ fn binding_known_and_opaque_support_keeps_both_alternatives() {
         },
         &callee,
         CallActuals {
+            callee_place: None,
             callee: &callee_value,
             arguments: &[pointer],
             ty: int,
@@ -128,6 +129,7 @@ fn imported_frame_support_does_not_alias_a_recursive_callers_current_frame() {
         &sample,
         &caller,
         CallActuals {
+            callee_place: None,
             callee: &callee_value,
             arguments: &[],
             ty: reference,
@@ -203,6 +205,7 @@ fn binding_known_and_unknown_queue_support_keeps_the_unknown_alternative() {
         },
         &callee,
         CallActuals {
+            callee_place: None,
             callee: &callee_value,
             arguments: &[argument],
             ty: int,
@@ -285,6 +288,7 @@ fn input_residual_binding_keeps_callbacks_with_their_current_actor() {
         },
         &callee,
         CallActuals {
+            callee_place: None,
             callee: &callee_value,
             arguments: &[actual],
             ty: future,

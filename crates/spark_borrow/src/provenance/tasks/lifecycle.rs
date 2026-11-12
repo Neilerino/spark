@@ -38,6 +38,14 @@ impl Owners {
     pub fn forget(&mut self, local: Local) {
         self.closed.retain(|role| role.local() != local);
     }
+    pub fn revoke(&mut self, witness: &Witness, copies: &Copies) {
+        for role in &witness.peers {
+            self.closed.remove(role);
+            for peer in copies.role_peers(role) {
+                self.closed.remove(&peer);
+            }
+        }
+    }
     pub fn forget_execution(&mut self, local: Local, ty: TypeId) {
         self.closed
             .retain(|role| role.local() != local || role.callback_type() != Some(ty));
@@ -264,6 +272,10 @@ impl Flow<'_> {
         let Rvalue::Use(Operand::Move(source)) = rvalue else {
             return None;
         };
+        self.environment_source(source, destination)
+    }
+
+    fn environment_source(&self, source: &Place, destination: &Place) -> Option<Local> {
         if !source.projections.is_empty() || !destination.projections.is_empty() {
             return None;
         }

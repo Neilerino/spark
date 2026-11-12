@@ -115,3 +115,388 @@ fn callback_copies_remain_owned_until_their_actual_helper_disposition() {
         assert!(returns > 0, "{name}");
     }
 }
+
+#[derive(Clone, Copy)]
+enum CallableAccess {
+    Direct,
+    Copied,
+    Borrowed,
+}
+
+fn assert_callable_result_retains_child(
+    expression: &str,
+    nested: bool,
+    argument: bool,
+    access: CallableAccess,
+) {
+    use crate::provenance::tasks::lifecycle::Token;
+    let parameter = if argument { "ignored: Future[Int]" } else { "" };
+    let extra = if argument { ", other: Future[Int]" } else { "" };
+    let actual = if argument { "other" } else { "" };
+    let invocation = match access {
+        CallableAccess::Direct => "factory",
+        _ => "invoked",
+    };
+    let parameter_type = if argument { "Future[Int]" } else { "" };
+    let copy = match access {
+        CallableAccess::Direct => String::new(),
+        CallableAccess::Copied => format!("invoked: ({parameter_type}): Future[Int] = factory"),
+        CallableAccess::Borrowed => format!("pointer: Ref[({parameter_type}): Future[Int]] = factory\ninvoked: ({parameter_type}): Future[Int] = pointer"),
+    };
+    let source = format!(
+        r#"
+async fn hold(child: Future[Int], release: Channel[Int]): Int {{ return release.recv() }}
+fn make(child: Future[Int], release: Channel[Int]{extra}): Future[Int] {{
+    factory: ({parameter_type}): Future[Int] = fn({parameter}): Future[Int] {{
+        gate: Channel[Int] = release
+        held: Future[Int] = child
+        return {expression}
+    }}
+    {copy}
+    made: Future[Int] = {invocation}({actual})
+    return made
+}}
+fn main(): Int {{ return 0 }}
+"#
+    );
+    let output = lower_source(&source);
+    assert!(!output.diagnostics.has_errors());
+    let function = output
+        .mir
+        .functions
+        .values()
+        .find(|function| {
+            output
+                .definitions
+                .get(function.def_id)
+                .is_some_and(|definition| definition.name.as_str() == "make")
+        })
+        .unwrap();
+    let facts = output
+        .mir
+        .functions
+        .iter()
+        .map(|(id, function)| (*id, crate::facts::extract_facts(function)))
+        .collect();
+    let (summaries, ports, proofs) = infer_summaries_with_definitions(
+        &output.mir,
+        &output.table,
+        &facts,
+        Some(&output.definitions),
+    );
+    let context = Context {
+        mir: &output.mir,
+        summaries: &summaries,
+        ports: &ports,
+        definitions: Some(&output.definitions),
+        proofs: Some(&proofs),
+    };
+    let factory = function
+        .locals
+        .iter()
+        .find(|decl| decl.name.is_some_and(|name| name.as_str() == invocation))
+        .unwrap()
+        .local;
+    let (block, body) = function
+        .blocks
+        .iter()
+        .enumerate()
+        .find(|(_, body)| {
+            matches!(&body.terminator,
+        Terminator::Call { func: Operand::Copy(place), .. } if place.local == factory)
+        })
+        .unwrap();
+    let Terminator::Call {
+        destination,
+        target,
+        ..
+    } = &body.terminator
+    else {
+        unreachable!()
+    };
+    let mut flow = Flow::new(function, &output.table, Some(context));
+    flow.solve(&facts[&function.def_id]);
+    let mut state = flow.entries[block].clone().unwrap();
+    for (index, statement) in body.statements.iter().enumerate() {
+        let point = Point::new(BlockId(block as u32), index as u32);
+        flow.ensure_transfer(point, &state);
+        flow.transfer_statement(statement, point, &mut state);
+    }
+    let targets = &state.value(factory).callees[&vec![]];
+    assert_eq!(targets.known.len(), 1);
+    let definition = &output.mir.functions[targets.known.iter().next().unwrap()];
+    assert_eq!(definition.captures.len(), 2);
+    assert!(matches!(
+        output.table.resolve(definition.captures[0].1),
+        Ty::Channel { .. }
+    ));
+    let (_, future) = definition.captures[1];
+    assert!(matches!(output.table.resolve(future), Ty::Future { .. }));
+    let source = if matches!(access, CallableAccess::Borrowed) {
+        function
+            .locals
+            .iter()
+            .find(|decl| decl.name.is_some_and(|name| name.as_str() == "factory"))
+            .unwrap()
+            .local
+    } else {
+        factory
+    };
+    let captured = Role::capture(source, definition.def_id, 1, future);
+    assert!(state
+        .input_owners
+        .tags(&captured)
+        .contains(&Token::Derived(Local(1))));
+    if matches!(access, CallableAccess::Direct) {
+        assert!(state.input_owners.retains_only(
+            Local(1),
+            &rustc_hash::FxHashSet::from_iter([Role::root(Local(1)), captured])
+        ));
+    }
+    assert!(flow.transfer_terminator(BlockId(block as u32), &mut state));
+    assert_result_owner(&state, destination.local, nested, argument);
+    assert!(flow.transfer_block(*target, &mut state));
+    assert_result_owner(&state, Local::RETURN_PLACE, nested, argument);
+}
+
+fn assert_result_owner(
+    state: &crate::provenance::State,
+    local: Local,
+    nested: bool,
+    argument: bool,
+) {
+    use crate::provenance::tasks::lifecycle::Token;
+    let contains = |tags: &crate::provenance::tasks::lifecycle::Tags| {
+        if argument {
+            assert!(
+                !tags.iter().any(|tag| tag.input() == Local(3)),
+                "an unused explicit argument is not the captured child"
+            );
+        }
+        tags.contains(&Token::Derived(Local(1)))
+    };
+    let retained = if nested {
+        state
+            .executions
+            .keys()
+            .filter(|(anchor, _)| *anchor == local)
+            .any(|(_, ty)| {
+                state
+                    .input_owners
+                    .execution_outputs(local, *ty)
+                    .values()
+                    .any(contains)
+            })
+    } else {
+        contains(&state.input_owners.tags(&Role::root(local)))
+    };
+    assert!(retained, "the returned owner must retain the captured child's mapped lineage independently of old callee escapes");
+}
+
+#[test]
+fn a_callable_parent_result_keeps_its_captured_child_owner() {
+    for argument in [false, true] {
+        assert_callable_result_retains_child(
+            "spawn { hold(held, gate) }",
+            true,
+            argument,
+            CallableAccess::Direct,
+        );
+    }
+}
+
+#[test]
+fn a_callable_child_result_keeps_its_captured_child_owner() {
+    for argument in [false, true] {
+        assert_callable_result_retains_child("held", false, argument, CallableAccess::Direct);
+    }
+}
+
+#[test]
+fn a_copied_callable_parent_result_keeps_its_captured_child_owner() {
+    assert_callable_result_retains_child(
+        "spawn { hold(held, gate) }",
+        true,
+        true,
+        CallableAccess::Copied,
+    );
+}
+
+#[test]
+fn a_copied_callable_child_result_keeps_its_captured_child_owner() {
+    assert_callable_result_retains_child("held", false, true, CallableAccess::Copied);
+}
+
+#[test]
+fn a_borrowed_callable_parent_result_keeps_its_captured_child_owner() {
+    assert_callable_result_retains_child(
+        "spawn { hold(held, gate) }",
+        true,
+        true,
+        CallableAccess::Borrowed,
+    );
+}
+
+#[test]
+fn a_borrowed_callable_child_result_keeps_its_captured_child_owner() {
+    assert_callable_result_retains_child("held", false, true, CallableAccess::Borrowed);
+}
+
+#[test]
+fn a_known_empty_callable_capture_does_not_retain_an_unrelated_formal() {
+    let output = lower_source(
+        r#"
+async fn value(): Int { return 1 }
+fn make(unrelated: Future[Int]): Future[Int] {
+    fresh: Future[Int] = spawn { value() }
+    factory: (): Future[Int] = fn(): Future[Int] { return fresh }
+    return factory()
+}
+fn main(): Int { return 0 }
+"#,
+    );
+    let function = output
+        .mir
+        .functions
+        .values()
+        .find(|function| {
+            output
+                .definitions
+                .get(function.def_id)
+                .is_some_and(|definition| definition.name.as_str() == "make")
+        })
+        .unwrap();
+    let facts = output
+        .mir
+        .functions
+        .iter()
+        .map(|(id, function)| (*id, crate::facts::extract_facts(function)))
+        .collect();
+    let (summaries, ports, proofs) = infer_summaries_with_definitions(
+        &output.mir,
+        &output.table,
+        &facts,
+        Some(&output.definitions),
+    );
+    let context = Context {
+        mir: &output.mir,
+        summaries: &summaries,
+        ports: &ports,
+        definitions: Some(&output.definitions),
+        proofs: Some(&proofs),
+    };
+    let mut flow = Flow::new(function, &output.table, Some(context));
+    flow.solve(&facts[&function.def_id]);
+    let crate::provenance::tasks::proofs::Guarantee::Returns(certificate) = flow.future_guarantee()
+    else {
+        panic!("make returns normally")
+    };
+    assert!(certificate.retains_no_owner.contains(&Local(1)));
+}
+
+#[test]
+fn captured_owner_exports_revoke_physical_coverage_without_caller_labels() {
+    for (expression, result, closed) in [
+        ("held", "Future[Int]", false),
+        ("spawn { hold(held, gate) }", "Future[Int]", false),
+        ("{ queue.send(held) 0 }", "Int", false),
+        ("0", "Int", true),
+    ] {
+        let source = format!(
+            r#"
+async fn value(): Int {{ return 1 }}
+async fn hold(child: Future[Int], release: Channel[Int]): Int {{ return release.recv() }}
+fn main(): Int {{
+    child: Future[Int] = spawn {{ value() }}
+    release: Channel[Int] = Channel[Int]()
+    output: Channel[Future[Int]] = Channel[Future[Int]]()
+    factory: (): {result} = fn(): {result} {{
+        gate: Channel[Int] = release
+        held: Future[Int] = child
+        queue: Channel[Future[Int]] = output
+        return {expression}
+    }}
+    made: {result} = factory()
+    observed: Int = await child
+    return 0
+}}
+"#
+        );
+        let output = lower_source(&source);
+        let function = output
+            .mir
+            .functions
+            .values()
+            .find(|function| {
+                output
+                    .definitions
+                    .get(function.def_id)
+                    .is_some_and(|definition| definition.name.as_str() == "main")
+            })
+            .unwrap();
+        let child = function
+            .locals
+            .iter()
+            .find(|decl| decl.name.is_some_and(|name| name.as_str() == "child"))
+            .unwrap()
+            .local;
+        let factory = function
+            .locals
+            .iter()
+            .find(|decl| decl.name.is_some_and(|name| name.as_str() == "factory"))
+            .unwrap()
+            .local;
+        let (block, body) = function
+            .blocks
+            .iter()
+            .enumerate()
+            .find(|(_, body)| {
+                matches!(&body.terminator,
+            Terminator::Call { func: Operand::Copy(place), .. } if place.local == factory)
+            })
+            .unwrap();
+        let facts = output
+            .mir
+            .functions
+            .iter()
+            .map(|(id, function)| (*id, crate::facts::extract_facts(function)))
+            .collect();
+        let (summaries, ports, proofs) = infer_summaries_with_definitions(
+            &output.mir,
+            &output.table,
+            &facts,
+            Some(&output.definitions),
+        );
+        let context = Context {
+            mir: &output.mir,
+            summaries: &summaries,
+            ports: &ports,
+            definitions: Some(&output.definitions),
+            proofs: Some(&proofs),
+        };
+        let mut flow = Flow::new(function, &output.table, Some(context));
+        flow.solve(&facts[&function.def_id]);
+        let mut state = flow.entries[block].clone().unwrap();
+        for (index, statement) in body.statements.iter().enumerate() {
+            flow.transfer_statement(
+                statement,
+                Point::new(BlockId(block as u32), index as u32),
+                &mut state,
+            );
+        }
+        assert!(
+            state.future_owners.known(child),
+            "the original leaf child starts closed"
+        );
+        assert!(
+            state.input_owners.all_value_tags().is_empty(),
+            "main has no formal or ambient labels to poison"
+        );
+        assert!(flow.transfer_terminator(BlockId(block as u32), &mut state));
+        assert_eq!(
+            state.future_owners.known(child),
+            closed,
+            "{expression}: physical capture retention is independent of mapped label emptiness"
+        );
+    }
+}

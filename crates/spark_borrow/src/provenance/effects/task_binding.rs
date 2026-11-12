@@ -82,6 +82,8 @@ impl Flow<'_> {
         Some(TaskDispatch::Returns(vec![CallOutcome {
             fresh_leaf_task,
             spawn_owners: self.spawn_owner_transfer(args, state),
+            returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
+            retained_captures: Vec::new(),
             returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals: facts.prefix.residuals,
             async_memory: Vec::new(),
@@ -174,6 +176,8 @@ impl Flow<'_> {
         Some(TaskDispatch::Returns(vec![CallOutcome {
             fresh_leaf_task: false,
             spawn_owners: None,
+            returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
+            retained_captures: Vec::new(),
             returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals,
             async_memory: Vec::new(),
@@ -236,6 +240,7 @@ impl Flow<'_> {
         let mut facts = TaskFacts::default();
         let callee = &record.callback;
         let actuals = CallActuals {
+            callee_place: None,
             callee,
             arguments: &[],
             ty,

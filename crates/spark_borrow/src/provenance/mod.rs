@@ -288,6 +288,12 @@ impl<'a> Flow<'a> {
             if external {
                 if matches!(
                     self.table.resolve(strip_mutable(decl.ty, self.table)),
+                    Ty::Function { .. }
+                ) {
+                    state.input_owners.mark_unresolved_environment(decl.local);
+                }
+                if matches!(
+                    self.table.resolve(strip_mutable(decl.ty, self.table)),
                     Ty::Future { .. }
                 ) {
                     state.future_copies.seed_input(decl.local);

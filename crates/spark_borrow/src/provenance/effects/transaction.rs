@@ -40,6 +40,8 @@ pub(in crate::provenance) struct CallOutcome {
     pub memory: Vec<MemoryWrite>,
     pub async_memory: Vec<MemoryWrite>,
     pub fresh_leaf_task: bool,
+    pub returned_owner_tags: crate::provenance::tasks::lifecycle::Tags,
+    pub retained_captures: Vec<crate::provenance::tasks::Witness>,
     pub returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs,
     pub spawn_owners: Option<crate::provenance::tasks::execution::ExecutionTransfer>,
     pub residuals: Vec<crate::provenance::tasks::residual::Import>,
@@ -75,6 +77,9 @@ impl CallOutcome {
         );
         state.reached_prefix.extend(self.returned_prefix.drain());
         flow.remember_publications(&self.publications, &mut state.publications);
+        for witness in &self.retained_captures {
+            state.future_owners.revoke(witness, &state.future_copies);
+        }
     }
 
     fn prepare_owner_transfers(
@@ -134,6 +139,28 @@ impl CallOutcome {
         point: Point,
         state: &mut State,
     ) {
+        if destination.projections.is_empty()
+            && matches!(
+                flow.table.resolve(crate::provenance::value::strip_mutable(
+                    flow.place_type(destination),
+                    flow.table
+                )),
+                spark_types::Ty::Function { .. }
+            )
+        {
+            state
+                .input_owners
+                .mark_unresolved_environment(destination.local);
+        }
+        let tags = std::mem::take(&mut self.returned_owner_tags);
+        if destination.projections.is_empty() {
+            state.input_owners.add_output(
+                crate::provenance::tasks::Role::root(destination.local),
+                tags,
+            );
+        } else {
+            state.input_owners.escape_tags(tags);
+        }
         if let Some(owners) = self.spawn_owners.take() {
             owners.install(flow, destination.local, point, state);
         }
@@ -294,13 +321,14 @@ impl Flow<'_> {
         CallOutcome {
             fresh_leaf_task: false,
             spawn_owners: None,
-            returned_callbacks: self.bind_callback_outputs(
-                summary,
+            returned_owner_tags: self.bind_owner_tags(
+                &summary.returned_owner_tags,
                 function,
                 actuals,
                 args,
-                actuals.read.state,
             ),
+            retained_captures: self.retained_capture_witnesses(Some((summary, function)), actuals),
+            returned_callbacks: self.bind_callback_outputs(summary, function, actuals, args),
             residuals,
             async_memory,
             publications: prefix.publications,

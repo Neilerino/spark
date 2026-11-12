@@ -20,6 +20,8 @@ use super::{
 #[derive(Clone, Default)]
 pub(super) struct Summary {
     returned: Value,
+    returned_owner_tags: super::tasks::lifecycle::Tags,
+    retained_owner_tags: super::tasks::lifecycle::Tags,
     pub(super) returned_callbacks: super::tasks::outputs::CallbackOutputs,
     queues: FxHashMap<super::channels::QueueKey, Value>,
     queue_contents: FxHashMap<(super::channels::Target, TypeId), Value>,
@@ -44,6 +46,14 @@ pub(super) struct Summary {
 impl Summary {
     fn join(&mut self, other: &Self) -> bool {
         let mut changed = self.returned.join(&other.returned);
+        let before = self.returned_owner_tags.len();
+        self.returned_owner_tags
+            .extend(other.returned_owner_tags.iter().copied());
+        changed |= before != self.returned_owner_tags.len();
+        let before = self.retained_owner_tags.len();
+        self.retained_owner_tags
+            .extend(other.retained_owner_tags.iter().copied());
+        changed |= before != self.retained_owner_tags.len();
         for (ty, output) in &other.returned_callbacks {
             changed |= self.returned_callbacks.entry(*ty).or_default().join(output);
         }
@@ -149,6 +159,7 @@ pub(super) struct Context<'a> {
 #[derive(Clone, Copy)]
 struct CallActuals<'a> {
     callee: &'a Value,
+    callee_place: Option<&'a spark_mir::Place>,
     arguments: &'a [Value],
     ty: TypeId,
     point: Point,
@@ -159,6 +170,31 @@ struct CallActuals<'a> {
 }
 
 impl<'a> CallActuals<'a> {
+    fn normal(
+        operand: &'a Operand,
+        callee: &'a Value,
+        arguments: &'a [Value],
+        ty: TypeId,
+        point: Point,
+        frame_owner: DefId,
+        state: &'a State,
+    ) -> Self {
+        Self {
+            callee_place: match operand {
+                Operand::Copy(place) | Operand::Move(place) => Some(place),
+                Operand::Constant(_) => None,
+            },
+            callee,
+            arguments,
+            ty,
+            point,
+            read: super::observations::ReadView::current(state),
+            instantiation_site: None,
+            frame_caller: Some(frame_owner),
+            aliases: None,
+        }
+    }
+
     const fn at_read<'b>(self, receive: Option<&'b Receive>) -> CallActuals<'b>
     where
         'a: 'b,
@@ -278,16 +314,15 @@ impl Flow<'_> {
         }
         let callee = self.operand(func, state);
         let arguments: Vec<_> = args.iter().map(|arg| self.operand(arg, state)).collect();
-        let actuals = CallActuals {
-            callee: &callee,
-            arguments: &arguments,
+        let actuals = CallActuals::normal(
+            func,
+            &callee,
+            &arguments,
             ty,
             point,
-            read: super::observations::ReadView::current(state),
-            instantiation_site: None,
-            frame_caller: Some(self.function.def_id),
-            aliases: None,
-        };
+            self.function.def_id,
+            state,
+        );
         let targets = self.callee_targets(&callee, super::operand_type(func, self.function));
         let mut dispatch = Dispatch::default();
         let open = targets.open;
@@ -350,11 +385,14 @@ impl Flow<'_> {
             );
             let returned = self.opaque_result(args, actuals);
             let mut outcome = self.opaque_queue_outcome(returned, args, actuals);
+            outcome.retained_captures = self.retained_capture_witnesses(None, actuals);
             outcome.clobbered_copies = self.opaque_copy_clobbers(func, args, actuals);
             dispatch.returning.push(outcome);
         }
         if open {
-            dispatch.returning.push(self.open_outcome(ty, point));
+            let mut outcome = self.open_outcome(ty, point);
+            outcome.retained_captures = self.retained_capture_witnesses(None, actuals);
+            dispatch.returning.push(outcome);
         }
         dispatch
     }
@@ -381,6 +419,8 @@ impl Flow<'_> {
         CallOutcome {
             fresh_leaf_task: false,
             spawn_owners: None,
+            returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
+            retained_captures: Vec::new(),
             returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals: Vec::new(),
             async_memory: Vec::new(),
@@ -571,6 +611,14 @@ impl Flow<'_> {
             self.export_queue_contents(&state, &mut summary);
             self.export_tasks(&state, &mut summary);
             self.export_callback_outputs(&state, &mut summary);
+            summary
+                .retained_owner_tags
+                .extend(state.input_owners.retained_tags());
+            summary.returned_owner_tags.extend(
+                state
+                    .input_owners
+                    .tags(&super::tasks::Role::root(Local::RETURN_PLACE)),
+            );
             for (key, value) in &state.residuals {
                 summary
                     .residuals

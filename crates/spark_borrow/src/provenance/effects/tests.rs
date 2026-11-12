@@ -1029,6 +1029,7 @@ fn binding_a_queued_read_discovers_its_input_storage_port() {
         &selector,
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &arguments,
             ty: reference,

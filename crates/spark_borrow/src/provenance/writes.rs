@@ -388,9 +388,7 @@ impl Flow<'_> {
                     state.external.insert(port.clone(), current);
                 }
                 Storage::Cell(local) | Storage::Logical(local) => {
-                    state.input_owners.escape_local(*local);
-                    state.future_owners.invalidate(*local, &state.future_copies);
-                    state.future_copies.forget(*local);
+                    self.clobber_input_owners(*local, state);
                     State::set_value(&mut state.cells, *local, current.clone());
                     if state.live.contains(local) {
                         self.record_path_store(

@@ -618,6 +618,8 @@ fn returned_history_follows_only_live_unclobbered_pending_copy_witnesses() {
         let outcome = CallOutcome {
             fresh_leaf_task: false,
             spawn_owners: None,
+            returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
+            retained_captures: Vec::new(),
             returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
             residuals: Vec::new(),
             async_memory: Vec::new(),
@@ -789,6 +791,8 @@ fn a_returned_capture_keeps_progress_learned_after_the_entry_snapshot() {
     let (_, returned) = tasks::birth(function.def_id, Point::new(BlockId::ENTRY, 3), future);
     let outcome = CallOutcome {
         returned,
+        returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
+        retained_captures: Vec::new(),
         returned_callbacks: FxHashMap::from_iter([(
             callback_ty,
             CallbackOutput {

@@ -141,9 +141,7 @@ impl Flow<'_> {
                 local,
                 ..
             } if *function == self.function.def_id => {
-                state.input_owners.escape_local(*local);
-                state.future_owners.invalidate(*local, &state.future_copies);
-                state.future_copies.forget(*local);
+                self.clobber_input_owners(*local, state);
                 state.invalidated_copies.insert(*local);
             }
             Memory::External(port) => {
@@ -155,11 +153,10 @@ impl Flow<'_> {
             }
             Memory::Frame { .. } | Memory::Unavailable(_) => {
                 self.unknown_copy_clobber = true;
-                for local in &state.live {
-                    state.input_owners.escape_local(*local);
-                    state.future_owners.invalidate(*local, &state.future_copies);
-                    state.future_copies.forget(*local);
-                    state.invalidated_copies.insert(*local);
+                let live: Vec<_> = state.live.iter().copied().collect();
+                for local in live {
+                    self.clobber_input_owners(local, state);
+                    state.invalidated_copies.insert(local);
                 }
             }
             Memory::Queue(_, _) => {}

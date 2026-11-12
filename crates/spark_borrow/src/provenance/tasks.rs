@@ -364,7 +364,7 @@ impl super::Flow<'_> {
         proof.exclude(clobbered);
         proof.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
         for local in clobbered {
-            state.future_copies.forget(*local);
+            self.clobber_input_owners(*local, state);
         }
         for witness in proof.completed {
             self.complete_future_witness(witness, None, point, state);

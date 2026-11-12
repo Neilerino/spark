@@ -77,6 +77,7 @@ fn widened_future_input_selections_keep_type_and_capture_roles_separate() {
     let callee = Value::default();
     let point = Point::new(BlockId::ENTRY, 9);
     let actuals = CallActuals {
+        callee_place: None,
         callee: &callee,
         arguments: &arguments,
         ty: first,

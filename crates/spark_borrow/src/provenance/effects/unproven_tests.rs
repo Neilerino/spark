@@ -293,6 +293,7 @@ fn imported_invocation_keeps_its_original_dispatch_witness() {
         &symbolic,
         &wrapper,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &arguments,
             ty: callable,
@@ -371,6 +372,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
         &hole,
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &[],
             ty: reference,
@@ -398,6 +400,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
         &exported,
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &[],
             ty: reference,
@@ -434,6 +437,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
         },
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &[],
             ty: reference,
@@ -533,6 +537,7 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
     let result = flow.opaque_result(
         &[Operand::Constant(spark_mir::Constant::Void)],
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &arguments,
             ty: reference,
@@ -558,6 +563,7 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
     let result = flow.opaque_result(
         &[Operand::Constant(spark_mir::Constant::Void)],
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &symbolic,
             ty: reference,
@@ -573,6 +579,7 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
         &summary,
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &arguments,
             ty: reference,
@@ -780,6 +787,8 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
     let outcome = CallOutcome {
         fresh_leaf_task: false,
         spawn_owners: None,
+        returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
+        retained_captures: Vec::new(),
         returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
         residuals: Vec::new(),
         async_memory: Vec::new(),

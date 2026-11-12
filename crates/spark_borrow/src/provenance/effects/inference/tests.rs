@@ -175,6 +175,7 @@ fn task_created_queues_keep_their_identity_across_observation_points() {
     let earlier_point = Point::new(BlockId::ENTRY, 0);
     let later_point = Point::new(BlockId::ENTRY, 1);
     let actuals = CallActuals {
+        callee_place: None,
         callee: &callee,
         arguments: &[],
         ty: inner,
@@ -779,6 +780,7 @@ fn later_argument_binding_preserves_an_existing_receive_prefix() {
         &summaries[&Key::distinct(extract.def_id)].returned,
         extract,
         super::super::CallActuals {
+            callee_place: None,
             callee: &Value::default(),
             arguments: &[received],
             ty: extract.return_type,
@@ -964,6 +966,7 @@ fn forwarding_preserves_projected_address_sites() {
         &callee_summary,
         sample,
         super::super::CallActuals {
+            callee_place: None,
             callee: &Value::default(),
             arguments: &[state.value(Local(1))],
             ty: reference,
