@@ -481,8 +481,8 @@ impl Flow<'_> {
                 && outcome.completed_task.as_ref().is_some_and(|(local, _)| *local == place.local));
             if !borrowed_await {
                 self.escape_input_owner_operand(arg, state);
+                Self::lose_owning_operand(arg, state);
             }
-            Self::lose_owning_operand(arg, state);
         }
         if let Some(output) = &mut outcome.future_proof.output_owners {
             output.restrict_coverage(state);
