@@ -269,11 +269,7 @@ impl Flow<'_> {
             }
             for handle in handles.iter().filter(|handle| handle.pending) {
                 let view = views::contribution(source, path, handle);
-                if !all
-                    && !view.memory.may_write
-                    && view.memory.samples().next().is_none()
-                    && !view.fallback
-                {
+                if !all && !view.retains_activity() {
                     continue;
                 }
                 let actor = Subject::from(handle);
@@ -287,28 +283,19 @@ impl Flow<'_> {
                     actor: actor.clone(),
                 });
                 let selected = select(selected.clone(), &actor);
-                let callbacks = selected
-                    .task_views
-                    .values()
-                    .flat_map(|subjects| subjects.values())
-                    .flat_map(|view| view.callbacks.iter())
-                    .map(|(ty, callback)| {
-                        (
-                            *ty,
-                            self.freeze_sources(
-                                point,
-                                callback
-                                    .value()
-                                    .sourced(&Storage::Task(actor.target.clone(), *ty)),
-                            ),
-                        )
-                    })
-                    .collect();
+                let (records, _) = views::pending_records(source, path, handle, state);
+                let mut callbacks = rustc_hash::FxHashMap::default();
+                for record in records {
+                    callbacks
+                        .entry(record.callback_ty)
+                        .or_insert_with(Value::default)
+                        .join(&self.freeze_sources(point, record.callback));
+                }
                 self.import_residual(
                     Import {
                         key,
                         value: selected,
-                        callbacks,
+                        callbacks: callbacks.into_iter().collect(),
                         visibility: Visibility::Occurrence(super::proofs::EventFence {
                             inputs: state.joined_inputs.clone(),
                             ..super::proofs::EventFence::default()
@@ -332,7 +319,7 @@ impl Flow<'_> {
                             lane.location.clone(),
                             self.freeze_sources(
                                 point,
-                                value.sourced(&Storage::PendingWrite(lane.clone())),
+                                Self::sample_pending_write(lane, value, state),
                             ),
                         ));
                     }

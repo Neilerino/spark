@@ -94,6 +94,16 @@ impl View {
             ..Self::default()
         }
     }
+    pub(in crate::provenance) fn retains_activity(&self) -> bool {
+        self.fallback
+            || self.memory.may_write
+            || self.memory.samples().next().is_some()
+            || self
+                .callbacks
+                .values()
+                .any(|callback| callback.shallow_value().retains_task_activity())
+    }
+
     pub fn join(&mut self, other: &Self) -> bool {
         let mut changed = other.fallback && !self.fallback;
         self.fallback |= other.fallback;
@@ -202,20 +212,11 @@ pub(in crate::provenance) fn pending_records_at(
     state: &crate::provenance::State,
     storage: &crate::provenance::demand::Storage,
 ) -> (Vec<super::Record>, bool) {
-    if handle.pending && path.is_empty() {
-        if let crate::provenance::demand::Storage::Logical(local) = storage {
-            let resident = state
-                .values
-                .get(local)
-                .and_then(|value| value.futures.get(path));
-            if resident.is_some_and(|handles| handles.contains(handle)) {
-                if let Some(record) = state.current_execution_record(*local) {
-                    return (vec![record], false);
-                }
-            }
-        }
-    }
-    pending_records(value, path, handle, state)
+    let (records, unknown) = super::activity::located_records(value, path, handle, state, storage);
+    (
+        records.into_iter().map(|located| located.record).collect(),
+        unknown,
+    )
 }
 
 pub(in crate::provenance) fn pending_records(
@@ -351,16 +352,14 @@ impl Value {
     }
 }
 
-impl crate::provenance::State {
-    pub(in crate::provenance) fn current_task_views(&self) -> impl Iterator<Item = &View> {
-        self.values
-            .values()
-            .chain(self.residuals.values())
-            .chain(self.external.values())
-            .chain(self.queues.values())
-            .chain(self.executions.values())
-            .chain(self.tasks.values().map(|record| &record.callback))
-            .flat_map(|value| value.task_views.values())
-            .flat_map(|subjects| subjects.values())
+impl Value {
+    pub(in crate::provenance) fn retains_task_activity(&self) -> bool {
+        !self.leaves.is_empty()
+            || !self.queues.is_empty()
+            || self.futures.values().flatten().any(|handle| handle.pending)
+            || self
+                .callees
+                .iter()
+                .any(|(path, targets)| !path.is_empty() || targets.open || targets.unresolved)
     }
 }

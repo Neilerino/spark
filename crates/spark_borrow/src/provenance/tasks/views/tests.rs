@@ -184,7 +184,10 @@ fn pending_memory_views_include_execution_backing_without_a_catalog_entry() {
         ),
     );
     assert!(state.tasks.is_empty());
-    assert!(state.current_task_views().any(|view| view.memory.may_write));
+    assert!(state
+        .rooted_activity()
+        .views()
+        .any(|view| view.memory.may_write));
 }
 
 #[test]

@@ -1,5 +1,12 @@
 // TAG [SPARK-114]
 
+mod basis;
+mod closure;
+mod completion;
+mod imports;
+mod records;
+pub(in crate::provenance) use records::located_records;
+
 use spark_types::TypeId;
 
 use super::views::{NodeKey, Subject};

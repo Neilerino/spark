@@ -306,7 +306,12 @@ impl super::Flow<'_> {
         self.ensure_transfer(point, state);
         witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
         self.settle_task_memory(&witness, &[], point, state);
+        witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
+        let descendants = self.prepare_completion_descendants(&witness, point, state);
         self.cleanup_completed_executions(&witness, point, state);
+        for (callback, role) in descendants {
+            self.preserve_pending_loss(&callback, &role, point, state, true);
+        }
         for role in witness
             .peers
             .iter()

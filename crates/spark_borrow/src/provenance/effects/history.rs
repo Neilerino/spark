@@ -7,9 +7,9 @@ use crate::provenance::{
     observations::{FrameScope, History, Memory, Sample},
     tasks::views::Subject,
 };
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::{CallActuals, Flow, MirFunction};
+use super::{CallActuals, Flow, MirFunction, Value};
 
 impl Flow<'_> {
     pub(super) fn bind_history(
@@ -133,26 +133,18 @@ impl Flow<'_> {
         {
             let actor = Subject::from(handle);
             let view = crate::provenance::tasks::views::contribution(&value, &[], handle);
-            if !view.memory.may_write && view.memory.samples().next().is_none() && !view.fallback {
-                continue;
-            }
-            let callbacks = view
+            let mut callbacks: FxHashMap<_, _> = view
                 .callbacks
                 .iter()
-                .map(|(ty, callback)| {
-                    let bound = if let Some(recipe) = activity.callbacks.get(ty) {
-                        self.bind(recipe, function, CallActuals { ty: *ty, ..actuals })
-                    } else {
-                        callback
-                            .value()
-                            .sourced(&crate::provenance::demand::Storage::Task(
-                                actor.target.clone(),
-                                *ty,
-                            ))
-                    };
-                    (*ty, bound)
-                })
+                .map(|(ty, callback)| (*ty, callback.value()))
                 .collect();
+            for (ty, recipe) in &activity.callbacks {
+                let bound = self.bind(recipe, function, CallActuals { ty: *ty, ..actuals });
+                callbacks.entry(*ty).or_default().join(&bound);
+            }
+            if !view.retains_activity() && !callbacks.values().any(Value::retains_task_activity) {
+                continue;
+            }
             let key = std::sync::Arc::new(crate::provenance::tasks::residual::Key {
                 actor: actor.clone(),
                 ty: handle.target.ty(),
@@ -161,7 +153,7 @@ impl Flow<'_> {
             result.push(crate::provenance::tasks::residual::Import {
                 key,
                 value: crate::provenance::tasks::residual::select(value.clone(), &actor),
-                callbacks,
+                callbacks: callbacks.into_iter().collect(),
                 visibility: visibility.clone(),
             });
         }

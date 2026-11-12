@@ -18,6 +18,13 @@ impl State {
         &self,
         local: Local,
     ) -> Option<super::Record> {
+        self.current_execution(local).map(|(_, record)| record)
+    }
+
+    pub(in crate::provenance) fn current_execution(
+        &self,
+        local: Local,
+    ) -> Option<(Storage, super::Record)> {
         if !self.live.contains(&local) || self.invalidated_copies.contains(&local) {
             return None;
         }
@@ -31,12 +38,14 @@ impl State {
         if facets.next().is_some() || !self.execution_backing_must.contains(&(anchor, ty)) {
             return None;
         }
-        Some(super::Record {
-            callback: callback
-                .clone()
-                .sourced(&Storage::ExecutionCallback(anchor, ty)),
-            callback_ty: ty,
-        })
+        let storage = Storage::ExecutionCallback(anchor, ty);
+        Some((
+            storage.clone(),
+            super::Record {
+                callback: callback.clone().sourced(&storage),
+                callback_ty: ty,
+            },
+        ))
     }
 
     pub(in crate::provenance) fn revoke_execution_backing(&mut self, local: Local) {

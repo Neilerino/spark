@@ -129,6 +129,7 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
+        self.import_task_sources(&mut value, point, state);
         match &lane.location.memory {
             Memory::Frame {
                 scope: FrameScope::Current,
@@ -242,7 +243,8 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
-        let value = self.freeze_sources(point, write.value.clone());
+        let mut value = self.freeze_sources(point, write.value.clone());
+        self.import_task_sources(&mut value, point, state);
         let locations = self.memory_locations(
             &write.target,
             write.ty,
@@ -271,6 +273,27 @@ impl Flow<'_> {
         }
     }
 
+    pub(in crate::provenance) fn sample_pending_write(
+        lane: &Arc<Lane>,
+        mut sample: Value,
+        state: &State,
+    ) -> Value {
+        if let Some(backing) = state.pending_memory.get(lane) {
+            for (path, handles) in &sample.futures {
+                for handle in handles {
+                    sample
+                        .task_views
+                        .entry(path.clone())
+                        .or_default()
+                        .entry(Subject::from(handle))
+                        .or_default()
+                        .join(&super::views::contribution(backing, path, handle));
+                }
+            }
+        }
+        sample.sourced(&Storage::PendingWrite(lane.clone()))
+    }
+
     pub(in crate::provenance) fn external_async_values(state: &State) -> Vec<Value> {
         let mut values = Vec::new();
         for (location, value) in &state.settled_memory {
@@ -282,12 +305,13 @@ impl Flow<'_> {
                 );
             }
         }
-        for view in state.current_task_views() {
+        let activity = state.rooted_activity();
+        for view in activity.views() {
             for (lane, value) in view.memory.samples() {
                 if matches!(lane.location.memory, Memory::External(_))
                     && state.pending_memory.contains_key(lane)
                 {
-                    values.push(value.sourced(&Storage::PendingWrite(lane.clone())));
+                    values.push(Self::sample_pending_write(lane, value, state));
                 }
             }
         }
@@ -298,8 +322,9 @@ impl Flow<'_> {
         state: &State,
     ) -> rustc_hash::FxHashSet<crate::provenance::aliases::View> {
         let mut modified = rustc_hash::FxHashSet::default();
-        let pending = state
-            .current_task_views()
+        let activity = state.rooted_activity();
+        let pending = activity
+            .views()
             .flat_map(|view| view.memory.samples())
             .map(|(lane, _)| &lane.location);
         for location in state.settled_memory.keys().chain(pending) {
@@ -386,12 +411,13 @@ impl Flow<'_> {
                 result.join(&value.prefixed_path(&location.path, ty, self.table));
             }
         };
-        for view in state.current_task_views() {
+        let activity = state.rooted_activity();
+        for view in activity.views() {
             for (lane, value) in view.memory.samples() {
                 if state.pending_memory.contains_key(lane) {
                     add(
                         &lane.location,
-                        value.sourced(&Storage::PendingWrite(lane.clone())),
+                        Self::sample_pending_write(lane, value, state),
                     );
                 }
             }
@@ -432,10 +458,7 @@ impl Flow<'_> {
                 for (lane, value) in view.memory.samples() {
                     values.push((
                         lane.location.clone(),
-                        self.freeze_sources(
-                            point,
-                            value.sourced(&Storage::PendingWrite(lane.clone())),
-                        ),
+                        self.freeze_sources(point, Self::sample_pending_write(lane, value, state)),
                     ));
                 }
             }
