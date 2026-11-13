@@ -67,6 +67,7 @@ fn outcome(state: &State, released_index: usize) -> CallOutcome {
         producer_events: Vec::new(),
         queue_accesses: crate::provenance::channels::access::Accesses::default(),
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
+        receipt: None,
         direct_queue_send: None,
         fresh_birth: None,
         fresh_leaf_task: false,

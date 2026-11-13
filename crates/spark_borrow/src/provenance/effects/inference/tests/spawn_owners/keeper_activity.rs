@@ -102,6 +102,91 @@ pub(super) fn with_source_flow(source: &str, run: impl FnOnce(&mut Flow<'_>)) {
 }
 
 #[test]
+fn a_child_received_after_its_single_producer_joins_has_closed_owner_coverage() {
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_task_retained_child_memory_scoped.spark"
+    ));
+    with_source_flow(source, |flow| {
+        let named = |name: &str| {
+            flow.function
+                .locals
+                .iter()
+                .find(|decl| decl.name.is_some_and(|symbol| symbol.as_str() == name))
+                .unwrap()
+                .local
+        };
+        let child = named("child");
+        let cell_ref = named("cellRef");
+        let origins: Origins = flow
+            .entries
+            .iter()
+            .flatten()
+            .flat_map(|state| state.value(cell_ref).origins())
+            .collect();
+        assert!(!origins.is_empty());
+        let (index, block) = flow
+            .function
+            .blocks
+            .iter()
+            .enumerate()
+            .find(|(_, block)| {
+                matches!(&block.terminator, Terminator::Call { args, .. } if
+                matches!(args.first(), Some(Operand::Copy(place)) if place.local == child))
+            })
+            .unwrap();
+        let block = block.clone();
+        let mut state = flow.entries[index]
+            .clone()
+            .expect("the received child's await must be reachable");
+        for (step, statement) in block.statements.iter().enumerate() {
+            flow.transfer_statement(
+                statement,
+                Point::new(BlockId(index as u32), step as u32),
+                &mut state,
+            );
+        }
+        assert!(
+            !state.value(child).origins().is_disjoint(&origins),
+            "the received child already carries its actual borrowed storage support"
+        );
+        assert!(state.future_owners.known(child),
+            "receiving the sole message after its producer joins must transfer the child's owner coverage");
+        let birth = state
+            .future_copies
+            .witness(child)
+            .birth
+            .expect("receipt preserves the actual child's birth");
+        assert!(birth.record(&state.value(child)).is_some());
+        assert!(
+            state.current_execution_record(child).is_some(),
+            "the received child has complete current callback backing"
+        );
+        let retained = named("retained");
+        let queue = state
+            .value(retained)
+            .root_queue_handles()
+            .next()
+            .unwrap()
+            .target
+            .clone();
+        assert!(state.queue_promises.is_empty());
+        assert!(state
+            .queue_current
+            .values()
+            .all(|message| !message.targets.contains(&queue)));
+        assert!(
+            !state.queues.keys().any(|(target, _)| *target == queue),
+            "successful receipt does not archive a weak duplicate"
+        );
+        assert!(
+            state.queue_accesses.blocked.contains(&queue),
+            "the actual receive prevents reopening an empty-entry lease"
+        );
+    });
+}
+
+#[test]
 fn a_nonleaf_producer_without_future_captures_has_complete_callback_backing() {
     let source = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),

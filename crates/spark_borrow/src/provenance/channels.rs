@@ -2,6 +2,8 @@
 
 //! Shared channel handles and weak payload storage.
 
+mod receipt;
+pub(in crate::provenance) use receipt::Receipt;
 pub(super) mod access;
 pub(super) mod counts;
 pub(super) mod identity;
@@ -436,6 +438,9 @@ impl Flow<'_> {
             ..Default::default()
         };
         Some(super::effects::CallOutcome {
+            receipt: (info.name == kw::RECV)
+                .then(|| Receipt::snapshot(self, receiver_operand, result_ty, state))
+                .flatten(),
             queue_accesses: if info.name == kw::SEND {
                 access::Accesses::default()
             } else {

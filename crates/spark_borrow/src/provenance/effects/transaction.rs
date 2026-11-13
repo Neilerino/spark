@@ -44,6 +44,7 @@ pub(in crate::provenance) struct CallOutcome {
     pub producer_events: Vec<crate::provenance::channels::QueueEvent>,
     pub queue_accesses: crate::provenance::channels::access::Accesses,
     pub queue_send_counts: crate::provenance::channels::counts::Sends,
+    pub receipt: Option<crate::provenance::channels::Receipt>,
     pub direct_queue_send: Option<crate::provenance::channels::messages::Send>,
     pub fresh_birth: Option<crate::provenance::tasks::fresh::Transfer>,
     pub fresh_leaf_task: bool,
@@ -77,6 +78,17 @@ impl CallOutcome {
                 .direct_queue_send
                 .as_ref()
                 .is_some_and(crate::provenance::channels::messages::Send::reserves_move)
+    }
+
+    fn apply_queue_accesses(&self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        let access = flow.expand_queue_accesses(&self.queue_accesses, state);
+        let mut poison_access = access.clone();
+        if let Some(receipt) = &self.receipt {
+            receipt.poison_access(&mut poison_access);
+        }
+        flow.poison_queue_promises(&poison_access, &self.queue_send_counts, point, state);
+        state.queue_accesses.join(&access);
+        state.queue_send_counts.then(&self.queue_send_counts);
     }
 
     fn apply_prefix(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
@@ -284,6 +296,9 @@ impl CallOutcome {
         }
         for (_, value) in &mut self.place_writes {
             visit(value);
+        }
+        if let Some(receipt) = &mut self.receipt {
+            visit(&mut receipt.value);
         }
         for value in self
             .memory
@@ -674,10 +689,7 @@ impl Flow<'_> {
         for mut alternative in outcome {
             self.transfers.insert(point, common.clone());
             let mut after = state.clone();
-            let access = self.expand_queue_accesses(&alternative.queue_accesses, &after);
-            self.poison_queue_promises(&access, &alternative.queue_send_counts, point, &mut after);
-            after.queue_accesses.join(&access);
-            after.queue_send_counts.then(&alternative.queue_send_counts);
+            alternative.apply_queue_accesses(self, point, &mut after);
             alternative.apply_prefix(self, point, &mut after);
             let mut completed = alternative.future_proof.completed.clone();
             if let Some((local, _)) = &alternative.completed_task {
@@ -747,6 +759,15 @@ impl Flow<'_> {
                 point,
                 &mut after,
             );
+            if let Some(receipt) = alternative.receipt.take() {
+                receipt.finish(
+                    self,
+                    destination,
+                    &alternative.clobbered_copies,
+                    point,
+                    &mut after,
+                );
+            }
             self.validate_queue_promises(point, &mut after);
             let transfer = self.transfers[&point].clone();
             if let Some((joined, ledger)) = &mut alternatives {

@@ -823,6 +823,7 @@ fn call_transaction_preserves_moved_argument_sources_in_return_and_queue() {
         producer_events: Vec::new(),
         queue_accesses: crate::provenance::channels::access::Accesses::default(),
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
+        receipt: None,
         direct_queue_send: None,
         fresh_birth: None,
         fresh_leaf_task: false,

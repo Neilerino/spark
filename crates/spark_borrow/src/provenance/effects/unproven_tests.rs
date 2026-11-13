@@ -790,6 +790,7 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
         producer_events: Vec::new(),
         queue_accesses: crate::provenance::channels::access::Accesses::default(),
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
+        receipt: None,
         direct_queue_send: None,
         fresh_birth: None,
         fresh_leaf_task: false,

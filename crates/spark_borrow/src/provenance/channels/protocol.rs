@@ -121,7 +121,7 @@ impl Flow<'_> {
         self.queue_aliases_in(witness, target, None, state)
     }
 
-    fn queue_aliases_in(
+    pub(super) fn queue_aliases_in(
         &self,
         witness: &Witness,
         target: &Target,
