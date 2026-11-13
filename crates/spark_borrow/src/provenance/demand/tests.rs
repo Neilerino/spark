@@ -820,7 +820,6 @@ fn call_transaction_preserves_moved_argument_sources_in_return_and_queue() {
     let outcome = CallOutcome {
         fresh_outputs: Vec::new(),
         spawn_outputs: Vec::new(),
-        producer_accesses: rustc_hash::FxHashSet::default(),
         producer_events: Vec::new(),
         queue_accesses: crate::provenance::channels::access::Accesses::default(),
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),

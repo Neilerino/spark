@@ -64,7 +64,6 @@ fn outcome(state: &State, released_index: usize) -> CallOutcome {
         async_memory: vec![],
         fresh_outputs: Vec::new(),
         spawn_outputs: Vec::new(),
-        producer_accesses: rustc_hash::FxHashSet::default(),
         producer_events: Vec::new(),
         queue_accesses: crate::provenance::channels::access::Accesses::default(),
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),

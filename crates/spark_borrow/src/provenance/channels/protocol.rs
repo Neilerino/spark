@@ -1,6 +1,6 @@
 // TAG [SPARK-114]
 
-//! Entry checks for reserving an exclusive current output, before a producer starts.
+//! Exclusive output entry checks and normal producer completion.
 
 use super::{
     counts::Count,
@@ -21,14 +21,29 @@ pub(in crate::provenance) struct Promise {
     pub recipe: crate::provenance::tasks::fresh_outputs::Recipe,
     pub queue: Target,
     pub producer: crate::provenance::tasks::Target,
+    pub present: bool,
 }
 
 pub(in crate::provenance) type Promises = FxHashMap<super::messages::Slot, Promise>;
 
 pub(in crate::provenance) fn intersect(into: &mut Promises, other: &Promises) -> bool {
     let before = into.len();
-    into.retain(|slot, promise| other.get(slot) == Some(promise));
-    into.len() != before
+    let mut changed = false;
+    into.retain(|slot, promise| {
+        let Some(right) = other.get(slot) else {
+            return false;
+        };
+        if promise.recipe != right.recipe
+            || promise.queue != right.queue
+            || promise.producer != right.producer
+        {
+            return false;
+        }
+        changed |= promise.present && !right.present;
+        promise.present &= right.present;
+        true
+    });
+    changed || into.len() != before
 }
 
 impl Flow<'_> {
@@ -243,7 +258,6 @@ impl Flow<'_> {
     pub(in crate::provenance) fn poison_queue_promises(
         &mut self,
         access: &super::access::Accesses,
-        allowed: &FxHashSet<super::messages::Slot>,
         sends: &super::counts::Sends,
         point: crate::provenance::Point,
         state: &mut State,
@@ -251,9 +265,8 @@ impl Flow<'_> {
         let slots: Vec<_> = state
             .queue_promises
             .iter()
-            .filter(|(slot, promise)| {
-                (!allowed.contains(*slot) && !access.allows(&promise.queue))
-                    || sends.get(&promise.queue) != Count::ZERO
+            .filter(|(_, promise)| {
+                !access.allows(&promise.queue) || sends.get(&promise.queue) != Count::ZERO
             })
             .map(|(slot, _)| slot.clone())
             .collect();
@@ -346,18 +359,95 @@ impl Flow<'_> {
                     return true;
                 };
                 let witness = state.channel_copies.witness(&role);
-                !state.future_copies.producer_roles(slot).iter().any(|role| {
-                    state.role_live(role) && !role.frame_clobbered(&[], &state.invalidated_copies)
-                }) || state
-                    .queue_current
-                    .get(*slot)
-                    .is_none_or(|message| promise.recipe.birth.record(&message.value).is_none())
+                (!promise.present
+                    && !state.future_copies.producer_roles(slot).iter().any(|role| {
+                        state.role_live(role)
+                            && !role.frame_clobbered(&[], &state.invalidated_copies)
+                    }))
+                    || state
+                        .queue_current
+                        .get(*slot)
+                        .is_none_or(|message| promise.recipe.birth.record(&message.value).is_none())
                     || !self.queue_aliases_in(&witness, &promise.queue, Some(slot), state)
             })
             .map(|(slot, _)| slot.clone())
             .collect();
         for slot in invalid {
             self.cancel_queue_promise(&slot, point, state);
+        }
+    }
+}
+
+impl State {
+    pub(in crate::provenance) fn completed_queue_outputs(
+        &self,
+        completed: &[crate::provenance::tasks::Witness],
+        clobbered: &[spark_mir::Local],
+    ) -> Vec<(super::messages::Slot, crate::provenance::tasks::Witness)> {
+        let mut outputs = Vec::new();
+        for witness in completed {
+            for slot in &witness.produces {
+                if witness
+                    .peers
+                    .iter()
+                    .any(|role| role.frame_clobbered(clobbered, &self.invalidated_copies))
+                {
+                    continue;
+                }
+                if witness
+                    .locals()
+                    .any(|local| self.protocol_producer(local, slot).is_some())
+                    && self.current_output_queue(slot).is_some()
+                {
+                    outputs.push((slot.clone(), witness.clone()));
+                }
+            }
+        }
+        outputs
+    }
+}
+
+impl Flow<'_> {
+    pub(in crate::provenance) fn establish_present_outputs(
+        &mut self,
+        outputs: Vec<(super::messages::Slot, crate::provenance::tasks::Witness)>,
+        clobbered: &[spark_mir::Local],
+        point: crate::provenance::Point,
+        state: &mut State,
+    ) {
+        for (slot, witness) in outputs {
+            let Some(promise) = state.queue_promises.get(&slot).cloned() else {
+                continue;
+            };
+            if promise.present {
+                continue;
+            }
+            let valid = state.current_output_queue(&slot).is_some_and(|role| {
+                self.queue_aliases_in(
+                    &state.channel_copies.witness(&role),
+                    &promise.queue,
+                    Some(&slot),
+                    state,
+                )
+            }) && witness
+                .peers
+                .iter()
+                .all(|role| !role.frame_clobbered(clobbered, &state.invalidated_copies))
+                && state
+                    .queue_current
+                    .get(&slot)
+                    .and_then(|message| promise.recipe.birth.record(&message.value))
+                    .is_some_and(|record| self.leaf_task(&record));
+            if !valid {
+                self.cancel_queue_promise(&slot, point, state);
+                continue;
+            }
+            state.queue_promises.get_mut(&slot).unwrap().present = true;
+            let role = crate::provenance::tasks::Role::message(slot);
+            state
+                .future_copies
+                .seed_role_birth(role.clone(), promise.recipe.birth);
+            state.future_owners.grant_role(role, &state.future_copies);
         }
     }
 }

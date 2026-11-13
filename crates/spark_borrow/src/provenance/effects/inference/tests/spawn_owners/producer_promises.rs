@@ -146,8 +146,8 @@ fn producer_promise_survives_normal_parent_join_and_exposure_archives_its_borrow
         assert!(!message.origins().is_empty());
         assert!(recipe.birth.record(&message).is_some());
         assert!(
-            !state.future_owners.known_role(&Role::message(slot.clone())),
-            "this slice has not discharged the ownership premise"
+            state.future_owners.known_role(&Role::message(slot.clone())),
+            "normal producer completion discharges the exclusive output premise"
         );
         let queue = state.value(retained);
         flow.expose_queue_handles(&queue, &mut state);
@@ -170,6 +170,21 @@ fn producer_promise_survives_normal_parent_join_and_exposure_archives_its_borrow
 fn producer_promise_metadata_meets_wake_flow_and_never_reopen_from_may_values() {
     with_marker(&source("", "", ""), |flow, state, _, parent, point| {
         let slot = state.queue_promises.keys().next().unwrap().clone();
+        let mut pending = state.queue_promises.clone();
+        let mut present = pending.clone();
+        present.get_mut(&slot).unwrap().present = true;
+        assert!(crate::provenance::channels::protocol::intersect(
+            &mut present,
+            &pending
+        ));
+        assert!(!present[&slot].present);
+        let mut present = pending.clone();
+        present.get_mut(&slot).unwrap().present = true;
+        assert!(!crate::provenance::channels::protocol::intersect(
+            &mut pending,
+            &present
+        ));
+        assert!(!pending[&slot].present);
         for lose_queue in [false, true] {
             let mut missing = state.clone();
             if lose_queue {
@@ -476,5 +491,233 @@ fn producer_reservations_do_not_reopen_when_a_queue_constructor_label_is_reused(
                 .any(|handle| handle.pending)),
             "older activity survives constructor reuse"
         );
+    });
+}
+
+fn assert_present_message_after_parent_join(source: &str) {
+    with_source_flow(source, |flow| {
+        let named = |name: &str| {
+            flow.function
+                .locals
+                .iter()
+                .find(|decl| {
+                    decl.name
+                        .is_some_and(|name_symbol| name_symbol.as_str() == name)
+                })
+                .unwrap()
+                .local
+        };
+        let retained = named("retained");
+        let parent = named("parent");
+        let (index, block) = flow.function.blocks.iter().enumerate().find(|(_, block)| {
+            matches!(&block.terminator, Terminator::Call {func,args,..}
+                if flow.function.resolve_callee_def_id(func).and_then(|id| flow.program.unwrap().definitions.unwrap().get(id)).is_some_and(|info| info.name == spark_intern::kw::RECV)
+                && matches!(args.first(), Some(Operand::Copy(place) | Operand::Move(place)) if place.local == retained))
+        }).unwrap();
+        let statements = block.statements.clone();
+        let mut state = flow.entries[index]
+            .clone()
+            .expect("normal parent join reaches the exact receive");
+        for (step, statement) in statements.iter().enumerate() {
+            flow.transfer_statement(
+                statement,
+                Point::new(BlockId(index as u32), step as u32),
+                &mut state,
+            );
+        }
+        if let Some(handles) = state.value(parent).futures.get(&Vec::new()) {
+            assert!(
+                handles.iter().all(|handle| !handle.pending),
+                "the actual parent join completed"
+            );
+        } else {
+            assert!(
+                !state.live.contains(&parent),
+                "a by-value join may consume its completed parent"
+            );
+        }
+        assert_eq!(state.queue_promises.len(), 1);
+        let (slot, promise) = state.queue_promises.iter().next().unwrap();
+        let message = &state.queue_current[slot].value;
+        assert!(!message.origins().is_empty());
+        assert!(promise.recipe.birth.record(message).is_some());
+        assert!(
+            message.futures[&Vec::new()]
+                .iter()
+                .all(|handle| handle.pending),
+            "parent completion never completes its queued child"
+        );
+        let role = Role::message(slot.clone());
+        assert_eq!(
+            state.future_copies.role_witness(&role).birth,
+            Some(promise.recipe.birth),
+            "normal producer completion must establish the actual present message's birth identity"
+        );
+        assert!(
+            state.future_owners.known_role(&role),
+            "the validated normal producer join discharges this message's exclusive-queue premise"
+        );
+        assert!(
+            !state.future_owners.known(parent),
+            "discharging the output lease does not grant blanket ownership to the nonleaf parent"
+        );
+    });
+}
+
+#[test]
+fn a_normal_producer_join_establishes_present_message_owner_coverage() {
+    assert_present_message_after_parent_join(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_task_retained_child_memory_scoped.spark"
+    )));
+}
+
+#[test]
+fn a_normal_helper_join_establishes_present_message_owner_coverage() {
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_task_retained_child_memory_scoped.spark"
+    ));
+    let source = source.replace("joined: Int = await parent", "joined: Int = join(parent)")
+        + "\nfn join(task: Future[Int]): Int { joined: Int = await task return joined }\n";
+    assert_present_message_after_parent_join(&source);
+    let transitive = source.replace("joined: Int = await task", "joined: Int = joinAgain(task)")
+        + "\nfn joinAgain(task: Future[Int]): Int { joined: Int = await task return joined }\n";
+    assert_present_message_after_parent_join(&transitive);
+}
+
+#[test]
+fn a_helper_completion_cannot_hide_another_queue_consumer() {
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_task_retained_child_memory_scoped.spark"
+    ));
+    let source = source.replace("joined: Int = await parent", "joined: Int = join(parent, retained)")
+        + "\nasync fn steal(out: Channel[Future[Int]]): Int { child: Future[Int] = out.recv() return 0 }\nfn join(task: Future[Int], out: Channel[Future[Int]]): Int { consumer: Future[Int] = spawn { steal(out) } joined: Int = await task return joined }\n";
+    with_source_flow(&source, |flow| {
+        let parent = flow
+            .function
+            .locals
+            .iter()
+            .find(|decl| decl.name.is_some_and(|symbol| symbol.as_str() == "parent"))
+            .unwrap()
+            .local;
+        let (index, block) = flow.function.blocks.iter().enumerate().find(|(_, block)| {
+            matches!(&block.terminator, Terminator::Call {func,..} if flow.function.resolve_callee_def_id(func).and_then(|id| flow.program.unwrap().definitions.unwrap().get(id)).is_some_and(|info| info.name.as_str() == "join"))
+        }).unwrap();
+        let block = block.clone();
+        let mut state = flow.entries[index]
+            .clone()
+            .expect("known join helper is reachable");
+        for (step, statement) in block.statements.iter().enumerate() {
+            flow.transfer_statement(
+                statement,
+                Point::new(BlockId(index as u32), step as u32),
+                &mut state,
+            );
+        }
+        assert_eq!(
+            state.queue_promises.len(),
+            1,
+            "the real producer reservation exists before this helper"
+        );
+        let Terminator::Call {
+            func,
+            args,
+            destination,
+            ..
+        } = &block.terminator
+        else {
+            unreachable!()
+        };
+        let point = Point::new(BlockId(index as u32), block.statements.len() as u32);
+        flow.ensure_transfer(point, &state);
+        let dispatch = flow.call_result(func, args, flow.place_type(destination), point, &state);
+        assert!(
+            dispatch.returning.iter().any(|outcome| outcome
+                .future_proof
+                .completed
+                .iter()
+                .any(|witness| witness.contains_local(parent))),
+            "the helper really has the existing normal completion guarantee"
+        );
+        flow.apply_call_outcomes(args, destination, dispatch.returning, point, &mut state);
+        assert!(
+            state.queue_promises.is_empty(),
+            "completion does not authorize the helper's independent consumer access"
+        );
+        assert!(state
+            .queue_current
+            .keys()
+            .all(|slot| !state.future_owners.known_role(&Role::message(slot.clone()))));
+        assert!(
+            state.queues.values().any(|value| value
+                .futures
+                .values()
+                .flatten()
+                .any(|handle| handle.pending)),
+            "unsafe-to-promote prefix data remains conservative"
+        );
+    });
+}
+
+#[test]
+fn a_pure_helper_join_requires_the_matching_completion_proof() {
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_task_retained_child_memory_scoped.spark"
+    ));
+    let source = source.replace("joined: Int = await parent", "joined: Int = join(parent)")
+        + "\nfn join(task: Future[Int]): Int { joined: Int = await task return joined }\n";
+    with_source_flow(&source, |flow| {
+        let (index, block) = flow.function.blocks.iter().enumerate().find(|(_, block)| {
+            matches!(&block.terminator, Terminator::Call {func,..} if flow.function.resolve_callee_def_id(func).and_then(|id| flow.program.unwrap().definitions.unwrap().get(id)).is_some_and(|info| info.name.as_str() == "join"))
+        }).unwrap();
+        let block = block.clone();
+        let mut state = flow.entries[index]
+            .clone()
+            .expect("known join helper is reachable");
+        for (step, statement) in block.statements.iter().enumerate() {
+            flow.transfer_statement(
+                statement,
+                Point::new(BlockId(index as u32), step as u32),
+                &mut state,
+            );
+        }
+        assert_eq!(
+            state.queue_promises.len(),
+            1,
+            "the real producer reservation exists before this helper"
+        );
+        let Terminator::Call {
+            func,
+            args,
+            destination,
+            ..
+        } = &block.terminator
+        else {
+            unreachable!()
+        };
+        let point = Point::new(BlockId(index as u32), block.statements.len() as u32);
+        flow.ensure_transfer(point, &state);
+        flow.program = Some(Context {
+            proofs: None,
+            ..flow.program.unwrap()
+        });
+        let dispatch = flow.call_result(func, args, flow.place_type(destination), point, &state);
+        assert!(!dispatch.returning.is_empty());
+        assert!(
+            dispatch.returning.iter().all(|outcome| {
+                outcome.future_proof.completed.is_empty() && outcome.queue_accesses.unknown
+            }),
+            "MAY summary access cannot substitute for the matching completion proof"
+        );
+        flow.apply_call_outcomes(args, destination, dispatch.returning, point, &mut state);
+        assert!(state.queue_promises.is_empty());
+        assert!(state.queues.values().any(|value| value
+            .futures
+            .values()
+            .flatten()
+            .any(|handle| handle.pending)));
     });
 }

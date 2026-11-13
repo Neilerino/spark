@@ -41,7 +41,6 @@ pub(in crate::provenance) struct CallOutcome {
     pub async_memory: Vec<MemoryWrite>,
     pub fresh_outputs: Vec<crate::provenance::effects::fresh_output_binding::Bound>,
     pub spawn_outputs: Vec<super::spawn_outputs::Reservation>,
-    pub producer_accesses: rustc_hash::FxHashSet<crate::provenance::channels::messages::Slot>,
     pub producer_events: Vec<crate::provenance::channels::QueueEvent>,
     pub queue_accesses: crate::provenance::channels::access::Accesses,
     pub queue_send_counts: crate::provenance::channels::counts::Sends,
@@ -87,14 +86,23 @@ impl CallOutcome {
                 self.queues.append(&mut output.events);
             }
         }
+        let mut completed: Vec<_> = self
+            .future_proof
+            .completed
+            .iter()
+            .flat_map(crate::provenance::tasks::Witness::locals)
+            .collect();
         if let Some((local, _)) = &self.completed_task {
-            if let Some(handles) = state.value(*local).futures.get(&Vec::new()) {
+            completed.push(*local);
+        }
+        for local in completed {
+            if let Some(handles) = state.value(local).futures.get(&Vec::new()) {
                 if handles.len() == 1 {
                     if let Some(handle) = handles.iter().next() {
                         let mut remaining = Vec::new();
                         for mut event in self.queues.drain(..) {
                             if flow.route_producer_queue_event(
-                                &crate::provenance::demand::Storage::Logical(*local),
+                                &crate::provenance::demand::Storage::Logical(local),
                                 &[],
                                 handle,
                                 &mut event,
@@ -406,7 +414,7 @@ impl Flow<'_> {
         let residuals = self.bind_residuals(summary, function, actuals, context, Some(args));
         CallOutcome {
             fresh_outputs,
-            queue_accesses: self.bind_queue_accesses(summary, function, actuals),
+            queue_accesses: self.bind_queue_accesses(summary, function, actuals, context, args),
             queue_send_counts: self.bind_normal_queue_sends(summary, function, actuals),
             returned_owner_tags: self.bind_owner_tags(
                 &summary.returned_owner_tags,
@@ -667,16 +675,16 @@ impl Flow<'_> {
             self.transfers.insert(point, common.clone());
             let mut after = state.clone();
             let access = self.expand_queue_accesses(&alternative.queue_accesses, &after);
-            self.poison_queue_promises(
-                &access,
-                &alternative.producer_accesses,
-                &alternative.queue_send_counts,
-                point,
-                &mut after,
-            );
+            self.poison_queue_promises(&access, &alternative.queue_send_counts, point, &mut after);
             after.queue_accesses.join(&access);
             after.queue_send_counts.then(&alternative.queue_send_counts);
             alternative.apply_prefix(self, point, &mut after);
+            let mut completed = alternative.future_proof.completed.clone();
+            if let Some((local, _)) = &alternative.completed_task {
+                completed.push(after.future_copies.witness(*local));
+            }
+            let completed_outputs =
+                after.completed_queue_outputs(&completed, &alternative.clobbered_copies);
             for witness in &alternative.future_proof.completed {
                 self.settle_task_memory(witness, &alternative.clobbered_copies, point, &mut after);
             }
@@ -733,6 +741,12 @@ impl Flow<'_> {
                 );
             }
             self.retire_call_frames(point, &mut after);
+            self.establish_present_outputs(
+                completed_outputs,
+                &alternative.clobbered_copies,
+                point,
+                &mut after,
+            );
             self.validate_queue_promises(point, &mut after);
             let transfer = self.transfers[&point].clone();
             if let Some((joined, ledger)) = &mut alternatives {

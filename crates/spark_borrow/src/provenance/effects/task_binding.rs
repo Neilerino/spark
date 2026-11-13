@@ -177,14 +177,7 @@ impl Flow<'_> {
             .is_empty()
             .then_some((place.local, returned.clone()));
         Some(TaskDispatch::Returns(vec![CallOutcome {
-            producer_accesses: if place.projections.is_empty()
-                && state.current_execution_record(place.local).is_some()
-            {
-                state.future_copies.produces(place.local)
-            } else {
-                rustc_hash::FxHashSet::default()
-            },
-            queue_accesses: self.operand_queue_accesses(args.first()?, state),
+            queue_accesses: self.awaited_queue_accesses(argument, state),
             residuals,
             returned,
             completed_task,

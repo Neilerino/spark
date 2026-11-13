@@ -111,6 +111,7 @@ impl Reservation {
                 recipe: self.recipe.clone(),
                 queue: self.entry.target.clone(),
                 producer: self.producer.clone(),
+                present: false,
             },
         );
         state

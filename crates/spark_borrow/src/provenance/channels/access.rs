@@ -12,6 +12,7 @@ use spark_types::{Ty, TypeId, TypeTable};
 pub(in crate::provenance) struct Accesses {
     pub blocked: FxHashSet<Target>,
     pub unknown: bool,
+    pub deferred_future_inputs: FxHashSet<Local>,
 }
 
 impl Accesses {
@@ -22,14 +23,16 @@ impl Accesses {
         }
     }
     pub fn join(&mut self, other: &Self) -> bool {
-        let before = self.blocked.len();
+        let before = (self.blocked.len(), self.deferred_future_inputs.len());
         let changed = !self.unknown && other.unknown;
         self.unknown |= other.unknown;
         self.blocked.extend(other.blocked.iter().cloned());
-        changed || self.blocked.len() != before
+        self.deferred_future_inputs
+            .extend(other.deferred_future_inputs.iter().copied());
+        changed || (self.blocked.len(), self.deferred_future_inputs.len()) != before
     }
     pub fn allows(&self, target: &Target) -> bool {
-        !self.unknown && !self.blocked.contains(target)
+        !self.unknown && self.deferred_future_inputs.is_empty() && !self.blocked.contains(target)
     }
     pub fn remap(&mut self, bindings: &FxHashMap<Target, Target>) {
         self.blocked = std::mem::take(&mut self.blocked)
@@ -189,6 +192,9 @@ impl Flow<'_> {
         let mut expanded = self.queue_accesses(&roots, state);
         expanded.unknown |= access.unknown;
         expanded
+            .deferred_future_inputs
+            .clone_from(&access.deferred_future_inputs);
+        expanded
     }
 
     pub(in crate::provenance) fn operand_queue_accesses(
@@ -214,6 +220,78 @@ impl Flow<'_> {
         access
     }
 
+    pub(in crate::provenance) fn awaited_queue_accesses(
+        &self,
+        operand: &Operand,
+        state: &State,
+    ) -> Accesses {
+        let (Operand::Copy(place) | Operand::Move(place)) = operand else {
+            return self.operand_queue_accesses(operand, state);
+        };
+        if !place.projections.is_empty() {
+            return self.operand_queue_accesses(operand, state);
+        }
+        let future = self.operand(operand, state);
+        let inputs = state.future_copies.inputs(place.local);
+        if inputs.len() == 1
+            && inputs
+                .iter()
+                .all(|input| input.0 > 0 && input.0 <= self.function.param_count)
+            && state.live.contains(&place.local)
+            && !state.invalidated_copies.contains(&place.local)
+            && future.task_views.iter().all(|(path, views)| {
+                path.is_empty()
+                    && views.iter().all(|(subject, view)| {
+                        future.futures.get(path).is_some_and(|handles| {
+                            handles.iter().any(|handle| {
+                                crate::provenance::tasks::views::Subject::from(handle) == *subject
+                            })
+                        }) && view.callbacks.is_empty()
+                            && view.history == crate::provenance::observations::History::default()
+                            && view.memory.samples().next().is_none()
+                    })
+            })
+            && future.futures.len() == 1
+            && future.futures.get(&Vec::new()).is_some_and(|handles| {
+                handles.len() == 1
+                    && handles.iter().all(|handle| {
+                        handle.pending
+                            && handle.capture.is_none()
+                            && matches!(&handle.target,
+                        crate::provenance::tasks::Target::Input {
+                            input, path, capture: None, queue: None, ..
+                        } if path.is_empty() && inputs.contains(input))
+                    })
+            })
+        {
+            let mut support = future;
+            support.futures.clear();
+            support.task_views.clear();
+            let mut access = self.queue_accesses(&support, state);
+            access.deferred_future_inputs = inputs;
+            return access;
+        }
+        let mut access = self.operand_queue_accesses(operand, state);
+        if !access.unknown && state.current_execution_record(place.local).is_some() {
+            for slot in state.future_copies.produces(place.local) {
+                let Some(promise) = state.queue_promises.get(&slot) else {
+                    continue;
+                };
+                if state.current_output_queue(&slot).is_some()
+                    && future.futures.get(&Vec::new()).is_some_and(|handles| {
+                        handles.len() == 1
+                            && handles.iter().all(|handle| {
+                                handle.capture.is_none() && handle.target == promise.producer
+                            })
+                    })
+                {
+                    access.blocked.remove(&promise.queue);
+                }
+            }
+        }
+        access
+    }
+
     pub(in crate::provenance) fn address_queue_access(
         &mut self,
         place: &Place,
@@ -229,7 +307,6 @@ impl Flow<'_> {
             state.queue_accesses.unknown = true;
             self.poison_queue_promises(
                 &Accesses::unknown(),
-                &FxHashSet::default(),
                 &super::counts::Sends::default(),
                 point,
                 state,
@@ -297,6 +374,55 @@ mod tests {
         assert!(
             flow.queue_accesses(&pending, &state).unknown,
             "a missing Future view is unknown support, not an empty callback"
+        );
+        let argument = Operand::Copy(Place::from_local(Local(1)));
+        let deferred = flow.awaited_queue_accesses(&argument, &state);
+        assert!(!deferred.unknown);
+        assert_eq!(
+            deferred.deferred_future_inputs,
+            FxHashSet::from_iter([Local(1)])
+        );
+        let subject = crate::provenance::tasks::views::Subject::from(
+            pending.futures[&Vec::new()].iter().next().unwrap(),
+        );
+        let mut fallback = pending.clone();
+        let mut view = crate::provenance::tasks::views::View::unknown();
+        view.memory.may_write = true;
+        fallback
+            .task_views
+            .entry(Vec::new())
+            .or_default()
+            .insert(subject.clone(), view);
+        state.set(Local(1), fallback.clone());
+        assert_eq!(
+            flow.awaited_queue_accesses(&argument, &state)
+                .deferred_future_inputs,
+            deferred.deferred_future_inputs
+        );
+        assert!(flow.operand_queue_accesses(&argument, &state).unknown);
+        fallback
+            .task_views
+            .get_mut(&Vec::new())
+            .unwrap()
+            .get_mut(&subject)
+            .unwrap()
+            .callbacks
+            .insert(
+                callback,
+                crate::provenance::tasks::views::Callback::seal(Value::function(DefId::new(9971))),
+            );
+        state.set(Local(1), fallback);
+        assert!(flow
+            .awaited_queue_accesses(&argument, &state)
+            .deferred_future_inputs
+            .is_empty());
+        let mut contaminated = pending;
+        contaminated.callees = state.value(Local(2)).callees;
+        state.set(Local(1), contaminated);
+        let contaminated = flow.awaited_queue_accesses(&argument, &state);
+        assert!(
+            contaminated.unknown,
+            "qualified await cannot erase independent opaque support"
         );
         let opaque = state.value(Local(2));
         assert!(

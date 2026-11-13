@@ -142,6 +142,7 @@ pub(in crate::provenance) struct Copies {
     produces: FxHashMap<Role, FxHashSet<crate::provenance::channels::messages::Slot>>,
 }
 
+#[derive(Clone)]
 pub(in crate::provenance) struct Witness {
     pub peers: FxHashSet<Role>,
     pub inputs: FxHashSet<Local>,
@@ -188,7 +189,11 @@ impl Copies {
 
     pub fn seed_birth(&mut self, local: Local, birth: super::fresh::Birth) {
         self.forget(local);
-        let role = Role::root(local);
+        self.seed_role_birth(Role::root(local), birth);
+    }
+
+    pub fn seed_role_birth(&mut self, role: Role, birth: super::fresh::Birth) {
+        self.forget_role(&role);
         self.classes.insert(role.clone());
         self.births.insert(role, birth);
     }

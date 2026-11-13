@@ -510,6 +510,8 @@ impl Flow<'_> {
         summary: &super::Summary,
         function: &MirFunction,
         actuals: super::CallActuals<'_>,
+        context: &super::Key,
+        args: &[spark_mir::Operand],
     ) -> crate::provenance::channels::access::Accesses {
         use crate::provenance::channels::access::Accesses;
         let Some(access) = &summary.normal_queue_accesses else {
@@ -530,6 +532,25 @@ impl Flow<'_> {
                     matches!(target, Target::Unknown { .. } | Target::Validation { .. })
                 });
             bound.blocked.extend(targets);
+        }
+        let certificate = self
+            .program
+            .and_then(|program| program.proofs)
+            .and_then(|proofs| proofs.get(context))
+            .and_then(crate::provenance::tasks::proofs::Proof::certificate);
+        for input in &access.deferred_future_inputs {
+            let operand = input
+                .index()
+                .checked_sub(1)
+                .filter(|_| input.0 <= function.param_count)
+                .and_then(|index| args.get(index));
+            if let Some(operand) =
+                operand.filter(|_| certificate.is_some_and(|proof| proof.completed.contains(input)))
+            {
+                bound.join(&self.awaited_queue_accesses(operand, actuals.read.state));
+            } else {
+                bound.unknown = true;
+            }
         }
         bound
     }
