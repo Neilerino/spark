@@ -175,6 +175,13 @@ impl Flow<'_> {
                     returned_at: None,
                 });
         }
+        for destination in targets
+            .all
+            .iter()
+            .filter(|destination| targets.strongly_defines(destination))
+        {
+            self.clear_settled_memory(destination, point, state);
+        }
         self.write_resolved_references(&targets, &value, ty, point, state);
     }
 

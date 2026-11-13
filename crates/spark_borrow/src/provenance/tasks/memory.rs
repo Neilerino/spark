@@ -101,6 +101,67 @@ impl Effects {
 pub(in crate::provenance) type Delta = Vec<(Arc<Lane>, Value)>;
 
 impl Flow<'_> {
+    pub(in crate::provenance) fn clear_settled_memory(
+        &mut self,
+        destination: &Coordinate,
+        point: Point,
+        state: &mut State,
+    ) {
+        if !crate::provenance::writes::owned_path(&destination.path) {
+            return;
+        }
+        let affected: Vec<_> = state
+            .settled_memory
+            .keys()
+            .filter_map(|location| {
+                if !crate::provenance::writes::owned_path(&location.path) {
+                    return None;
+                }
+                let storage = match &location.memory {
+                    Memory::Frame {
+                        scope: FrameScope::Current,
+                        function,
+                        local,
+                        ..
+                    } if *function == self.function.def_id => Storage::Cell(*local),
+                    Memory::External(port) => Storage::External(port.clone()),
+                    Memory::Frame { .. } | Memory::Queue(_, _) | Memory::Unavailable(_) => {
+                        return None
+                    }
+                };
+                if storage != destination.storage {
+                    return None;
+                }
+                if crate::provenance::storage::prefix(&destination.path, &location.path) {
+                    Some((location.clone(), Vec::new()))
+                } else if crate::provenance::storage::prefix(&location.path, &destination.path) {
+                    Some((
+                        location.clone(),
+                        destination.path[location.path.len()..].to_vec(),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (location, relative) in affected {
+            self.record_path_store(
+                point,
+                Coordinate {
+                    storage: Storage::SettledMemory(location.clone()),
+                    path: relative.clone(),
+                },
+                &Value::default(),
+                true,
+            );
+            if relative.is_empty() {
+                state.settled_memory.remove(&location);
+            } else if let Some(value) = state.settled_memory.get_mut(&location) {
+                value.clear_path(&relative);
+            }
+        }
+    }
+
     pub(in crate::provenance) fn freeze_memory_delta(&self, delta: &mut Delta, point: Point) {
         for (_, value) in delta {
             *value = self.freeze_sources(point, std::mem::take(value));

@@ -793,6 +793,18 @@ impl<'a> Flow<'a> {
             self.store_references(&targets, &value, self.place_type(place), point, state);
             return;
         }
+        let (path, _) = self.projection_path(
+            self.function.locals[place.local.index()].ty,
+            &place.projections,
+        );
+        self.clear_settled_memory(
+            &demand::Coordinate {
+                storage: demand::Storage::Cell(place.local),
+                path: path.clone(),
+            },
+            point,
+            state,
+        );
         self.retire_execution_owner(place.local, point, state);
         state.input_owners.escape_local(place.local);
         state.future_copies.forget(place.local);
@@ -805,10 +817,6 @@ impl<'a> Flow<'a> {
             state.set(place.local, value);
             return;
         }
-        let (path, _) = self.projection_path(
-            self.function.locals[place.local.index()].ty,
-            &place.projections,
-        );
         state.invalidated.retain(|(local, invalid), _| {
             *local != place.local || !storage::prefix(&path, invalid)
         });

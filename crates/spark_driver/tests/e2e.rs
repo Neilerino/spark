@@ -6593,3 +6593,59 @@ fn future_results_own_their_cache_and_each_awaited_copy() {
         );
     }
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_actual_clear_after_join_retires_settled_memory() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/async/future_task_clear_after_join_scoped.spark",
+            "run-pass/async/future_task_clear_one_field_scoped.spark",
+        ] {
+            let cleared = run_spark_with_args(fixture, args);
+            assert_eq!(
+                cleared.exit_code, 0,
+                "{fixture} {args:?}: {}",
+                cleared.stderr
+            );
+            assert_eq!(cleared.stdout.trim(), "0", "{fixture} {args:?}");
+        }
+        for (fixture, expected) in [
+            (
+                "run-pass/async/future_task_active_write_survives_clear_scoped.spark",
+                "5",
+            ),
+            (
+                "run-pass/async/future_task_saved_copy_survives_clear_scoped.spark",
+                "5\n0",
+            ),
+        ] {
+            let retained = run_spark_with_args(fixture, args);
+            assert_eq!(
+                retained.exit_code, 0,
+                "{fixture} {args:?}: {}",
+                retained.stderr
+            );
+            assert_eq!(retained.stdout.trim(), expected, "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/future_task_active_write_survives_clear_owner_drop.spark",
+            "compile-fail/borrow_errors/future_task_saved_copy_survives_clear_owner_drop.spark",
+            "compile-fail/borrow_errors/future_task_clear_sibling_keeps_borrow.spark",
+        ] {
+            let retained = build_spark_with_args(fixture, args);
+            assert_eq!(
+                retained.exit_code, 1,
+                "{fixture} {args:?}: {}",
+                retained.stderr
+            );
+            assert!(
+                retained
+                    .stderr
+                    .contains("borrowed value does not live long enough"),
+                "{fixture} {args:?}: {}",
+                retained.stderr
+            );
+        }
+    }
+}
