@@ -1,6 +1,6 @@
 // TAG [SPARK-114]
 
-//! Cleanup rights cover current owner roles, never an allocation-site singleton.
+//! Current owner coverage separates direct execution references from descendant cleanup.
 
 mod tokens;
 pub(in crate::provenance) use tokens::{InputOwners, Tags, Token, Transfer};
@@ -15,6 +15,8 @@ use crate::provenance::{value, Flow, State};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::provenance) enum Coverage {
     Closed,
+    /// All direct strong references are represented; descendant cleanup is unproved.
+    Direct,
     ThroughQueue(std::sync::Arc<crate::provenance::aliases::Port>),
 }
 
@@ -22,6 +24,7 @@ impl Coverage {
     pub fn meet(self, other: Self) -> Option<Self> {
         match (self, other) {
             (Self::Closed, coverage) | (coverage, Self::Closed) => Some(coverage),
+            (Self::Direct, Self::Direct) => Some(Self::Direct),
             (Self::ThroughQueue(left), Self::ThroughQueue(right)) if left == right => {
                 Some(Self::ThroughQueue(left))
             }

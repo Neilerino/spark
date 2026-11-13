@@ -1,6 +1,6 @@
 // TAG [SPARK-114]
 
-//! Actual leaf-task birth provenance, independent of cleanup rights and MAY task recipes.
+//! Actual spawn-return admission and leaf-task birth provenance.
 
 use super::{views::Subject, Record, Target};
 use crate::provenance::{address::OpaqueSite, value, Flow, Point, State, Value};
@@ -108,9 +108,36 @@ impl Transfer {
         {
             return;
         }
-        state
-            .future_copies
-            .seed_birth(destination.local, self.birth);
+        let Some(record) = self.birth.record(&state.value(destination.local)) else {
+            return;
+        };
+        if flow.leaf_task(&record) {
+            state
+                .future_copies
+                .seed_birth(destination.local, self.birth);
+        } else if !state.future_owners.known(destination.local)
+            && state
+                .current_execution_record(destination.local)
+                .is_some_and(|record| {
+                    record.callback_ty == self.birth.callback_ty
+                        && record
+                            .callback
+                            .callees
+                            .get(&Vec::new())
+                            .is_some_and(|targets| {
+                                !targets.open
+                                    && !targets.unresolved
+                                    && targets.known.len() == 1
+                                    && targets.known.contains(&self.birth.callback)
+                            })
+                })
+        {
+            state.future_owners.install_role(
+                super::Role::root(destination.local),
+                super::lifecycle::Coverage::Direct,
+                &state.future_copies,
+            );
+        }
     }
 }
 

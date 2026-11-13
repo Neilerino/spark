@@ -46,7 +46,7 @@ pub(in crate::provenance) struct CallOutcome {
     pub queue_send_counts: crate::provenance::channels::counts::Sends,
     pub receipt: Option<crate::provenance::channels::Receipt>,
     pub direct_queue_send: Option<crate::provenance::channels::messages::Send>,
-    pub fresh_birth: Option<crate::provenance::tasks::fresh::Transfer>,
+    pub spawn_return: Option<crate::provenance::tasks::fresh::Transfer>,
     pub fresh_leaf_task: bool,
     pub returned_owner_tags: crate::provenance::tasks::lifecycle::Tags,
     pub retained_captures: Vec<crate::provenance::tasks::Witness>,
@@ -78,6 +78,21 @@ impl CallOutcome {
                 .direct_queue_send
                 .as_ref()
                 .is_some_and(crate::provenance::channels::messages::Send::reserves_move)
+    }
+
+    fn finish_result(
+        &mut self,
+        flow: &mut Flow<'_>,
+        destination: &Place,
+        point: Point,
+        state: &mut State,
+    ) {
+        if let Some(receipt) = self.receipt.take() {
+            receipt.finish(flow, destination, &self.clobbered_copies, point, state);
+        }
+        if let Some(spawn) = self.spawn_return.take() {
+            spawn.install(flow, destination, &self.clobbered_copies, state);
+        }
     }
 
     fn apply_queue_accesses(&self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
@@ -240,9 +255,6 @@ impl CallOutcome {
         );
         if let Some(output) = output {
             output.install(destination.local, state);
-        }
-        if let Some(birth) = self.fresh_birth.take() {
-            birth.install(flow, destination, &self.clobbered_copies, state);
         }
     }
 
@@ -498,7 +510,7 @@ impl Flow<'_> {
         true
     }
 
-    fn apply_prefix_writes(
+    pub(in crate::provenance) fn apply_prefix_writes(
         &mut self,
         memory: &[MemoryEvent],
         queues: &[crate::provenance::channels::QueueEvent],
@@ -759,15 +771,7 @@ impl Flow<'_> {
                 point,
                 &mut after,
             );
-            if let Some(receipt) = alternative.receipt.take() {
-                receipt.finish(
-                    self,
-                    destination,
-                    &alternative.clobbered_copies,
-                    point,
-                    &mut after,
-                );
-            }
+            alternative.finish_result(self, destination, point, &mut after);
             self.validate_queue_promises(point, &mut after);
             let transfer = self.transfers[&point].clone();
             if let Some((joined, ledger)) = &mut alternatives {

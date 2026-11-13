@@ -337,7 +337,9 @@ impl super::Flow<'_> {
         for index in 0..self.entries.len() {
             if let Some(mut state) = self.entries[index].clone() {
                 let block = spark_mir::BlockId(index as u32);
-                self.transfer_block(block, &mut state);
+                if !self.transfer_block(block, &mut state) {
+                    continue;
+                }
                 exits.insert(block, state.atoms());
                 if matches!(
                     self.function.blocks[index].terminator,
@@ -383,12 +385,13 @@ impl super::Flow<'_> {
                         active.extend(state.support(atom));
                     }
                 }
-                if let Some(statement) = self.function.blocks[index].statements.get(statement_index)
+                let continues = if let Some(statement) =
+                    self.function.blocks[index].statements.get(statement_index)
                 {
-                    self.transfer_statement(statement, point, &mut state);
+                    self.transfer_statement(statement, point, &mut state)
                 } else {
-                    self.transfer_terminator(block, &mut state);
-                }
+                    self.transfer_terminator(block, &mut state)
+                };
                 for atom in after.get(&point).into_iter().flatten() {
                     if state.contains(atom) {
                         active.extend(state.support(atom));
@@ -406,6 +409,9 @@ impl super::Flow<'_> {
                     {
                         region.points.insert(point);
                     }
+                }
+                if !continues {
+                    break;
                 }
             }
         }

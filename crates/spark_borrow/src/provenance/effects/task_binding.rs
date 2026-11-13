@@ -4,7 +4,7 @@ use spark_intern::kw;
 use spark_resolve::DefinitionKind;
 use spark_types::Ty;
 
-use super::super::tasks::{Handle, Record, Target};
+use super::super::tasks::{Handle, Record, ReturnStatus, Target};
 use super::{
     Aliases, CallActuals, CallOutcome, Flow, FxHashMap, FxHashSet, Intent, Key, MirFunction,
     Operand, Point, Selector, Slot, TypeId, Value,
@@ -20,6 +20,8 @@ pub(in crate::provenance) struct TaskFacts {
     pub returned: Value,
     pub prefix: super::prefix::Prefix,
     pub normal_return: bool,
+    pub return_status: crate::provenance::tasks::ReturnStatus,
+    pub contexts: FxHashSet<Key>,
     pub memory_support: bool,
     pub clean_captures: FxHashSet<Slot>,
 }
@@ -87,11 +89,9 @@ impl Flow<'_> {
         Some(TaskDispatch::Returns(vec![CallOutcome {
             spawn_outputs,
             queue_accesses: self.operand_queue_accesses(argument, state),
-            fresh_birth: if fresh_leaf_task {
-                crate::provenance::tasks::fresh::Transfer::at_spawn(self, args, &record, ty, point)
-            } else {
-                None
-            },
+            spawn_return: crate::provenance::tasks::fresh::Transfer::at_spawn(
+                self, args, &record, ty, point,
+            ),
             fresh_leaf_task,
             spawn_owners: self.spawn_owner_transfer(args, fresh_leaf_task, state),
             residuals: facts.prefix.residuals,
@@ -187,6 +187,15 @@ impl Flow<'_> {
         }]))
     }
 
+    pub(in crate::provenance) fn task_contexts_available(&self, contexts: &FxHashSet<Key>) -> bool {
+        !contexts.is_empty()
+            && self.program.is_some_and(|context| {
+                contexts
+                    .iter()
+                    .all(|key| context.summaries.contains_key(key))
+            })
+    }
+
     pub(in crate::provenance) fn task_facts(
         &mut self,
         record: &Record,
@@ -241,30 +250,25 @@ impl Flow<'_> {
             aliases: None,
         };
         let targets = self.callee_targets(callee, record.callback_ty);
+        facts.return_status = if targets.open || targets.unresolved || targets.known.is_empty() {
+            ReturnStatus::MayReturn
+        } else {
+            ReturnStatus::NoReturn
+        };
         facts.normal_return = targets.open || targets.unresolved;
         facts.memory_support = targets.open || targets.unresolved;
         for def in &targets.known {
             let Some(context) = self.program else {
+                facts.return_status.join(ReturnStatus::MayReturn);
                 continue;
             };
             let Some(function) = context.mir.functions.get(def) else {
+                facts.return_status.join(ReturnStatus::MayReturn);
                 continue;
             };
             let roots = &context.ports[def];
             let locations = self.call_locations(roots, function, actuals);
-            let mut clean: FxHashSet<_> = function
-                .captures
-                .iter()
-                .enumerate()
-                .filter(|(_, (_, ty))| {
-                    matches!(
-                        self.table
-                            .resolve(super::value::strip_mutable(*ty, self.table)),
-                        Ty::Future { .. }
-                    )
-                })
-                .map(|(index, (_, ty))| Slot::Capture(*def, index, *ty))
-                .collect();
+            let mut clean = self.future_capture_slots(function);
             let mut observed = false;
             for aliases in Aliases::call_variants(roots, self.table, &locations, &self.aliases) {
                 let key = Key {
@@ -273,10 +277,12 @@ impl Flow<'_> {
                     callables: self.callback_inputs(function, actuals),
                 };
                 observed = true;
+                facts.contexts.insert(key.clone());
                 let proven = self.clean_task_capture_slots(function, &key);
                 clean.retain(|slot| proven.contains(slot));
                 let Some(summary) = context.summaries.get(&key) else {
                     clean.clear();
+                    facts.return_status.join(ReturnStatus::Pending);
                     self.requests.insert(key);
                     continue;
                 };
@@ -306,6 +312,9 @@ impl Flow<'_> {
                     Some(&resident),
                 ));
                 facts.normal_return |= summary.normal_return;
+                if summary.normal_return {
+                    facts.return_status.join(ReturnStatus::MayReturn);
+                }
                 facts.memory_support |=
                     !summary.prefix_memory.is_empty() || summary.unknown_copy_clobber;
                 if summary.normal_return {
@@ -314,11 +323,30 @@ impl Flow<'_> {
                         .join(&self.bind(&summary.returned, function, actuals));
                 }
             }
+            if !observed {
+                facts.return_status.join(ReturnStatus::MayReturn);
+            }
             if observed && !targets.open && !targets.unresolved {
                 facts.clean_captures.extend(clean);
             }
         }
         facts
+    }
+
+    fn future_capture_slots(&self, function: &MirFunction) -> FxHashSet<Slot> {
+        function
+            .captures
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, ty))| {
+                matches!(
+                    self.table
+                        .resolve(super::value::strip_mutable(*ty, self.table)),
+                    Ty::Future { .. }
+                )
+            })
+            .map(|(index, (_, ty))| Slot::Capture(function.def_id, index, *ty))
+            .collect()
     }
 
     fn clean_task_capture_slots(&self, function: &MirFunction, key: &Key) -> FxHashSet<Slot> {

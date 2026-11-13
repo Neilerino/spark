@@ -15,6 +15,7 @@ pub(super) mod forwarding;
 pub(super) mod fresh;
 pub(super) mod fresh_outputs;
 mod identity;
+pub(super) mod last_release;
 pub(super) mod lifecycle;
 pub(super) mod memory;
 pub(super) mod outputs;
@@ -23,6 +24,24 @@ pub(super) mod residual;
 mod settle;
 pub(super) mod views;
 pub(super) use identity::{Anchor, Copies, Live, Role, Witness};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::provenance) enum ReturnStatus {
+    NoReturn,
+    Pending,
+    #[default]
+    MayReturn,
+}
+
+impl ReturnStatus {
+    pub const fn join(&mut self, other: Self) {
+        *self = match (*self, other) {
+            (Self::MayReturn, _) | (_, Self::MayReturn) => Self::MayReturn,
+            (Self::Pending, _) | (_, Self::Pending) => Self::Pending,
+            _ => Self::NoReturn,
+        };
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Capture {

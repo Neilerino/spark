@@ -445,7 +445,9 @@ impl<'a> Flow<'a> {
         let body = &self.function.blocks[block.index()];
         for (index, statement) in body.statements.iter().enumerate() {
             let point = Point::new(block, index as u32);
-            self.transfer_statement(statement, point, state);
+            if !self.transfer_statement(statement, point, state) {
+                return false;
+            }
         }
         self.transfer_terminator(block, state)
     }
@@ -499,7 +501,12 @@ impl<'a> Flow<'a> {
         true
     }
 
-    fn transfer_statement(&mut self, statement: &Statement, point: Point, state: &mut State) {
+    fn transfer_statement(
+        &mut self,
+        statement: &Statement,
+        point: Point,
+        state: &mut State,
+    ) -> bool {
         state.invalidated_copies.clear();
         self.transfers
             .insert(point, demand::Transfer::at_entry(state.atoms()));
@@ -577,26 +584,37 @@ impl<'a> Flow<'a> {
                 self.record_consumed(point, *value);
             }
             Statement::Drop { place, .. } => {
-                self.retire_execution_owner(place.local, point, state);
-                if place.projections.is_empty() {
-                    state.input_owners.drop_local(place.local);
-                } else {
-                    self.escape_input_owner_operand(&Operand::Move(place.clone()), state);
+                if !self.transfer_drop(place, point, state) {
+                    return false;
                 }
-                self.preserve_writer_loss(place, point, state);
-                let mut accesses = Accesses::default();
-                self.read_access(place, state, AccessKind::Value, &mut accesses);
-                self.record_accesses(point, accesses, state);
-                self.invalidate(place, point, state);
-                if place.projections.is_empty() {
-                    state.consume(place.local);
-                    self.record_consumed(point, place.local);
-                }
-                self.settle_pending_tasks(point, state);
             }
             Statement::Nop => {}
         }
         self.validate_queue_promises(point, state);
+        true
+    }
+
+    fn transfer_drop(&mut self, place: &Place, point: Point, state: &mut State) -> bool {
+        if !self.future_drop_continues(place, point, state) {
+            return false;
+        }
+        self.retire_execution_owner(place.local, point, state);
+        if place.projections.is_empty() {
+            state.input_owners.drop_local(place.local);
+        } else {
+            self.escape_input_owner_operand(&Operand::Move(place.clone()), state);
+        }
+        self.preserve_writer_loss(place, point, state);
+        let mut accesses = Accesses::default();
+        self.read_access(place, state, AccessKind::Value, &mut accesses);
+        self.record_accesses(point, accesses, state);
+        self.invalidate(place, point, state);
+        if place.projections.is_empty() {
+            state.consume(place.local);
+            self.record_consumed(point, place.local);
+        }
+        self.settle_pending_tasks(point, state);
+        true
     }
 
     fn rvalue(&mut self, rvalue: &Rvalue, ty: TypeId, point: Point, state: &State) -> Value {
@@ -814,7 +832,9 @@ impl<'a> Flow<'a> {
             if !matches!(self.function.blocks[index].terminator, Terminator::Return) {
                 continue;
             }
-            self.transfer_block(block, &mut state);
+            if !self.transfer_block(block, &mut state) {
+                continue;
+            }
             self.report_external_stores(&state, block, diagnostics);
             let value = self.reachable_queue_payloads(&state.value(Local::RETURN_PLACE), &state);
             for root in value.frame_sources(self.function.def_id) {

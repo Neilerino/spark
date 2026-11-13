@@ -270,7 +270,7 @@ fn late_spawn_and_send_imports_cannot_restore_fresh_birth_provenance() {
             let mut dispatch = flow.call_result(&func, &args, ty, point, &state);
             assert_eq!(dispatch.returning.len(), 1);
             let mut outcome = dispatch.returning.pop().unwrap();
-            assert!(outcome.fresh_birth.is_some());
+            assert!(outcome.spawn_return.is_some());
             let actor = outcome
                 .returned
                 .task_views

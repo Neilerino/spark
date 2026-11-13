@@ -6401,18 +6401,14 @@ fn collection_borrow_future_nonreturning_parents_keep_child_memory_writers() {
             args,
         );
         assert_eq!(scoped.exit_code, 0, "{args:?}: {}", scoped.stderr);
-        let invalid = build_spark_with_args(
+        for fixture in [
             "compile-fail/borrow_errors/future_task_nonreturning_child_memory_owner_drop.spark",
-            args,
-        );
-        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
-        assert!(
-            invalid
-                .stderr
-                .contains("borrowed value does not live long enough"),
-            "{args:?}: {}",
-            invalid.stderr
-        );
+            "compile-fail/borrow_errors/future_task_nonreturning_child_prefix_read_owner_drop.spark",
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(invalid.exit_code, 1, "{fixture} {args:?}: {}", invalid.stderr);
+            assert!(invalid.stderr.contains("borrowed value does not live long enough"), "{fixture} {args:?}: {}", invalid.stderr);
+        }
     }
 }
 

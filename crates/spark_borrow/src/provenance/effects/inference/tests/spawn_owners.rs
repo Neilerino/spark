@@ -222,20 +222,43 @@ fn parent_handle_aliases_rehome_one_execution_graph_and_preserve_borrow_sources(
             ));
             drop(flow, &mut state, child, 104);
             assert!(state.future_owners.known_role(&role));
-            drop(flow, &mut state, moved_parent, 105);
+            assert_eq!(
+                state.future_copies.role_peers(&role),
+                FxHashSet::from_iter([role.clone()])
+            );
+            let parent_role = Role::root(moved_parent);
+            assert_eq!(
+                state.future_copies.role_peers(&parent_role),
+                FxHashSet::from_iter([parent_role.clone()])
+            );
+            assert_eq!(
+                state.future_owners.coverage(&parent_role),
+                Some(crate::provenance::tasks::lifecycle::Coverage::Direct)
+            );
+            assert!(state.current_execution_record(moved_parent).is_some());
+            assert!(flow.transfer_statement(
+                &Statement::Drop {
+                    place: Place::from_local(moved_parent),
+                    span: Span::DUMMY
+                },
+                Point::new(BlockId::ENTRY, 105),
+                &mut state,
+            ));
+            assert!(!state.live.contains(&moved_parent));
             assert!(state.executions.is_empty());
             assert!(state.execution_backing_must.is_empty());
+            assert!(flow.current_role_value(&role, &state).is_none());
+            assert!(state.future_owners.coverage(&role).is_none());
             assert!(
-                state
-                    .residuals
-                    .values()
-                    .any(|value| origins.is_subset(&value.origins())
+                !state.rooted_activity().into_carriers().any(|(_, value)| {
+                    !origins.is_disjoint(&value.origins())
                         && value
                             .futures
                             .values()
                             .flatten()
-                            .any(|handle| handle.pending)),
-                "unproved callback cleanup must retain its child activity and sources"
+                            .any(|handle| handle.pending)
+                }),
+                "the final parent join must release its proven last captured child owner"
             );
         },
     );
@@ -741,3 +764,5 @@ mod keeper_activity;
 mod producer_promises;
 
 mod receipts;
+
+mod nonreturn_drop;

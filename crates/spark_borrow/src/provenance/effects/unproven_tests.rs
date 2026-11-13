@@ -792,7 +792,7 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         receipt: None,
         direct_queue_send: None,
-        fresh_birth: None,
+        spawn_return: None,
         fresh_leaf_task: false,
         spawn_owners: None,
         returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),

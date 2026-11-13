@@ -608,7 +608,9 @@ impl Flow<'_> {
             let Some(mut state) = self.entries[index].clone() else {
                 continue;
             };
-            self.transfer_block(BlockId(index as u32), &mut state);
+            if !self.transfer_block(BlockId(index as u32), &mut state) {
+                continue;
+            }
             summary.normal_return = true;
             join_prefix(&mut summary.normal_prefix, &state.reached_prefix);
             summary
@@ -644,58 +646,62 @@ impl Flow<'_> {
                 &state.value(Local::RETURN_PLACE),
                 self.function.def_id,
             ));
-            let mut ports = self
-                .program
-                .map(|context| context.ports[&self.function.def_id].clone())
-                .unwrap_or_default();
-            ports.extend(self.written_inputs.iter().map(|view| view.root.clone()));
-            let async_modified = Self::async_modified(&state);
-            ports.extend(async_modified.iter().map(|view| view.root.clone()));
-            summary.async_modified.extend(async_modified);
-            for declaration in self
-                .function
-                .locals
-                .iter()
-                .skip(1)
-                .take(self.function.param_count as usize + self.function.captures.len())
-            {
-                if let Some(inner) = child_type(declaration.ty, &Slot::Deref, self.table) {
-                    ports.push(Port::root(declaration.local, inner));
-                }
-            }
-            let ports: FxHashSet<_> = ports
-                .into_iter()
-                .map(|port| self.aliases.representative(&port))
-                .collect();
-            for port in ports {
-                if matches!(port.kind, super::aliases::StorageKind::Channel(_)) {
-                    continue;
-                }
-                let mut selector = port.selector();
-                if !self.aliases.is_cell(&port) {
-                    if let Intent::Address(payload) = &mut selector.intent {
-                        payload.kind = DerefKind::Residual;
-                    }
-                }
-                let value = self.symbolic_pointee(&selector, port.pointee, &state);
-                summary
-                    .memory
-                    .entry(port.clone())
-                    .or_default()
-                    .join(&export_value(&value, self.function.def_id));
-                summary.modified.extend(
-                    state
-                        .modified_views
-                        .iter()
-                        .filter(|view| view.root == port)
-                        .cloned(),
-                );
-            }
+            self.export_memory_state(&state, &mut summary);
         }
         self.export_prefix(&mut summary);
 
         self.normalize_fresh_queue_roles(&mut summary);
         summary
+    }
+
+    fn export_memory_state(&self, state: &State, summary: &mut Summary) {
+        let mut ports = self
+            .program
+            .map(|context| context.ports[&self.function.def_id].clone())
+            .unwrap_or_default();
+        ports.extend(self.written_inputs.iter().map(|view| view.root.clone()));
+        let async_modified = Self::async_modified(state);
+        ports.extend(async_modified.iter().map(|view| view.root.clone()));
+        summary.async_modified.extend(async_modified);
+        for declaration in self
+            .function
+            .locals
+            .iter()
+            .skip(1)
+            .take(self.function.param_count as usize + self.function.captures.len())
+        {
+            if let Some(inner) = child_type(declaration.ty, &Slot::Deref, self.table) {
+                ports.push(Port::root(declaration.local, inner));
+            }
+        }
+        let ports: FxHashSet<_> = ports
+            .into_iter()
+            .map(|port| self.aliases.representative(&port))
+            .collect();
+        for port in ports {
+            if matches!(port.kind, super::aliases::StorageKind::Channel(_)) {
+                continue;
+            }
+            let mut selector = port.selector();
+            if !self.aliases.is_cell(&port) {
+                if let Intent::Address(payload) = &mut selector.intent {
+                    payload.kind = DerefKind::Residual;
+                }
+            }
+            let value = self.symbolic_pointee(&selector, port.pointee, state);
+            summary
+                .memory
+                .entry(port.clone())
+                .or_default()
+                .join(&export_value(&value, self.function.def_id));
+            summary.modified.extend(
+                state
+                    .modified_views
+                    .iter()
+                    .filter(|view| view.root == port)
+                    .cloned(),
+            );
+        }
     }
 
     fn bind_frame(&mut self, endpoint: &Endpoint, actuals: CallActuals<'_>) -> Endpoint {
