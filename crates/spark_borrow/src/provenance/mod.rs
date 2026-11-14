@@ -6,6 +6,7 @@ mod effects;
 mod read;
 mod storage;
 mod value;
+mod writes;
 
 use std::collections::VecDeque;
 
@@ -36,6 +37,8 @@ type Origins = FxHashSet<Origin>;
 struct State {
     values: FxHashMap<Local, Value>,
     cells: FxHashMap<Local, Value>,
+    external: FxHashMap<Local, Value>,
+    external_defined: FxHashSet<(Local, Path)>,
     invalidated: FxHashMap<(Local, Path), FxHashSet<Point>>,
 }
 
@@ -74,6 +77,13 @@ impl State {
         for (local, value) in &other.cells {
             changed |= self.cells.entry(*local).or_default().join(value);
         }
+        for (local, value) in &other.external {
+            changed |= self.external.entry(*local).or_default().join(value);
+        }
+        let before = self.external_defined.len();
+        self.external_defined
+            .retain(|key| other.external_defined.contains(key));
+        changed |= before != self.external_defined.len();
         for (storage, points) in &other.invalidated {
             let entry = self.invalidated.entry(storage.clone()).or_default();
             let before = entry.len();
@@ -221,8 +231,7 @@ impl<'a> Flow<'a> {
                         self.record_consumed(point, local);
                     }
                 }
-                self.record_store(point, destination, &result);
-                self.store(destination, result, state);
+                self.store(destination, result, point, state);
             }
             Terminator::SwitchInt { discriminant, .. } => {
                 let mut accesses = Accesses::default();
@@ -246,8 +255,7 @@ impl<'a> Flow<'a> {
                 for local in consume_rvalue(rvalue, state) {
                     self.record_consumed(point, local);
                 }
-                self.record_store(point, place, &result);
-                self.store(place, result, state);
+                self.store(place, result, point, state);
             }
             Statement::IndexedAssign {
                 root,
@@ -405,7 +413,11 @@ impl<'a> Flow<'a> {
         result
     }
 
-    fn store(&self, place: &Place, value: Value, state: &mut State) {
+    fn store(&mut self, place: &Place, value: Value, point: Point, state: &mut State) {
+        if self.store_external(place, &value, point, state) {
+            return;
+        }
+        self.record_store(point, place, &value);
         if place.projections.is_empty() {
             state
                 .invalidated
@@ -441,6 +453,7 @@ impl<'a> Flow<'a> {
                 continue;
             }
             self.transfer_block(block, &mut state);
+            self.report_external_stores(&state, block, diagnostics);
             let value = state.value(Local::RETURN_PLACE);
             for leaf in value.leaves.values() {
                 let endpoints = leaf

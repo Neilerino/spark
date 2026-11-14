@@ -211,14 +211,14 @@ impl Flow<'_> {
                         }
                     }
                     Endpoint::Frame { .. } => value::tainted_from(ty, reference, self.table),
-                    Endpoint::Input(selector) => self.symbolic_pointee(selector, ty),
+                    Endpoint::Input(selector) => self.symbolic_pointee(selector, ty, state),
                 };
                 result.join(&payload);
             }
             if leaf.opaque.is_empty() {
                 for dependency in &leaf.dependencies {
                     if let Dependency::InputValue(selector) = dependency {
-                        result.join(&self.symbolic_pointee(selector, ty));
+                        result.join(&self.symbolic_pointee(selector, ty, state));
                     }
                 }
             }
@@ -229,7 +229,12 @@ impl Flow<'_> {
         result
     }
 
-    fn symbolic_pointee(&self, selector: &super::address::Selector, ty: TypeId) -> Value {
+    fn symbolic_pointee(
+        &self,
+        selector: &super::address::Selector,
+        ty: TypeId,
+        state: &State,
+    ) -> Value {
         use super::address::{Dependency, Intent, Selector, TypedPath};
         let source_ty = self.function.locals[selector.input.index()].ty;
         let (selection, payload) = match &selector.intent {
@@ -258,6 +263,16 @@ impl Flow<'_> {
                 },
             ),
         };
+        let address = Selector {
+            input: selector.input,
+            selection: selection.clone(),
+            intent: Intent::Address(payload.clone()),
+            expected: Some(ty),
+        };
+        let (stored, complete) = self.external_contents(&address, state);
+        if complete {
+            return stored;
+        }
         let prefix = value::normalize(
             source_ty,
             [
@@ -285,6 +300,7 @@ impl Flow<'_> {
                 }),
             }));
         }
+        result.join(&stored);
         result
     }
 

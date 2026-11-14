@@ -1,0 +1,14 @@
+fn fill(out: Ref[Map[String, Ref[Int]]]!): Void {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    entries: Map[String, Ref[Int]] = {"one": borrowed}
+    out = entries
+    empty: Map[String, Ref[Int]] = {}
+    out = empty
+}
+fn main(): Int {
+    entries: Map[String, Ref[Int]]! = {}
+    fill(entries)
+    print(entries.len())
+    return 0
+}

@@ -9,6 +9,7 @@ use super::{Origin, Path, Slot};
 pub(super) enum Bank {
     Logical,
     Cell,
+    External,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -90,35 +91,53 @@ impl super::Flow<'_> {
     ) {
         let root = self.function.locals[place.local.index()].ty;
         let (prefix, _) = self.projection_path(root, &place.projections);
-        let transfer = self.transfers.entry(point).or_default();
         for bank in [Bank::Logical, Bank::Cell] {
-            if place.projections.is_empty() {
-                transfer.definitions.push(Definition {
+            self.record_path_store(
+                point,
+                Coordinate {
                     bank,
                     local: place.local,
-                    prefix: Vec::new(),
-                });
-            }
-            for ((path, origin), sources) in &value.sources {
-                let path = super::value::normalize(
-                    root,
-                    [prefix.clone(), path.clone()].concat(),
-                    self.table,
-                );
-                let destination = Atom {
-                    coordinate: Coordinate {
-                        bank,
-                        local: place.local,
-                        path,
-                    },
-                    origin: origin.clone(),
-                };
-                transfer
-                    .dependencies
-                    .entry(destination)
-                    .or_default()
-                    .extend(sources.iter().cloned());
-            }
+                    path: prefix.clone(),
+                },
+                value,
+                place.projections.is_empty(),
+            );
+        }
+    }
+
+    pub(super) fn record_path_store(
+        &mut self,
+        point: super::Point,
+        destination: Coordinate,
+        value: &super::Value,
+        strong: bool,
+    ) {
+        let Coordinate {
+            bank,
+            local,
+            path: prefix,
+        } = destination;
+        let root = self.function.locals[local.index()].ty;
+        let transfer = self.transfers.entry(point).or_default();
+        if strong {
+            transfer.definitions.push(Definition {
+                bank,
+                local,
+                prefix: prefix.clone(),
+            });
+        }
+        for ((path, origin), sources) in &value.sources {
+            let path =
+                super::value::normalize(root, [prefix.clone(), path.clone()].concat(), self.table);
+            let destination = Atom {
+                coordinate: Coordinate { bank, local, path },
+                origin: origin.clone(),
+            };
+            transfer
+                .dependencies
+                .entry(destination)
+                .or_default()
+                .extend(sources.iter().cloned());
         }
     }
 
@@ -143,11 +162,19 @@ impl super::Flow<'_> {
                     let returned = state
                         .value(Local::RETURN_PLACE)
                         .sourced(Bank::Logical, Local::RETURN_PLACE);
+                    let external = state.external.iter().flat_map(|(local, value)| {
+                        value
+                            .clone()
+                            .sourced(Bank::External, *local)
+                            .sources
+                            .into_values()
+                            .flatten()
+                    });
                     self.transfers
                         .entry(point)
                         .or_default()
                         .seeds
-                        .extend(returned.sources.into_values().flatten());
+                        .extend(returned.sources.into_values().flatten().chain(external));
                 }
             }
         }
@@ -249,31 +276,30 @@ fn solve(
 
 impl super::State {
     fn atoms(&self) -> Demand {
-        self.values
-            .iter()
-            .flat_map(|(local, value)| {
+        [
+            (Bank::Logical, &self.values),
+            (Bank::Cell, &self.cells),
+            (Bank::External, &self.external),
+        ]
+        .into_iter()
+        .flat_map(|(bank, values)| {
+            values.iter().flat_map(move |(local, value)| {
                 value
                     .clone()
-                    .sourced(Bank::Logical, *local)
+                    .sourced(bank, *local)
                     .sources
                     .into_values()
                     .flatten()
             })
-            .chain(self.cells.iter().flat_map(|(local, value)| {
-                value
-                    .clone()
-                    .sourced(Bank::Cell, *local)
-                    .sources
-                    .into_values()
-                    .flatten()
-            }))
-            .collect()
+        })
+        .collect()
     }
 
     fn support(&self, atom: &Atom) -> super::Origins {
         let values = match atom.coordinate.bank {
             Bank::Logical => &self.values,
             Bank::Cell => &self.cells,
+            Bank::External => &self.external,
         };
         let mut result = super::Origins::from_iter([atom.origin.clone()]);
         if let Some(parents) = values.get(&atom.coordinate.local).and_then(|value| {
@@ -290,6 +316,7 @@ impl super::State {
         let values = match atom.coordinate.bank {
             Bank::Logical => &self.values,
             Bank::Cell => &self.cells,
+            Bank::External => &self.external,
         };
         values.get(&atom.coordinate.local).is_some_and(|value| {
             value
