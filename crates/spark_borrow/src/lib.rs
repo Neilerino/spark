@@ -45,6 +45,7 @@ pub mod liveness;
 mod provenance;
 pub mod regions;
 
+use rustc_hash::FxHashSet;
 use spark_diagnostics::Diagnostics;
 use spark_mir::Mir;
 use spark_resolve::DefinitionTable;
@@ -110,23 +111,57 @@ pub fn check(input: BorrowInput) -> BorrowOutput {
         }
 
         let borrow_facts = facts::extract_facts(func);
-        let regs = &carrier_regions[&func.def_id];
-        check::check_borrows(func, &borrow_facts, regs, &mut diagnostics);
-        check::check_set_mutation_loans(
-            func,
-            &borrow_facts,
-            regs,
-            &table,
-            &definitions,
-            &mut diagnostics,
-        );
+        for regs in &carrier_regions[&func.def_id] {
+            check::check_borrows(func, &borrow_facts, regs, &mut diagnostics);
+            check::check_set_mutation_loans(
+                func,
+                &borrow_facts,
+                regs,
+                &table,
+                &definitions,
+                &mut diagnostics,
+            );
+        }
     }
 
     BorrowOutput {
         mir,
         table,
-        diagnostics,
+        diagnostics: unique_diagnostics(diagnostics),
     }
+}
+
+fn unique_diagnostics(diagnostics: Diagnostics) -> Diagnostics {
+    let mut seen = FxHashSet::default();
+    let mut unique = Diagnostics::new();
+    for diagnostic in diagnostics {
+        let identity = (
+            diagnostic.level,
+            diagnostic.code.clone(),
+            diagnostic.message.clone(),
+            diagnostic
+                .labels
+                .iter()
+                .map(|label| (label.span, label.message.clone(), label.is_primary))
+                .collect::<Vec<_>>(),
+            diagnostic.notes.clone(),
+            diagnostic
+                .suggestions
+                .iter()
+                .map(|suggestion| {
+                    (
+                        suggestion.span,
+                        suggestion.message.clone(),
+                        suggestion.replacement.clone(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        if seen.insert(identity) {
+            unique.push(diagnostic);
+        }
+    }
+    unique
 }
 
 /// Returns true if a function's parameter or return types involve `Ty::Ref`.

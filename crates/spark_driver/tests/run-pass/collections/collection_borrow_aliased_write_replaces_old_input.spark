@@ -1,0 +1,20 @@
+fn change(out: Ref[Map[String, Ref[Int]]]!, reader: Ref[Map[String, Ref[Int]]], safe: Ref[Int]): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]] = {"one": safe}
+    out = entries
+    return reader
+}
+fn produce(old: Ref[Int], safe: Ref[Int]): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {"one": old}
+    return change(entries, entries, safe)
+}
+fn outer(value: Int, safe: Ref[Int]): Map[String, Ref[Int]] {
+    old: Ref[Int] = value
+    return produce(old, safe)
+}
+fn main(): Int {
+    value: Int = 9
+    safe: Ref[Int] = value
+    entries: Map[String, Ref[Int]] = outer(7, safe)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

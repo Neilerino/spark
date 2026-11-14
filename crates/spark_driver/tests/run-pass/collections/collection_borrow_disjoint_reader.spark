@@ -1,0 +1,18 @@
+fn change(out: Ref[Map[String, Ref[Int]]]!, reader: Ref[Map[String, Ref[Int]]], value: Ref[Int]): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]] = {"one": value}
+    out = entries
+    return reader
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {"one": safe}
+    borrowed: Ref[Int] = value
+    other: Map[String, Ref[Int]] = {"one": safe}
+    return change(entries, other, borrowed)
+}
+fn main(): Int {
+    safe: Int = 8
+    borrowed: Ref[Int] = safe
+    entries: Map[String, Ref[Int]] = produce(borrowed, 7)
+    print(entries.len())
+    return 0
+}

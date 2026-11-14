@@ -1917,6 +1917,113 @@ fn collection_borrow_imported_writes_preserve_demand_and_prefix_reads() {
 }
 
 #[test]
+fn collection_borrow_aliased_helper_reads_reject_written_local_references() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "compile-fail/borrow_errors/collection_borrow_unknown_alias_member_write.spark",
+            "compile-fail/borrow_errors/collection_borrow_aliased_read_after_write.spark",
+            "compile-fail/borrow_errors/collection_borrow_equal_alternative_targets.spark",
+            "compile-fail/borrow_errors/collection_borrow_aliased_generic_recursive.spark",
+            "compile-fail/borrow_errors/collection_borrow_unused_helper_escape.spark",
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result
+                    .stderr
+                    .contains("returned value contains a reference to local storage"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_aliased_helper_reads_preserve_entry_snapshots() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, output) in [
+            (
+                "run-pass/collections/collection_borrow_disjoint_alternative_targets.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_unknown_alias_incoming.spark",
+                "1\n7\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_exclusive_inputs_are_distinct.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_aliased_write_replaces_old_input.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_aliased_generic_clear.spark",
+                "0\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_aliased_entry_snapshot.spark",
+                "1\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_disjoint_reader.spark",
+                "1\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_aliased_reset.spark",
+                "0\n1\n",
+            ),
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, output, "{fixture} {args:?}");
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_alias_contexts_preserve_prefix_writes_and_distinct_diagnostics() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_aliased_nonreturning_prefix.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 1, "prefix {args:?}: {}", result.stderr);
+        assert!(
+            result
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "prefix {args:?}: {}",
+            result.stderr
+        );
+        for (fixture, count) in [
+            (
+                "compile-fail/borrow_errors/collection_borrow_alias_duplicate_witness.spark",
+                1,
+            ),
+            (
+                "compile-fail/borrow_errors/collection_borrow_alias_distinct_witnesses.spark",
+                2,
+            ),
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(
+                result
+                    .stderr
+                    .matches("returned value contains a reference to local storage")
+                    .count(),
+                count,
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
 fn collection_borrow_loops_preserve_occurrence_lifetimes() {
     for args in [&[][..], &["--no-opt"][..]] {
         let negative = build_spark_with_args(

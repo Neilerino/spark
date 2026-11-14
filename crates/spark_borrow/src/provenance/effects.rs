@@ -7,6 +7,7 @@ use spark_resolve::DefId;
 use spark_types::{TypeId, TypeTable};
 
 use super::address::{Dependency, Endpoint, Intent, Selector};
+use super::aliases::{Aliases, Key};
 
 use super::{
     child_type, value, AccessKind, Accesses, Flow, Origin, Origins, Path, Point, Slot, State, Value,
@@ -18,6 +19,7 @@ pub(super) struct Summary {
     normal_return: bool,
     memory: FxHashMap<Local, Value>,
     modified: FxHashSet<Local>,
+    written_inputs: FxHashSet<Local>,
     observed: Accesses,
 }
 
@@ -32,6 +34,10 @@ impl Summary {
         let before = self.modified.len();
         self.modified.extend(other.modified.iter().copied());
         changed |= before != self.modified.len();
+        let before = self.written_inputs.len();
+        self.written_inputs
+            .extend(other.written_inputs.iter().copied());
+        changed |= before != self.written_inputs.len();
         let before = self.observed.len();
         self.observed.extend(other.observed.iter().cloned());
         changed || before != self.observed.len()
@@ -41,7 +47,8 @@ impl Summary {
 #[derive(Clone, Copy)]
 pub(super) struct Context<'a> {
     mir: &'a Mir,
-    summaries: &'a FxHashMap<DefId, Summary>,
+    summaries: &'a Summaries,
+    ports: &'a Ports,
 }
 
 pub(super) struct CallOutcome {
@@ -58,51 +65,131 @@ struct CallActuals<'a> {
     state: &'a State,
 }
 
+type Summaries = FxHashMap<Key, Summary>;
+type Ports = FxHashMap<DefId, Vec<Local>>;
+
 pub fn analyze_program(
     mir: &Mir,
     table: &TypeTable,
     diagnostics: &mut Diagnostics,
-) -> FxHashMap<DefId, Vec<crate::regions::Region>> {
+) -> FxHashMap<DefId, Vec<Vec<crate::regions::Region>>> {
     let facts: FxHashMap<_, _> = mir
         .functions
         .iter()
         .map(|(def, function)| (*def, crate::facts::extract_facts(function)))
         .collect();
-    let mut summaries: FxHashMap<_, _> = mir
+    let (summaries, ports) = infer_summaries(mir, table, &facts);
+    let context = Context {
+        mir,
+        summaries: &summaries,
+        ports: &ports,
+    };
+    let mut regions: FxHashMap<_, Vec<_>> = FxHashMap::default();
+    for key in summaries.keys() {
+        let function = &mir.functions[&key.function];
+        let mut flow = Flow::new(function, table, Some(context));
+        flow.aliases = key.aliases.clone();
+        flow.solve(&facts[&key.function]);
+        flow.report_returns(&facts[&key.function], diagnostics);
+        flow.report_reads(diagnostics);
+        regions
+            .entry(key.function)
+            .or_default()
+            .push(flow.carrier_regions(&facts[&key.function]));
+    }
+    regions
+}
+
+fn infer_summaries(
+    mir: &Mir,
+    table: &TypeTable,
+    facts: &FxHashMap<DefId, crate::facts::BorrowFacts>,
+) -> (Summaries, Ports) {
+    let mut summaries: Summaries = mir
         .functions
         .keys()
-        .map(|def| (*def, Summary::default()))
+        .map(|def| (Key::distinct(*def), Summary::default()))
         .collect();
+    let mut ports: Ports = mir.functions.keys().map(|def| (*def, Vec::new())).collect();
     loop {
         let context = Context {
             mir,
             summaries: &summaries,
+            ports: &ports,
         };
         let mut next = summaries.clone();
+        let mut discovered = ports.clone();
+        let mut requests = FxHashSet::default();
         let mut changed = false;
-        for (def, function) in &mir.functions {
+        for key in summaries.keys() {
+            let function = &mir.functions[&key.function];
             let mut flow = Flow::new(function, table, Some(context));
-            flow.solve(&facts[def]);
-            changed |= next.entry(*def).or_default().join(&flow.summary());
+            flow.aliases = key.aliases.clone();
+            flow.solve(&facts[&key.function]);
+            let summary = flow.summary();
+            discover_ports(
+                function,
+                &summary,
+                table,
+                discovered.entry(key.function).or_default(),
+            );
+            changed |= next.entry(key.clone()).or_default().join(&summary);
+            requests.extend(flow.requests);
+        }
+        if discovered != ports {
+            for (def, roots) in &discovered {
+                for aliases in Aliases::body_variants(&mir.functions[def], roots, table) {
+                    requests.insert(Key {
+                        function: *def,
+                        aliases,
+                    });
+                }
+            }
+            ports = discovered;
+            for summary in next.values_mut() {
+                *summary = Summary::default();
+            }
+            changed = true;
+        }
+        for key in requests {
+            if let std::collections::hash_map::Entry::Vacant(entry) = next.entry(key) {
+                entry.insert(Summary::default());
+                changed = true;
+            }
         }
         summaries = next;
         if !changed {
-            break;
+            return (summaries, ports);
         }
     }
-    let context = Context {
-        mir,
-        summaries: &summaries,
-    };
-    let mut regions = FxHashMap::default();
-    for (def, function) in &mir.functions {
-        let mut flow = Flow::new(function, table, Some(context));
-        flow.solve(&facts[def]);
-        flow.report_returns(&facts[def], diagnostics);
-        flow.report_reads(diagnostics);
-        regions.insert(*def, flow.carrier_regions(&facts[def]));
+}
+
+fn discover_ports(
+    function: &MirFunction,
+    summary: &Summary,
+    table: &TypeTable,
+    ports: &mut Vec<Local>,
+) {
+    if summary.written_inputs.is_empty() {
+        return;
     }
-    regions
+    for access in &summary.observed {
+        let selector = match &access.target {
+            Dependency::InputValue(selector) | Dependency::Address(Endpoint::Input(selector)) => {
+                selector
+            }
+            Dependency::Address(Endpoint::Frame { .. }) => continue,
+        };
+        let root = function.locals[selector.input.index()].ty;
+        if let Some(inner) = child_type(root, &Slot::Deref, table) {
+            if !value::inputs(inner, selector.input, inner, &[], table).is_empty()
+                && !ports.contains(&selector.input)
+            {
+                ports.push(selector.input);
+            }
+        }
+    }
+    ports.sort_unstable_by_key(|local| local.0);
 }
 
 impl Flow<'_> {
@@ -127,36 +214,40 @@ impl Flow<'_> {
         let mut outcomes = Vec::new();
         let mut unknown = targets.is_none_or(FxHashSet::is_empty);
         for def in targets.into_iter().flatten() {
-            if let Some((function, summary)) = self.program.and_then(|context| {
-                Some((context.mir.functions.get(def)?, context.summaries.get(def)?))
-            }) {
+            let Some(context) = self.program else {
+                unknown = true;
+                continue;
+            };
+            let Some(function) = context.mir.functions.get(def) else {
+                unknown = true;
+                continue;
+            };
+            let roots = &context.ports[def];
+            let locations = roots
+                .iter()
+                .map(|local| {
+                    let input = Self::actual_input(*local, function, actuals);
+                    let inner =
+                        child_type(function.locals[local.index()].ty, &Slot::Deref, self.table)
+                            .unwrap_or(TypeId::ERROR);
+                    (*local, self.reference_locations(&input, inner))
+                })
+                .collect();
+            for aliases in Aliases::call_variants(function, roots, self.table, &locations) {
+                let key = Key {
+                    function: *def,
+                    aliases,
+                };
+                let Some(summary) = context.summaries.get(&key) else {
+                    self.requests.insert(key);
+                    continue;
+                };
                 self.observe(summary, function, actuals);
+                self.observe_writes(summary, function, actuals);
                 if !summary.normal_return {
                     continue;
                 }
-                let returned = self.bind(&summary.returned, function, actuals);
-                let mut memory = Vec::new();
-                for local in &summary.modified {
-                    let Some(snapshot) = summary.memory.get(local) else {
-                        continue;
-                    };
-                    let root = function.locals[local.index()].ty;
-                    let inner = child_type(root, &Slot::Deref, self.table).unwrap_or(TypeId::ERROR);
-                    let input = Self::actual_input(*local, function, actuals);
-                    let target = self.project_reference(&input, inner, &Vec::new());
-                    let value = self.bind(
-                        snapshot,
-                        function,
-                        CallActuals {
-                            ty: inner,
-                            ..actuals
-                        },
-                    );
-                    memory.push((target, value));
-                }
-                outcomes.push(CallOutcome { returned, memory });
-            } else {
-                unknown = true;
+                outcomes.push(self.bind_outcome(summary, function, actuals, &key.aliases));
             }
         }
         if unknown {
@@ -166,6 +257,61 @@ impl Flow<'_> {
             });
         }
         (!outcomes.is_empty()).then_some(outcomes)
+    }
+
+    fn observe_writes(
+        &mut self,
+        summary: &Summary,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) {
+        for local in &summary.written_inputs {
+            let root = function.locals[local.index()].ty;
+            let Some(inner) = child_type(root, &Slot::Deref, self.table) else {
+                continue;
+            };
+            let input = Self::actual_input(*local, function, actuals);
+            let targets = self.project_reference(&input, inner, &Vec::new());
+            for endpoint in targets.endpoints {
+                if let Endpoint::Input(selector) = endpoint {
+                    self.written_inputs
+                        .insert(self.aliases.representative(selector.input));
+                }
+            }
+        }
+    }
+
+    fn bind_outcome(
+        &mut self,
+        summary: &Summary,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        aliases: &Aliases,
+    ) -> CallOutcome {
+        let returned = self.bind(&summary.returned, function, actuals);
+        let mut memory = Vec::new();
+        for local in &summary.modified {
+            let Some(snapshot) = summary.memory.get(local) else {
+                continue;
+            };
+            let root = function.locals[local.index()].ty;
+            let inner = child_type(root, &Slot::Deref, self.table).unwrap_or(TypeId::ERROR);
+            let mut target = super::value::Leaf::default();
+            for member in aliases.members(*local) {
+                let input = Self::actual_input(member, function, actuals);
+                target.join(&self.project_reference(&input, inner, &Vec::new()));
+            }
+            let value = self.bind(
+                snapshot,
+                function,
+                CallActuals {
+                    ty: inner,
+                    ..actuals
+                },
+            );
+            memory.push((target, value));
+        }
+        CallOutcome { returned, memory }
     }
 
     fn opaque_result(&mut self, args: &[Operand], actuals: CallActuals<'_>) -> Value {
@@ -233,7 +379,10 @@ impl Flow<'_> {
     }
 
     fn summary(&mut self) -> Summary {
-        let mut summary = Summary::default();
+        let mut summary = Summary {
+            written_inputs: self.written_inputs.clone(),
+            ..Summary::default()
+        };
         for index in 0..self.entries.len() {
             if !matches!(self.function.blocks[index].terminator, Terminator::Return) {
                 continue;
