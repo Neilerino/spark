@@ -1,0 +1,8 @@
+fn produce(): Map[String, Ref[Int]] {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    entries: Map[String, Ref[Int]] = {"one": borrowed}
+    copy: Map[String, Ref[Int]] = entries
+    return copy
+}
+fn main(): Int { return 0 }

@@ -1,0 +1,13 @@
+fn forwardA(input: Ref[Int], depth: Int): Map[String, Ref[Int]] {
+    if depth == 0 { return {"one": input} }
+    return forwardB(input, depth - 1)
+}
+fn forwardB(input: Ref[Int], depth: Int): Map[String, Ref[Int]] {
+    return forwardA(input, depth)
+}
+fn produce(): Map[String, Ref[Int]] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    return forwardA(borrowed, 2)
+}
+fn main(): Int { return 0 }

@@ -1,0 +1,8 @@
+fn produce(input: Ref[Int]): Map[String, Ref[Int]] {
+    value: Int = 7
+    original: Map[String, Ref[Int]]! = {"one": value}
+    saved: Map[String, Ref[Int]] = original
+    original = {"one": input}
+    return saved
+}
+fn main(): Int { return 0 }

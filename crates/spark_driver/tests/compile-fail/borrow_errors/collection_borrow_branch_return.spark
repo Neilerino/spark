@@ -1,0 +1,8 @@
+fn produce(input: Ref[Int], choose: Bool): Map[String, Ref[Int]] {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    entries: Map[String, Ref[Int]]! = {"one": input}
+    if choose { entries = {"one": borrowed} }
+    return entries
+}
+fn main(): Int { return 0 }

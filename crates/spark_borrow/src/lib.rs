@@ -42,6 +42,7 @@ pub mod check;
 pub mod errors;
 pub mod facts;
 pub mod liveness;
+mod provenance;
 pub mod regions;
 
 use spark_diagnostics::Diagnostics;
@@ -77,8 +78,8 @@ pub struct BorrowOutput {
 
 /// Runs borrow checking on all functions in the MIR.
 ///
-/// Functions whose signatures do not involve `Ref` types are skipped entirely,
-/// as they use default copy semantics and don't need borrow checking.
+/// Value provenance is checked for every function. Loan conflict analysis is
+/// skipped when no local type involves a reference.
 ///
 /// # Example
 ///
@@ -100,6 +101,7 @@ pub fn check(input: BorrowInput) -> BorrowOutput {
 
     let mut diagnostics = Diagnostics::new();
 
+    provenance::check_program_returns(&mir, &table, &mut diagnostics);
     for func in mir.functions.values() {
         check::check_indexed_write_storage(func, &table, &mut diagnostics);
         // Skip functions that don't use Ref types (optimization).
