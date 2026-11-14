@@ -37,7 +37,7 @@ impl Accesses {
     ) {
         use super::address::Dependency;
         self.demands.extend(reference.address_sources());
-        for ((path, origin), leaf) in &reference.leaves {
+        for ((path, origin, _), leaf) in &reference.leaves {
             if !path.is_empty() && *path != [Slot::Tail] {
                 continue;
             }
@@ -185,10 +185,10 @@ impl Flow<'_> {
     ) -> Value {
         use super::address::{Dependency, Endpoint};
         let mut result = Value::default();
-        for path in [Vec::new(), vec![Slot::Tail]] {
-            let Some(leaf) = reference.leaves.get(&(path, origin.clone())) else {
+        for ((path, candidate, _), leaf) in &reference.leaves {
+            if candidate != origin || (!path.is_empty() && *path != [Slot::Tail]) {
                 continue;
-            };
+            }
             if leaf.has_validation_hole(origin) {
                 result.join(&value::validation_hole(ty, self.table));
             }
@@ -215,7 +215,9 @@ impl Flow<'_> {
                             value
                         }
                     }
-                    Endpoint::Frame { .. } => value::tainted_from(ty, reference, self.table),
+                    Endpoint::Frame { .. } => {
+                        value::tainted_from(ty, reference, self.table).without_reference_captures()
+                    }
                     Endpoint::Input(selector) => self.symbolic_pointee(selector, ty, state),
                 };
                 result.join(&payload);
@@ -228,7 +230,9 @@ impl Flow<'_> {
                 }
             }
             if !leaf.opaque.is_empty() {
-                result.join(&value::tainted_from(ty, reference, self.table));
+                result.join(
+                    &value::tainted_from(ty, reference, self.table).without_reference_captures(),
+                );
             }
         }
         result
@@ -270,7 +274,24 @@ impl Flow<'_> {
                 },
             ),
         };
+        let fact_path = if let Intent::Payload(payload) = &selector.intent {
+            [payload.projection.clone(), vec![Slot::Deref]].concat()
+        } else {
+            Vec::new()
+        };
+        let qualified = if matches!(&selector.intent, Intent::Payload(_)) {
+            selector
+                .capture
+                .map(|capture| super::callbacks::FactSource {
+                    input: selector.input,
+                    capture: Some(capture),
+                    prefix: &fact_path,
+                })
+        } else {
+            None
+        };
         let address = Selector {
+            capture: selector.address_capture(),
             input: selector.input,
             selection,
             intent: Intent::Address(payload),
@@ -281,11 +302,11 @@ impl Flow<'_> {
             let mut address = view.root.selector();
             if let Intent::Address(payload) = &mut address.intent {
                 payload.projection = view.path;
-                if !view.root.exact() {
+                if !self.aliases.is_cell(&view.root) {
                     payload.kind = DerefKind::Residual;
                 }
             }
-            result.join(&self.symbolic_cell_pointee(&address, ty, state));
+            result.join(&self.symbolic_cell_pointee(&address, ty, state, qualified));
         }
         result
     }
@@ -295,6 +316,7 @@ impl Flow<'_> {
         address: &super::address::Selector,
         ty: TypeId,
         state: &State,
+        qualified: Option<super::callbacks::FactSource<'_>>,
     ) -> Value {
         use super::address::{Dependency, Intent, Selector, TypedPath};
         let Intent::Address(payload) = &address.intent else {
@@ -316,16 +338,17 @@ impl Flow<'_> {
             .concat(),
             self.table,
         );
-        let mut result = self.symbolic_input(ty, address.input, source_ty, &prefix);
+        let mut result = self.symbolic_pointee_input(ty, source_ty, &prefix, address, qualified);
         result
             .leaves
-            .retain(|(path, _), _| !covered.iter().any(|prefix| path.starts_with(prefix)));
+            .retain(|(path, _, _), _| !covered.iter().any(|prefix| path.starts_with(prefix)));
         result
             .callees
             .retain(|path, _| !covered.iter().any(|prefix| path.starts_with(prefix)));
-        for ((path, _), leaf) in &mut result.leaves {
+        for ((path, _, _), leaf) in &mut result.leaves {
             leaf.dependencies.clear();
             leaf.dependencies.insert(Dependency::InputValue(Selector {
+                capture: address.capture,
                 input: address.input,
                 selection: selection.clone(),
                 expected: Some(self.selected_type(ty, path)),
@@ -397,12 +420,12 @@ impl Flow<'_> {
         let mut pending = vec![(value, ty)];
         let mut seen: rustc_hash::FxHashMap<_, Value> = rustc_hash::FxHashMap::default();
         while let Some((value, ty)) = pending.pop() {
-            for ((path, origin), leaf) in &value.leaves {
+            for ((path, origin, capture), leaf) in &value.leaves {
                 let selected = self.selected_type(ty, path);
 
                 let sources = value
                     .sources
-                    .get(&(path.clone(), origin.clone()))
+                    .get(&(path.clone(), origin.clone(), *capture))
                     .cloned()
                     .unwrap_or_default();
                 let pointees = if let Ty::Ref { inner, .. } = self
@@ -414,8 +437,13 @@ impl Flow<'_> {
                     self.pointee_types(leaf)
                 };
                 if pointees.is_empty() {
-                    result.insert_leaf(Vec::new(), origin.clone(), leaf);
-                    result.insert_sourced(Vec::new(), origin.clone(), sources);
+                    result.insert_contribution(Vec::new(), origin.clone(), *capture, leaf);
+                    result.insert_source_contribution(
+                        Vec::new(),
+                        origin.clone(),
+                        *capture,
+                        sources,
+                    );
                     continue;
                 }
                 for pointee in pointees {
@@ -426,12 +454,22 @@ impl Flow<'_> {
                                 | spark_types::check_expr::CastKind::Deferred)
                         )
                     }) {
-                        result.insert_leaf(Vec::new(), origin.clone(), leaf);
-                        result.insert_sourced(Vec::new(), origin.clone(), sources.clone());
+                        result.insert_contribution(Vec::new(), origin.clone(), *capture, leaf);
+                        result.insert_source_contribution(
+                            Vec::new(),
+                            origin.clone(),
+                            *capture,
+                            sources.clone(),
+                        );
                     }
                     let mut reference = Value::default();
-                    reference.insert_leaf(Vec::new(), origin.clone(), leaf);
-                    reference.insert_sourced(Vec::new(), origin.clone(), sources.clone());
+                    reference.insert_contribution(Vec::new(), origin.clone(), *capture, leaf);
+                    reference.insert_source_contribution(
+                        Vec::new(),
+                        origin.clone(),
+                        *capture,
+                        sources.clone(),
+                    );
                     let context = seen.entry((origin.clone(), pointee)).or_default();
                     if !context.join(&reference) {
                         continue;

@@ -395,6 +395,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
     let residual = flow.residual_reference(
         &derived,
         &Port {
+            capture: None,
             input: Local(1),
             selection: vec![Slot::Element],
             pointee: callable,
@@ -424,7 +425,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
     assert!(exported_mixed
         .leaves
         .keys()
-        .any(|(_, origin)| *origin == Origin::ValidationHole));
+        .any(|(_, origin, _)| *origin == Origin::ValidationHole));
     assert!(exported_mixed
         .frame_sources(function.def_id)
         .any(|root| root == point));
@@ -590,11 +591,16 @@ fn known_function_placeholders_do_not_erase_widened_reference_captures() {
         );
         flow.callables = super::super::callbacks::Inputs::invocation();
         flow.callables.slots.insert(
-            (Local(1), vec![], callable),
+            (Local(1), vec![], callable, None),
             super::super::callbacks::Targets::function(outer),
         );
         flow.callables.slots.insert(
-            (Local(1), vec![Slot::Capture(outer, 0, callable)], callable),
+            (
+                Local(1),
+                vec![Slot::Capture(outer, 0, callable)],
+                callable,
+                None,
+            ),
             super::super::callbacks::Targets::function(inner),
         );
         let value = flow.symbolic_input(callable, Local(1), callable, &[]);
@@ -603,7 +609,7 @@ fn known_function_placeholders_do_not_erase_widened_reference_captures() {
             assert!(value
                 .leaves
                 .keys()
-                .any(|(path, _)| path == &[Slot::Capture(outer, 0, callable), Slot::Tail]));
+                .any(|(path, _, _)| path == &[Slot::Capture(outer, 0, callable), Slot::Tail]));
         }
     }
 }

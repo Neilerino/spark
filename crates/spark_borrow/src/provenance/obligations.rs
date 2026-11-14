@@ -48,8 +48,12 @@ impl Flow<'_> {
         let mut value = value.clone();
         if let Boundary::Invoke { checked, .. } = &boundary {
             let already_checked = |path: &[Slot]| matches!(path.first(), Some(Slot::Capture(owner, _, _)) if checked.contains(owner));
-            value.leaves.retain(|(path, _), _| !already_checked(path));
-            value.sources.retain(|(path, _), _| !already_checked(path));
+            value
+                .leaves
+                .retain(|(path, _, _), _| !already_checked(path));
+            value
+                .sources
+                .retain(|(path, _, _), _| !already_checked(path));
         }
         if value.leaves.is_empty() {
             return;

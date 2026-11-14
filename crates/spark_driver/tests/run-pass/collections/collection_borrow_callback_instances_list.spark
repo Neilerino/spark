@@ -1,0 +1,36 @@
+// TAG [SPARK-114]
+
+fn nest(callback: (): Void): (): Void { return fn(): Void { callback() } }
+fn clearer(target: Ref[Map[String, Ref[Int]]]!): (): Void {
+    return fn(): Void {
+        empty: Map[String, Ref[Int]] = {}
+        target = empty
+    }
+}
+fn produce(value: Ref[Int], chooseFirst: Bool): Map[String, Ref[Int]] {
+    left: Map[String, Ref[Int]]! = {"one": value}
+    right: Map[String, Ref[Int]]! = {}
+    firstTarget: Ref[Map[String, Ref[Int]]]! = left
+    secondTarget: Ref[Map[String, Ref[Int]]]! = right
+    first: (): Void = clearer(firstTarget)
+    second: (): Void = clearer(secondTarget)
+    callbacks: List[(): Void] = [first, second]
+    index: Int = if chooseFirst { 0 } else { 1 }
+    callbacks[index] to {
+        selected: (): Void -> {
+            wrapped: (): Void = nest(nest(nest(selected)))
+            wrapped()
+        },
+        Null -> first()
+    }
+    return left
+}
+fn main(): Int {
+    value: Int = 8
+    source: Ref[Int] = value
+    first: Map[String, Ref[Int]] = produce(source, true)
+    first["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    second: Map[String, Ref[Int]] = produce(source, false)
+    second["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    return 0
+}

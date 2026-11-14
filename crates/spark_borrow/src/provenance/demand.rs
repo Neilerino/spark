@@ -22,10 +22,11 @@ pub(super) struct Coordinate {
 pub(super) struct Atom {
     pub coordinate: Coordinate,
     pub origin: Origin,
+    pub capture: Option<super::value::ReferenceCapture>,
 }
 
 pub(super) type Demand = FxHashSet<Atom>;
-pub(super) type Sources = FxHashMap<(Path, Origin), Demand>;
+pub(super) type Sources = FxHashMap<super::value::Contribution, Demand>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Definition {
@@ -136,7 +137,7 @@ impl super::Flow<'_> {
                 prefix: prefix.clone(),
             });
         }
-        for ((path, origin), sources) in &value.sources {
+        for ((path, origin, capture), sources) in &value.sources {
             let path =
                 super::value::normalize(root, [prefix.clone(), path.clone()].concat(), self.table);
             let destination = Atom {
@@ -145,6 +146,7 @@ impl super::Flow<'_> {
                     path,
                 },
                 origin: origin.clone(),
+                capture: *capture,
             };
             transfer
                 .dependencies
@@ -326,9 +328,11 @@ impl super::State {
         if let Some(parents) = self
             .stored_value(&atom.coordinate.storage)
             .and_then(|value| {
-                value
-                    .leaves
-                    .get(&(atom.coordinate.path.clone(), atom.origin.clone()))
+                value.leaves.get(&(
+                    atom.coordinate.path.clone(),
+                    atom.origin.clone(),
+                    atom.capture,
+                ))
             })
         {
             result.extend(parents.parents.iter().cloned());
@@ -339,9 +343,11 @@ impl super::State {
     fn contains(&self, atom: &Atom) -> bool {
         self.stored_value(&atom.coordinate.storage)
             .is_some_and(|value| {
-                value
-                    .leaves
-                    .contains_key(&(atom.coordinate.path.clone(), atom.origin.clone()))
+                value.leaves.contains_key(&(
+                    atom.coordinate.path.clone(),
+                    atom.origin.clone(),
+                    atom.capture,
+                ))
             })
     }
 }
@@ -356,6 +362,7 @@ mod tests {
         Atom {
             coordinate: Coordinate { storage, path },
             origin: Origin::Loan(Point::new(BlockId(0), 0)),
+            capture: None,
         }
     }
 
@@ -370,6 +377,7 @@ mod tests {
     fn replacing_external_owner_preserves_independent_pointee_demand() {
         let owner = Port::root(Local(1), spark_types::TypeId::ERROR);
         let pointee = Port {
+            capture: None,
             input: Local(1),
             selection: vec![Slot::Deref, Slot::Field(spark_intern::sym("target"))],
             pointee: spark_types::TypeId::ERROR,

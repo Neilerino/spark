@@ -41,6 +41,17 @@ pub(super) struct Selector {
     pub selection: Path,
     pub intent: Intent,
     pub expected: Option<TypeId>,
+    pub capture: Option<super::value::ReferenceCapture>,
+}
+
+impl Selector {
+    pub const fn address_capture(&self) -> Option<super::value::ReferenceCapture> {
+        if matches!(&self.intent, Intent::Payload(_)) {
+            None
+        } else {
+            self.capture
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -124,7 +135,7 @@ impl super::Flow<'_> {
             parents: reference.address_support(),
             ..Default::default()
         };
-        for ((path, _), leaf) in &reference.leaves {
+        for ((path, _, _), leaf) in &reference.leaves {
             if !path.is_empty() && *path != [super::Slot::Tail] {
                 continue;
             }
@@ -141,7 +152,9 @@ impl super::Flow<'_> {
                     }
                     Dependency::InputValue(selector) => {
                         let mut selector = selector.clone();
+                        let capture = selector.address_capture();
                         if let Intent::Payload(payload) = &selector.intent {
+                            selector.capture = capture;
                             selector.selection = super::value::normalize(
                                 self.function.locals[selector.input.index()].ty,
                                 [

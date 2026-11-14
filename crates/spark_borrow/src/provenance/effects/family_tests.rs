@@ -70,12 +70,15 @@ fn residual_binding_filters_endpoints_without_erasing_opaque_or_ambiguous_altern
         })
     };
     let family = Port {
+        capture: None,
         input: Local(1),
         selection: vec![Slot::Element],
         pointee: map,
     };
     let root = Port::root(Local(2), map);
-    let aliases = Aliases::body_variants(&callee, &[family.clone(), root], &table).remove(0);
+    let aliases = Aliases::default()
+        .body_variants(&callee, &[family.clone(), root], &table)
+        .remove(0);
     let state = State::default();
     let flow = Flow::new(&caller, &table, None);
     for opaque in [false, true] {
