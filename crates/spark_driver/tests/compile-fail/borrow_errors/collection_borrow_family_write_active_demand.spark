@@ -1,0 +1,19 @@
+// TAG [SPARK-114]
+
+fn write(outputs: List[Ref[Map[String, Ref[List[Int]]]]!], value: Ref[List[Int]]): Void {
+    next: Map[String, Ref[List[Int]]] = {"one": value}
+    outputs[0] to { out: Ref[Map[String, Ref[List[Int]]]]! -> { out = next }, Null -> {} }
+}
+fn main(): Int {
+    source: List[Int]! = [1]
+    borrowed: Ref[List[Int]] = source
+    entries: Map[String, Ref[List[Int]]]! = {}
+    target: Ref[Map[String, Ref[List[Int]]]]! = entries
+    outputs: List[Ref[Map[String, Ref[List[Int]]]]!] = [target]
+    write(outputs, borrowed)
+    source[0] = 9
+    entries["one"] to { found: Ref[List[Int]] -> print(found.len()), Null -> print(0) }
+    empty: Map[String, Ref[List[Int]]] = {}
+    target = empty
+    return 0
+}
