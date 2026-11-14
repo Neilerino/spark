@@ -28,7 +28,7 @@ pub(super) struct Atom {
 pub(super) type Demand = FxHashSet<Atom>;
 pub(super) type Sources = FxHashMap<(Path, Origin), Demand>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Definition {
     pub bank: Bank,
     pub local: Local,
@@ -52,6 +52,18 @@ pub(super) struct Transfer {
 }
 
 impl Transfer {
+    pub fn join_alternative(&mut self, other: &Self) {
+        self.definitions
+            .retain(|definition| other.definitions.contains(definition));
+        self.seeds.extend(other.seeds.iter().cloned());
+        for (destination, sources) in &other.dependencies {
+            self.dependencies
+                .entry(destination.clone())
+                .or_default()
+                .extend(sources.iter().cloned());
+        }
+    }
+
     pub fn before(&self, after: &Demand) -> Demand {
         let mut before = self.seeds.clone();
         for atom in after {

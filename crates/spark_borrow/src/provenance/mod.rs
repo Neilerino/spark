@@ -36,6 +36,7 @@ type Origins = FxHashSet<Origin>;
 #[derive(Clone, Debug, Default)]
 struct State {
     values: FxHashMap<Local, Value>,
+    live: FxHashSet<Local>,
     cells: FxHashMap<Local, Value>,
     external: FxHashMap<Local, Value>,
     external_defined: FxHashSet<(Local, Path)>,
@@ -53,6 +54,7 @@ impl State {
 
     fn set(&mut self, local: Local, mut value: Value) {
         value.sources.clear();
+        self.live.insert(local);
         Self::set_value(&mut self.cells, local, value.clone());
         Self::set_value(&mut self.values, local, value);
     }
@@ -67,10 +69,13 @@ impl State {
 
     fn consume(&mut self, local: Local) {
         self.values.remove(&local);
+        self.live.remove(&local);
     }
 
     fn join(&mut self, other: &Self) -> bool {
-        let mut changed = false;
+        let before = self.live.len();
+        self.live.extend(other.live.iter().copied());
+        let mut changed = before != self.live.len();
         for (local, value) in &other.values {
             changed |= self.values.entry(*local).or_default().join(value);
         }
@@ -78,7 +83,8 @@ impl State {
             changed |= self.cells.entry(*local).or_default().join(value);
         }
         for (local, value) in &other.external {
-            changed |= self.external.entry(*local).or_default().join(value);
+            let existed = self.external.contains_key(local);
+            changed |= self.external.entry(*local).or_default().join(value) || !existed;
         }
         let before = self.external_defined.len();
         self.external_defined
@@ -170,7 +176,9 @@ impl<'a> Flow<'a> {
             let Some(mut state) = self.entries[block.index()].clone() else {
                 continue;
             };
-            self.transfer_block(block, &mut state);
+            if !self.transfer_block(block, &mut state) {
+                continue;
+            }
             for successor in &successors[block.index()] {
                 let entry = &mut self.entries[successor.index()];
                 let changed = if let Some(entry) = entry {
@@ -186,17 +194,17 @@ impl<'a> Flow<'a> {
         }
     }
 
-    fn transfer_block(&mut self, block: BlockId, state: &mut State) {
+    fn transfer_block(&mut self, block: BlockId, state: &mut State) -> bool {
         let body = &self.function.blocks[block.index()];
         for (index, statement) in body.statements.iter().enumerate() {
             let point = Point::new(block, index as u32);
             self.transfers.insert(point, demand::Transfer::default());
             self.transfer_statement(statement, point, state);
         }
-        self.transfer_terminator(block, state);
+        self.transfer_terminator(block, state)
     }
 
-    fn transfer_terminator(&mut self, block: BlockId, state: &mut State) {
+    fn transfer_terminator(&mut self, block: BlockId, state: &mut State) -> bool {
         let body = &self.function.blocks[block.index()];
         let point = Point::new(block, body.statements.len() as u32);
         self.transfers.insert(point, demand::Transfer::default());
@@ -225,13 +233,35 @@ impl<'a> Flow<'a> {
                     }
                 }
                 self.record_accesses(point, accesses, state);
-                let result = self.call_result(func, args, ty, point, state);
+                let Some(outcome) = self.call_result(func, args, ty, point, state) else {
+                    return false;
+                };
                 for arg in args {
                     if let Some(local) = consume(arg, state) {
                         self.record_consumed(point, local);
                     }
                 }
-                self.store(destination, result, point, state);
+                let common = self.transfers[&point].clone();
+                let mut alternatives: Option<(State, demand::Transfer)> = None;
+                for alternative in outcome {
+                    self.transfers.insert(point, common.clone());
+                    let mut after = state.clone();
+                    for (target, value) in alternative.memory {
+                        self.store_references(&target, &value, point, &mut after);
+                    }
+                    self.store(destination, alternative.returned, point, &mut after);
+                    let transfer = self.transfers[&point].clone();
+                    if let Some((joined, ledger)) = &mut alternatives {
+                        joined.join(&after);
+                        ledger.join_alternative(&transfer);
+                    } else {
+                        alternatives = Some((after, transfer));
+                    }
+                }
+                if let Some((after, transfer)) = alternatives {
+                    *state = after;
+                    self.transfers.insert(point, transfer);
+                }
             }
             Terminator::SwitchInt { discriminant, .. } => {
                 let mut accesses = Accesses::default();
@@ -243,6 +273,7 @@ impl<'a> Flow<'a> {
             }
             Terminator::Goto { .. } | Terminator::Return | Terminator::Unreachable => {}
         }
+        true
     }
 
     fn transfer_statement(&mut self, statement: &Statement, point: Point, state: &mut State) {
@@ -414,7 +445,13 @@ impl<'a> Flow<'a> {
     }
 
     fn store(&mut self, place: &Place, value: Value, point: Point, state: &mut State) {
-        if self.store_external(place, &value, point, state) {
+        if place
+            .projections
+            .iter()
+            .any(|projection| matches!(projection, Projection::Deref))
+        {
+            let targets = self.reference_metadata(place, point, state);
+            self.store_references(&targets, &value, point, state);
             return;
         }
         self.record_store(point, place, &value);

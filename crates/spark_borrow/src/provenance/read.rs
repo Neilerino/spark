@@ -229,7 +229,7 @@ impl Flow<'_> {
         result
     }
 
-    fn symbolic_pointee(
+    pub(super) fn symbolic_pointee(
         &self,
         selector: &super::address::Selector,
         ty: TypeId,

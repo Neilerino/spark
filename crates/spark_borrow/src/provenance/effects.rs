@@ -15,15 +15,26 @@ use super::{
 #[derive(Clone, Default)]
 pub(super) struct Summary {
     returned: Value,
+    normal_return: bool,
+    memory: FxHashMap<Local, Value>,
+    modified: FxHashSet<Local>,
     observed: Accesses,
 }
 
 impl Summary {
     fn join(&mut self, other: &Self) -> bool {
-        let returned = self.returned.join(&other.returned);
+        let mut changed = self.returned.join(&other.returned);
+        changed |= !self.normal_return && other.normal_return;
+        self.normal_return |= other.normal_return;
+        for (local, value) in &other.memory {
+            changed |= self.memory.entry(*local).or_default().join(value);
+        }
+        let before = self.modified.len();
+        self.modified.extend(other.modified.iter().copied());
+        changed |= before != self.modified.len();
         let before = self.observed.len();
         self.observed.extend(other.observed.iter().cloned());
-        returned || before != self.observed.len()
+        changed || before != self.observed.len()
     }
 }
 
@@ -31,6 +42,11 @@ impl Summary {
 pub(super) struct Context<'a> {
     mir: &'a Mir,
     summaries: &'a FxHashMap<DefId, Summary>,
+}
+
+pub(super) struct CallOutcome {
+    pub returned: Value,
+    pub memory: Vec<(super::value::Leaf, Value)>,
 }
 
 #[derive(Clone, Copy)]
@@ -97,7 +113,7 @@ impl Flow<'_> {
         ty: TypeId,
         point: Point,
         state: &State,
-    ) -> Value {
+    ) -> Option<Vec<CallOutcome>> {
         let callee = self.operand(func, state);
         let arguments: Vec<_> = args.iter().map(|arg| self.operand(arg, state)).collect();
         let actuals = CallActuals {
@@ -108,75 +124,112 @@ impl Flow<'_> {
             state,
         };
         let targets = callee.callees.get(&Vec::new());
-        let mut result = Value::default();
+        let mut outcomes = Vec::new();
         let mut unknown = targets.is_none_or(FxHashSet::is_empty);
         for def in targets.into_iter().flatten() {
             if let Some((function, summary)) = self.program.and_then(|context| {
                 Some((context.mir.functions.get(def)?, context.summaries.get(def)?))
             }) {
                 self.observe(summary, function, actuals);
-                result.join(&self.bind(&summary.returned, function, actuals));
+                if !summary.normal_return {
+                    continue;
+                }
+                let returned = self.bind(&summary.returned, function, actuals);
+                let mut memory = Vec::new();
+                for local in &summary.modified {
+                    let Some(snapshot) = summary.memory.get(local) else {
+                        continue;
+                    };
+                    let root = function.locals[local.index()].ty;
+                    let inner = child_type(root, &Slot::Deref, self.table).unwrap_or(TypeId::ERROR);
+                    let input = Self::actual_input(*local, function, actuals);
+                    let target = self.project_reference(&input, inner, &Vec::new());
+                    let value = self.bind(
+                        snapshot,
+                        function,
+                        CallActuals {
+                            ty: inner,
+                            ..actuals
+                        },
+                    );
+                    memory.push((target, value));
+                }
+                outcomes.push(CallOutcome { returned, memory });
             } else {
                 unknown = true;
             }
         }
         if unknown {
-            let mut origins = callee.origins();
-            for arg in &arguments {
-                origins.extend(arg.origins());
-            }
-            let mut accesses = Accesses::default();
-            for (argument, operand) in arguments.iter().zip(args) {
-                let ty = match operand {
-                    Operand::Copy(place) | Operand::Move(place) => Some(self.place_type(place)),
-                    Operand::Constant(_) => None,
-                };
-                accesses.observe_reference(argument, ty, &[], AccessKind::Value);
-            }
-            self.record_accesses(point, accesses, state);
-            origins.insert(Origin::Unproven(point));
-            let mut tainted = value::tainted(ty, &origins, self.table);
-            let parents: Origins = arguments
-                .iter()
-                .chain(std::iter::once(&callee))
-                .flat_map(|value| {
-                    value.origins().into_iter().chain(
-                        value
-                            .leaves
-                            .values()
-                            .flat_map(|leaf| leaf.parents.iter().cloned()),
-                    )
-                })
-                .collect();
-            let sources: super::demand::Demand = arguments
-                .iter()
-                .chain(std::iter::once(&callee))
-                .flat_map(Value::all_sources)
-                .collect();
-            let mut dependencies = FxHashSet::default();
-            for value in arguments.iter().chain(std::iter::once(&callee)) {
-                for leaf in value.leaves.values() {
-                    dependencies.extend(leaf.dependencies.iter().cloned());
-                    dependencies.extend(
-                        leaf.endpoints
-                            .iter()
-                            .cloned()
-                            .map(super::address::Dependency::Address),
-                    );
-                }
-            }
-            for (key, leaf) in &mut tainted.leaves {
-                leaf.parents.extend(parents.iter().cloned());
-                leaf.dependencies.extend(dependencies.iter().cloned());
-                leaf.opaque.insert(super::address::OpaqueSite {
-                    function: self.function.def_id,
-                    point,
-                });
-                tainted.sources.insert(key.clone(), sources.clone());
-            }
-            result.join(&tainted);
+            outcomes.push(CallOutcome {
+                returned: self.opaque_result(args, actuals),
+                memory: Vec::new(),
+            });
         }
-        result
+        (!outcomes.is_empty()).then_some(outcomes)
+    }
+
+    fn opaque_result(&mut self, args: &[Operand], actuals: CallActuals<'_>) -> Value {
+        let CallActuals {
+            callee,
+            arguments,
+            ty,
+            point,
+            state,
+        } = actuals;
+        let mut origins = callee.origins();
+        for arg in arguments {
+            origins.extend(arg.origins());
+        }
+        let mut accesses = Accesses::default();
+        for (argument, operand) in arguments.iter().zip(args) {
+            let ty = match operand {
+                Operand::Copy(place) | Operand::Move(place) => Some(self.place_type(place)),
+                Operand::Constant(_) => None,
+            };
+            accesses.observe_reference(argument, ty, &[], AccessKind::Value);
+        }
+        self.record_accesses(point, accesses, state);
+        origins.insert(Origin::Unproven(point));
+        let mut tainted = value::tainted(ty, &origins, self.table);
+        let parents: Origins = arguments
+            .iter()
+            .chain(std::iter::once(callee))
+            .flat_map(|value| {
+                value.origins().into_iter().chain(
+                    value
+                        .leaves
+                        .values()
+                        .flat_map(|leaf| leaf.parents.iter().cloned()),
+                )
+            })
+            .collect();
+        let sources: super::demand::Demand = arguments
+            .iter()
+            .chain(std::iter::once(callee))
+            .flat_map(Value::all_sources)
+            .collect();
+        let mut dependencies = FxHashSet::default();
+        for value in arguments.iter().chain(std::iter::once(callee)) {
+            for leaf in value.leaves.values() {
+                dependencies.extend(leaf.dependencies.iter().cloned());
+                dependencies.extend(
+                    leaf.endpoints
+                        .iter()
+                        .cloned()
+                        .map(super::address::Dependency::Address),
+                );
+            }
+        }
+        for (key, leaf) in &mut tainted.leaves {
+            leaf.parents.extend(parents.iter().cloned());
+            leaf.dependencies.extend(dependencies.iter().cloned());
+            leaf.opaque.insert(super::address::OpaqueSite {
+                function: self.function.def_id,
+                point,
+            });
+            tainted.sources.insert(key.clone(), sources.clone());
+        }
+        tainted
     }
 
     fn summary(&mut self) -> Summary {
@@ -189,30 +242,36 @@ impl Flow<'_> {
                 continue;
             };
             self.transfer_block(BlockId(index as u32), &mut state);
-            let value = state.value(Local::RETURN_PLACE);
-            for ((path, origin), leaf) in &value.leaves {
-                let exported = match origin {
-                    Origin::Loan(point) => Origin::Frame {
-                        function: self.function.def_id,
-                        point: *point,
-                    },
-                    Origin::Unproven(point) => Origin::Opaque {
-                        function: self.function.def_id,
-                        point: *point,
-                    },
-                    other => other.clone(),
+            summary.normal_return = true;
+            summary.returned.join(&export_value(
+                &state.value(Local::RETURN_PLACE),
+                self.function.def_id,
+            ));
+            for declaration in self
+                .function
+                .locals
+                .iter()
+                .skip(1)
+                .take(self.function.param_count as usize + self.function.captures.len())
+            {
+                let Some(inner) = child_type(declaration.ty, &Slot::Deref, self.table) else {
+                    continue;
                 };
-                let mut leaf = leaf.clone();
-                leaf.parents.clear();
-                summary.returned.insert_leaf(path.clone(), exported, &leaf);
-            }
-            for (path, callees) in &value.callees {
+                let selector = Selector {
+                    input: declaration.local,
+                    selection: Vec::new(),
+                    intent: Intent::Value,
+                    expected: Some(declaration.ty),
+                };
+                let value = self.symbolic_pointee(&selector, inner, &state);
                 summary
-                    .returned
-                    .callees
-                    .entry(path.clone())
+                    .memory
+                    .entry(declaration.local)
                     .or_default()
-                    .extend(callees);
+                    .join(&export_value(&value, self.function.def_id));
+                if state.external.contains_key(&declaration.local) {
+                    summary.modified.insert(declaration.local);
+                }
             }
         }
         for access in self.accesses.values().flatten() {
@@ -442,6 +501,30 @@ impl Flow<'_> {
     }
 }
 
+fn export_value(value: &Value, function: DefId) -> Value {
+    let mut result = Value {
+        callees: value.callees.clone(),
+        ..Default::default()
+    };
+    for ((path, origin), leaf) in &value.leaves {
+        let origin = match origin {
+            Origin::Loan(point) => Origin::Frame {
+                function,
+                point: *point,
+            },
+            Origin::Unproven(point) => Origin::Opaque {
+                function,
+                point: *point,
+            },
+            other => other.clone(),
+        };
+        let mut leaf = leaf.clone();
+        leaf.parents.clear();
+        result.insert_leaf(path.clone(), origin, &leaf);
+    }
+    result
+}
+
 fn retain_selected(
     value: &Value,
     retained: &mut super::value::Leaf,
@@ -463,3 +546,6 @@ fn retain_selected(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod write_tests;

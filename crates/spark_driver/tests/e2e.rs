@@ -1788,6 +1788,135 @@ fn collection_borrow_external_store_clear_preserves_copied_payloads() {
 }
 
 #[test]
+fn collection_borrow_helper_writes_preserve_caller_lifetimes() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/collections/collection_borrow_helper_write_input.spark",
+            "run-pass/collections/collection_borrow_helper_write_recursive_input.spark",
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, "7\n", "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/collection_borrow_helper_write_escape.spark",
+            "compile-fail/borrow_errors/collection_borrow_helper_write_recursive_escape.spark",
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result
+                    .stderr
+                    .contains("returned value contains a reference to local storage"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_helper_clear_replaces_caller_contents() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/collections/collection_borrow_helper_clears_source.spark",
+            "run-pass/collections/collection_borrow_helper_recursive_clear.spark",
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, "0\n", "{fixture} {args:?}");
+        }
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_helper_partial_clear_escape.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 1,
+            "partial clear {args:?}: {}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("returned value contains a reference to local storage"),
+            "partial clear {args:?}: {}",
+            result.stderr
+        );
+        let result = build_spark_with_args(
+            "build-pass/collection_borrow_nonreturning_writer.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 0,
+            "nonreturning {args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_indirect_writes_preserve_each_target_path() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_indirect_clear_or_keep.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 1, "{args:?}: {}", result.stderr);
+        assert!(
+            result
+                .stderr
+                .contains("cannot write to a borrowed collection"),
+            "{args:?}: {}",
+            result.stderr
+        );
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_indirect_all_clear.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "all clear {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "0\n", "all clear {args:?}");
+    }
+}
+
+#[test]
+fn collection_borrow_imported_writes_preserve_demand_and_prefix_reads() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, message) in [
+            (
+                "compile-fail/borrow_errors/collection_borrow_helper_write_live_source.spark",
+                "cannot write to a borrowed collection",
+            ),
+            (
+                "compile-fail/borrow_errors/collection_borrow_helper_write_live_sibling.spark",
+                "cannot write to a borrowed collection",
+            ),
+            (
+                "compile-fail/borrow_errors/collection_borrow_nonreturning_prefix_read.spark",
+                "borrowed value does not live long enough",
+            ),
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains(message),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_helper_write_cleared_source.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 0,
+            "cleared source {args:?}: {}",
+            result.stderr
+        );
+        assert_eq!(result.stdout, "9\n0\n", "cleared source {args:?}");
+    }
+}
+
+#[test]
 fn collection_borrow_loops_preserve_occurrence_lifetimes() {
     for args in [&[][..], &["--no-opt"][..]] {
         let negative = build_spark_with_args(
