@@ -1,0 +1,25 @@
+struct Holder { target: Ref[Map[String, Ref[List[Int]]]]! }
+fn exercise(holder: Ref[Holder]!, other: Ref[Map[String, Ref[List[Int]]]]!): Void {
+    saved: Ref[Map[String, Ref[List[Int]]]]! = holder.target
+    source: List[Int]! = [1]
+    borrowed: Ref[List[Int]] = source
+    entries: Map[String, Ref[List[Int]]] = {"one": borrowed}
+    holder.target = entries
+    replacement: Holder = Holder { target: other }
+    holder = replacement
+    source[0] = 9
+    snapshot: Map[String, Ref[List[Int]]] = saved
+    snapshot["one"] to { found: Ref[List[Int]] -> print(found.len()), Null -> print(0) }
+    empty: Map[String, Ref[List[Int]]] = {}
+    saved = empty
+}
+fn main(): Int {
+    first: Map[String, Ref[List[Int]]]! = {}
+    second: Map[String, Ref[List[Int]]]! = {}
+    firstRef: Ref[Map[String, Ref[List[Int]]]]! = first
+    secondRef: Ref[Map[String, Ref[List[Int]]]]! = second
+    holder: Holder! = Holder { target: firstRef }
+    view: Ref[Holder]! = holder
+    exercise(view, secondRef)
+    return 0
+}

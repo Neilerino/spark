@@ -104,14 +104,14 @@ fn pending_memory_summary_is_not_a_returning_empty_clear() {
         functions: std::collections::HashMap::from([(helper.def_id, helper)]),
     };
     let facts = crate::facts::extract_facts(&caller);
-    let ports = FxHashMap::from_iter([(DefId::new(9800), Vec::new())]);
+    let ports = FxHashMap::from_iter([(DefId::new(9800), Vec::new()), (caller.def_id, Vec::new())]);
     for normal_return in [false, true] {
         let summaries = FxHashMap::from_iter([(
             Key::distinct(DefId::new(9800)),
             Summary {
                 normal_return,
-                memory: FxHashMap::from_iter([(Local(1), Value::default())]),
-                modified: FxHashSet::from_iter([Local(1)]),
+                memory: FxHashMap::from_iter([(Port::root(Local(1), map), Value::default())]),
+                modified: FxHashSet::from_iter([Port::root(Local(1), map)]),
                 ..Summary::default()
             },
         )]);
@@ -217,7 +217,7 @@ fn empty_optional_write_footprints_reach_later_return_blocks() {
     flow.solve(&crate::facts::extract_facts(&function));
     let summary = flow.summary();
     assert!(summary.normal_return);
-    assert!(summary.modified.contains(&Local(1)), "a possible empty write is a footprint even without new borrowed payload or a definite-write mask");
+    assert!(summary.modified.contains(&Port::root(Local(1), map)), "a possible empty write is a footprint even without new borrowed payload or a definite-write mask");
 }
 
 #[test]
@@ -340,5 +340,109 @@ fn readonly_observed_inputs_do_not_enumerate_alias_partitions() {
         summaries.len(),
         1,
         "alias equality cannot affect entry-state reads without writes"
+    );
+}
+
+#[test]
+fn field_write_footprints_are_separate_within_one_input() {
+    use spark_mir::Projection;
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let reference = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let string = table.intern(Ty::String);
+    let map = table.intern(Ty::Map(string, reference));
+    let writable = table.intern(Ty::Ref {
+        inner: map,
+        mutable: true,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let readable = table.intern(Ty::Ref {
+        inner: map,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let pair = table.intern(Ty::Tuple(vec![writable, readable]));
+    let span = Span::DUMMY;
+    let function = MirFunction {
+        def_id: DefId::new(9820),
+        param_count: 2,
+        return_type: map,
+        locals: [map, pair, reference, map]
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| LocalDecl {
+                local: Local(index as u32),
+                ty,
+                name: None,
+                is_user_variable: false,
+                mutable: true,
+                span,
+            })
+            .collect(),
+        blocks: vec![BasicBlock {
+            statements: vec![
+                Statement::Assign {
+                    place: Place::from_local(Local(3)),
+                    rvalue: Rvalue::Aggregate(
+                        AggregateKind::Map,
+                        vec![
+                            Operand::Constant(Constant::String(spark_intern::sym("one"))),
+                            Operand::Copy(Place::from_local(Local(2))),
+                        ],
+                    ),
+                    span,
+                },
+                Statement::Assign {
+                    place: Place {
+                        local: Local(1),
+                        projections: vec![
+                            Projection::Field(spark_intern::sym("0")),
+                            Projection::Deref,
+                        ],
+                    },
+                    rvalue: Rvalue::Use(Operand::Copy(Place::from_local(Local(3)))),
+                    span,
+                },
+                Statement::Assign {
+                    place: Place::from_local(Local(0)),
+                    rvalue: Rvalue::Use(Operand::Copy(Place {
+                        local: Local(1),
+                        projections: vec![
+                            Projection::Field(spark_intern::sym("1")),
+                            Projection::Deref,
+                        ],
+                    })),
+                    span,
+                },
+            ],
+            terminator: Terminator::Return,
+            is_cleanup: false,
+        }],
+        captures: vec![],
+        is_async: false,
+        span,
+    };
+    let mut flow = Flow::new(&function, &table, None);
+    flow.solve(&crate::facts::extract_facts(&function));
+    let summary = flow.summary();
+    let written = Port {
+        input: Local(1),
+        selection: vec![Slot::Tuple(0)],
+        pointee: map,
+    };
+    let untouched = Port {
+        input: Local(1),
+        selection: vec![Slot::Tuple(1)],
+        pointee: map,
+    };
+    assert_eq!(summary.modified, FxHashSet::from_iter([written.clone()]));
+    assert!(summary.memory.contains_key(&written));
+    assert!(
+        !summary.modified.contains(&untouched),
+        "writing one field must not manufacture a write to its sibling"
     );
 }

@@ -3,19 +3,18 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_mir::Local;
 
-use super::{Origin, Path, Slot};
+use super::{aliases::Port, Origin, Path, Slot};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum Bank {
-    Logical,
-    Cell,
-    External,
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Storage {
+    Logical(Local),
+    Cell(Local),
+    External(Port),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Coordinate {
-    pub bank: Bank,
-    pub local: Local,
+    pub storage: Storage,
     pub path: Path,
 }
 
@@ -30,15 +29,13 @@ pub(super) type Sources = FxHashMap<(Path, Origin), Demand>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Definition {
-    pub bank: Bank,
-    pub local: Local,
+    pub storage: Storage,
     pub prefix: Path,
 }
 
 impl Definition {
     fn includes(&self, atom: &Atom) -> bool {
-        self.bank == atom.coordinate.bank
-            && self.local == atom.coordinate.local
+        self.storage == atom.coordinate.storage
             && !self.prefix.contains(&Slot::Tail)
             && atom.coordinate.path.starts_with(&self.prefix)
     }
@@ -89,8 +86,7 @@ impl super::Flow<'_> {
             .or_default()
             .definitions
             .push(Definition {
-                bank: Bank::Logical,
-                local,
+                storage: Storage::Logical(local),
                 prefix: Vec::new(),
             });
     }
@@ -103,12 +99,11 @@ impl super::Flow<'_> {
     ) {
         let root = self.function.locals[place.local.index()].ty;
         let (prefix, _) = self.projection_path(root, &place.projections);
-        for bank in [Bank::Logical, Bank::Cell] {
+        for storage in [Storage::Logical(place.local), Storage::Cell(place.local)] {
             self.record_path_store(
                 point,
                 Coordinate {
-                    bank,
-                    local: place.local,
+                    storage,
                     path: prefix.clone(),
                 },
                 value,
@@ -125,16 +120,19 @@ impl super::Flow<'_> {
         strong: bool,
     ) {
         let Coordinate {
-            bank,
-            local,
+            storage,
             path: prefix,
         } = destination;
-        let root = self.function.locals[local.index()].ty;
+        let root = match &storage {
+            Storage::Logical(local) | Storage::Cell(local) => {
+                self.function.locals[local.index()].ty
+            }
+            Storage::External(port) => port.pointee,
+        };
         let transfer = self.transfers.entry(point).or_default();
         if strong {
             transfer.definitions.push(Definition {
-                bank,
-                local,
+                storage: storage.clone(),
                 prefix: prefix.clone(),
             });
         }
@@ -142,7 +140,10 @@ impl super::Flow<'_> {
             let path =
                 super::value::normalize(root, [prefix.clone(), path.clone()].concat(), self.table);
             let destination = Atom {
-                coordinate: Coordinate { bank, local, path },
+                coordinate: Coordinate {
+                    storage: storage.clone(),
+                    path,
+                },
                 origin: origin.clone(),
             };
             transfer
@@ -173,11 +174,11 @@ impl super::Flow<'_> {
                         Point::new(block, self.function.blocks[index].statements.len() as u32);
                     let returned = state
                         .value(Local::RETURN_PLACE)
-                        .sourced(Bank::Logical, Local::RETURN_PLACE);
+                        .sourced(&Storage::Logical(Local::RETURN_PLACE));
                     let external = state.external.iter().flat_map(|(local, value)| {
                         value
                             .clone()
-                            .sourced(Bank::External, *local)
+                            .sourced(&Storage::External(local.clone()))
                             .sources
                             .into_values()
                             .flatten()
@@ -288,53 +289,60 @@ fn solve(
 
 impl super::State {
     fn atoms(&self) -> Demand {
-        [
-            (Bank::Logical, &self.values),
-            (Bank::Cell, &self.cells),
-            (Bank::External, &self.external),
-        ]
-        .into_iter()
-        .flat_map(|(bank, values)| {
-            values.iter().flat_map(move |(local, value)| {
+        self.values
+            .iter()
+            .map(|(local, value)| (Storage::Logical(*local), value))
+            .chain(
+                self.cells
+                    .iter()
+                    .map(|(local, value)| (Storage::Cell(*local), value)),
+            )
+            .chain(
+                self.external
+                    .iter()
+                    .map(|(port, value)| (Storage::External(port.clone()), value)),
+            )
+            .flat_map(|(storage, value)| {
                 value
                     .clone()
-                    .sourced(bank, *local)
+                    .sourced(&storage)
                     .sources
                     .into_values()
                     .flatten()
             })
-        })
-        .collect()
+            .collect()
+    }
+
+    fn stored_value(&self, storage: &Storage) -> Option<&super::Value> {
+        match storage {
+            Storage::Logical(local) => self.values.get(local),
+            Storage::Cell(local) => self.cells.get(local),
+            Storage::External(port) => self.external.get(port),
+        }
     }
 
     fn support(&self, atom: &Atom) -> super::Origins {
-        let values = match atom.coordinate.bank {
-            Bank::Logical => &self.values,
-            Bank::Cell => &self.cells,
-            Bank::External => &self.external,
-        };
         let mut result = super::Origins::from_iter([atom.origin.clone()]);
-        if let Some(parents) = values.get(&atom.coordinate.local).and_then(|value| {
-            value
-                .leaves
-                .get(&(atom.coordinate.path.clone(), atom.origin.clone()))
-        }) {
+        if let Some(parents) = self
+            .stored_value(&atom.coordinate.storage)
+            .and_then(|value| {
+                value
+                    .leaves
+                    .get(&(atom.coordinate.path.clone(), atom.origin.clone()))
+            })
+        {
             result.extend(parents.parents.iter().cloned());
         }
         result
     }
 
     fn contains(&self, atom: &Atom) -> bool {
-        let values = match atom.coordinate.bank {
-            Bank::Logical => &self.values,
-            Bank::Cell => &self.cells,
-            Bank::External => &self.external,
-        };
-        values.get(&atom.coordinate.local).is_some_and(|value| {
-            value
-                .leaves
-                .contains_key(&(atom.coordinate.path.clone(), atom.origin.clone()))
-        })
+        self.stored_value(&atom.coordinate.storage)
+            .is_some_and(|value| {
+                value
+                    .leaves
+                    .contains_key(&(atom.coordinate.path.clone(), atom.origin.clone()))
+            })
     }
 }
 
@@ -344,32 +352,58 @@ mod tests {
     use crate::facts::Point;
     use spark_mir::BlockId;
 
-    fn atom(bank: Bank, local: u32, path: Path) -> Atom {
+    fn atom(storage: Storage, path: Path) -> Atom {
         Atom {
-            coordinate: Coordinate {
-                bank,
-                local: Local(local),
-                path,
-            },
+            coordinate: Coordinate { storage, path },
             origin: Origin::Loan(Point::new(BlockId(0), 0)),
         }
     }
 
-    fn definition(bank: Bank, local: u32) -> Definition {
+    fn definition(storage: Storage) -> Definition {
         Definition {
-            bank,
-            local: Local(local),
+            storage,
             prefix: Vec::new(),
         }
     }
 
     #[test]
+    fn replacing_external_owner_preserves_independent_pointee_demand() {
+        let owner = Port::root(Local(1), spark_types::TypeId::ERROR);
+        let pointee = Port {
+            input: Local(1),
+            selection: vec![Slot::Deref, Slot::Field(spark_intern::sym("target"))],
+            pointee: spark_types::TypeId::ERROR,
+        };
+        let retained = atom(Storage::External(pointee.clone()), vec![Slot::Value]);
+        let mut transfer = Transfer {
+            definitions: vec![definition(Storage::External(owner))],
+            ..Transfer::default()
+        };
+        let demand = Demand::from_iter([retained.clone()]);
+        assert_eq!(
+            transfer.before(&demand),
+            demand,
+            "replacing the pointer-containing value cannot kill demand in its old pointee cell"
+        );
+        transfer
+            .definitions
+            .push(definition(Storage::External(pointee)));
+        assert!(
+            transfer.before(&Demand::from_iter([retained])).is_empty(),
+            "clearing the actual pointee cell ends that demand"
+        );
+    }
+
+    #[test]
     fn clearing_a_carrier_preserves_demand_for_its_sibling_copy() {
-        let removed = atom(Bank::Logical, 1, vec![Slot::Value]);
-        let old_cell = atom(Bank::Cell, 1, vec![Slot::Value]);
-        let sibling = atom(Bank::Logical, 2, vec![Slot::Value]);
+        let removed = atom(Storage::Logical(Local(1)), vec![Slot::Value]);
+        let old_cell = atom(Storage::Cell(Local(1)), vec![Slot::Value]);
+        let sibling = atom(Storage::Logical(Local(2)), vec![Slot::Value]);
         let transfer = Transfer {
-            definitions: vec![definition(Bank::Logical, 1), definition(Bank::Cell, 1)],
+            definitions: vec![
+                definition(Storage::Logical(Local(1))),
+                definition(Storage::Cell(Local(1))),
+            ],
             ..Transfer::default()
         };
         let after = [removed, old_cell, sibling.clone()].into_iter().collect();
@@ -378,11 +412,14 @@ mod tests {
 
     #[test]
     fn reissuing_a_reference_does_not_kill_an_old_carrier_with_the_same_origin() {
-        let fresh = atom(Bank::Logical, 1, Vec::new());
-        let retained = atom(Bank::Logical, 2, vec![Slot::Value]);
+        let fresh = atom(Storage::Logical(Local(1)), Vec::new());
+        let retained = atom(Storage::Logical(Local(2)), vec![Slot::Value]);
         assert_eq!(fresh.origin, retained.origin);
         let transfer = Transfer {
-            definitions: vec![definition(Bank::Logical, 1), definition(Bank::Cell, 1)],
+            definitions: vec![
+                definition(Storage::Logical(Local(1))),
+                definition(Storage::Cell(Local(1))),
+            ],
             ..Transfer::default()
         };
         let after = [fresh, retained.clone()].into_iter().collect();
@@ -391,10 +428,10 @@ mod tests {
 
     #[test]
     fn consuming_a_logical_value_preserves_its_addressable_contents() {
-        let logical = atom(Bank::Logical, 1, vec![Slot::Tuple(0)]);
-        let cell = atom(Bank::Cell, 1, vec![Slot::Tuple(0)]);
+        let logical = atom(Storage::Logical(Local(1)), vec![Slot::Tuple(0)]);
+        let cell = atom(Storage::Cell(Local(1)), vec![Slot::Tuple(0)]);
         let transfer = Transfer {
-            definitions: vec![definition(Bank::Logical, 1)],
+            definitions: vec![definition(Storage::Logical(Local(1)))],
             ..Transfer::default()
         };
         let after = [logical, cell.clone()].into_iter().collect();
@@ -403,11 +440,14 @@ mod tests {
 
     #[test]
     fn copied_payload_depends_on_its_cell_and_the_copy_reads_its_wrapper() {
-        let payload = atom(Bank::Logical, 3, vec![Slot::Value]);
-        let source = atom(Bank::Cell, 1, vec![Slot::Value]);
-        let wrapper = atom(Bank::Logical, 2, Vec::new());
+        let payload = atom(Storage::Logical(Local(3)), vec![Slot::Value]);
+        let source = atom(Storage::Cell(Local(1)), vec![Slot::Value]);
+        let wrapper = atom(Storage::Logical(Local(2)), Vec::new());
         let transfer = Transfer {
-            definitions: vec![definition(Bank::Logical, 3), definition(Bank::Cell, 3)],
+            definitions: vec![
+                definition(Storage::Logical(Local(3))),
+                definition(Storage::Cell(Local(3))),
+            ],
             dependencies: FxHashMap::from_iter([(
                 payload.clone(),
                 [source.clone()].into_iter().collect(),
@@ -426,11 +466,10 @@ mod tests {
 
     #[test]
     fn widened_tail_does_not_authorize_a_strong_subpath_kill() {
-        let retained = atom(Bank::Logical, 1, vec![Slot::Value, Slot::Tail]);
+        let retained = atom(Storage::Logical(Local(1)), vec![Slot::Value, Slot::Tail]);
         let transfer = Transfer {
             definitions: vec![Definition {
-                bank: Bank::Logical,
-                local: Local(1),
+                storage: Storage::Logical(Local(1)),
                 prefix: vec![Slot::Value, Slot::Tail],
             }],
             ..Transfer::default()

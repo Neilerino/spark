@@ -7,11 +7,95 @@ use spark_mir::{Local, MirFunction};
 use spark_resolve::DefId;
 use spark_types::{TypeId, TypeTable};
 
-use super::address::{Endpoint, Intent};
+use super::address::{Endpoint, Intent, Selector, TypedPath};
 use super::{child_type, Flow, Path, Slot, Value};
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Port {
+    pub input: Local,
+    pub selection: Path,
+    pub pointee: TypeId,
+}
+
+impl Port {
+    pub fn from_selector(
+        selector: &Selector,
+        function: &MirFunction,
+        table: &TypeTable,
+    ) -> Option<Self> {
+        let root = function.locals[selector.input.index()].ty;
+        let (selection, pointee) = match &selector.intent {
+            Intent::Address(payload) => (selector.selection.clone(), payload.pointee),
+            Intent::Value => {
+                let ty = selector
+                    .expected
+                    .unwrap_or_else(|| Self::selected_type(root, &selector.selection, table));
+                (
+                    selector.selection.clone(),
+                    child_type(ty, &Slot::Deref, table)?,
+                )
+            }
+            Intent::Payload(payload) => {
+                let ty = selector.expected.unwrap_or_else(|| {
+                    Self::selected_type(payload.pointee, &payload.projection, table)
+                });
+                let selection = super::value::normalize(
+                    root,
+                    [
+                        selector.selection.clone(),
+                        vec![Slot::Deref],
+                        payload.projection.clone(),
+                    ]
+                    .concat(),
+                    table,
+                );
+                (selection, child_type(ty, &Slot::Deref, table)?)
+            }
+        };
+        Some(Self {
+            input: selector.input,
+            selection,
+            pointee,
+        })
+    }
+
+    pub const fn root(input: Local, pointee: TypeId) -> Self {
+        Self {
+            input,
+            selection: Vec::new(),
+            pointee,
+        }
+    }
+
+    pub fn selector(&self) -> Selector {
+        Selector {
+            input: self.input,
+            selection: self.selection.clone(),
+            intent: Intent::Address(TypedPath {
+                pointee: self.pointee,
+                projection: Vec::new(),
+            }),
+            expected: Some(self.pointee),
+        }
+    }
+
+    pub fn exact(&self) -> bool {
+        !self
+            .selection
+            .iter()
+            .any(|slot| matches!(slot, Slot::Element | Slot::Key | Slot::Value | Slot::Tail))
+    }
+
+    fn selected_type(mut ty: TypeId, path: &[Slot], table: &TypeTable) -> TypeId {
+        for slot in path {
+            ty = child_type(ty, slot, table).unwrap_or(TypeId::ERROR);
+        }
+        ty
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub(super) struct Aliases(Vec<(Local, Local)>);
+pub(super) struct Aliases(Vec<(Port, Port)>);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Key {
@@ -29,35 +113,38 @@ impl Key {
 }
 
 impl Aliases {
-    pub fn representative(&self, input: Local) -> Local {
+    pub fn representative(&self, input: &Port) -> Port {
         self.0
             .iter()
-            .find_map(|(local, representative)| (*local == input).then_some(*representative))
-            .unwrap_or(input)
+            .find_map(|(port, representative)| (port == input).then(|| representative.clone()))
+            .unwrap_or_else(|| input.clone())
     }
 
-    pub fn body_variants(function: &MirFunction, ports: &[Local], table: &TypeTable) -> Vec<Self> {
-        let exclusive = |local: Local| {
-            let ty = function.locals[local.index()].ty;
+    pub fn body_variants(function: &MirFunction, ports: &[Port], table: &TypeTable) -> Vec<Self> {
+        let exclusive = |port: &Port| {
+            let ty = Port::selected_type(
+                function.locals[port.input.index()].ty,
+                &port.selection,
+                table,
+            );
             matches!(table.resolve(ty), spark_types::Ty::Mutable(_))
                 || matches!(
                     table.resolve(super::value::strip_mutable(ty, table)),
                     spark_types::Ty::Ref { mutable: true, .. }
                 )
         };
-        Self::variants(function, ports, table, |left, right, equal| {
+        Self::variants(ports, table, |left, right, equal| {
             !(equal && exclusive(left) && exclusive(right))
         })
     }
 
     pub fn call_variants(
-        function: &MirFunction,
-        ports: &[Local],
+        ports: &[Port],
         table: &TypeTable,
-        locations: &FxHashMap<Local, Option<FxHashSet<Location>>>,
+        locations: &FxHashMap<Port, Option<FxHashSet<Location>>>,
     ) -> Vec<Self> {
-        Self::variants(function, ports, table, |left, right, equal| {
-            match (&locations[&left], &locations[&right]) {
+        Self::variants(ports, table, |left, right, equal| {
+            match (&locations[left], &locations[right]) {
                 (Some(left), Some(right)) if left.len() == 1 && right.len() == 1 => {
                     equal == (left == right)
                 }
@@ -67,49 +154,42 @@ impl Aliases {
         })
     }
 
-    pub fn members(&self, representative: Local) -> impl Iterator<Item = Local> + '_ {
-        std::iter::once(representative).chain(
+    pub fn members<'a>(&'a self, representative: &'a Port) -> impl Iterator<Item = Port> + 'a {
+        std::iter::once(representative.clone()).chain(
             self.0
                 .iter()
-                .filter_map(move |(local, root)| (*root == representative).then_some(*local)),
+                .filter(move |(_, root)| root == representative)
+                .map(|(port, _)| port.clone()),
         )
     }
 
     fn variants(
-        function: &MirFunction,
-        ports: &[Local],
+        ports: &[Port],
         table: &TypeTable,
-        allowed: impl Fn(Local, Local, bool) -> bool,
+        allowed: impl Fn(&Port, &Port, bool) -> bool,
     ) -> Vec<Self> {
         fn visit(
-            function: &MirFunction,
-            ports: &[Local],
+            ports: &[Port],
             table: &TypeTable,
             index: usize,
             current: &mut Aliases,
-            allowed: &impl Fn(Local, Local, bool) -> bool,
+            allowed: &impl Fn(&Port, &Port, bool) -> bool,
             result: &mut Vec<Aliases>,
         ) {
             if index == ports.len() {
                 result.push(current.clone());
                 return;
             }
-            let local = ports[index];
-            let ty = child_type(function.locals[local.index()].ty, &Slot::Deref, table)
-                .unwrap_or(TypeId::ERROR);
+            let local = ports[index].clone();
+            let ty = local.pointee;
             let mut representatives = FxHashSet::default();
-            let mut candidates = vec![local];
+            let mut candidates = vec![local.clone()];
             for previous in &ports[..index] {
-                let representative = current.representative(*previous);
-                if !representatives.insert(representative) {
+                let representative = current.representative(previous);
+                if !representatives.insert(representative.clone()) {
                     continue;
                 }
-                let other = child_type(
-                    function.locals[representative.index()].ty,
-                    &Slot::Deref,
-                    table,
-                )
-                .unwrap_or(TypeId::ERROR);
+                let other = representative.pointee;
                 if matches!(
                     spark_types::check_expr::cast_kind(ty, other, table),
                     Ok(spark_types::check_expr::CastKind::Identity
@@ -121,32 +201,24 @@ impl Aliases {
             for representative in candidates {
                 if ports[..index].iter().any(|previous| {
                     !allowed(
-                        local,
-                        *previous,
-                        representative == current.representative(*previous),
+                        &local,
+                        previous,
+                        representative == current.representative(previous),
                     )
                 }) {
                     continue;
                 }
                 if representative != local {
-                    current.0.push((local, representative));
+                    current.0.push((local.clone(), representative.clone()));
                 }
-                visit(function, ports, table, index + 1, current, allowed, result);
+                visit(ports, table, index + 1, current, allowed, result);
                 if representative != local {
                     current.0.pop();
                 }
             }
         }
         let mut result = Vec::new();
-        visit(
-            function,
-            ports,
-            table,
-            0,
-            &mut Self::default(),
-            &allowed,
-            &mut result,
-        );
+        visit(ports, table, 0, &mut Self::default(), &allowed, &mut result);
         result
     }
 }
@@ -158,7 +230,7 @@ pub(super) enum Location {
         local: Local,
         path: Path,
     },
-    Input(Local),
+    Input(Port),
 }
 
 impl Flow<'_> {
@@ -189,11 +261,13 @@ impl Flow<'_> {
                         path: location.clone(),
                     }
                 }
-                Endpoint::Input(selector)
-                    if selector.selection.is_empty()
-                        && matches!(&selector.intent, Intent::Address(payload) if payload.projection.is_empty()) =>
+                Endpoint::Input(selector) if matches!(&selector.intent, Intent::Address(payload) if payload.projection.is_empty()) =>
                 {
-                    Location::Input(self.aliases.representative(selector.input))
+                    let port = Port::from_selector(selector, self.function, self.table)?;
+                    if !port.exact() {
+                        return None;
+                    }
+                    Location::Input(self.aliases.representative(&port))
                 }
                 Endpoint::Frame { .. } | Endpoint::Input(_) => return None,
             };
@@ -311,7 +385,9 @@ mod tests {
             is_async: false,
             span: Span::DUMMY,
         };
-        let ports: Vec<_> = (1..=20).map(Local).collect();
+        let ports: Vec<_> = (1..=20)
+            .map(|index| Port::root(Local(index), map))
+            .collect();
         assert_eq!(
             Aliases::body_variants(&function, &ports, &table),
             vec![Aliases::default()]
@@ -320,28 +396,28 @@ mod tests {
             .iter()
             .map(|local| {
                 (
-                    *local,
-                    Some(std::iter::once(Location::Input(*local)).collect()),
+                    local.clone(),
+                    Some(std::iter::once(Location::Input(local.clone())).collect()),
                 )
             })
             .collect();
         assert_eq!(
-            Aliases::call_variants(&function, &ports, &table, &locations),
+            Aliases::call_variants(&ports, &table, &locations),
             vec![Aliases::default()]
         );
         let same = ports
             .iter()
             .map(|local| {
                 (
-                    *local,
-                    Some(std::iter::once(Location::Input(Local(1))).collect()),
+                    local.clone(),
+                    Some(std::iter::once(Location::Input(Port::root(Local(1), map))).collect()),
                 )
             })
             .collect();
-        let variants = Aliases::call_variants(&function, &ports, &table, &same);
+        let variants = Aliases::call_variants(&ports, &table, &same);
         assert_eq!(variants.len(), 1, "actual calls remain modeled even if existing permission checks reject aliasing mutable inputs");
         assert!(ports
             .iter()
-            .all(|local| variants[0].representative(*local) == Local(1)));
+            .all(|local| variants[0].representative(local) == Port::root(Local(1), map)));
     }
 }

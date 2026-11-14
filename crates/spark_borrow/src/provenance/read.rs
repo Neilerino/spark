@@ -139,7 +139,7 @@ impl Flow<'_> {
     ) -> Value {
         let mut value = state
             .value(place.local)
-            .sourced(super::demand::Bank::Logical, place.local);
+            .sourced(&super::demand::Storage::Logical(place.local));
         let mut ty = self.function.locals[place.local.index()].ty;
         for (index, projection) in place.projections.iter().enumerate() {
             let slot = projection_slot(projection, ty, self.table);
@@ -199,7 +199,7 @@ impl Flow<'_> {
                         let value = self.project_path(
                             state
                                 .cell(*local)
-                                .sourced(super::demand::Bank::Cell, *local),
+                                .sourced(&super::demand::Storage::Cell(*local)),
                             *root_ty,
                             location,
                             state,

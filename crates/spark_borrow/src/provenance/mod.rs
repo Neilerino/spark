@@ -39,8 +39,9 @@ struct State {
     values: FxHashMap<Local, Value>,
     live: FxHashSet<Local>,
     cells: FxHashMap<Local, Value>,
-    external: FxHashMap<Local, Value>,
-    external_defined: FxHashSet<(Local, Path)>,
+    external: FxHashMap<aliases::Port, Value>,
+    external_defined: FxHashSet<aliases::Port>,
+    modified_ports: FxHashSet<aliases::Port>,
     invalidated: FxHashMap<(Local, Path), FxHashSet<Point>>,
 }
 
@@ -85,8 +86,12 @@ impl State {
         }
         for (local, value) in &other.external {
             let existed = self.external.contains_key(local);
-            changed |= self.external.entry(*local).or_default().join(value) || !existed;
+            changed |= self.external.entry(local.clone()).or_default().join(value) || !existed;
         }
+        let before = self.modified_ports.len();
+        self.modified_ports
+            .extend(other.modified_ports.iter().cloned());
+        changed |= before != self.modified_ports.len();
         let before = self.external_defined.len();
         self.external_defined
             .retain(|key| other.external_defined.contains(key));
@@ -108,7 +113,7 @@ struct Flow<'a> {
     program: Option<effects::Context<'a>>,
     aliases: aliases::Aliases,
     requests: FxHashSet<aliases::Key>,
-    written_inputs: FxHashSet<Local>,
+    written_inputs: FxHashSet<aliases::Port>,
     accesses: FxHashMap<Point, Accesses>,
     transfers: FxHashMap<Point, demand::Transfer>,
     invalid_reads: FxHashSet<(Point, Point, Origin)>,

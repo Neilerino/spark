@@ -36,7 +36,7 @@ fn tail_selection_joins_support_for_repeated_origins_in_different_slots() {
             .with_address_support(&std::iter::once(parent.clone()).collect());
         value.join(&contribution.prefixed(Slot::Tuple(index), tuple, &table));
     }
-    let value = value.sourced(super::super::demand::Bank::Logical, Local(1));
+    let value = value.sourced(&super::super::demand::Storage::Logical(Local(1)));
     let selected = flow.tail_reference_value(value, tuple, Some(int), &State::default());
     assert_eq!(
         selected.address_sources().len(),
@@ -89,7 +89,7 @@ fn opaque_pointee_copy_preserves_reaching_support() {
             ..Default::default()
         })
         .with_address_support(&std::iter::once(parent.clone()).collect())
-        .sourced(super::super::demand::Bank::Logical, Local(1));
+        .sourced(&super::super::demand::Storage::Logical(Local(1)));
     let payload = flow.dereference(&wrapper, list_ref, &State::default());
     assert!(
         payload
@@ -141,7 +141,7 @@ fn opaque_tail_selection_preserves_reaching_support() {
             ..Default::default()
         })
         .with_address_support(&std::iter::once(parent.clone()).collect())
-        .sourced(super::super::demand::Bank::Logical, Local(1));
+        .sourced(&super::super::demand::Storage::Logical(Local(1)));
     let selected = flow.tail_reference_value(wrapper, list_ref, Some(int), &State::default());
     assert!(
         selected.address_support().contains(&parent),

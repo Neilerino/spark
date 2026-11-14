@@ -4,7 +4,7 @@ use spark_resolve::DefId;
 use spark_types::{Ty, TypeId, TypeTable};
 
 use super::address::{Dependency, Endpoint, Intent, OpaqueSite, Selector};
-use super::demand::{Atom, Bank, Coordinate, Sources};
+use super::demand::{Atom, Coordinate, Sources, Storage};
 use super::{Origin, Origins};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -122,7 +122,7 @@ impl Value {
         changed
     }
 
-    pub fn sourced(mut self, bank: Bank, local: spark_mir::Local) -> Self {
+    pub fn sourced(mut self, storage: &Storage) -> Self {
         self.sources.clear();
         for (path, origin) in self.leaves.keys() {
             self.sources
@@ -130,8 +130,7 @@ impl Value {
                 .or_default()
                 .insert(Atom {
                     coordinate: Coordinate {
-                        bank,
-                        local,
+                        storage: storage.clone(),
                         path: path.clone(),
                     },
                     origin: origin.clone(),
