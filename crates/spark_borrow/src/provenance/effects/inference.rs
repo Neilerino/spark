@@ -11,19 +11,26 @@ type EventVocabulary = FxHashMap<Key, FxHashSet<EventKey>>;
 
 #[derive(Default)]
 struct Outputs {
+    definitions: FxHashSet<crate::provenance::aliases::View>,
     callbacks: crate::provenance::tasks::outputs::CallbackOutputs,
     messages: FxHashSet<crate::provenance::tasks::fresh_outputs::Recipe>,
 }
 type OutputVocabulary = FxHashMap<Key, Outputs>;
 
 fn discover_outputs(outputs: &mut OutputVocabulary, key: &Key, summary: &Summary) -> bool {
-    if summary.returned_callbacks.is_empty() && summary.fresh_outputs.is_empty() {
+    if summary.returned_callbacks.is_empty()
+        && summary.fresh_outputs.is_empty()
+        && summary.modified.is_empty()
+    {
         return false;
     }
     let known = outputs.entry(key.clone()).or_default();
+    let before_definitions = known.definitions.len();
+    known.definitions.extend(summary.modified.iter().cloned());
     let before = known.messages.len();
     known.messages.extend(summary.fresh_outputs.keys().cloned());
-    let mut changed = before != known.messages.len();
+    let mut changed =
+        before != known.messages.len() || before_definitions != known.definitions.len();
     for (ty, output) in &summary.returned_callbacks {
         changed |= known.callbacks.entry(*ty).or_default().join(output);
     }
@@ -280,12 +287,19 @@ impl Program<'_> {
                         .and_then(|bounds| bounds.get(key))
                         .cloned()
                         .unwrap_or_else(|| {
-                            Proof::universe(
+                            let mut proof = Proof::universe(
                                 &self.mir.functions[&key.function],
                                 self.table,
                                 summary.normal_return,
                                 events.get(key),
-                            )
+                            );
+                            proof.seed_actual_definitions(
+                                outputs
+                                    .get(key)
+                                    .into_iter()
+                                    .flat_map(|output| output.definitions.iter().cloned()),
+                            );
+                            proof
                         }),
                 )
             })
@@ -387,3 +401,6 @@ impl Program<'_> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(in crate::provenance) mod test_support;

@@ -43,6 +43,7 @@ pub(super) struct Summary {
     residual_callbacks: FxHashMap<(std::sync::Arc<super::tasks::residual::Key>, TypeId), Value>,
     written_inputs: FxHashSet<View>,
     unknown_copy_clobber: bool,
+    unknown_memory_write: bool,
     observed: Accesses,
     obligations: FxHashMap<super::obligations::Boundary, Value>,
 }
@@ -109,6 +110,8 @@ impl Summary {
         }
         changed |= !self.unknown_copy_clobber && other.unknown_copy_clobber;
         self.unknown_copy_clobber |= other.unknown_copy_clobber;
+        changed |= !self.unknown_memory_write && other.unknown_memory_write;
+        self.unknown_memory_write |= other.unknown_memory_write;
         for (event, value) in &other.prefix_memory {
             let existed = self.prefix_memory.contains_key(event);
             changed |= self
@@ -250,8 +253,8 @@ mod prefix;
 mod receive_prefix;
 mod receive_snapshots;
 pub(super) use prefix::{
-    join_prefix, EventKey, Memory as PrefixMemory, MemoryEvent, PrefixOccurrence, PrefixWrites,
-    ReachedPrefix, Receive,
+    join_prefix, EventKey, Execution, Memory as PrefixMemory, MemoryEvent, MemoryKey,
+    PrefixOccurrence, PrefixWrites, ReachedPrefix, Receive,
 };
 pub(super) use receive_snapshots::ReceiveSnapshots;
 mod history;
@@ -374,14 +377,11 @@ impl Flow<'_> {
                     ..actuals
                 };
                 self.observe_writes(summary, function, actuals);
-                let prefix = self.bind_prefix(summary, function, actuals, &key, Some(args), None);
+                let source = prefix::PrefixContext::Call(args);
+                let prefix = self.bind_prefix(summary, function, actuals, &key, source);
                 self.observe_prefix(&prefix, point, state);
                 if !summary.normal_return {
-                    dispatch.diverging.push(PrefixWrites {
-                        memory: prefix.memory,
-                        queues: prefix.queues,
-                        residuals: prefix.residuals,
-                    });
+                    dispatch.diverging.push(prefix.into_writes());
                     continue;
                 }
                 let mut outcome = self.bind_outcome(summary, function, actuals, &key, args, prefix);
@@ -409,6 +409,7 @@ impl Flow<'_> {
             dispatch.returning.push(outcome);
         }
         if open {
+            self.unknown_memory_write = true;
             let mut outcome = self.open_outcome(ty, point);
             outcome.retained_captures = self.retained_capture_witnesses(None, actuals);
             dispatch.returning.push(outcome);
@@ -575,6 +576,7 @@ impl Flow<'_> {
         function: &MirFunction,
         actuals: CallActuals<'_>,
     ) {
+        self.unknown_memory_write |= summary.unknown_memory_write;
         for view in &summary.written_inputs {
             let mut input = self.port_input(&view.root, function, actuals);
             if !actuals.is_cell(&view.root) {
@@ -599,6 +601,7 @@ impl Flow<'_> {
         let mut summary = Summary {
             written_inputs: self.written_inputs.clone(),
             unknown_copy_clobber: self.unknown_copy_clobber,
+            unknown_memory_write: self.unknown_memory_write,
             ..Summary::default()
         };
         for index in 0..self.entries.len() {

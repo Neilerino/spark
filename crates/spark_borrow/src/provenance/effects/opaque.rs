@@ -130,6 +130,7 @@ impl Flow<'_> {
         if self.is_builtin_callee(actuals.callee) {
             return Vec::new();
         }
+        self.unknown_memory_write = true;
         let mut clobbered = FxHashSet::default();
         let callee_ty = super::super::operand_type(func, self.function);
         let parameters = match self

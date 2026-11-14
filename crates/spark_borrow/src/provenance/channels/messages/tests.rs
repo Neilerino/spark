@@ -183,7 +183,7 @@ fn an_actual_send_owns_one_writable_contribution_and_preserves_its_entry_sources
             &stored,
             Vec::new(),
             actor.clone(),
-            (Vec::new(), true),
+            (Vec::new(), true, false),
             point,
             &mut state
         ));
@@ -284,6 +284,7 @@ fn a_send_import_that_clobbers_its_receiver_archives_both_messages() {
             .unwrap();
         view.memory.import(
             std::sync::Arc::new(Lane {
+                execution: crate::provenance::effects::Execution::Current,
                 event: OpaqueSite {
                     function: flow.function.def_id,
                     point,

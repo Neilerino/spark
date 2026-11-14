@@ -6649,3 +6649,90 @@ fn collection_borrow_future_actual_clear_after_join_retires_settled_memory() {
         }
     }
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_normal_final_clear_retires_temporary_memory() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/async/future_task_final_clear_scoped.spark",
+            "run-pass/async/future_task_final_clear_implicit_join.spark",
+        ] {
+            let cleared = run_spark_with_args(fixture, args);
+            assert_eq!(
+                cleared.exit_code, 0,
+                "{fixture} {args:?}: {}",
+                cleared.stderr
+            );
+            assert_eq!(cleared.stdout.trim(), "0", "{fixture} {args:?}");
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_future_normal_final_clear_requires_every_path() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let retained = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_final_clear_missing_branch.spark",
+            args,
+        );
+        assert_ne!(retained.exit_code, 0, "{args:?}");
+        assert!(
+            retained.stderr.contains("owner was dropped"),
+            "{args:?}: {}",
+            retained.stderr
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_future_normal_final_clear_preserves_independent_borrows() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "compile-fail/borrow_errors/future_task_final_clear_competing_writer.spark",
+            "compile-fail/borrow_errors/future_task_final_clear_retained_message.spark",
+            "compile-fail/borrow_errors/future_task_final_clear_same_spawn_site.spark",
+        ] {
+            let retained = build_spark_with_args(fixture, args);
+            assert_ne!(retained.exit_code, 0, "{fixture} {args:?}");
+            assert!(
+                retained.stderr.contains("owner was dropped"),
+                "{fixture} {args:?}: {}",
+                retained.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_future_helper_clear_requires_join_before_store() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "compile-fail/borrow_errors/future_helper_clear_before_join.spark",
+            "compile-fail/borrow_errors/future_helper_clear_saved_before_call.spark",
+            "compile-fail/borrow_errors/future_helper_clear_competing_writer.spark",
+        ] {
+            let retained = build_spark_with_args(fixture, args);
+            assert_ne!(retained.exit_code, 0, "{fixture} {args:?}");
+            assert!(
+                retained.stderr.contains("owner was dropped"),
+                "{fixture} {args:?}: {}",
+                retained.stderr
+            );
+        }
+
+        for fixture in [
+            "run-pass/async/future_helper_clear_after_join.spark",
+            "run-pass/async/future_helper_clear_settled.spark",
+            "run-pass/async/future_helper_clear_generic.spark",
+        ] {
+            let cleared = run_spark_with_args(fixture, args);
+            assert_eq!(
+                cleared.exit_code, 0,
+                "{fixture} {args:?}: {}",
+                cleared.stderr
+            );
+            assert_eq!(cleared.stdout.trim(), "0", "{fixture} {args:?}");
+        }
+    }
+}

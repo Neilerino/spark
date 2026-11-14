@@ -412,6 +412,7 @@ fn imported_memory_writes_cannot_restore_channel_capture_identity_after_clobber(
             );
             view.memory.import(
                 std::sync::Arc::new(Lane {
+                    execution: crate::provenance::effects::Execution::Current,
                     event: site,
                     actor: actor.clone(),
                     location: Sample {
@@ -543,6 +544,7 @@ fn execution_imports_revalidate_channel_captures_at_the_final_installation() {
                     .unwrap();
                 view.memory.import(
                     std::sync::Arc::new(Lane {
+                        execution: crate::provenance::effects::Execution::Current,
                         event: site,
                         actor: actor.clone(),
                         location: Sample {

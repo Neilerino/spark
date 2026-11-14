@@ -133,7 +133,9 @@ impl Flow<'_> {
                 {
                     continue;
                 }
-                if witness.peers.len() == 1 {
+                if witness.peers.len() == 1
+                    && !self.finish_preselected_capture(&capture.role, point, state)
+                {
                     self.complete_future_witness(witness, None, point, state);
                 }
                 self.release_execution_capture(&capture.role, point, state);
@@ -156,6 +158,13 @@ impl Flow<'_> {
         let Some(callback) = state.executions.get_mut(&(local, ty)) else {
             return;
         };
+        self.overwrite_completion_sources(
+            &Coordinate {
+                storage: storage.clone(),
+                path: role.selection().to_vec(),
+            },
+            point,
+        );
         callback.clear_path(role.selection());
         self.record_path_store(
             point,

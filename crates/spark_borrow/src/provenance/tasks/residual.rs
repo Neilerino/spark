@@ -325,22 +325,8 @@ impl Flow<'_> {
                 }
             }
         }
-        for (location, mut value) in stored {
-            self.record_path_store(
-                point,
-                Coordinate {
-                    storage: Storage::SettledMemory(location.clone()),
-                    path: Vec::new(),
-                },
-                &value,
-                false,
-            );
-            value.clear_sources();
-            state
-                .settled_memory
-                .entry(location)
-                .or_default()
-                .join(&value);
+        for (location, value) in stored {
+            self.store_independent_settled_sample(location, value, point, state);
         }
     }
 }

@@ -703,6 +703,7 @@ fn bound_prefix_stores_to_unknown_destinations_keep_their_obligation() {
     let value = state.value(Local(1)).sourced(&Storage::Logical(Local(1)));
     let mut prefix = prefix::Prefix::default();
     prefix.memory.push(prefix::MemoryEvent {
+        execution: prefix::Execution::Current,
         site,
         fence: Default::default(),
         write: MemoryWrite {
@@ -792,6 +793,7 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         receipt: None,
         direct_queue_send: None,
+        spawned_memory: None,
         spawn_return: None,
         fresh_leaf_task: false,
         spawn_owners: None,
@@ -800,6 +802,8 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
         returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
         residuals: Vec::new(),
         async_memory: Vec::new(),
+        actual_definitions: Vec::new(),
+        ordered_definitions: Vec::new(),
         returned: Value::default(),
         tasks: Vec::new(),
         completed_task: None,
@@ -813,6 +817,7 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
         queue_contents: Vec::new(),
         prefix_residuals: Vec::new(),
         prefix_memory: vec![prefix::MemoryEvent {
+            execution: prefix::Execution::Current,
             site,
             fence: Default::default(),
             write: MemoryWrite {

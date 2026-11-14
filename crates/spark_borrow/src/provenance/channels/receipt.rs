@@ -168,7 +168,21 @@ impl Receipt {
         );
         state.future_owners.forget_role(&message);
         state.future_copies.forget_role(&message);
+        flow.overwrite_completion_sources(
+            &crate::provenance::demand::Coordinate {
+                storage: Storage::QueueCurrent(self.slot.clone()),
+                path: Vec::new(),
+            },
+            point,
+        );
         state.queue_current.remove(&self.slot);
+        flow.overwrite_completion_sources(
+            &crate::provenance::demand::Coordinate {
+                storage: Storage::ExecutionCallback(destination.local, record.callback_ty),
+                path: Vec::new(),
+            },
+            point,
+        );
         state.install_execution_callback(destination.local, record.callback_ty, expected, true);
         state
             .future_owners

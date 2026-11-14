@@ -424,6 +424,7 @@ fn memory_owned_parents_keep_full_callback_progress_on_read_and_commit() {
         ty: future,
     };
     let lane = std::sync::Arc::new(Lane {
+        execution: crate::provenance::effects::Execution::Current,
         event: OpaqueSite {
             function: function.def_id,
             point,
@@ -501,6 +502,7 @@ fn active_memory_samples_do_not_revive_older_same_lane_futures() {
         capture: None,
     };
     let lane = std::sync::Arc::new(Lane {
+        execution: crate::provenance::effects::Execution::Current,
         event: OpaqueSite {
             function: function.def_id,
             point,
@@ -648,6 +650,7 @@ fn fallback_imports_rebuild_activity_after_leafless_memory_growth() {
         capture: None,
     };
     let lane = std::sync::Arc::new(Lane {
+        execution: crate::provenance::effects::Execution::Current,
         event: OpaqueSite {
             function: function.def_id,
             point,

@@ -115,6 +115,13 @@ impl Flow<'_> {
                 true,
             );
             output.callback.clear_sources();
+            self.overwrite_completion_sources(
+                &crate::provenance::demand::Coordinate {
+                    storage: Storage::ExecutionCallback(destination.local, ty),
+                    path: Vec::new(),
+                },
+                point,
+            );
             state.install_execution_callback(destination.local, ty, output.callback, false);
         }
     }

@@ -125,6 +125,7 @@ fn receipt_revalidates_present_identity_and_late_imports_without_losing_borrowed
                         .unwrap();
                     view.memory.import(
                         std::sync::Arc::new(Lane {
+                            execution: crate::provenance::effects::Execution::Current,
                             event: OpaqueSite {
                                 function: flow.function.def_id,
                                 point,

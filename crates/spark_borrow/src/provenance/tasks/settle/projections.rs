@@ -27,9 +27,15 @@ struct Cut {
     residuals: Vec<usize>,
 }
 
+#[derive(Clone)]
+struct Replay {
+    transfer: Transfer,
+    scope: Option<crate::provenance::tasks::memory::completion::Scope>,
+}
+
 struct Snapshot {
     state: State,
-    transfer: Transfer,
+    replay: Replay,
     effects: FxHashMap<(Local, Subject), Effects>,
 }
 
@@ -161,17 +167,21 @@ impl<'a> GuardedReads<'a> {
                 .collect(),
         };
         let mut solved = FxHashMap::default();
-        let entry = flow.transfers[&point].clone();
+        let entry = Replay {
+            transfer: flow.transfers[&point].clone(),
+            scope: flow.completion_scope.clone(),
+        };
         self.solve(flow, point, &entry, &all, &mut solved);
         let snapshot = solved.remove(&all).expect("root cut was settled");
-        (snapshot.state, snapshot.transfer)
+        flow.completion_scope = snapshot.replay.scope;
+        (snapshot.state, snapshot.replay.transfer)
     }
 
     fn solve(
         &self,
         flow: &mut Flow<'_>,
         point: Point,
-        entry: &Transfer,
+        entry: &Replay,
         cut: &Cut,
         solved: &mut FxHashMap<Cut, Snapshot>,
     ) {
@@ -201,7 +211,8 @@ impl<'a> GuardedReads<'a> {
             probe: false,
         };
         let mut state = self.entry.clone();
-        flow.transfers.insert(point, entry.clone());
+        flow.transfers.insert(point, entry.transfer.clone());
+        flow.completion_scope.clone_from(&entry.scope);
         let memory: Vec<_> = cut
             .memory
             .iter()
@@ -230,7 +241,10 @@ impl<'a> GuardedReads<'a> {
             cut.clone(),
             Snapshot {
                 state,
-                transfer: flow.transfers[&point].clone(),
+                replay: Replay {
+                    transfer: flow.transfers[&point].clone(),
+                    scope: flow.completion_scope.clone(),
+                },
                 effects,
             },
         );
@@ -304,8 +318,9 @@ impl Publications<'_> {
             query.result = effects.result.clone();
             query.writes.extend(effects.queues.values().cloned());
             for mut residual in effects.residuals.values().cloned() {
-                residual
-                    .visit_values(|value| *value = child.transfer.freeze(std::mem::take(value)));
+                residual.visit_values(|value| {
+                    *value = child.replay.transfer.freeze(std::mem::take(value));
+                });
                 query.residuals.push(residual);
             }
         }
@@ -317,10 +332,11 @@ impl Publications<'_> {
             .and_then(|views| views.get(&subject))
         {
             let mut history = view.history.clone();
-            let samples = history.projected_samples(&child.state, &child.transfer);
+            let samples = history.projected_samples(&child.state, &child.replay.transfer);
             flow.remember_samples(samples, &mut history, point, state);
             query.history = Some(history);
             query.memory_support = view.memory.may_write;
+            query.unknown_memory_write = view.memory.unknown_write;
             query.memory = view
                 .memory
                 .samples()
@@ -329,6 +345,7 @@ impl Publications<'_> {
                     (
                         lane.clone(),
                         child
+                            .replay
                             .transfer
                             .freeze(value.sourced(&Storage::PendingWrite(lane.clone()))),
                     )
@@ -342,7 +359,7 @@ impl Publications<'_> {
             .get_mut(&point)
             .expect("current transfer")
             .seeds
-            .extend(child.transfer.seeds.iter().cloned());
+            .extend(child.replay.transfer.seeds.iter().cloned());
         Some(query)
     }
 }
@@ -504,7 +521,10 @@ mod tests {
         state.residuals.insert(Arc::new(unrelated_key), pending);
         let child = Snapshot {
             state: state.clone(),
-            transfer: child_flow.transfers[&point].clone(),
+            replay: Replay {
+                transfer: child_flow.transfers[&point].clone(),
+                scope: None,
+            },
             effects: FxHashMap::from_iter([(
                 (Local(1), actor),
                 Effects {

@@ -943,6 +943,17 @@ mod tests {
                 coverage.insert(View::whole(flow.aliases.representative(&root)));
             }
             assert_eq!(state.external_defined, coverage);
+            assert_eq!(state.actual_definitions, coverage);
+            let mut snapshot = super::super::State::default();
+            flow.apply_memory_snapshot(
+                &metadata,
+                &Value::default(),
+                family.pointee,
+                point,
+                &mut snapshot,
+            );
+            assert_eq!(snapshot.external_defined, coverage);
+            assert!(snapshot.actual_definitions.is_empty());
         }
     }
 }

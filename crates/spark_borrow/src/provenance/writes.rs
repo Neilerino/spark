@@ -15,6 +15,14 @@ use super::{Flow, Path, Point, State, Value};
 pub(super) struct Coverage(rustc_hash::FxHashSet<View>);
 
 impl Coverage {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub const fn views(&self) -> &rustc_hash::FxHashSet<View> {
+        &self.0
+    }
+
     pub fn insert(&mut self, view: View) {
         if self
             .0
@@ -71,6 +79,24 @@ pub(super) fn owned_path(path: &[super::Slot]) -> bool {
         .all(|slot| matches!(slot, super::Slot::Field(_) | super::Slot::Tuple(_)))
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct OrderedDefinitions(pub(super) rustc_hash::FxHashMap<spark_mir::Local, Coverage>);
+
+impl OrderedDefinitions {
+    pub(super) fn intersect(&mut self, other: &Self) -> bool {
+        let mut changed = false;
+        self.0.retain(|input, coverage| {
+            let Some(other) = other.0.get(input) else {
+                changed = true;
+                return false;
+            };
+            changed |= coverage.intersect(other);
+            !coverage.is_empty()
+        });
+        changed
+    }
+}
+
 #[derive(Default)]
 pub(super) struct WriteTargets {
     pub all: rustc_hash::FxHashSet<Coordinate>,
@@ -80,7 +106,7 @@ pub(super) struct WriteTargets {
 }
 
 impl WriteTargets {
-    fn strongly_defines(&self, destination: &Coordinate) -> bool {
+    pub(super) fn strongly_defines(&self, destination: &Coordinate) -> bool {
         self.physical.len() == 1
             && !self.unknown
             && match &destination.storage {
@@ -126,6 +152,7 @@ impl Flow<'_> {
         }
         if targets.unknown {
             self.unknown_copy_clobber = true;
+            self.unknown_memory_write = true;
             return state.live.clone();
         }
         targets
@@ -150,7 +177,17 @@ impl Flow<'_> {
         let mut value = self.freeze_sources(point, value.clone());
         self.import_task_sources(&mut value, point, state);
         let targets = self.write_targets(metadata);
+        self.unknown_memory_write |= targets.unknown;
+        if targets.unknown {
+            self.trace_unknown_completion_write(point);
+            state.record_task_interference(None);
+        }
+        for destination in &targets.physical {
+            self.record_task_interference(destination, ty, state);
+            self.trace_completion_write(destination.clone(), point);
+        }
         let published = self.record_prefix_memory(
+            super::effects::Execution::Current,
             super::address::OpaqueSite {
                 function: self.function.def_id,
                 point,
@@ -182,7 +219,70 @@ impl Flow<'_> {
         {
             self.clear_settled_memory(destination, point, state);
         }
+        Self::record_actual_targets(&targets, state);
+        Self::record_ordered_targets(
+            &targets,
+            &state.joined_inputs,
+            &mut state.ordered_definitions,
+        );
         self.write_resolved_references(&targets, &value, ty, point, state);
+    }
+
+    pub(in crate::provenance) fn record_actual_definition(
+        &self,
+        metadata: &super::value::Leaf,
+        state: &mut State,
+    ) {
+        Self::record_actual_targets(&self.write_targets(metadata), state);
+    }
+
+    pub(in crate::provenance) fn record_ordered_definition(
+        &self,
+        metadata: &super::value::Leaf,
+        joined: &rustc_hash::FxHashSet<spark_mir::Local>,
+        state: &mut State,
+    ) {
+        Self::record_ordered_targets(
+            &self.write_targets(metadata),
+            joined,
+            &mut state.ordered_definitions,
+        );
+    }
+
+    fn record_ordered_targets(
+        targets: &WriteTargets,
+        joined: &rustc_hash::FxHashSet<spark_mir::Local>,
+        definitions: &mut OrderedDefinitions,
+    ) {
+        for target in targets
+            .all
+            .iter()
+            .filter(|target| targets.strongly_defines(target))
+        {
+            if let Storage::External(port) = &target.storage {
+                for input in joined {
+                    definitions.0.entry(*input).or_default().insert(View {
+                        root: port.clone(),
+                        path: target.path.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn record_actual_targets(targets: &WriteTargets, state: &mut State) {
+        for destination in targets
+            .all
+            .iter()
+            .filter(|target| targets.strongly_defines(target))
+        {
+            if let Storage::External(port) = &destination.storage {
+                state.actual_definitions.insert(View {
+                    root: port.clone(),
+                    path: destination.path.clone(),
+                });
+            }
+        }
     }
 
     pub(super) fn apply_memory_snapshot(
@@ -203,19 +303,28 @@ impl Flow<'_> {
     pub(super) fn import_prefix_memory(
         &mut self,
         event: &super::effects::MemoryEvent,
+        execution: super::effects::Execution,
         point: Point,
         state: &State,
     ) {
         self.ensure_transfer(point, state);
         let write = &event.write;
         let targets = self.write_targets(&write.target);
+        self.unknown_memory_write |= targets.unknown;
         self.observe_store_boundary(&targets, &write.value, write.ty, point, state);
-        self.record_prefix_memory(event.site, &targets, &write.value, &event.fence.inputs);
+        self.record_prefix_memory(
+            execution,
+            event.site,
+            &targets,
+            &write.value,
+            &event.fence.inputs,
+        );
     }
 
     pub(super) fn remember_memory_publication(
         &self,
         event: &super::effects::MemoryEvent,
+        execution: super::effects::Execution,
         publications: &mut super::effects::PrefixMemory,
     ) {
         for destination in self.write_targets(&event.write.target).all {
@@ -224,13 +333,14 @@ impl Flow<'_> {
                 value.clear_sources();
                 value.clear_task_imports();
                 publications
-                    .entry((
-                        event.site,
-                        View {
+                    .entry(super::effects::MemoryKey {
+                        site: event.site,
+                        view: View {
                             root: port,
                             path: destination.path,
                         },
-                    ))
+                        execution,
+                    })
                     .or_default()
                     .join(&value);
             }
@@ -307,6 +417,7 @@ impl Flow<'_> {
 
     fn record_prefix_memory(
         &mut self,
+        execution: super::effects::Execution,
         site: super::address::OpaqueSite,
         targets: &WriteTargets,
         value: &Value,
@@ -322,7 +433,11 @@ impl Flow<'_> {
                 let mut data = value.clone();
                 data.clear_sources();
                 data.clear_task_imports();
-                let event = (site, view);
+                let event = super::effects::MemoryKey {
+                    site,
+                    view,
+                    execution,
+                };
                 self.record_event_guard(super::effects::EventKey::Memory(event.clone()), joined);
                 published.entry(event.clone()).or_default().join(&data);
                 self.prefix_memory.entry(event).or_default().join(&data);
@@ -343,7 +458,11 @@ impl Flow<'_> {
         if targets.may_escape() {
             self.expose_queue_handles(value, state);
         }
+        if targets.unknown {
+            self.forget_completion_sources(point);
+        }
         for destination in &targets.all {
+            self.overwrite_completion_sources(destination, point);
             let Coordinate { storage, path } = destination;
             let (root, mut current) = self.stored_carrier(storage, state);
             let strong = targets.strongly_defines(destination);

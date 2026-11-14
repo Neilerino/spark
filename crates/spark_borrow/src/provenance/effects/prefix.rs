@@ -73,7 +73,27 @@ pub(in crate::provenance) fn join_prefix(
     before != current.len()
 }
 
-pub(in crate::provenance) type MemoryKey = (OpaqueSite, View);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(in crate::provenance) enum Execution {
+    Current,
+    Other,
+}
+
+impl Execution {
+    pub const fn within(self, enclosing: Self) -> Self {
+        match (self, enclosing) {
+            (Self::Current, Self::Current) => Self::Current,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(in crate::provenance) struct MemoryKey {
+    pub site: OpaqueSite,
+    pub view: View,
+    pub execution: Execution,
+}
 pub(in crate::provenance) type Memory = rustc_hash::FxHashMap<MemoryKey, Value>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -83,6 +103,12 @@ pub(in crate::provenance) enum EventKey {
     Residual(std::sync::Arc<crate::provenance::tasks::residual::Key>),
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum PrefixContext<'a> {
+    Call(&'a [spark_mir::Operand]),
+    Task(&'a FxHashSet<spark_mir::Local>),
+}
+
 #[derive(Clone, Default)]
 pub(in crate::provenance) struct PrefixWrites {
     pub memory: Vec<MemoryEvent>,
@@ -90,9 +116,18 @@ pub(in crate::provenance) struct PrefixWrites {
     pub residuals: Vec<crate::provenance::tasks::residual::Import>,
 }
 
+impl PrefixWrites {
+    fn enter_task_boundary(&mut self) {
+        for event in &mut self.memory {
+            event.execution = Execution::Other;
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(in crate::provenance) struct MemoryEvent {
     pub site: OpaqueSite,
+    pub execution: Execution,
     pub write: super::MemoryWrite,
     pub fence: crate::provenance::tasks::proofs::EventFence,
 }
@@ -110,6 +145,24 @@ pub(in crate::provenance) struct Prefix {
 }
 
 impl Prefix {
+    pub(in crate::provenance) fn enter_task_boundary(&mut self) {
+        for event in &mut self.memory {
+            event.execution = Execution::Other;
+        }
+        self.publications.enter_task_boundary();
+        for snapshot in self.snapshots.values_mut() {
+            snapshot.enter_task_boundary();
+        }
+    }
+
+    pub(super) fn into_writes(self) -> PrefixWrites {
+        PrefixWrites {
+            memory: self.memory,
+            queues: self.queues,
+            residuals: self.residuals,
+        }
+    }
+
     pub fn merge(&mut self, other: Self) {
         self.accesses.merge(other.accesses);
         self.queues.extend(other.queues);
@@ -229,9 +282,12 @@ impl Flow<'_> {
         function: &MirFunction,
         actuals: CallActuals<'_>,
         key: &super::Key,
-        args: Option<&[spark_mir::Operand]>,
-        resident_captures: Option<&FxHashSet<spark_mir::Local>>,
+        source: PrefixContext<'_>,
     ) -> Prefix {
+        let (args, resident_captures, execution) = match source {
+            PrefixContext::Call(args) => (Some(args), None, Execution::Current),
+            PrefixContext::Task(captures) => (None, Some(captures), Execution::Other),
+        };
         let obligations = summary
             .obligations
             .iter()
@@ -253,7 +309,8 @@ impl Flow<'_> {
         } else {
             PrefixWrites::default()
         };
-        let snapshots = self.bind_receive_snapshots(summary, function, actuals, key, args);
+        let snapshots =
+            self.bind_receive_snapshots(summary, function, actuals, key, args, execution);
         let residuals =
             self.bind_prefix_residuals(summary, function, actuals, key, args, resident_captures);
         let prefix = Prefix {
@@ -292,7 +349,11 @@ impl Flow<'_> {
     ) -> Vec<MemoryEvent> {
         let mut memory = Vec::new();
         for (event, value) in memory_values {
-            let (site, view) = event;
+            let MemoryKey {
+                site,
+                view,
+                execution,
+            } = event;
             let mut target = crate::provenance::value::Leaf::default();
             let members = actuals.aliases.map_or_else(
                 || vec![view.root.clone()],
@@ -309,6 +370,7 @@ impl Flow<'_> {
             let value = self.bind(value, function, CallActuals { ty, ..actuals });
             memory.push(MemoryEvent {
                 site: *site,
+                execution: *execution,
                 fence: self.event_fence(
                     key,
                     &EventKey::Memory(event.clone()),
@@ -327,8 +389,27 @@ impl Flow<'_> {
         point: Point,
         state: &State,
     ) {
+        self.observe_prefix_as(prefix, Execution::Current, point, state);
+    }
+
+    pub(in crate::provenance) fn observe_task_prefix(
+        &mut self,
+        prefix: &Prefix,
+        point: Point,
+        state: &State,
+    ) {
+        self.observe_prefix_as(prefix, Execution::Other, point, state);
+    }
+
+    fn observe_prefix_as(
+        &mut self,
+        prefix: &Prefix,
+        execution: Execution,
+        point: Point,
+        state: &State,
+    ) {
         for event in &prefix.memory {
-            self.import_prefix_memory(event, point, state);
+            self.import_prefix_memory(event, event.execution.within(execution), point, state);
         }
         self.record_accesses(point, prefix.accesses.clone(), state);
         self.record_queue_prefix(&prefix.queues, point, state);

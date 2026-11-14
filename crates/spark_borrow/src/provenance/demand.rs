@@ -193,6 +193,7 @@ impl super::Flow<'_> {
     }
 
     pub(super) fn record_consumed(&mut self, point: super::Point, local: Local) {
+        self.consume_completion_local(local, point);
         self.transfers.get_mut(&point).unwrap().define(&Definition {
             storage: Storage::Logical(local),
             prefix: Vec::new(),

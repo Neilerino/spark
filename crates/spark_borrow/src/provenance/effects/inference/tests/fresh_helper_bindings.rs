@@ -270,6 +270,7 @@ fn helper_queue_moves_and_late_import_failures_preserve_their_distinction() {
                     let ty = function.locals[queue.index()].ty;
                     view.memory.import(
                         std::sync::Arc::new(Lane {
+                            execution: crate::provenance::effects::Execution::Current,
                             event: crate::provenance::address::OpaqueSite {
                                 function: function.def_id,
                                 point,

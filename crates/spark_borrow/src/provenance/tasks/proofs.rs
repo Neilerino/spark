@@ -36,6 +36,25 @@ impl Proof {
         }
     }
 
+    pub fn seed_actual_definitions(
+        &mut self,
+        views: impl Iterator<Item = crate::provenance::aliases::View>,
+    ) {
+        if let Guarantee::Returns(certificate) = &mut self.returns {
+            for view in views {
+                certificate.actual_definitions.insert(view.clone());
+                for input in &certificate.completed {
+                    certificate
+                        .ordered_definitions
+                        .0
+                        .entry(*input)
+                        .or_default()
+                        .insert(view.clone());
+                }
+            }
+        }
+    }
+
     pub fn seed_owner_outputs(
         &mut self,
         function: &MirFunction,
@@ -130,7 +149,11 @@ fn future_captures(function: &MirFunction, table: &TypeTable) -> FxHashSet<Local
         .collect()
 }
 
-fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witness> {
+pub(in crate::provenance) fn actual_witness(
+    input: Local,
+    args: &[Operand],
+    state: &State,
+) -> Option<Witness> {
     let (Operand::Copy(place) | Operand::Move(place)) = args.get(input.index().checked_sub(1)?)?
     else {
         return None;
@@ -143,6 +166,8 @@ fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witne
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Certificate {
+    pub ordered_definitions: crate::provenance::writes::OrderedDefinitions,
+    pub actual_definitions: crate::provenance::writes::Coverage,
     pub fresh_messages: FxHashSet<super::fresh_outputs::Recipe>,
     pub prefix_messages: FxHashSet<super::fresh_outputs::Recipe>,
     pub returned_owners: Option<Box<super::outputs::CallbackRecipe>>,
@@ -180,6 +205,8 @@ impl Guarantee {
             })
             .collect();
         Self::Returns(Box::new(Certificate {
+            actual_definitions: crate::provenance::writes::Coverage::default(),
+            ordered_definitions: crate::provenance::writes::OrderedDefinitions::default(),
             fresh_messages: FxHashSet::default(),
             prefix_messages: FxHashSet::default(),
             returned_owners: None,
@@ -193,7 +220,7 @@ impl Guarantee {
     }
 
     pub fn has_effect(&self) -> bool {
-        matches!(self, Self::Returns(certificate) if !certificate.fresh_messages.is_empty() || certificate.returned_owners.is_some() || !certificate.completed.is_empty() || !certificate.returned.is_empty()
+        matches!(self, Self::Returns(certificate) if !certificate.actual_definitions.is_empty() || !certificate.fresh_messages.is_empty() || certificate.returned_owners.is_some() || !certificate.completed.is_empty() || !certificate.returned.is_empty()
             || !certificate.released_provided.is_empty() || !certificate.retains_no_owner.is_empty() || !certificate.forwarded_provided.is_empty() || !certificate.clean_ambient_captures.is_empty())
     }
 
@@ -201,6 +228,9 @@ impl Guarantee {
         let before = self.clone();
         match (&mut *self, other) {
             (Self::Returns(left), Self::Returns(right)) => {
+                left.actual_definitions.intersect(&right.actual_definitions);
+                left.ordered_definitions
+                    .intersect(&right.ordered_definitions);
                 left.fresh_messages
                     .retain(|recipe| right.fresh_messages.contains(recipe));
                 left.prefix_messages
@@ -235,14 +265,6 @@ pub(in crate::provenance) struct CallProof {
     pub completed: Vec<Witness>,
     pub returned: Option<Witness>,
     pub released_owners: FxHashMap<usize, Witness>,
-}
-
-impl CallProof {
-    pub fn exclude(&mut self, clobbered: &[Local]) {
-        for witness in self.completed.iter_mut().chain(self.returned.iter_mut()) {
-            witness.exclude(clobbered);
-        }
-    }
 }
 
 impl Flow<'_> {
@@ -284,6 +306,8 @@ impl Flow<'_> {
                 .cloned()
                 .collect();
             let candidate = Guarantee::Returns(Box::new(Certificate {
+                actual_definitions: state.actual_definitions.clone(),
+                ordered_definitions: state.ordered_definitions.clone(),
                 fresh_messages,
                 prefix_messages,
                 clean_ambient_captures,

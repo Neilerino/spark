@@ -766,3 +766,5 @@ mod producer_promises;
 mod receipts;
 
 mod nonreturn_drop;
+
+mod normal_memory;

@@ -62,6 +62,8 @@ fn outcome(state: &State, released_index: usize) -> CallOutcome {
         place_writes: vec![],
         memory: vec![],
         async_memory: vec![],
+        actual_definitions: Vec::new(),
+        ordered_definitions: Vec::new(),
         fresh_outputs: Vec::new(),
         spawn_outputs: Vec::new(),
         producer_events: Vec::new(),
@@ -69,6 +71,7 @@ fn outcome(state: &State, released_index: usize) -> CallOutcome {
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         receipt: None,
         direct_queue_send: None,
+        spawned_memory: None,
         spawn_return: None,
         fresh_leaf_task: false,
         spawn_owners: None,
@@ -98,7 +101,7 @@ fn releasing_a_call_copy_preserves_the_original_pending_owner() {
     let mut state = pending(&flow, point);
     let mut proof = outcome(&state, 0);
     flow.ensure_transfer(point, &state);
-    flow.consume_call_arguments(&[copied()], &mut proof, point, &mut state);
+    flow.consume_call_arguments(&[copied()], &mut proof, &[], point, &mut state);
     assert!(state.future_owners.known(Local(1)));
     assert!(state.live.contains(&Local(1)));
     assert!(state.joined_inputs.is_empty());
@@ -119,7 +122,7 @@ fn releasing_the_last_covered_moved_owner_joins_it() {
     let mut state = pending(&flow, point);
     let mut proof = outcome(&state, 0);
     flow.ensure_transfer(point, &state);
-    flow.consume_call_arguments(&[moved()], &mut proof, point, &mut state);
+    flow.consume_call_arguments(&[moved()], &mut proof, &[], point, &mut state);
     assert!(!state.live.contains(&Local(1)));
     assert!(state.joined_inputs.contains(&Local(1)));
     assert!(state.input_owners.released_provided(Local(1)));
@@ -136,7 +139,7 @@ fn aliased_argument_escape_is_recorded_before_any_certified_release() {
         let released = usize::from(matches!(args[0], Operand::Copy(_)));
         let mut proof = outcome(&state, released);
         flow.ensure_transfer(point, &state);
-        flow.consume_call_arguments(&args, &mut proof, point, &mut state);
+        flow.consume_call_arguments(&args, &mut proof, &[], point, &mut state);
         assert!(
             state.joined_inputs.is_empty(),
             "a retained aliased argument prevents final cleanup"
@@ -159,7 +162,7 @@ fn certified_release_preserves_an_older_escaped_copy() {
     Flow::lose_owning_operand(&copied(), &mut state);
     let mut proof = outcome(&state, 0);
     flow.ensure_transfer(point, &state);
-    flow.consume_call_arguments(&[moved()], &mut proof, point, &mut state);
+    flow.consume_call_arguments(&[moved()], &mut proof, &[], point, &mut state);
     assert!(state.joined_inputs.is_empty());
     assert!(state.input_owners.released_provided(Local(1)));
     assert!(!state.input_owners.retains_no_owner(Local(1)));
@@ -174,7 +177,7 @@ fn a_clobbered_owner_witness_cannot_discharge_the_argument() {
     let mut proof = outcome(&state, 0);
     proof.clobbered_copies.push(Local(1));
     flow.ensure_transfer(point, &state);
-    flow.consume_call_arguments(&[moved()], &mut proof, point, &mut state);
+    flow.consume_call_arguments(&[moved()], &mut proof, &[], point, &mut state);
     assert!(state.joined_inputs.is_empty());
     assert!(!state.input_owners.released_provided(Local(1)));
 }
@@ -203,6 +206,7 @@ fn releasing_two_aliased_move_roles_joins_only_after_both_are_consumed() {
     flow.consume_call_arguments(
         &[moved(), Operand::Move(Place::from_local(Local(2)))],
         &mut proof,
+        &[],
         point,
         &mut state,
     );
@@ -229,7 +233,7 @@ fn releasing_one_of_two_covered_owners_keeps_the_other_pending() {
         &mut state,
     );
     let mut proof = outcome(&state, 0);
-    flow.consume_call_arguments(&[moved()], &mut proof, point, &mut state);
+    flow.consume_call_arguments(&[moved()], &mut proof, &[], point, &mut state);
     assert!(state.joined_inputs.is_empty());
     assert!(state.future_owners.known(Local(2)));
     assert!(state
@@ -286,7 +290,7 @@ fn a_returned_capture_reserves_ownership_across_all_released_alias_arguments() {
         };
         proof.future_proof.output_owners = flow.bind_output_recipe(&recipe, &args, &state);
         assert!(proof.future_proof.output_owners.is_some());
-        flow.consume_call_arguments(&args, &mut proof, point, &mut state);
+        flow.consume_call_arguments(&args, &mut proof, &[], point, &mut state);
         assert!(
             state.joined_inputs.is_empty(),
             "the returned parent retains an owner in either argument order"
@@ -331,7 +335,7 @@ fn a_forwarded_root_reserves_the_parent_across_all_released_alias_arguments() {
             &mut state,
         );
         assert!(call.future_proof.forwarded.is_some());
-        flow.consume_call_arguments(&args, &mut call, point, &mut state);
+        flow.consume_call_arguments(&args, &mut call, &[], point, &mut state);
         assert!(
             state.joined_inputs.is_empty(),
             "forwarded parent is not a final release in either order"
@@ -405,6 +409,7 @@ fn returned_callback_imports_cannot_restore_invalidated_identity_or_owner_covera
         let mut view = View::unknown();
         view.memory.import(
             std::sync::Arc::new(Lane {
+                execution: crate::provenance::effects::Execution::Current,
                 event: site,
                 actor: actor.clone(),
                 location: Sample {
@@ -472,3 +477,5 @@ fn returned_callback_imports_cannot_restore_invalidated_identity_or_owner_covera
         );
     }
 }
+
+mod settled_memory;

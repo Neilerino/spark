@@ -27,6 +27,7 @@ struct TaskQuery {
     history: Option<History>,
     memory: super::memory::Delta,
     memory_support: bool,
+    unknown_memory_write: bool,
     residuals: Vec<super::residual::Import>,
 }
 
@@ -35,7 +36,7 @@ struct TaskQueries {
     writes: Vec<crate::provenance::channels::QueueEvent>,
     results: Vec<(Storage, TypeId, Path, Value)>,
     histories: Vec<(Storage, Path, Subject, History)>,
-    memories: Vec<(Storage, Path, Subject, super::memory::Delta, bool)>,
+    memories: Vec<(Storage, Path, Subject, super::memory::Delta, bool, bool)>,
     residuals: Vec<super::residual::Import>,
 }
 
@@ -64,6 +65,7 @@ impl Flow<'_> {
             return;
         };
         let entry = self.transfers[&point].clone();
+        let source_scope = self.completion_scope.clone();
         let mut candidate = state.clone();
         if self.close_task_effects(
             point,
@@ -76,6 +78,7 @@ impl Flow<'_> {
             *state = candidate;
             return;
         }
+        self.completion_scope = source_scope;
         self.transfers.insert(point, entry);
         let (closed, transfer) = guarded.settle(self, point);
         *state = closed;
@@ -106,7 +109,7 @@ impl Flow<'_> {
             let before_publications = publications
                 .is_probe()
                 .then(|| self.transfers[&point].clone());
-            for (_, _, _, delta, _) in &mut memories {
+            for (_, _, _, delta, _, _) in &mut memories {
                 self.freeze_memory_delta(delta, point);
             }
             for residual in &mut residuals {
@@ -116,12 +119,12 @@ impl Flow<'_> {
             for residual in residuals {
                 changed |= self.import_residual(residual, point, state);
             }
-            for (storage, path, actor, delta, support) in memories {
+            for (storage, path, actor, delta, support, unknown) in memories {
                 changed |= self.cache_pending_memory(
                     &storage,
                     path,
                     actor,
-                    (delta, support),
+                    (delta, support, unknown),
                     point,
                     state,
                 );
@@ -195,13 +198,17 @@ impl Flow<'_> {
                         }
                     }
                     queries.residuals.append(&mut query.residuals);
-                    if query.memory_support || !query.memory.is_empty() {
+                    if query.memory_support
+                        || query.unknown_memory_write
+                        || !query.memory.is_empty()
+                    {
                         queries.memories.push((
                             storage.clone(),
                             path.clone(),
                             Subject::from(handle),
                             query.memory,
                             query.memory_support,
+                            query.unknown_memory_write,
                         ));
                     }
                     if query.normal_return {
@@ -244,6 +251,8 @@ impl Flow<'_> {
             views::pending_records_at(carrier, path, handle, state, carrier_storage);
         if unknown {
             query.memory_support = true;
+            query.unknown_memory_write = true;
+            self.unknown_memory_write = true;
             let mut accesses = crate::provenance::Accesses::default();
             accesses.observe_reference(
                 &carrier.task_lineage(),
@@ -268,10 +277,11 @@ impl Flow<'_> {
                 state,
             );
             query.memory_support |= facts.memory_support;
+            query.unknown_memory_write |= facts.unknown_memory_write;
             query
                 .memory
                 .extend(self.task_memory_delta(&facts.prefix.memory, &subject));
-            self.observe_prefix(&facts.prefix, point, state);
+            self.observe_task_prefix(&facts.prefix, point, state);
             query.residuals.extend(facts.prefix.residuals);
             self.expose_prefix_memory(&facts.prefix.memory, state);
             for mut write in facts.prefix.queues {
