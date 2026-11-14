@@ -41,7 +41,11 @@ struct CallActuals<'a> {
     state: &'a State,
 }
 
-pub fn check_program_returns(mir: &Mir, table: &TypeTable, diagnostics: &mut Diagnostics) {
+pub fn analyze_program(
+    mir: &Mir,
+    table: &TypeTable,
+    diagnostics: &mut Diagnostics,
+) -> FxHashMap<DefId, Vec<crate::regions::Region>> {
     let facts: FxHashMap<_, _> = mir
         .functions
         .iter()
@@ -73,12 +77,15 @@ pub fn check_program_returns(mir: &Mir, table: &TypeTable, diagnostics: &mut Dia
         mir,
         summaries: &summaries,
     };
+    let mut regions = FxHashMap::default();
     for (def, function) in &mir.functions {
         let mut flow = Flow::new(function, table, Some(context));
         flow.solve(&facts[def]);
         flow.report_returns(&facts[def], diagnostics);
         flow.report_reads(diagnostics);
+        regions.insert(*def, flow.carrier_regions(&facts[def]));
     }
+    regions
 }
 
 impl Flow<'_> {
@@ -117,7 +124,7 @@ impl Flow<'_> {
             for arg in &arguments {
                 origins.extend(arg.origins());
             }
-            let accesses = arguments
+            let mut accesses: Accesses = arguments
                 .iter()
                 .flat_map(Value::addresses)
                 .map(|origin| Access {
@@ -126,10 +133,43 @@ impl Flow<'_> {
                     kind: AccessKind::Value,
                 })
                 .collect();
+            for argument in &arguments {
+                accesses.demands.extend(argument.address_sources());
+            }
             self.record_accesses(point, accesses, state);
             self.retain_unknown(point, &origins);
             origins.insert(Origin::Unproven(point));
-            result.join(&value::tainted(ty, &origins, self.table));
+            let mut tainted = value::tainted(ty, &origins, self.table);
+            let parents: Origins = arguments
+                .iter()
+                .chain(std::iter::once(&callee))
+                .flat_map(|value| {
+                    value
+                        .origins()
+                        .into_iter()
+                        .chain(value.support.values().flatten().cloned())
+                })
+                .collect();
+            for (path, origins) in &tainted.slots {
+                for origin in origins {
+                    tainted
+                        .support
+                        .insert((path.clone(), origin.clone()), parents.clone());
+                }
+            }
+            let sources: super::demand::Demand = arguments
+                .iter()
+                .chain(std::iter::once(&callee))
+                .flat_map(Value::all_sources)
+                .collect();
+            for (path, origins) in &tainted.slots {
+                for origin in origins {
+                    tainted
+                        .sources
+                        .insert((path.clone(), origin.clone()), sources.clone());
+                }
+            }
+            result.join(&tainted);
         }
         result
     }
@@ -298,12 +338,11 @@ impl Flow<'_> {
                                     .cloned()
                                     .collect::<Vec<_>>(),
                             );
-                            result.insert(
-                                path.clone(),
-                                self.tail_references(selected, selected_ty, expected, state),
-                            );
+                            let selected =
+                                self.tail_reference_value(selected, selected_ty, expected, state);
+                            result.insert_addresses(path, &selected);
                         } else {
-                            result.insert(path.clone(), selected.addresses());
+                            result.insert_addresses(path, &selected);
                         }
                     }
                     Origin::InputAddress {
@@ -313,7 +352,7 @@ impl Flow<'_> {
                         let source = Self::actual_input(*local, function, actuals);
                         let source_ty = function.locals[local.index()].ty;
                         let selected = self.bind_address(source, source_ty, source_path, actuals);
-                        result.insert(path.clone(), selected);
+                        result.insert_addresses(path, &selected);
                     }
                     Origin::Opaque { .. } => result.insert(
                         path.clone(),
@@ -363,11 +402,13 @@ impl Flow<'_> {
                         path,
                         actuals.state,
                     );
-                    let origins = if path.contains(&Slot::Tail) {
-                        self.tail_references(selected, TypeId::ERROR, None, actuals.state)
+                    let selected = if path.contains(&Slot::Tail) {
+                        self.tail_reference_value(selected, TypeId::ERROR, None, actuals.state)
                     } else {
-                        selected.addresses()
+                        selected
                     };
+                    accesses.demands.extend(selected.address_sources());
+                    let origins = selected.addresses();
                     for origin in origins {
                         accesses.insert(Access {
                             origin,
@@ -386,6 +427,7 @@ impl Flow<'_> {
                     {
                         let selected =
                             self.select_input(source, ty, &path[..index].to_vec(), actuals.state);
+                        accesses.demands.extend(selected.address_sources());
                         for origin in selected.addresses() {
                             accesses.insert(Access {
                                 origin,
@@ -395,6 +437,7 @@ impl Flow<'_> {
                             });
                         }
                     } else {
+                        accesses.demands.extend(source.all_sources());
                         for origin in source.origins() {
                             accesses.insert(Access {
                                 origin,
@@ -435,13 +478,22 @@ impl Flow<'_> {
         mut ty: TypeId,
         path: &Path,
         actuals: CallActuals<'_>,
-    ) -> Origins {
+    ) -> Value {
         let deref = path.iter().rposition(|slot| *slot == Slot::Deref);
         let Some(index) = deref.filter(|_| !path.contains(&Slot::Tail)) else {
             let mut origins = source.origins();
             self.retain_unknown(actuals.point, &origins);
             origins.insert(Origin::Unproven(actuals.point));
-            return origins;
+            let mut result = Value::default();
+            for origin in origins {
+                result.insert_sourced(Vec::new(), origin, source.all_sources());
+            }
+            let parents: Origins = source
+                .origins()
+                .into_iter()
+                .chain(source.support.values().flatten().cloned())
+                .collect();
+            return result.with_address_support(&parents);
         };
         let selected = self.select_input(source, ty, &path[..index].to_vec(), actuals.state);
         for slot in &path[..=index] {
@@ -460,7 +512,17 @@ impl Flow<'_> {
         let before = entry.len();
         entry.extend(targets);
         self.changed |= before != entry.len();
-        std::iter::once(Origin::Loan(actuals.point)).collect()
+        let mut accesses = Accesses::default();
+        accesses.demands.extend(selected.address_sources());
+        self.record_accesses(actuals.point, accesses, actuals.state);
+        let mut result = Value::reference(Origin::Loan(actuals.point))
+            .with_address_support(&selected.address_support());
+        result.insert_sourced(
+            Vec::new(),
+            Origin::Loan(actuals.point),
+            selected.address_sources(),
+        );
+        result
     }
 
     fn select_input(&self, mut value: Value, mut ty: TypeId, path: &Path, state: &State) -> Value {
@@ -638,7 +700,7 @@ mod tests {
             functions: HashMap::from([(helper_id, helper), (caller_id, caller)]),
         };
         let mut diagnostics = Diagnostics::new();
-        check_program_returns(&mir, &table, &mut diagnostics);
+        analyze_program(&mir, &table, &mut diagnostics);
         assert!(
             diagnostics.iter().any(|diagnostic| diagnostic.message
                 == "returned value contains a reference to local storage"),
@@ -837,7 +899,7 @@ mod tests {
             functions: HashMap::from([(select_id, select), (copy_id, copier), (caller_id, caller)]),
         };
         let mut diagnostics = Diagnostics::new();
-        check_program_returns(&mir, &table, &mut diagnostics);
+        analyze_program(&mir, &table, &mut diagnostics);
         assert_eq!(diagnostics.has_errors(), borrow_local, "projected helper Ref must preserve payload lifetime independently of the wrapper address");
     }
 }

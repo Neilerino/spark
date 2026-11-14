@@ -1635,6 +1635,73 @@ fn collection_borrow_allows_dead_payloads_without_pointee_reads() {
 }
 
 #[test]
+fn collection_borrow_rejects_mutation_while_carrier_reference_is_used() {
+    for fixture in [
+        "mutation_live_carrier",
+        "mutation_retained_copy",
+        "mutation_helper_return",
+        "mutation_helper_read",
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = build_spark_with_args(
+                &format!("compile-fail/borrow_errors/collection_borrow_{fixture}.spark"),
+                args,
+            );
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result
+                    .stderr
+                    .contains("cannot write to a borrowed collection"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_allows_mutation_after_last_carrier_is_cleared() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_cleared_carrier_before_write.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "9\n", "{args:?}");
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_helper_discards_input.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "2\n7\n", "{args:?}");
+    }
+}
+
+#[test]
+fn collection_borrow_loops_preserve_occurrence_lifetimes() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let negative = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_loop_retained_reissue.spark",
+            args,
+        );
+        assert_eq!(negative.exit_code, 1, "{args:?}: {}", negative.stderr);
+        assert!(
+            negative
+                .stderr
+                .contains("cannot write to a borrowed collection"),
+            "{args:?}: {}",
+            negative.stderr
+        );
+        let positive = run_spark_with_args(
+            "run-pass/collections/collection_borrow_loop_cleared_reissue.spark",
+            args,
+        );
+        assert_eq!(positive.exit_code, 0, "{args:?}: {}", positive.stderr);
+        assert_eq!(positive.stdout, "2\n2\n", "{args:?}");
+    }
+}
+
+#[test]
 fn map_literal_empty_uses_expected_type() {
     let fixture = "run-pass/collections/map_literal_empty.spark";
     for args in [&[][..], &["--no-opt"][..]] {
