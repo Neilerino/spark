@@ -1,0 +1,18 @@
+// TAG [SPARK-114]
+
+fn produce(value: Ref[Int]): List[Channel[Ref[Int]]] {
+    queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    queue.send(value)
+    values: List[Channel[Ref[Int]]]! = []
+    values.append(queue)
+    return values
+}
+fn main(): Int {
+    outside: Int = 9
+    borrowed: Ref[Int] = outside
+    values: List[Channel[Ref[Int]]] = produce(borrowed)
+    fallback: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    selected: Channel[Ref[Int]] = values[0] ?? fallback
+    print(selected.recv())
+    return 0
+}

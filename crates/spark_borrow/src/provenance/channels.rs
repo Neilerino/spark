@@ -391,6 +391,7 @@ impl Flow<'_> {
             return None;
         };
         Some(super::effects::CallOutcome {
+            place_writes: Vec::new(),
             returned,
             memory: Vec::new(),
             queues,

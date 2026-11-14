@@ -4,6 +4,7 @@ mod address;
 mod aliases;
 mod callbacks;
 mod channels;
+mod collections;
 mod demand;
 mod effects;
 mod obligations;
@@ -299,6 +300,9 @@ impl<'a> Flow<'a> {
                             point,
                             &mut after,
                         );
+                    }
+                    for (place, value) in alternative.place_writes {
+                        self.store(&place, value, point, &mut after);
                     }
                     self.store(destination, alternative.returned, point, &mut after);
                     let transfer = self.transfers[&point].clone();

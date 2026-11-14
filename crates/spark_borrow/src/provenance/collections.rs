@@ -1,0 +1,48 @@
+// TAG [SPARK-114]
+
+//! Carrier contents changed by collection builtins.
+
+use spark_intern::kw;
+use spark_mir::Operand;
+use spark_resolve::DefinitionKind;
+use spark_types::Ty;
+
+use super::{value, Flow, Slot, State, Value};
+
+impl Flow<'_> {
+    pub(super) fn collection_call(
+        &self,
+        func: &Operand,
+        args: &[Operand],
+        state: &State,
+    ) -> Option<super::effects::CallOutcome> {
+        let def = self.function.resolve_callee_def_id(func)?;
+        let info = self.program?.definitions?.get(def)?;
+        if !matches!(info.kind, DefinitionKind::BuiltinMethod) || info.name != kw::APPEND {
+            return None;
+        }
+        let receiver @ (Operand::Copy(place) | Operand::Move(place)) = args.first()? else {
+            return None;
+        };
+        let ty = self.place_type(place);
+        if !matches!(
+            self.table.resolve(value::strip_mutable(ty, self.table)),
+            Ty::List(_)
+        ) {
+            return None;
+        }
+        let mut contents = self.operand(receiver, state);
+        contents.join(
+            &self
+                .operand(args.get(1)?, state)
+                .prefixed(Slot::Element, ty, self.table),
+        );
+        Some(super::effects::CallOutcome {
+            returned: Value::default(),
+            place_writes: vec![(place.clone(), contents)],
+            memory: Vec::new(),
+            queues: Vec::new(),
+            queue_contents: Vec::new(),
+        })
+    }
+}

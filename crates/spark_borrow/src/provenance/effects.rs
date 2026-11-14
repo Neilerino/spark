@@ -76,6 +76,7 @@ pub(super) struct Context<'a> {
 
 pub(super) struct CallOutcome {
     pub returned: Value,
+    pub place_writes: Vec<(spark_mir::Place, Value)>,
     pub memory: Vec<MemoryWrite>,
     pub queues: Vec<super::channels::Write>,
     pub queue_contents: Vec<super::channels::Write>,
@@ -163,7 +164,10 @@ impl Flow<'_> {
         point: Point,
         state: &State,
     ) -> Option<Vec<CallOutcome>> {
-        if let Some(outcome) = self.channel_call(func, args, ty, point, state) {
+        if let Some(outcome) = self
+            .collection_call(func, args, state)
+            .or_else(|| self.channel_call(func, args, ty, point, state))
+        {
             return Some(vec![outcome]);
         }
         let callee = self.operand(func, state);
@@ -245,23 +249,28 @@ impl Flow<'_> {
             outcomes.push(self.opaque_queue_outcome(returned, args, actuals));
         }
         if open {
-            let mut returned = value::validation_hole(ty, self.table);
-            returned.join(&super::channels::validation_handles(
-                ty,
-                super::address::OpaqueSite {
-                    function: self.function.def_id,
-                    point,
-                },
-                self.table,
-            ));
-            outcomes.push(CallOutcome {
-                returned,
-                memory: Vec::new(),
-                queues: Vec::new(),
-                queue_contents: Vec::new(),
-            });
+            outcomes.push(self.open_outcome(ty, point));
         }
         (!outcomes.is_empty()).then_some(outcomes)
+    }
+
+    fn open_outcome(&self, ty: TypeId, point: Point) -> CallOutcome {
+        let mut returned = value::validation_hole(ty, self.table);
+        returned.join(&super::channels::validation_handles(
+            ty,
+            super::address::OpaqueSite {
+                function: self.function.def_id,
+                point,
+            },
+            self.table,
+        ));
+        CallOutcome {
+            place_writes: Vec::new(),
+            returned,
+            memory: Vec::new(),
+            queues: Vec::new(),
+            queue_contents: Vec::new(),
+        }
     }
 
     fn callback_inputs(
@@ -436,6 +445,7 @@ impl Flow<'_> {
         }
         let queue_contents = self.bind_queue_contents(summary, function, actuals);
         CallOutcome {
+            place_writes: Vec::new(),
             returned,
             memory,
             queues,

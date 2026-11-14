@@ -1,0 +1,15 @@
+// TAG [SPARK-114]
+
+fn produce(): List[(): Int] {
+    value: Int = 9
+    read: (): Int = fn(): Int { return value }
+    callbacks: List[(): Int]! = []
+    callbacks.append(read)
+    return callbacks
+}
+fn main(): Int {
+    callbacks: List[(): Int] = produce()
+    selected: (): Int = callbacks[0] ?? fn(): Int { return 0 }
+    print(selected())
+    return 0
+}
