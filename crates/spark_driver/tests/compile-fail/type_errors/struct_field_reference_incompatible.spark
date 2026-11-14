@@ -1,0 +1,6 @@
+struct Record { value: Int }
+fn main(): Int {
+    text: Ref[String] = "text"
+    record: Record = Record { value: text }
+    return 0
+}

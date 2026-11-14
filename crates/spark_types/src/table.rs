@@ -3,6 +3,8 @@
 //! The [`TypeTable`] is the primary output of type checking. It maps
 //! definitions to their types and expressions to their inferred types.
 
+use std::borrow::Cow;
+
 use rustc_hash::FxHashMap;
 use spark_ast::ExprId;
 use spark_intern::Symbol;
@@ -368,6 +370,31 @@ impl TypeTable {
     #[must_use]
     pub const fn mono_instances(&self) -> &FxHashMap<Span, (DefId, FxHashMap<DefId, TypeId>)> {
         &self.mono_instances
+    }
+
+    /// Returns the parameter layouts recorded for this call, including generic substitution.
+    #[must_use]
+    pub fn call_parameter_types(
+        &self,
+        mut callee: TypeId,
+        span: Span,
+    ) -> Option<Cow<'_, [TypeId]>> {
+        // TAG [SPARK-105]
+        while let Ty::Mutable(inner) | Ty::Ref { inner, .. } = self.resolve(callee) {
+            callee = *inner;
+        }
+        let Ty::Function { params, .. } = self.resolve(callee) else {
+            return None;
+        };
+        let Some((_, substitution)) = self.mono_instances.get(&span) else {
+            return Some(Cow::Borrowed(params));
+        };
+        Some(Cow::Owned(
+            params
+                .iter()
+                .map(|&param| crate::substitute::substitute(param, substitution, self))
+                .collect(),
+        ))
     }
 
     /// Interns a lifetime name and returns its [`LifetimeId`].
