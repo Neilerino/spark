@@ -1541,6 +1541,9 @@ fn collection_borrow_rejects_local_and_parameter_storage_escape() {
         "recursive_return",
         "struct_return",
         "generic_struct_return",
+        "recursive_deref_return",
+        "nested_tuple_list_return",
+        "nested_tuple_optional_return",
     ] {
         for args in [&[][..], &["--no-opt"][..]] {
             let fixture = format!("compile-fail/borrow_errors/collection_borrow_{fixture}.spark");
@@ -1571,6 +1574,18 @@ fn collection_borrow_preserves_live_local_and_input_references() {
         );
         assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
         assert_eq!(result.stdout, "7\n7\n7\n7\n7\n7\n7\n", "{args:?}");
+    }
+}
+
+#[test]
+fn collection_borrow_recursive_carriers_preserve_payload_lifetimes() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_recursive_payload.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "7\n7\n7\n", "{args:?}");
     }
 }
 

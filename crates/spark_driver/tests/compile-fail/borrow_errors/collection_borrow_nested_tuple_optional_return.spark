@@ -1,0 +1,10 @@
+fn identity[T](value: T): T { return value }
+fn bad(input: Ref[Int]): Tup[List[Map[String, Ref[Int]]], Map[String, Ref[Int]]?] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    unsafeEntries: Map[String, Ref[Int]] = {"x": borrowed}
+    safeEntries: Map[String, Ref[Int]] = {"x": input}
+    optional: Map[String, Ref[Int]]? = unsafeEntries
+    return identity(([safeEntries], optional))
+}
+fn main(): Int { return 0 }
