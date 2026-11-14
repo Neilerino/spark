@@ -1,0 +1,10 @@
+fn main(): Int {
+    values: List[Int]! = [1, 2]
+    borrowed: Ref[List[Int]] = values
+    entries: Map[String, Ref[List[Int]]]! = {"one": borrowed}
+    empty: Map[String, Ref[List[Int]]] = {}
+    entries = empty
+    values = [9]
+    print(values[0] ?? 99)
+    return 0
+}
