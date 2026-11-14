@@ -1,3 +1,5 @@
+// TAG [SPARK-114]
+
 use spark_mir::Local;
 use spark_resolve::DefId;
 use spark_types::TypeId;
@@ -11,8 +13,24 @@ pub(super) enum Intent {
     Address(TypedPath),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum DerefKind {
+    All,
+    Residual,
+}
+
+impl DerefKind {
+    pub const fn slot(self) -> super::Slot {
+        match self {
+            Self::All => super::Slot::Deref,
+            Self::Residual => super::Slot::ResidualDeref,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct TypedPath {
+    pub kind: DerefKind,
     pub pointee: TypeId,
     pub projection: Path,
 }
@@ -128,7 +146,7 @@ impl super::Flow<'_> {
                                 self.function.locals[selector.input.index()].ty,
                                 [
                                     selector.selection,
-                                    vec![super::Slot::Deref],
+                                    vec![payload.kind.slot()],
                                     payload.projection.clone(),
                                 ]
                                 .concat(),
@@ -137,6 +155,7 @@ impl super::Flow<'_> {
                         }
                         selector.expected = Some(self.selected_type(pointee, projection));
                         selector.intent = Intent::Address(TypedPath {
+                            kind: DerefKind::All,
                             pointee,
                             projection: super::value::normalize(
                                 pointee,
@@ -188,6 +207,7 @@ impl super::Flow<'_> {
                 selector.expected = Some(self.selected_type(pointee, projection));
                 selector.intent = match &selector.intent {
                     Intent::Address(payload) => Intent::Address(TypedPath {
+                        kind: payload.kind,
                         pointee: payload.pointee,
                         projection: super::value::normalize(
                             payload.pointee,
@@ -196,6 +216,7 @@ impl super::Flow<'_> {
                         ),
                     }),
                     Intent::Value | Intent::Payload(_) => Intent::Address(TypedPath {
+                        kind: DerefKind::All,
                         pointee,
                         projection: super::value::normalize(
                             pointee,

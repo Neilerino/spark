@@ -1,3 +1,5 @@
+// TAG [SPARK-114]
+
 //! End-to-end tests for the Spark compiler.
 //!
 //! Each test compiles and runs a `.spark` fixture file via the `spark` binary,
@@ -2242,6 +2244,121 @@ fn collection_borrow_owned_subfield_writes_preserve_demand_and_generic_layouts()
             "active field demand {args:?}: {}",
             result.stderr
         );
+    }
+}
+
+#[test]
+fn collection_borrow_widened_reference_writes_reach_possible_root_readers() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_widened_incoming_reference.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 0,
+            "safe incoming widened reference {args:?}: {}",
+            result.stderr
+        );
+        assert_eq!(
+            result.stdout, "7\n",
+            "safe incoming widened reference {args:?}"
+        );
+        for (fixture, output) in [
+            (
+                "run-pass/collections/collection_borrow_widened_disjoint_reader.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/collections/collection_borrow_root_clear_widened_reader.spark",
+                "0\n1\n",
+            ),
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, output, "{fixture} {args:?}");
+        }
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_widened_write_root_reader.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 1,
+            "widened/root alias {args:?}: {}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("returned value contains a reference to local storage"),
+            "widened/root alias {args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_root_writes_reach_possible_widened_readers() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/collections/collection_borrow_root_write_widened_incoming.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 0,
+            "safe incoming root/family references {args:?}: {}",
+            result.stderr
+        );
+        assert_eq!(
+            result.stdout, "7\n9\n",
+            "safe incoming root/family references {args:?}"
+        );
+        let result = build_spark_with_args(
+            "compile-fail/borrow_errors/collection_borrow_root_write_widened_reader.spark",
+            args,
+        );
+        assert_eq!(
+            result.exit_code, 1,
+            "root/widened alias {args:?}: {}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("returned value contains a reference to local storage"),
+            "root/widened alias {args:?}: {}",
+            result.stderr
+        );
+    }
+}
+
+#[test]
+fn collection_borrow_widened_effects_preserve_forwarding_snapshots_and_residual_cells() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, output) in [
+            ("run-pass/collections/collection_borrow_widened_forwarded_disjoint.spark", "9\n"),
+            ("run-pass/collections/collection_borrow_widened_forwarded_clear.spark", "0\n1\n"),
+            ("run-pass/collections/collection_borrow_widened_snapshot_before_write.spark", "9\n"),
+            ("run-pass/collections/collection_borrow_widened_residual_excludes_cleared_root.spark", "0\n"),
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, output, "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/collection_borrow_widened_forwarded_escape.spark",
+            "compile-fail/borrow_errors/collection_borrow_root_widened_forwarded_escape.spark",
+            "compile-fail/borrow_errors/collection_borrow_widened_residual_keeps_other_map.spark",
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result
+                    .stderr
+                    .contains("returned value contains a reference to local storage"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
     }
 }
 
