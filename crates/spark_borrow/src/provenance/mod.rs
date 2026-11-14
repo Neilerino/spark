@@ -111,6 +111,7 @@ struct Flow<'a> {
     aliases: aliases::Aliases,
     requests: FxHashSet<aliases::Key>,
     written_inputs: FxHashSet<aliases::View>,
+    unproven_stores: FxHashMap<(Point, TypeId), Value>,
     accesses: FxHashMap<Point, Accesses>,
     transfers: FxHashMap<Point, demand::Transfer>,
     invalid_reads: FxHashSet<(Point, Point, Origin)>,
@@ -128,6 +129,7 @@ pub fn check_returns(
     let mut flow = Flow::new(function, table, None);
     flow.solve(facts);
     flow.report_returns(facts, diagnostics);
+    flow.report_unproven_stores(diagnostics);
 }
 
 impl<'a> Flow<'a> {
@@ -143,6 +145,7 @@ impl<'a> Flow<'a> {
             aliases: aliases::Aliases::default(),
             requests: FxHashSet::default(),
             written_inputs: FxHashSet::default(),
+            unproven_stores: FxHashMap::default(),
             accesses: FxHashMap::default(),
             transfers: FxHashMap::default(),
             invalid_reads: FxHashSet::default(),
@@ -255,8 +258,14 @@ impl<'a> Flow<'a> {
                 for alternative in outcome {
                     self.transfers.insert(point, common.clone());
                     let mut after = state.clone();
-                    for (target, value) in alternative.memory {
-                        self.store_references(&target, &value, point, &mut after);
+                    for write in alternative.memory {
+                        self.store_references(
+                            &write.target,
+                            &write.value,
+                            write.ty,
+                            point,
+                            &mut after,
+                        );
                     }
                     self.store(destination, alternative.returned, point, &mut after);
                     let transfer = self.transfers[&point].clone();
@@ -460,7 +469,7 @@ impl<'a> Flow<'a> {
             .any(|projection| matches!(projection, Projection::Deref))
         {
             let targets = self.reference_metadata(place, point, state);
-            self.store_references(&targets, &value, point, state);
+            self.store_references(&targets, &value, self.place_type(place), point, state);
             return;
         }
         self.record_store(point, place, &value);
@@ -501,23 +510,9 @@ impl<'a> Flow<'a> {
             self.transfer_block(block, &mut state);
             self.report_external_stores(&state, block, diagnostics);
             let value = state.value(Local::RETURN_PLACE);
-            for leaf in value.leaves.values() {
-                let endpoints = leaf
-                    .endpoints
-                    .iter()
-                    .chain(leaf.dependencies.iter().filter_map(|dependency| {
-                        if let address::Dependency::Address(endpoint) = dependency {
-                            Some(endpoint)
-                        } else {
-                            None
-                        }
-                    }));
-                for endpoint in endpoints {
-                    if let address::Endpoint::Frame { function, root, .. } = endpoint {
-                        if *function == self.function.def_id && reported.insert(*root) {
-                            self.report_return(*root, &value, block, facts, diagnostics);
-                        }
-                    }
+            for root in value.frame_sources(self.function.def_id) {
+                if reported.insert(root) {
+                    self.report_return(root, &value, block, facts, diagnostics);
                 }
             }
         }

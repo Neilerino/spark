@@ -1,0 +1,23 @@
+// TAG [SPARK-114]
+
+link "union_probe"
+extern fn opaque_map(target: Ref[Map[String, Ref[String]]]!): Ref[Map[String, Ref[String]]]!
+fn repeat(): Void { repeat() }
+fn fill(target: Ref[Map[String, Ref[String]]]!): Void {
+    pointer: Ref[Map[String, Ref[String]]]! = opaque_map(target)
+    if true {
+        text: String = "seven"
+        borrowed: Ref[String] = text
+        entries: Map[String, Ref[String]] = {"one": borrowed}
+        pointer = entries
+    }
+    snapshot: Map[String, Ref[String]] = pointer
+    snapshot["one"] to { found: Ref[String] -> print(found.len()), Null -> print(0) }
+    repeat()
+}
+fn main(): Int {
+    entries: Map[String, Ref[String]]! = {}
+    target: Ref[Map[String, Ref[String]]]! = entries
+    fill(target)
+    return 0
+}
