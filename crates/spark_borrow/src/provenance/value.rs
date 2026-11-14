@@ -21,7 +21,7 @@ pub(super) enum Slot {
     Optional,
     Deref,
     ResidualDeref,
-    Capture(usize, TypeId),
+    Capture(DefId, usize, TypeId),
     Tail,
 }
 
@@ -179,9 +179,9 @@ impl Value {
         self.leaves.is_empty() && self.callees.is_empty()
     }
 
-    pub fn capture(&self, index: usize) -> Self {
+    pub fn capture(&self, function: DefId, index: usize) -> Self {
         let mut result = self.map_borrows(|path| {
-            if matches!(path.first(), Some(Slot::Capture(i, _)) if *i == index) {
+            if matches!(path.first(), Some(Slot::Capture(owner, i, _)) if *owner == function && *i == index) {
                 Some(path[1..].to_vec())
             } else if path.first() == Some(&Slot::Tail) {
                 Some(vec![Slot::Tail])
@@ -190,7 +190,8 @@ impl Value {
             }
         });
         for (path, callees) in &self.callees {
-            if matches!(path.first(), Some(Slot::Capture(i, _)) if *i == index) {
+            if matches!(path.first(), Some(Slot::Capture(owner, i, _)) if *owner == function && *i == index)
+            {
                 result
                     .callees
                     .entry(path[1..].to_vec())
@@ -367,7 +368,7 @@ pub(super) fn child_type(ty: TypeId, slot: &Slot, table: &TypeTable) -> Option<T
             );
             Some(spark_types::substitute::substitute(ty, &subst, table))
         }
-        (Ty::Function { .. }, Slot::Capture(_, ty)) => Some(*ty),
+        (Ty::Function { .. }, Slot::Capture(_, _, ty)) => Some(*ty),
         _ => None,
     }
 }
