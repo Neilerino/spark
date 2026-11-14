@@ -6,12 +6,30 @@ use spark_mir::{BlockId, Local, Mir, MirFunction, Operand, Terminator};
 use spark_resolve::DefId;
 use spark_types::{TypeId, TypeTable};
 
-use super::{child_type, value, Flow, Origin, Origins, Path, Point, Slot, State, Target, Value};
+use super::{
+    child_type, value, Access, AccessKind, Accesses, Flow, Origin, Origins, Path, Point, Slot,
+    State, Target, Value,
+};
+
+#[derive(Clone, Default)]
+pub(super) struct Summary {
+    returned: Value,
+    observed: Accesses,
+}
+
+impl Summary {
+    fn join(&mut self, other: &Self) -> bool {
+        let returned = self.returned.join(&other.returned);
+        let before = self.observed.len();
+        self.observed.extend(other.observed.iter().cloned());
+        returned || before != self.observed.len()
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct Context<'a> {
     mir: &'a Mir,
-    summaries: &'a FxHashMap<DefId, Value>,
+    summaries: &'a FxHashMap<DefId, Summary>,
 }
 
 #[derive(Clone, Copy)]
@@ -32,7 +50,7 @@ pub fn check_program_returns(mir: &Mir, table: &TypeTable, diagnostics: &mut Dia
     let mut summaries: FxHashMap<_, _> = mir
         .functions
         .keys()
-        .map(|def| (*def, Value::default()))
+        .map(|def| (*def, Summary::default()))
         .collect();
     loop {
         let context = Context {
@@ -59,6 +77,7 @@ pub fn check_program_returns(mir: &Mir, table: &TypeTable, diagnostics: &mut Dia
         let mut flow = Flow::new(function, table, Some(context));
         flow.solve(&facts[def]);
         flow.report_returns(&facts[def], diagnostics);
+        flow.report_reads(diagnostics);
     }
 }
 
@@ -87,7 +106,8 @@ impl Flow<'_> {
             if let Some((function, summary)) = self.program.and_then(|context| {
                 Some((context.mir.functions.get(def)?, context.summaries.get(def)?))
             }) {
-                result.join(&self.bind(summary, function, actuals));
+                self.observe(summary, function, actuals);
+                result.join(&self.bind(&summary.returned, function, actuals));
             } else {
                 unknown = true;
             }
@@ -97,6 +117,16 @@ impl Flow<'_> {
             for arg in &arguments {
                 origins.extend(arg.origins());
             }
+            let accesses = arguments
+                .iter()
+                .flat_map(Value::addresses)
+                .map(|origin| Access {
+                    origin,
+                    selection: Vec::new(),
+                    kind: AccessKind::Value,
+                })
+                .collect();
+            self.record_accesses(point, accesses, state);
             self.retain_unknown(point, &origins);
             origins.insert(Origin::Unproven(point));
             result.join(&value::tainted(ty, &origins, self.table));
@@ -111,8 +141,8 @@ impl Flow<'_> {
         self.changed |= before != entry.len();
     }
 
-    fn summary(&mut self) -> Value {
-        let mut summary = Value::default();
+    fn summary(&mut self) -> Summary {
+        let mut summary = Summary::default();
         for index in 0..self.entries.len() {
             if !matches!(self.function.blocks[index].terminator, Terminator::Return) {
                 continue;
@@ -127,14 +157,27 @@ impl Flow<'_> {
                 for origin in origins {
                     exported.extend(self.boundary_origins(origin, &mut FxHashSet::default()));
                 }
-                summary.insert(path.clone(), exported);
+                summary.returned.insert(path.clone(), exported);
             }
             for (path, callees) in &value.callees {
                 summary
+                    .returned
                     .callees
                     .entry(path.clone())
                     .or_default()
                     .extend(callees);
+            }
+        }
+        for access in self.accesses.values().flatten() {
+            for origin in self.boundary_origins(&access.origin, &mut FxHashSet::default()) {
+                if matches!(origin, Origin::Input { .. } | Origin::InputAddress { .. }) {
+                    let ty = self.input_pointee_type(&origin);
+                    summary.observed.insert(Access {
+                        origin,
+                        selection: value::normalize(ty, access.selection.clone(), self.table),
+                        kind: access.kind,
+                    });
+                }
             }
         }
         summary
@@ -238,6 +281,27 @@ impl Flow<'_> {
                                 ty,
                                 self.table,
                             ));
+                        } else if source_path.contains(&Slot::Tail) {
+                            let target = self.selected_type(ty, path);
+                            let expected = if let spark_types::Ty::Ref { inner, .. } =
+                                self.table.resolve(value::strip_mutable(target, self.table))
+                            {
+                                Some(*inner)
+                            } else {
+                                None
+                            };
+                            let selected_ty = self.selected_type(
+                                source_ty,
+                                &source_path
+                                    .iter()
+                                    .take_while(|slot| **slot != Slot::Tail)
+                                    .cloned()
+                                    .collect::<Vec<_>>(),
+                            );
+                            result.insert(
+                                path.clone(),
+                                self.tail_references(selected, selected_ty, expected, state),
+                            );
                         } else {
                             result.insert(path.clone(), selected.addresses());
                         }
@@ -268,6 +332,85 @@ impl Flow<'_> {
             self.retain_unknown(point, &result.origins());
         }
         result
+    }
+
+    fn input_pointee_type(&self, origin: &Origin) -> TypeId {
+        let (local, path, address) = match origin {
+            Origin::Input { local, path } => (*local, path, false),
+            Origin::InputAddress { local, path } => (*local, path, true),
+            _ => return TypeId::ERROR,
+        };
+        let mut ty = self.function.locals[local.index()].ty;
+        for slot in path {
+            ty = child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR);
+        }
+        if address {
+            ty
+        } else {
+            child_type(ty, &Slot::Deref, self.table).unwrap_or(TypeId::ERROR)
+        }
+    }
+
+    fn observe(&mut self, summary: &Summary, function: &MirFunction, actuals: CallActuals<'_>) {
+        let mut accesses = Accesses::default();
+        for access in &summary.observed {
+            match &access.origin {
+                Origin::Input { local, path } => {
+                    let source = Self::actual_input(*local, function, actuals);
+                    let selected = self.select_input(
+                        source,
+                        function.locals[local.index()].ty,
+                        path,
+                        actuals.state,
+                    );
+                    let origins = if path.contains(&Slot::Tail) {
+                        self.tail_references(selected, TypeId::ERROR, None, actuals.state)
+                    } else {
+                        selected.addresses()
+                    };
+                    for origin in origins {
+                        accesses.insert(Access {
+                            origin,
+                            selection: access.selection.clone(),
+                            kind: access.kind,
+                        });
+                    }
+                }
+                Origin::InputAddress { local, path } => {
+                    let source = Self::actual_input(*local, function, actuals);
+                    let ty = function.locals[local.index()].ty;
+                    if let Some(index) = path
+                        .iter()
+                        .rposition(|slot| *slot == Slot::Deref)
+                        .filter(|_| !path.contains(&Slot::Tail))
+                    {
+                        let selected =
+                            self.select_input(source, ty, &path[..index].to_vec(), actuals.state);
+                        for origin in selected.addresses() {
+                            accesses.insert(Access {
+                                origin,
+                                selection: [path[index + 1..].to_vec(), access.selection.clone()]
+                                    .concat(),
+                                kind: access.kind,
+                            });
+                        }
+                    } else {
+                        for origin in source.origins() {
+                            accesses.insert(Access {
+                                origin,
+                                selection: vec![Slot::Tail],
+                                kind: access.kind,
+                            });
+                        }
+                    }
+                }
+                Origin::Loan(_)
+                | Origin::Unproven(_)
+                | Origin::Frame { .. }
+                | Origin::Opaque { .. } => {}
+            }
+        }
+        self.record_accesses(actuals.point, accesses, actuals.state);
     }
 
     fn actual_input(local: Local, function: &MirFunction, actuals: CallActuals<'_>) -> Value {
@@ -375,10 +518,6 @@ mod tests {
             place: local(index),
             mutable: false,
         };
-        let drop_local = |index| Statement::Drop {
-            place: local(index),
-            span,
-        };
         let block = |statements, terminator| BasicBlock {
             statements,
             terminator,
@@ -462,8 +601,8 @@ mod tests {
                                 mutable: false,
                             },
                         ),
-                        drop_local(8),
-                        drop_local(10),
+                        assign(8, Rvalue::Use(copy(6))),
+                        assign(10, Rvalue::Aggregate(AggregateKind::Map, vec![])),
                     ],
                     Terminator::Goto { target: BlockId(2) },
                 ),
