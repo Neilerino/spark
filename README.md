@@ -26,4 +26,6 @@ export SPARK_RUNTIME_DIR="$HOME/.local/lib"
 
 From a directory containing your `day.spark`, run `spark run --single-file day.spark`. Omit `--single-file` when your program needs modules from the project. Add `--no-opt` to compare behavior with Spark's optional MIR optimizations disabled. Arguments after `--` are forwarded to your program.
 
+For a local puzzle workflow, see the [Advent of Code quickstart](examples/advent-of-code/README.md).
+
 See the [language reference](docs/lang-spec.md) for syntax and examples, and the [compiler guide](docs/compiler-architecture.md) for the pipeline and development checks.

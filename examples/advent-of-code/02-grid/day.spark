@@ -1,0 +1,37 @@
+fn main(): Int {
+    width: Int = 4
+    height: Int = 3
+    blocked: Set[Int] = {5, 6, 10}
+    visited: Set[Int]! = {}
+    frontier: List[Int]! = [0]
+    visited.add(0)
+    head: Int! = 0
+    loop {
+        if head >= frontier.len() { break }
+        position: Int = frontier[head] ?? -1
+        head = head + 1
+        x: Int = position % width
+        y: Int = position / width
+        left: Int = if x > 0 { position - 1 } else { -1 }
+        right: Int = if x + 1 < width { position + 1 } else { -1 }
+        up: Int = if y > 0 { position - width } else { -1 }
+        down: Int = if y + 1 < height { position + width } else { -1 }
+        neighbors: List[Int] = [left, right, up, down]
+        index: Int! = 0
+        loop {
+            if index >= neighbors.len() { break }
+            nextCell: Int = neighbors[index] ?? -1
+            index = index + 1
+            if nextCell >= 0 {
+                if blocked.contains(nextCell) == false {
+                    if visited.contains(nextCell) == false {
+                        visited.add(nextCell)
+                        frontier.append(nextCell)
+                    }
+                }
+            }
+        }
+    }
+    print(visited.len())
+    return 0
+}

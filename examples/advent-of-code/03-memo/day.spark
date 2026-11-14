@@ -1,0 +1,21 @@
+fn main(): Int {
+    memo: Map[Int, Int]! = {0: 0, 1: 1}
+    requests: List[Int] = [10, 5, 10, 12]
+    highest: Int! = 1
+    index: Int! = 0
+    loop {
+        if index >= requests.len() { break }
+        target: Int = requests[index] ?? 0
+        index = index + 1
+        loop {
+            if highest >= target { break }
+            previous: Int = memo[highest] ?? 0
+            earlier: Int = memo[highest - 1] ?? 0
+            highest = highest + 1
+            memo[highest] = previous + earlier
+        }
+        print(memo[target] ?? -1)
+    }
+    print(memo.len())
+    return 0
+}
