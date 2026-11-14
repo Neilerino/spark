@@ -35,28 +35,6 @@ pub fn check_borrows(
     check_aliasing_call_args(func, facts, diagnostics);
 }
 
-/// Enforces owned slots until collection borrows can be tracked across escapes.
-pub fn check_indexed_write_storage(
-    func: &MirFunction,
-    table: &TypeTable,
-    diagnostics: &mut Diagnostics,
-) {
-    for stmt in func.blocks.iter().flat_map(|block| &block.statements) {
-        if let Statement::IndexedAssign { value, span, .. } = stmt {
-            let ty = func.locals[value.index()].ty;
-            if can_carry_borrowed_reference(ty, table, &mut FxHashSet::default()) {
-                diagnostics.push(
-                    Diagnostic::error("indexed assignment requires an owned value type")
-                        .with_label(Label::primary(
-                            *span,
-                            "this slot type can carry a borrowed reference",
-                        )),
-                );
-            }
-        }
-    }
-}
-
 pub(crate) fn can_carry_borrowed_reference(
     ty: TypeId,
     table: &TypeTable,

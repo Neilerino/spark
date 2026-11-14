@@ -1,0 +1,19 @@
+fn main(): Int {
+    original: Int = 3
+    replacement: Int = 8
+    borrowed: Ref[Int] = replacement
+    values: List[Ref[Int]]! = [original]
+    snapshot: List[Ref[Int]] = values
+    values[0] = borrowed
+    values[0] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    snapshot[0] to { found: Ref[Int] -> print(found), Null -> print(99) }
+
+    entries: Map[String, Ref[Int]]! = {}
+    entries["new"] = replacement
+    entries["new"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    callback: (): Int = fn(): Int { borrowed + 1 }
+    callbacks: Map[Int, (): Int]! = {}
+    callbacks[0] = callback
+    callbacks[0] to { found: (): Int -> print(found()), Null -> print(99) }
+    return 0
+}

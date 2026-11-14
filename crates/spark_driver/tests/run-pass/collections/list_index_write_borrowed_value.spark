@@ -6,5 +6,10 @@ fn main(): Int {
     text: RefOrString = "old"
     values: List[RefOrString]! = [text]
     values[0] = borrowed
+    value: RefOrString = values[0] ?? text
+    value to {
+        found: Ref[Int] -> print(found),
+        String -> print(98)
+    }
     return 0
 }

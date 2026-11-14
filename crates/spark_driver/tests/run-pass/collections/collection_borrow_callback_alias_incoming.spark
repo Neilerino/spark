@@ -1,7 +1,7 @@
 // TAG [SPARK-114]
 
 fn apply(callback: (): Void, reader: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
-    
+
     callback()
     snapshot: Map[String, Ref[Int]] = reader
     return snapshot

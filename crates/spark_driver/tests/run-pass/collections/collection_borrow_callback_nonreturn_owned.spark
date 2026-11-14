@@ -6,7 +6,7 @@ fn main(): Int {
     retained: Map[Int, (): Void]! = {}
     if true {
         text: String = "seven"
-        
+
         callback: (): Void = fn(): Void { print(text.len())
             repeat() }
         next: Map[Int, (): Void] = {1: callback}

@@ -1,7 +1,7 @@
 // TAG [SPARK-114]
 
 fn apply(callback: (): Void, reader: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
-    
+
     callback()
     snapshot: Map[String, Ref[Int]] = reader
     return snapshot
@@ -22,7 +22,7 @@ fn main(): Int {
     initial: Int = 8
     safe: Ref[Int] = initial
     value: Int = 7
-    
+
     entries: Map[String, Ref[Int]] = produce(safe, value)
     entries["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
     return 0

@@ -13,7 +13,7 @@ fn produce(value: Ref[Int]): Map[String, Ref[Int]] {
     second: (): Void = nest(first)
     third: (): Void = nest(second)
     third()
-    
+
     return entries
 }
 fn main(): Int {

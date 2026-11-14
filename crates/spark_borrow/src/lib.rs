@@ -14,6 +14,13 @@
 //! 4. **Conflict detection**: Check for overlapping mutable borrows, use after move,
 //!    mutation through immutable references, etc.
 //!
+//! Collection and capture provenance records the source of each borrowed
+//! contribution. Calls bind summary effects to actual argument paths, while
+//! guarantees required on every normal return use a separate analysis. Task
+//! execution demand and borrows published to results, queues, or memory have
+//! separate lifetimes. See the repository's compiler architecture guide for
+//! the relationship between borrow checking and async lowering.
+//!
 //! ## Quick Start
 //!
 //! ```ignore
@@ -105,7 +112,6 @@ pub fn check(input: BorrowInput) -> BorrowOutput {
     let carrier_regions =
         provenance::analyze_program(&mir, &table, Some(&definitions), &mut diagnostics);
     for func in mir.functions.values() {
-        check::check_indexed_write_storage(func, &table, &mut diagnostics);
         // Skip functions that don't use Ref types (optimization).
         if !function_uses_refs(func, &table) {
             continue;
