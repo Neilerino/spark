@@ -1,0 +1,24 @@
+// TAG [SPARK-114]
+
+fn invoke(callback: (): Int): Int { return callback() }
+fn identity(callback: (): Int): (): Int { return callback }
+fn forward(callback: (): Int): (): Int { return identity(callback) }
+fn ignore(callback: (): Int): Int { return 1 }
+fn seven(): Int { return 7 }
+fn main(): Int {
+    text: String = "seven"
+    borrowed: Ref[String] = text
+    scoped: (): Int = fn(): Int { return borrowed.len() }
+    print(invoke(scoped))
+    print(invoke(forward(seven)))
+    retained: Map[Int, (): Int]! = {}
+    if true {
+        temporary: String = "temporary"
+        reference: Ref[String] = temporary
+        callback: (): Int = fn(): Int { return reference.len() }
+        next: Map[Int, (): Int] = {1: callback}
+        retained = next
+    }
+    retained[1] to { callback: (): Int -> print(ignore(callback)), Null -> print(0) }
+    return 0
+}

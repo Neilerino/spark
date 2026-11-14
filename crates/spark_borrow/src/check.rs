@@ -1446,7 +1446,7 @@ mod tests {
                         },
                     ],
                     terminator: Terminator::Call {
-                        func: Operand::Constant(Constant::Void), // placeholder
+                        func: Operand::Constant(Constant::FunctionRef(DefId::new(9999))),
                         args: vec![
                             Operand::Move(Place::from_local(Local(2))),
                             Operand::Copy(Place::from_local(Local(3))),

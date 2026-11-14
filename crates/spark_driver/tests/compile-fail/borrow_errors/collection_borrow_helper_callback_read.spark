@@ -1,0 +1,15 @@
+// TAG [SPARK-114]
+
+fn invoke(callback: (): Int): Int { return callback() }
+fn main(): Int {
+    retained: Map[Int, (): Int]! = {}
+    if true {
+        text: String = "seven"
+        borrowed: Ref[String] = text
+        callback: (): Int = fn(): Int { return borrowed.len() }
+        next: Map[Int, (): Int] = {1: callback}
+        retained = next
+    }
+    retained[1] to { callback: (): Int -> print(invoke(callback)), Null -> print(0) }
+    return 0
+}

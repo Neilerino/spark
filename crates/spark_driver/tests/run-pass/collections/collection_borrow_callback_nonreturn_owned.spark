@@ -1,0 +1,17 @@
+// TAG [SPARK-114]
+
+fn repeat(): Void { repeat() }
+fn invoke(callback: (): Void): Void { callback() }
+fn main(): Int {
+    retained: Map[Int, (): Void]! = {}
+    if true {
+        text: String = "seven"
+        
+        callback: (): Void = fn(): Void { print(text.len())
+            repeat() }
+        next: Map[Int, (): Void] = {1: callback}
+        retained = next
+    }
+    retained[1] to { callback: (): Void -> invoke(callback), Null -> print(0) }
+    return 0
+}

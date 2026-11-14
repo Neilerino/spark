@@ -36,6 +36,17 @@ pub(super) struct Leaf {
 }
 
 impl Leaf {
+    pub fn has_validation_hole(&self, origin: &Origin) -> bool {
+        *origin == Origin::ValidationHole || self.parents.contains(&Origin::ValidationHole)
+    }
+
+    pub fn is_validation_only(&self, origin: &Origin) -> bool {
+        self.has_validation_hole(origin)
+            && self.endpoints.is_empty()
+            && self.dependencies.is_empty()
+            && self.opaque.is_empty()
+    }
+
     pub fn join(&mut self, other: &Self) -> bool {
         let before = (
             self.parents.len(),
@@ -61,10 +72,22 @@ impl Leaf {
 pub(super) struct Value {
     pub leaves: FxHashMap<(Path, Origin), Leaf>,
     pub sources: Sources,
-    pub callees: FxHashMap<Path, FxHashSet<DefId>>,
+    pub callees: FxHashMap<Path, super::callbacks::Targets>,
 }
 
 impl Value {
+    pub fn materialize_validation_holes(&mut self) {
+        let paths: Vec<_> = self
+            .leaves
+            .iter()
+            .filter(|((_, origin), leaf)| leaf.has_validation_hole(origin))
+            .map(|((path, _), _)| path.clone())
+            .collect();
+        for path in paths {
+            self.insert_leaf(path, Origin::ValidationHole, &Leaf::default());
+        }
+    }
+
     pub fn frame_sources(&self, function: DefId) -> impl Iterator<Item = super::Point> + '_ {
         self.leaves
             .values()
@@ -143,9 +166,7 @@ impl Value {
         }
         for (path, callees) in &other.callees {
             let entry = self.callees.entry(path.clone()).or_default();
-            let before = entry.len();
-            entry.extend(callees);
-            changed |= before != entry.len();
+            changed |= entry.join(callees);
         }
         changed
     }
@@ -153,6 +174,9 @@ impl Value {
     pub fn sourced(mut self, storage: &Storage) -> Self {
         self.sources.clear();
         for (path, origin) in self.leaves.keys() {
+            if *origin == Origin::ValidationHole {
+                continue;
+            }
             self.sources
                 .entry((path.clone(), origin.clone()))
                 .or_default()
@@ -171,7 +195,7 @@ impl Value {
         let mut value = Self::default();
         value
             .callees
-            .insert(Vec::new(), std::iter::once(def).collect());
+            .insert(Vec::new(), super::callbacks::Targets::function(def));
         value
     }
 
@@ -196,7 +220,7 @@ impl Value {
                     .callees
                     .entry(path[1..].to_vec())
                     .or_default()
-                    .extend(callees);
+                    .join(callees);
             }
         }
         result
@@ -270,13 +294,13 @@ impl Value {
                     .callees
                     .entry(path[1..].to_vec())
                     .or_default()
-                    .extend(callees);
+                    .join(callees);
             } else if path.first() == Some(&Slot::Tail) {
                 result
                     .callees
                     .entry(vec![Slot::Tail])
                     .or_default()
-                    .extend(callees);
+                    .join(callees);
             }
         }
         result
@@ -299,7 +323,7 @@ impl Value {
                 .callees
                 .entry(normalize(ty, prefixed, table))
                 .or_default()
-                .extend(callees);
+                .join(callees);
         }
         result
     }
@@ -425,6 +449,15 @@ pub(super) fn inputs(
             }));
         },
     );
+    super::callbacks::callable_slots(
+        &mut value,
+        ty,
+        table,
+        &super::callbacks::Targets {
+            open: true,
+            ..Default::default()
+        },
+    );
     value
 }
 
@@ -437,11 +470,40 @@ pub(super) fn tainted(ty: TypeId, origins: &Origins, table: &TypeTable) -> Value
         table,
         &mut |path| value.insert(&path, origins.clone()),
     );
+    super::callbacks::callable_slots(
+        &mut value,
+        ty,
+        table,
+        &super::callbacks::Targets {
+            open: origins.contains(&Origin::ValidationHole),
+            unresolved: origins
+                .iter()
+                .any(|origin| *origin != Origin::ValidationHole),
+            ..Default::default()
+        },
+    );
     value
 }
 
+pub(super) fn validation_hole(ty: TypeId, table: &TypeTable) -> Value {
+    tainted(
+        ty,
+        &std::iter::once(Origin::ValidationHole).collect(),
+        table,
+    )
+}
+
 pub(super) fn tainted_from(ty: TypeId, source: &Value, table: &TypeTable) -> Value {
-    let mut result = tainted(ty, &source.origins(), table);
+    let mut origins = Origins::default();
+    for ((_, origin), leaf) in &source.leaves {
+        if leaf.has_validation_hole(origin) {
+            origins.insert(Origin::ValidationHole);
+        }
+        if !leaf.is_validation_only(origin) {
+            origins.insert(origin.clone());
+        }
+    }
+    let mut result = tainted(ty, &origins, table);
     for ((path, origin), leaf) in &mut result.leaves {
         for ((_, candidate), metadata) in &source.leaves {
             if origin == candidate {

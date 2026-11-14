@@ -189,6 +189,9 @@ impl Flow<'_> {
             let Some(leaf) = reference.leaves.get(&(path, origin.clone())) else {
                 continue;
             };
+            if leaf.has_validation_hole(origin) {
+                result.join(&value::validation_hole(ty, self.table));
+            }
             for endpoint in &leaf.endpoints {
                 let payload = match endpoint {
                     Endpoint::Frame {
@@ -313,7 +316,7 @@ impl Flow<'_> {
             .concat(),
             self.table,
         );
-        let mut result = value::inputs(ty, address.input, source_ty, &prefix, self.table);
+        let mut result = self.symbolic_input(ty, address.input, source_ty, &prefix);
         result
             .leaves
             .retain(|(path, _), _| !covered.iter().any(|prefix| path.starts_with(prefix)));

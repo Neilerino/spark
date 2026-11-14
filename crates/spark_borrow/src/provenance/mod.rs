@@ -2,8 +2,10 @@
 
 mod address;
 mod aliases;
+mod callbacks;
 mod demand;
 mod effects;
+mod obligations;
 mod read;
 mod storage;
 mod value;
@@ -27,6 +29,7 @@ use value::{child_type, strip_mutable, Path, Slot, Value};
 // TAG [SPARK-114]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Origin {
+    ValidationHole,
     Loan(Point),
     Input { local: Local, path: Path },
     Unproven(Point),
@@ -109,9 +112,10 @@ struct Flow<'a> {
     entries: Vec<Option<State>>,
     program: Option<effects::Context<'a>>,
     aliases: aliases::Aliases,
+    callables: callbacks::Inputs,
     requests: FxHashSet<aliases::Key>,
     written_inputs: FxHashSet<aliases::View>,
-    unproven_stores: FxHashMap<(Point, TypeId), Value>,
+    obligations: FxHashMap<(Point, obligations::Boundary), Value>,
     accesses: FxHashMap<Point, Accesses>,
     transfers: FxHashMap<Point, demand::Transfer>,
     invalid_reads: FxHashSet<(Point, Point, Origin)>,
@@ -129,7 +133,7 @@ pub fn check_returns(
     let mut flow = Flow::new(function, table, None);
     flow.solve(facts);
     flow.report_returns(facts, diagnostics);
-    flow.report_unproven_stores(diagnostics);
+    flow.report_obligations(diagnostics);
 }
 
 impl<'a> Flow<'a> {
@@ -143,9 +147,10 @@ impl<'a> Flow<'a> {
             table,
             program,
             aliases: aliases::Aliases::default(),
+            callables: callbacks::Inputs::default(),
             requests: FxHashSet::default(),
             written_inputs: FxHashSet::default(),
-            unproven_stores: FxHashMap::default(),
+            obligations: FxHashMap::default(),
             accesses: FxHashMap::default(),
             transfers: FxHashMap::default(),
             invalid_reads: FxHashSet::default(),
@@ -161,7 +166,7 @@ impl<'a> Flow<'a> {
             if external {
                 state.set(
                     decl.local,
-                    value::inputs(decl.ty, decl.local, decl.ty, &[], self.table),
+                    self.symbolic_input(decl.ty, decl.local, decl.ty, &[]),
                 );
             }
         }

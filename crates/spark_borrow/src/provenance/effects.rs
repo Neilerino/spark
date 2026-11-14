@@ -23,7 +23,7 @@ pub(super) struct Summary {
     modified: FxHashSet<View>,
     written_inputs: FxHashSet<View>,
     observed: Accesses,
-    unproven_stores: FxHashMap<TypeId, Value>,
+    obligations: FxHashMap<super::obligations::Boundary, Value>,
 }
 
 impl Summary {
@@ -34,8 +34,12 @@ impl Summary {
         for (local, value) in &other.memory {
             changed |= self.memory.entry(local.clone()).or_default().join(value);
         }
-        for (ty, value) in &other.unproven_stores {
-            changed |= self.unproven_stores.entry(*ty).or_default().join(value);
+        for (boundary, value) in &other.obligations {
+            changed |= self
+                .obligations
+                .entry(boundary.clone())
+                .or_default()
+                .join(value);
         }
         let before = self.modified.len();
         self.modified.extend(other.modified.iter().cloned());
@@ -52,7 +56,7 @@ impl Summary {
 
 #[derive(Clone, Copy)]
 pub(super) struct Context<'a> {
-    mir: &'a Mir,
+    pub(super) mir: &'a Mir,
     summaries: &'a Summaries,
     pub(super) ports: &'a Ports,
 }
@@ -81,97 +85,10 @@ struct CallActuals<'a> {
 type Summaries = FxHashMap<Key, Summary>;
 type Ports = FxHashMap<DefId, Vec<Port>>;
 
-pub fn analyze_program(
-    mir: &Mir,
-    table: &TypeTable,
-    diagnostics: &mut Diagnostics,
-) -> FxHashMap<DefId, Vec<Vec<crate::regions::Region>>> {
-    let facts: FxHashMap<_, _> = mir
-        .functions
-        .iter()
-        .map(|(def, function)| (*def, crate::facts::extract_facts(function)))
-        .collect();
-    let (summaries, ports) = infer_summaries(mir, table, &facts);
-    let context = Context {
-        mir,
-        summaries: &summaries,
-        ports: &ports,
-    };
-    let mut regions: FxHashMap<_, Vec<_>> = FxHashMap::default();
-    for key in summaries.keys() {
-        let function = &mir.functions[&key.function];
-        let mut flow = Flow::new(function, table, Some(context));
-        flow.aliases = key.aliases.clone();
-        flow.solve(&facts[&key.function]);
-        flow.report_returns(&facts[&key.function], diagnostics);
-        flow.report_reads(diagnostics);
-        flow.report_unproven_stores(diagnostics);
-        regions
-            .entry(key.function)
-            .or_default()
-            .push(flow.carrier_regions(&facts[&key.function]));
-    }
-    regions
-}
-
-fn infer_summaries(
-    mir: &Mir,
-    table: &TypeTable,
-    facts: &FxHashMap<DefId, crate::facts::BorrowFacts>,
-) -> (Summaries, Ports) {
-    let mut summaries: Summaries = mir
-        .functions
-        .keys()
-        .map(|def| (Key::distinct(*def), Summary::default()))
-        .collect();
-    let mut ports: Ports = mir.functions.keys().map(|def| (*def, Vec::new())).collect();
-    loop {
-        let context = Context {
-            mir,
-            summaries: &summaries,
-            ports: &ports,
-        };
-        let mut next = summaries.clone();
-        let mut discovered = ports.clone();
-        let mut requests = FxHashSet::default();
-        let mut changed = false;
-        for key in summaries.keys() {
-            let function = &mir.functions[&key.function];
-            let mut flow = Flow::new(function, table, Some(context));
-            flow.aliases = key.aliases.clone();
-            flow.solve(&facts[&key.function]);
-            let summary = flow.summary();
-            flow.discover_ports(&summary, discovered.entry(key.function).or_default());
-            changed |= next.entry(key.clone()).or_default().join(&summary);
-            requests.extend(flow.requests);
-        }
-        if discovered != ports {
-            for (def, roots) in &discovered {
-                for aliases in Aliases::body_variants(&mir.functions[def], roots, table) {
-                    requests.insert(Key {
-                        function: *def,
-                        aliases,
-                    });
-                }
-            }
-            ports = discovered;
-            for summary in next.values_mut() {
-                *summary = Summary::default();
-            }
-            changed = true;
-        }
-        for key in requests {
-            if let std::collections::hash_map::Entry::Vacant(entry) = next.entry(key) {
-                entry.insert(Summary::default());
-                changed = true;
-            }
-        }
-        summaries = next;
-        if !changed {
-            return (summaries, ports);
-        }
-    }
-}
+mod inference;
+pub use inference::analyze_program;
+#[cfg(test)]
+use inference::infer_summaries;
 
 impl Flow<'_> {
     fn discover_ports(&self, summary: &Summary, ports: &mut Vec<Port>) {
@@ -229,8 +146,13 @@ impl Flow<'_> {
         };
         let targets = callee.callees.get(&Vec::new());
         let mut outcomes = Vec::new();
-        let mut unknown = targets.is_none_or(FxHashSet::is_empty);
-        for def in targets.into_iter().flatten() {
+        let open = targets.is_some_and(|targets| targets.open);
+        let unresolved_value = targets.is_none_or(|targets| {
+            targets.unresolved || (!targets.open && targets.known.is_empty())
+        });
+        let mut unknown = unresolved_value;
+        let mut dispatched = FxHashSet::default();
+        for def in targets.into_iter().flat_map(|targets| &targets.known) {
             let Some(context) = self.program else {
                 unknown = true;
                 continue;
@@ -248,9 +170,11 @@ impl Flow<'_> {
                 })
                 .collect();
             for aliases in Aliases::call_variants(roots, self.table, &locations, &self.aliases) {
+                dispatched.insert(*def);
                 let key = Key {
                     function: *def,
                     aliases,
+                    callables: self.callback_inputs(function, actuals),
                 };
                 let Some(summary) = context.summaries.get(&key) else {
                     self.requests.insert(key);
@@ -262,9 +186,16 @@ impl Flow<'_> {
                 };
                 self.observe(summary, function, actuals);
                 self.observe_writes(summary, function, actuals);
-                for (ty, value) in &summary.unproven_stores {
-                    let bound = self.bind(value, function, CallActuals { ty: *ty, ..actuals });
-                    self.record_unproven_store(point, *ty, &bound);
+                for (boundary, value) in &summary.obligations {
+                    let bound = self.bind(
+                        value,
+                        function,
+                        CallActuals {
+                            ty: boundary.ty(),
+                            ..actuals
+                        },
+                    );
+                    self.record_obligation(point, boundary.clone(), &bound);
                 }
                 if !summary.normal_return {
                     continue;
@@ -273,12 +204,100 @@ impl Flow<'_> {
             }
         }
         if unknown {
+            if unresolved_value {
+                self.record_unknown_arguments(point, args, &arguments);
+            }
+            self.record_obligation(
+                point,
+                super::obligations::Boundary::invoke(
+                    super::operand_type(func, self.function),
+                    dispatched,
+                ),
+                &callee,
+            );
             outcomes.push(CallOutcome {
                 returned: self.opaque_result(args, actuals),
                 memory: Vec::new(),
             });
         }
+        if open {
+            outcomes.push(CallOutcome {
+                returned: value::validation_hole(ty, self.table),
+                memory: Vec::new(),
+            });
+        }
         (!outcomes.is_empty()).then_some(outcomes)
+    }
+
+    fn callback_inputs(
+        &self,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> super::callbacks::Inputs {
+        let mut inputs = super::callbacks::Inputs::invocation();
+        for decl in function
+            .locals
+            .iter()
+            .skip(1)
+            .take(function.param_count as usize + function.captures.len())
+        {
+            let value = Self::actual_input(decl.local, function, actuals);
+            let mut pending = super::callbacks::selectors(decl.ty, self.table);
+            let mut visited = FxHashSet::default();
+            while let Some((path, ty)) = pending.pop() {
+                let path = value::normalize(decl.ty, path, self.table);
+                if path.contains(&Slot::Tail) || !visited.insert((path.clone(), ty)) {
+                    continue;
+                }
+                let selected =
+                    self.select_input(value.clone(), decl.ty, &path, decl.local, function, actuals);
+                let targets = selected
+                    .callees
+                    .get(&Vec::new())
+                    .cloned()
+                    .unwrap_or_else(|| super::callbacks::Targets {
+                        unresolved: true,
+                        ..Default::default()
+                    });
+                for def in &targets.known {
+                    let Some(target) = self
+                        .program
+                        .and_then(|context| context.mir.functions.get(def))
+                    else {
+                        continue;
+                    };
+                    for (index, (_, capture_ty)) in target.captures.iter().enumerate() {
+                        for (selection, selected_ty) in
+                            super::callbacks::selectors(*capture_ty, self.table)
+                        {
+                            pending.push((
+                                [
+                                    path.clone(),
+                                    vec![Slot::Capture(*def, index, *capture_ty)],
+                                    selection,
+                                ]
+                                .concat(),
+                                selected_ty,
+                            ));
+                        }
+                    }
+                }
+                inputs
+                    .slots
+                    .entry((decl.local, path, ty))
+                    .or_default()
+                    .join(&targets);
+            }
+            for (path, targets) in value.callees {
+                let ty = self.selected_type(decl.ty, &path);
+                inputs
+                    .slots
+                    .entry((decl.local, value::normalize(decl.ty, path, self.table), ty))
+                    .or_default()
+                    .join(&targets);
+            }
+        }
+        inputs
     }
 
     fn observe_writes(
@@ -386,6 +405,7 @@ impl Flow<'_> {
             accesses.observe_reference(argument, ty, &[], AccessKind::Value);
         }
         self.record_accesses(point, accesses, state);
+        origins.remove(&Origin::ValidationHole);
         origins.insert(Origin::Unproven(point));
         let mut tainted = value::tainted(ty, &origins, self.table);
         let parents: Origins = arguments
@@ -399,6 +419,7 @@ impl Flow<'_> {
                         .flat_map(|leaf| leaf.parents.iter().cloned()),
                 )
             })
+            .filter(|origin| *origin != Origin::ValidationHole)
             .collect();
         let sources: super::demand::Demand = arguments
             .iter()
@@ -489,10 +510,10 @@ impl Flow<'_> {
                 );
             }
         }
-        for ((_, ty), value) in &self.unproven_stores {
+        for ((_, boundary), value) in &self.obligations {
             summary
-                .unproven_stores
-                .entry(*ty)
+                .obligations
+                .entry(boundary.clone())
                 .or_default()
                 .join(&export_value(value, self.function.def_id));
         }
@@ -531,6 +552,16 @@ impl Flow<'_> {
             ..Default::default()
         };
         for ((path, origin), leaf) in &summary.leaves {
+            if leaf.has_validation_hole(origin) {
+                result.insert_leaf(
+                    path.clone(),
+                    Origin::ValidationHole,
+                    &super::value::Leaf::default(),
+                );
+            }
+            if leaf.is_validation_only(origin) {
+                continue;
+            }
             let mut retained = super::value::Leaf {
                 opaque: leaf.opaque.clone(),
                 ..Default::default()
@@ -768,6 +799,7 @@ impl Flow<'_> {
         actuals: CallActuals<'_>,
     ) -> Value {
         let mut selected = self.expand_reference(value, port.pointee);
+        selected.materialize_validation_holes();
         let Some(aliases) = actuals.aliases else {
             return selected;
         };
@@ -800,7 +832,8 @@ impl Flow<'_> {
                             || !locations.iter().all(|location| excluded.contains(location))
                     })
             });
-            !leaf.endpoints.is_empty()
+            leaf.is_validation_only(origin)
+                || !leaf.endpoints.is_empty()
                 || !leaf.opaque.is_empty()
                 || leaf
                     .dependencies
@@ -857,6 +890,16 @@ fn export_value(value: &Value, function: DefId) -> Value {
         ..Default::default()
     };
     for ((path, origin), leaf) in &value.leaves {
+        if leaf.has_validation_hole(origin) {
+            result.insert_leaf(
+                path.clone(),
+                Origin::ValidationHole,
+                &super::value::Leaf::default(),
+            );
+        }
+        if leaf.is_validation_only(origin) {
+            continue;
+        }
         let origin = match origin {
             Origin::Loan(point) => Origin::Frame {
                 function,
@@ -891,6 +934,9 @@ fn retain_selected(
             .dependencies
             .extend(leaf.endpoints.iter().cloned().map(Dependency::Address));
         retained.opaque.extend(leaf.opaque.iter().copied());
+    }
+    if !retained.opaque.is_empty() {
+        retained.parents.remove(&Origin::ValidationHole);
     }
 }
 

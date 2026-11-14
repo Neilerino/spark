@@ -1,0 +1,21 @@
+// TAG [SPARK-114]
+
+fn read(value: Ref[Int]): Int { return value }
+fn forward(callback: (Ref[Int]): Ref[(Ref[Int]): Int]): (Ref[Int]): Int {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    pointer: Ref[(Ref[Int]): Int] = callback(borrowed)
+    cast: Ref[(Ref[Int]): Int] = pointer as Ref[(Ref[Int]): Int]
+    result: (Ref[Int]): Int = cast
+    return result
+}
+fn main(): Int {
+    stable: Int = 9
+    borrowed: Ref[Int] = stable
+    function: (Ref[Int]): Int = read
+    pointer: Ref[(Ref[Int]): Int] = function
+    callback: (Ref[Int]): Ref[(Ref[Int]): Int] = fn(ignored: Ref[Int]): Ref[(Ref[Int]): Int] { return pointer }
+    result: (Ref[Int]): Int = forward(callback)
+    print(result(borrowed))
+    return 0
+}

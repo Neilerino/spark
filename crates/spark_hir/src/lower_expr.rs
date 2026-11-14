@@ -483,9 +483,17 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
                     }
                 })
                 .collect();
+            // TAG [SPARK-114]
+            let enclosing_return = ctx.current_fn_ret;
+            ctx.current_fn_ret = match ctx.table.resolve(expr_type(expr.id, ctx.table)) {
+                Ty::Function { ret, .. } => Some(*ret),
+                _ => None,
+            };
+            let body = lower_expr(body, ctx);
+            ctx.current_fn_ret = enclosing_return;
             HirExprKind::Lambda {
                 params: hir_params,
-                body: Box::new(lower_expr(body, ctx)),
+                body: Box::new(body),
             }
         }
 
