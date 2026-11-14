@@ -1,5 +1,6 @@
 //! Value-slot provenance for references carried across MIR control flow.
 
+mod address;
 mod demand;
 mod effects;
 mod read;
@@ -18,7 +19,7 @@ use spark_resolve::DefId;
 use spark_types::{Ty, TypeId, TypeTable};
 
 use crate::facts::{BorrowFacts, Point};
-use read::{Access, AccessKind, Accesses};
+use read::{AccessKind, Accesses};
 use value::{child_type, strip_mutable, Path, Slot, Value};
 
 // TAG [SPARK-114]
@@ -26,7 +27,6 @@ use value::{child_type, strip_mutable, Path, Slot, Value};
 enum Origin {
     Loan(Point),
     Input { local: Local, path: Path },
-    InputAddress { local: Local, path: Path },
     Unproven(Point),
     Frame { function: DefId, point: Point },
     Opaque { function: DefId, point: Point },
@@ -84,30 +84,13 @@ impl State {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum Target {
-    Frame {
-        local: Local,
-        path: Path,
-    },
-    Through {
-        origin: Origin,
-        ty: TypeId,
-        path: Path,
-    },
-}
-
 struct Flow<'a> {
     function: &'a MirFunction,
     table: &'a TypeTable,
-    loans: FxHashMap<Point, FxHashSet<Target>>,
     entries: Vec<Option<State>>,
-    unproven: FxHashMap<Point, Origins>,
-    changed: bool,
     program: Option<effects::Context<'a>>,
     accesses: FxHashMap<Point, Accesses>,
     transfers: FxHashMap<Point, demand::Transfer>,
-    readers: FxHashSet<BlockId>,
     invalid_reads: FxHashSet<(Point, Point, Origin)>,
 }
 
@@ -134,13 +117,9 @@ impl<'a> Flow<'a> {
         Self {
             function,
             table,
-            loans: FxHashMap::default(),
-            unproven: FxHashMap::default(),
-            changed: false,
             program,
             accesses: FxHashMap::default(),
             transfers: FxHashMap::default(),
-            readers: FxHashSet::default(),
             invalid_reads: FxHashSet::default(),
             entries: vec![None; function.blocks.len()],
         }
@@ -181,7 +160,6 @@ impl<'a> Flow<'a> {
             let Some(mut state) = self.entries[block.index()].clone() else {
                 continue;
             };
-            self.changed = false;
             self.transfer_block(block, &mut state);
             for successor in &successors[block.index()] {
                 let entry = &mut self.entries[successor.index()];
@@ -193,21 +171,6 @@ impl<'a> Flow<'a> {
                 };
                 if changed && queued.insert(*successor) {
                     pending.push_back(*successor);
-                }
-            }
-            if self.changed {
-                for (index, entry) in self.entries.iter().enumerate() {
-                    let block = BlockId(index as u32);
-                    if entry.is_some()
-                        && (self.readers.contains(&block)
-                            || matches!(
-                                self.function.blocks[index].terminator,
-                                Terminator::Call { .. }
-                            ))
-                        && queued.insert(block)
-                    {
-                        pending.push_back(block);
-                    }
                 }
             }
         }
@@ -330,28 +293,10 @@ impl<'a> Flow<'a> {
             Rvalue::Use(operand) => self.read_operand(operand, state, &mut accesses),
             Rvalue::Ref { place, .. } => {
                 self.read_access(place, state, AccessKind::Address, &mut accesses);
-                let parents = place
-                    .projections
-                    .iter()
-                    .rposition(|projection| matches!(projection, Projection::Deref))
-                    .map_or_else(Origins::default, |index| {
-                        let prefix = Place {
-                            local: place.local,
-                            projections: place.projections[..index].to_vec(),
-                        };
-                        self.read(&prefix, state).address_support()
-                    });
-                let targets = self.reference_targets(place, state);
-                let entry = self.loans.entry(point).or_default();
-                let before = entry.len();
-                entry.extend(targets);
-                self.changed |= before != entry.len();
-                accesses.insert(Access {
-                    origin: Origin::Loan(point),
-                    selection: Vec::new(),
-                    kind: AccessKind::Address,
-                });
-                Value::reference(Origin::Loan(point)).with_address_support(&parents)
+                let metadata = self.reference_metadata(place, point, state);
+                let result = Value::reference(Origin::Loan(point)).with_metadata(&metadata);
+                accesses.observe_reference(&result, Some(ty), &[], AccessKind::Address);
+                result
             }
             Rvalue::Aggregate(kind, operands) => {
                 self.aggregate(kind, operands, ty, state, &mut accesses)
@@ -497,45 +442,25 @@ impl<'a> Flow<'a> {
             }
             self.transfer_block(block, &mut state);
             let value = state.value(Local::RETURN_PLACE);
-            for origin in value.origins() {
-                if let Some(point) = self.frame_loan(&origin, &mut FxHashSet::default()) {
-                    if reported.insert(point) {
-                        self.report_return(point, &value, block, facts, diagnostics);
-                    }
-                }
-            }
-        }
-    }
-
-    fn frame_loan(&self, origin: &Origin, seen: &mut FxHashSet<Origin>) -> Option<Point> {
-        if !seen.insert(origin.clone()) {
-            return None;
-        }
-        match origin {
-            Origin::Loan(point) => {
-                for target in self.loans.get(point).into_iter().flatten() {
-                    match target {
-                        Target::Frame { .. } => return Some(*point),
-                        Target::Through { origin, .. } => {
-                            if let Some(found) = self.frame_loan(origin, seen) {
-                                return Some(found);
-                            }
+            for leaf in value.leaves.values() {
+                let endpoints = leaf
+                    .endpoints
+                    .iter()
+                    .chain(leaf.dependencies.iter().filter_map(|dependency| {
+                        if let address::Dependency::Address(endpoint) = dependency {
+                            Some(endpoint)
+                        } else {
+                            None
+                        }
+                    }));
+                for endpoint in endpoints {
+                    if let address::Endpoint::Frame { function, root, .. } = endpoint {
+                        if *function == self.function.def_id && reported.insert(*root) {
+                            self.report_return(*root, &value, block, facts, diagnostics);
                         }
                     }
                 }
-                None
             }
-            Origin::Unproven(point) => self
-                .unproven
-                .get(point)
-                .into_iter()
-                .flatten()
-                .find_map(|origin| self.frame_loan(origin, seen)),
-            Origin::Frame { function, point } if *function == self.function.def_id => Some(*point),
-            Origin::Input { .. }
-            | Origin::InputAddress { .. }
-            | Origin::Frame { .. }
-            | Origin::Opaque { .. } => None,
         }
     }
 
@@ -550,7 +475,7 @@ impl<'a> Flow<'a> {
         let Some(loan) = facts.loans.iter().find(|loan| loan.issued_at == point) else {
             return;
         };
-        if value.slots.contains_key(&Vec::new()) {
+        if value.leaves.keys().any(|(path, _)| path.is_empty()) {
             crate::errors::emit_dangling_return(diagnostics, loan, self.function);
             return;
         }

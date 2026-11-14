@@ -278,10 +278,10 @@ impl super::State {
         let mut result = super::Origins::from_iter([atom.origin.clone()]);
         if let Some(parents) = values.get(&atom.coordinate.local).and_then(|value| {
             value
-                .support
+                .leaves
                 .get(&(atom.coordinate.path.clone(), atom.origin.clone()))
         }) {
-            result.extend(parents.iter().cloned());
+            result.extend(parents.parents.iter().cloned());
         }
         result
     }
@@ -291,10 +291,11 @@ impl super::State {
             Bank::Logical => &self.values,
             Bank::Cell => &self.cells,
         };
-        values
-            .get(&atom.coordinate.local)
-            .and_then(|value| value.slots.get(&atom.coordinate.path))
-            .is_some_and(|origins| origins.contains(&atom.origin))
+        values.get(&atom.coordinate.local).is_some_and(|value| {
+            value
+                .leaves
+                .contains_key(&(atom.coordinate.path.clone(), atom.origin.clone()))
+        })
     }
 }
 
@@ -581,6 +582,15 @@ mod tests {
     }
     #[test]
     fn copied_opaque_payload_keeps_parent_region_live() {
+        opaque_payload_region_case(false);
+    }
+
+    #[test]
+    fn opaque_helper_payload_keeps_caller_parent_region_live() {
+        opaque_payload_region_case(true);
+    }
+
+    fn opaque_payload_region_case(through_helper: bool) {
         use spark_mir::{
             AggregateKind, BasicBlock, Constant, LocalDecl, Mir, MirFunction, Operand, Place,
             Projection, Rvalue, Statement, Terminator,
@@ -632,6 +642,29 @@ mod tests {
                 })
                 .collect()
         };
+        let invoke_id = DefId::new(9301);
+        let invoke = MirFunction {
+            def_id: invoke_id,
+            param_count: 2,
+            return_type: carrier_ref,
+            locals: locals(&[carrier_ref, callback, list_ref]),
+            blocks: vec![
+                block(
+                    vec![],
+                    Terminator::Call {
+                        func: copy(1),
+                        args: vec![copy(2)],
+                        destination: local(0),
+                        target: BlockId(1),
+                        span,
+                    },
+                ),
+                block(vec![], Terminator::Return),
+            ],
+            captures: vec![],
+            is_async: false,
+            span,
+        };
         let caller_id = DefId::new(9300);
         let caller = MirFunction {
             def_id: caller_id,
@@ -678,8 +711,16 @@ mod tests {
                         assign(7, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
                     ],
                     Terminator::Call {
-                        func: copy(1),
-                        args: vec![copy(4)],
+                        func: if through_helper {
+                            Operand::Constant(Constant::FunctionRef(invoke_id))
+                        } else {
+                            copy(1)
+                        },
+                        args: if through_helper {
+                            vec![copy(1), copy(4)]
+                        } else {
+                            vec![copy(4)]
+                        },
                         destination: local(5),
                         target: BlockId(1),
                         span,
@@ -718,7 +759,7 @@ mod tests {
             span,
         };
         let mir = Mir {
-            functions: HashMap::from([(caller_id, caller)]),
+            functions: HashMap::from([(caller_id, caller), (invoke_id, invoke)]),
         };
         let mut diagnostics = spark_diagnostics::Diagnostics::new();
         let regions = super::super::effects::analyze_program(&mir, &table, &mut diagnostics);

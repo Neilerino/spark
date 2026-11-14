@@ -5,7 +5,7 @@ use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_mir::Place;
 use spark_types::{Ty, TypeId, TypeTable};
 
-use super::{value, AccessKind, Accesses, Flow, Origin, Path, Point, Slot, State, Target};
+use super::{value, AccessKind, Accesses, Flow, Origin, Path, Point, Slot, State};
 
 impl Flow<'_> {
     pub(super) fn invalidate(&self, place: &Place, point: Point, state: &mut State) {
@@ -36,17 +36,13 @@ impl Flow<'_> {
     }
 
     pub(super) fn record_accesses(&mut self, point: Point, accesses: Accesses, state: &State) {
-        if !accesses.is_empty() {
-            self.readers.insert(point.block);
-        }
         for access in &accesses {
             let mut expired = FxHashSet::default();
             self.expired_access(
-                &access.origin,
+                &access.target,
                 &access.selection,
                 access.kind,
                 state,
-                &mut FxHashSet::default(),
                 &mut expired,
             );
             for drop in expired {
@@ -64,63 +60,39 @@ impl Flow<'_> {
 
     fn expired_access(
         &self,
-        origin: &Origin,
+        target: &super::address::Dependency,
         selection: &[Slot],
         kind: AccessKind,
         state: &State,
-        seen: &mut FxHashSet<Origin>,
         expired: &mut FxHashSet<Point>,
     ) {
-        if !seen.insert(origin.clone()) {
-            return;
-        }
-        let local_loan = match origin {
-            Origin::Loan(point) => Some(*point),
-            Origin::Frame { function, point } if *function == self.function.def_id => Some(*point),
-            Origin::Input { .. }
-            | Origin::InputAddress { .. }
-            | Origin::Frame { .. }
-            | Origin::Opaque { .. }
-            | Origin::Unproven(_) => None,
-        };
-        if let Some(point) = local_loan {
-            for target in self.loans.get(&point).into_iter().flatten() {
-                match target {
-                    Target::Frame { local, path } => {
-                        let selected = [path.as_slice(), selection].concat();
-                        for ((owner, path), drops) in &state.invalidated {
-                            if owner != local {
-                                continue;
-                            }
-                            let needed = match kind {
-                                AccessKind::Value => overlaps(path, &selected),
-                                AccessKind::Address => {
-                                    path.len() < selected.len() && overlaps_prefix(path, &selected)
-                                }
-                            };
-                            if needed {
-                                expired.extend(drops);
-                            }
-                        }
+        use super::address::{Dependency, Endpoint};
+        if let Dependency::Address(Endpoint::Frame {
+            function,
+            local,
+            location,
+            ..
+        }) = target
+        {
+            if *function != self.function.def_id {
+                return;
+            }
+            let selected = [location.as_slice(), selection].concat();
+            for ((owner, path), drops) in &state.invalidated {
+                if owner != local {
+                    continue;
+                }
+                let needed = match kind {
+                    AccessKind::Value => overlaps(path, &selected),
+                    AccessKind::Address => {
+                        path.len() < selected.len() && overlaps_prefix(path, &selected)
                     }
-                    Target::Through { origin, path, .. } => {
-                        self.expired_access(
-                            origin,
-                            &[path.as_slice(), selection].concat(),
-                            kind,
-                            state,
-                            seen,
-                            expired,
-                        );
-                    }
+                };
+                if needed {
+                    expired.extend(drops);
                 }
             }
-        } else if let Origin::Unproven(point) = origin {
-            for dependency in self.unproven.get(point).into_iter().flatten() {
-                self.expired_access(dependency, selection, kind, state, seen, expired);
-            }
         }
-        seen.remove(origin);
     }
 
     pub(super) fn report_reads(&self, diagnostics: &mut Diagnostics) {
