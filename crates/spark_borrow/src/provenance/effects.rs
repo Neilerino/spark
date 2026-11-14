@@ -144,15 +144,13 @@ impl Flow<'_> {
             state,
             aliases: None,
         };
-        let targets = callee.callees.get(&Vec::new());
+        let targets = self.callee_targets(&callee, super::operand_type(func, self.function));
         let mut outcomes = Vec::new();
-        let open = targets.is_some_and(|targets| targets.open);
-        let unresolved_value = targets.is_none_or(|targets| {
-            targets.unresolved || (!targets.open && targets.known.is_empty())
-        });
+        let open = targets.open;
+        let unresolved_value = targets.unresolved || (!targets.open && targets.known.is_empty());
         let mut unknown = unresolved_value;
         let mut dispatched = FxHashSet::default();
-        for def in targets.into_iter().flat_map(|targets| &targets.known) {
+        for def in &targets.known {
             let Some(context) = self.program else {
                 unknown = true;
                 continue;
@@ -251,14 +249,7 @@ impl Flow<'_> {
                 }
                 let selected =
                     self.select_input(value.clone(), decl.ty, &path, decl.local, function, actuals);
-                let targets = selected
-                    .callees
-                    .get(&Vec::new())
-                    .cloned()
-                    .unwrap_or_else(|| super::callbacks::Targets {
-                        unresolved: true,
-                        ..Default::default()
-                    });
+                let targets = self.callee_targets(&selected, ty);
                 for def in &targets.known {
                     let Some(target) = self
                         .program
@@ -606,11 +597,14 @@ impl Flow<'_> {
                         if !leaf.opaque.is_empty() {
                             retain_selected(&selected, &mut retained, &mut retained_sources);
                         } else if path.last() == Some(&Slot::Tail) {
-                            result.join(&selected.prefixed_path(
-                                &path[..path.len() - 1],
-                                actuals.ty,
-                                self.table,
-                            ));
+                            let prefix = if selector.expected.is_some_and(|ty| {
+                                child_type(ty, &Slot::Deref, self.table).is_some()
+                            }) {
+                                path.as_slice()
+                            } else {
+                                &path[..path.len() - 1]
+                            };
+                            result.join(&selected.prefixed_path(prefix, actuals.ty, self.table));
                         } else {
                             result.insert_addresses(path, &selected);
                         }

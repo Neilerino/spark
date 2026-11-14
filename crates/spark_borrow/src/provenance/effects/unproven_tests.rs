@@ -537,3 +537,73 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
         "binding a hole argument cannot turn a foreign result into validation data"
     );
 }
+
+#[test]
+fn known_function_placeholders_do_not_erase_widened_reference_captures() {
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let string = table.intern(Ty::String);
+    let reference = table.intern(Ty::Ref {
+        inner: string,
+        mutable: false,
+        lifetime: spark_types::LifetimeId::ANONYMOUS,
+    });
+    let callable = table.intern(Ty::Function {
+        params: vec![],
+        ret: int,
+        is_async: false,
+    });
+    let outer = DefId::new(9896);
+    let inner = DefId::new(9897);
+    let schema = |def, capture_ty| MirFunction {
+        def_id: def,
+        param_count: 0,
+        return_type: int,
+        locals: vec![],
+        blocks: vec![],
+        captures: vec![(DefId::new(9898), capture_ty)],
+        is_async: false,
+        span: Span::DUMMY,
+    };
+    let caller = MirFunction {
+        def_id: DefId::new(9899),
+        captures: vec![],
+        ..schema(DefId::new(9899), callable)
+    };
+    for captured in [string, reference] {
+        let mir = Mir {
+            functions: std::collections::HashMap::from([
+                (outer, schema(outer, callable)),
+                (inner, schema(inner, captured)),
+            ]),
+        };
+        let summaries = Summaries::default();
+        let ports = Ports::default();
+        let mut flow = Flow::new(
+            &caller,
+            &table,
+            Some(Context {
+                mir: &mir,
+                summaries: &summaries,
+                ports: &ports,
+            }),
+        );
+        flow.callables = super::super::callbacks::Inputs::invocation();
+        flow.callables.slots.insert(
+            (Local(1), vec![], callable),
+            super::super::callbacks::Targets::function(outer),
+        );
+        flow.callables.slots.insert(
+            (Local(1), vec![Slot::Capture(outer, 0, callable)], callable),
+            super::super::callbacks::Targets::function(inner),
+        );
+        let value = flow.symbolic_input(callable, Local(1), callable, &[]);
+        assert_eq!(!value.leaves.is_empty(), captured == reference, "known owned captures need no placeholder, while real references survive the same normalized path");
+        if captured == reference {
+            assert!(value
+                .leaves
+                .keys()
+                .any(|(path, _)| path == &[Slot::Capture(outer, 0, callable), Slot::Tail]));
+        }
+    }
+}

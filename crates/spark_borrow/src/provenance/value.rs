@@ -221,6 +221,12 @@ impl Value {
                     .entry(path[1..].to_vec())
                     .or_default()
                     .join(callees);
+            } else if path.first() == Some(&Slot::Tail) {
+                result
+                    .callees
+                    .entry(vec![Slot::Tail])
+                    .or_default()
+                    .join(callees);
             }
         }
         result
@@ -440,12 +446,16 @@ pub(super) fn inputs(
                 local,
                 path: selection.clone(),
             };
+            let expected = path
+                .iter()
+                .try_fold(ty, |ty, slot| child_type(ty, slot, table))
+                .filter(|ty| matches!(table.resolve(strip_mutable(*ty, table)), Ty::Ref { .. }));
             let leaf = value.leaves.entry((path, origin)).or_default();
             leaf.dependencies.insert(Dependency::InputValue(Selector {
                 input: local,
                 selection,
                 intent: Intent::Value,
-                expected: None,
+                expected,
             }));
         },
     );

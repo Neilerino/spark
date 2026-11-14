@@ -92,6 +92,132 @@ impl Hash for Inputs {
 }
 
 impl Flow<'_> {
+    fn input_seed(&self, ty: TypeId, local: Local, source_ty: TypeId, prefix: &[Slot]) -> Value {
+        let mut result = value::inputs(ty, local, source_ty, prefix, self.table);
+        apply_role(&mut result, self.callables.missing);
+        let slots: Vec<_> = result.callees.keys().cloned().collect();
+        for path in slots {
+            let Some(selected) = path
+                .iter()
+                .try_fold(ty, |ty, slot| value::child_type(ty, slot, self.table))
+            else {
+                continue;
+            };
+            let selected = value::strip_mutable(selected, self.table);
+            let source = value::normalize(
+                source_ty,
+                [prefix.to_vec(), path.clone()].concat(),
+                self.table,
+            );
+            let Some(targets) = self.input_targets(local, &source, selected) else {
+                continue;
+            };
+            if !targets.unresolved
+                && !targets.known.is_empty()
+                && targets.known.iter().all(|def| {
+                    self.program
+                        .is_some_and(|context| context.mir.functions.contains_key(def))
+                })
+            {
+                let placeholder = [path.clone(), vec![Slot::Tail]].concat();
+                result.leaves.retain(|(path, _), _| *path != placeholder);
+            }
+            result.callees.insert(path, targets);
+        }
+        result
+    }
+
+    pub(super) fn callee_targets(&self, value: &Value, ty: TypeId) -> Targets {
+        if let Some(targets) = value.callees.get(&Vec::new()) {
+            return targets.clone();
+        }
+        let Some(tail) = value.callees.get(&vec![Slot::Tail]) else {
+            return Targets {
+                unresolved: true,
+                ..Targets::default()
+            };
+        };
+        self.tail_targets(tail, ty)
+    }
+
+    fn input_targets(&self, local: Local, path: &[Slot], ty: TypeId) -> Option<Targets> {
+        if let Some(targets) = self.callables.slots.get(&(local, path.to_vec(), ty)) {
+            return Some(targets.clone());
+        }
+        let mut result = None;
+        let mut longest = 0;
+        for ((input, selected, _), targets) in &self.callables.slots {
+            if *input != local {
+                continue;
+            }
+            let Some(index) = selected.iter().position(|slot| *slot == Slot::Tail) else {
+                continue;
+            };
+            if !path.starts_with(&selected[..index]) || index < longest {
+                continue;
+            }
+            let targets = self.tail_targets(targets, ty);
+            if index > longest {
+                result = None;
+                longest = index;
+            }
+            result.get_or_insert_with(Targets::default).join(&targets);
+        }
+        result
+    }
+
+    fn tail_targets(&self, tail: &Targets, ty: TypeId) -> Targets {
+        let mut targets = Targets {
+            open: tail.open,
+            unresolved: tail.unresolved,
+            ..Targets::default()
+        };
+        for def in &tail.known {
+            match self.target_matches(*def, ty) {
+                Some(true) => {
+                    targets.known.insert(*def);
+                }
+                Some(false) => {}
+                None => targets.unresolved = true,
+            }
+        }
+        if targets.known.is_empty() && !targets.open {
+            targets.unresolved = true;
+        }
+        targets
+    }
+
+    fn target_matches(&self, def: DefId, ty: TypeId) -> Option<bool> {
+        let Ty::Function {
+            params,
+            ret,
+            is_async,
+        } = self.table.resolve(value::strip_mutable(ty, self.table))
+        else {
+            return None;
+        };
+        if let Some(function) = self
+            .program
+            .and_then(|context| context.mir.functions.get(&def))
+        {
+            return Some(
+                function.return_type == *ret
+                    && function.is_async == *is_async
+                    && function.param_count as usize == params.len()
+                    && function
+                        .locals
+                        .iter()
+                        .skip(1)
+                        .take(params.len())
+                        .map(|decl| decl.ty)
+                        .eq(params.iter().copied()),
+            );
+        }
+        self.table.get_def_type(def).map(|actual| {
+            value::strip_mutable(actual, self.table) == value::strip_mutable(ty, self.table)
+        })
+    }
+
     pub(super) fn symbolic_input(
         &self,
         ty: TypeId,
@@ -99,8 +225,7 @@ impl Flow<'_> {
         source_ty: TypeId,
         prefix: &[Slot],
     ) -> Value {
-        let mut result = value::inputs(ty, local, source_ty, prefix, self.table);
-        apply_role(&mut result, self.callables.missing);
+        let mut result = self.input_seed(ty, local, source_ty, prefix);
         let facts: Vec<_> = self
             .callables
             .slots
@@ -122,9 +247,7 @@ impl Flow<'_> {
                 for (index, (_, capture_ty)) in function.captures.iter().enumerate() {
                     let slot = Slot::Capture(*def, index, *capture_ty);
                     let selection = [(*path).clone(), vec![slot.clone()]].concat();
-                    let mut capture =
-                        value::inputs(*capture_ty, local, source_ty, &selection, self.table);
-                    apply_role(&mut capture, self.callables.missing);
+                    let capture = self.input_seed(*capture_ty, local, source_ty, &selection);
                     result.join(&capture.prefixed_path(
                         &[relative.to_vec(), vec![slot]].concat(),
                         ty,
@@ -134,16 +257,6 @@ impl Flow<'_> {
             }
         }
         for (_, relative, targets) in facts {
-            if !targets.unresolved
-                && !targets.known.is_empty()
-                && targets.known.iter().all(|def| {
-                    self.program
-                        .is_some_and(|context| context.mir.functions.contains_key(def))
-                })
-            {
-                let placeholder = [relative.to_vec(), vec![Slot::Tail]].concat();
-                result.leaves.retain(|(path, _), _| *path != placeholder);
-            }
             result.callees.insert(relative.to_vec(), targets.clone());
         }
         result

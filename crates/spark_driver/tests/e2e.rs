@@ -4682,3 +4682,70 @@ fn collection_borrow_open_function_results_preserve_target_roles() {
         );
     }
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_nested_callbacks_keep_capture_lifetimes() {
+    let cases = [
+        (
+            include_str!("run-pass/collections/collection_borrow_nested_owned_callback.spark"),
+            true,
+        ),
+        (
+            include_str!("run-pass/collections/collection_borrow_nested_scoped_callback.spark"),
+            true,
+        ),
+        (
+            include_str!(
+                "compile-fail/borrow_errors/collection_borrow_nested_callback_owner.spark"
+            ),
+            false,
+        ),
+    ];
+    let dir = tempfile::tempdir().expect("create nested callback directory");
+    for (case, (template, valid)) in cases.into_iter().enumerate() {
+        for depth in 0..=6 {
+            let mut callback = "original".to_string();
+            let mut wrappers = String::new();
+            for level in 1..=depth {
+                wrappers.push_str(&format!(
+                    "        wrapped{level}: (): Int = nest({callback})\n"
+                ));
+                callback = format!("wrapped{level}");
+            }
+            let start = template
+                .find("        once:")
+                .expect("wrapper declarations");
+            let end = template
+                .find("        entries:")
+                .expect("carrier declaration");
+            let mut source = template.to_string();
+            source.replace_range(start..end, &wrappers);
+            source = source.replace("{1: three}", &format!("{{1: {callback}}}"));
+            let path = dir.path().join(format!("case{case}_depth{depth}.spark"));
+            std::fs::write(&path, source).expect("write nested callback source");
+            let fixture = path.to_str().expect("UTF-8 source path");
+            for args in [&[][..], &["--no-opt"][..]] {
+                if valid {
+                    let safe = run_spark_with_args(fixture, args);
+                    assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+                    assert_eq!(safe.stdout, "5\n", "{fixture} {args:?}");
+                } else {
+                    let invalid = build_spark_with_args(fixture, args);
+                    assert_eq!(
+                        invalid.exit_code, 1,
+                        "{fixture} {args:?}: {}",
+                        invalid.stderr
+                    );
+                    assert!(
+                        invalid
+                            .stderr
+                            .contains("borrowed value does not live long enough"),
+                        "{fixture} {args:?}: {}",
+                        invalid.stderr
+                    );
+                }
+            }
+        }
+    }
+}
