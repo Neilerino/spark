@@ -142,7 +142,7 @@ fn run_passes(func: &mut MirFunction, table: &TypeTable) -> bool {
     changed |= const_fold::fold_constants(func);
     changed |= divrem::reduce_signed_divrem(func, table);
     changed |= simplify_cfg::simplify_cfg(func);
-    changed |= dce::eliminate_dead_code(func);
+    changed |= dce::eliminate_dead_code(func, table);
     changed |= copy_prop::propagate_copies(func, table);
     changed
 }

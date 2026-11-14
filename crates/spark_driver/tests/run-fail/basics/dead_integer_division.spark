@@ -1,0 +1,20 @@
+// TAG [SPARK-127]
+
+import spark.sys { args }
+
+fn main(): Int {
+    argv: List[String] = args()
+    operation: String = argv[1] ?? "div"
+    input: String = argv[2] ?? "x"
+    divisor: Int = input.len() - 1
+    if operation == "rem" {
+        unused: Int = 7 % divisor
+    } else if operation == "overflow" {
+        minimum: Int = -9223372036854775807 - 1
+        unusedOverflow: Int = minimum / divisor
+    } else {
+        unusedDivision: Int = 7 / divisor
+    }
+    print(42)
+    return 0
+}

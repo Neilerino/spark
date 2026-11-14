@@ -12,15 +12,20 @@
 //!    place) is always considered used. `Statement::Drop` is never removed.
 
 use rustc_hash::FxHashSet;
-use spark_mir::{BlockId, Local, MirFunction, Operand, Place, Projection, Statement, Terminator};
+use spark_ast::BinaryOp;
+use spark_mir::{
+    BlockId, Constant, Local, MirFunction, Operand, Place, Projection, Rvalue, Statement,
+    Terminator,
+};
+use spark_types::{IntWidth, Ty, TypeId, TypeTable};
 
 /// Eliminates dead code from `func`.
 ///
 /// Returns `true` if any blocks were cleared or assignments were removed.
-pub fn eliminate_dead_code(func: &mut MirFunction) -> bool {
+pub fn eliminate_dead_code(func: &mut MirFunction, table: &TypeTable) -> bool {
     let mut changed = false;
     changed |= remove_unreachable_blocks(func);
-    changed |= remove_dead_assignments(func);
+    changed |= remove_dead_assignments(func, table);
     changed
 }
 
@@ -62,15 +67,17 @@ fn compute_reachable_blocks(func: &MirFunction) -> FxHashSet<BlockId> {
 }
 
 /// Removes assignments to locals that are never read.
-fn remove_dead_assignments(func: &mut MirFunction) -> bool {
+fn remove_dead_assignments(func: &mut MirFunction, table: &TypeTable) -> bool {
     let used = compute_used_locals(func);
     let mut changed = false;
 
     for block in &mut func.blocks {
         for stmt in &mut block.statements {
-            if let Statement::Assign { place, .. } = stmt {
-                // Only remove bare local assignments (no projections).
-                if place.projections.is_empty() && !used.contains(&place.local) {
+            if let Statement::Assign { place, rvalue, .. } = stmt {
+                if place.projections.is_empty()
+                    && !used.contains(&place.local)
+                    && !may_trap(rvalue, func.locals[place.local.index()].ty, table)
+                {
                     *stmt = Statement::Nop;
                     changed = true;
                 }
@@ -79,6 +86,32 @@ fn remove_dead_assignments(func: &mut MirFunction) -> bool {
     }
 
     changed
+}
+
+// TAG [SPARK-127]
+fn may_trap(rvalue: &Rvalue, mut ty: TypeId, table: &TypeTable) -> bool {
+    let Rvalue::BinaryOp(op @ (BinaryOp::Div | BinaryOp::Mod), _, divisor) = rvalue else {
+        return false;
+    };
+    while let Ty::Mutable(inner) = table.resolve(ty) {
+        ty = *inner;
+    }
+    let ty = table.resolve(ty);
+    if matches!(ty, Ty::Float(_)) {
+        return false;
+    }
+    match divisor {
+        Operand::Constant(Constant::Int(0)) => true,
+        Operand::Constant(Constant::Int(-1)) => {
+            *op == BinaryOp::Div
+                && matches!(
+                    ty,
+                    Ty::Int(IntWidth::I8 | IntWidth::I16 | IntWidth::I32 | IntWidth::I64)
+                )
+        }
+        Operand::Constant(Constant::Int(_)) => false,
+        _ => true,
+    }
 }
 
 /// Computes the set of locals that are "used" (read from).
@@ -244,7 +277,6 @@ mod tests {
     };
     use spark_resolve::DefId;
     use spark_span::Span;
-    use spark_types::TypeId;
 
     fn make_func(blocks: Vec<BasicBlock>, locals: Vec<LocalDecl>) -> MirFunction {
         MirFunction {
@@ -286,6 +318,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn removes_proven_safe_dead_division_but_keeps_potential_overflow() {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let division = |local, divisor| Statement::Assign {
+            place: Place::from_local(Local(local)),
+            rvalue: Rvalue::BinaryOp(
+                BinaryOp::Div,
+                Operand::Copy(Place::from_local(Local(1))),
+                Operand::Constant(Constant::Int(divisor)),
+            ),
+            span: Span::DUMMY,
+        };
+        let mut locals: Vec<_> = (0..4).map(|local| local_decl(local, false)).collect();
+        for local in &mut locals {
+            local.ty = int;
+        }
+        let mut func = make_func(
+            vec![BasicBlock {
+                statements: vec![division(2, 3), division(3, -1)],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            locals,
+        );
+        assert!(eliminate_dead_code(&mut func, &table));
+        assert!(matches!(func.blocks[0].statements[0], Statement::Nop));
+        assert!(matches!(
+            func.blocks[0].statements[1],
+            Statement::Assign { .. }
+        ));
+    }
+
     // ── Unreachable block removal ──────────────────────────────
 
     #[test]
@@ -308,7 +373,7 @@ mod tests {
             vec![local_decl(0, false)],
         );
 
-        assert!(eliminate_dead_code(&mut func));
+        assert!(eliminate_dead_code(&mut func, &TypeTable::new()));
         assert!(func.blocks[1].statements.is_empty());
         assert!(matches!(func.blocks[1].terminator, Terminator::Unreachable));
     }
@@ -335,7 +400,7 @@ mod tests {
 
         // bb1 is reachable, so no unreachable removal. But dead assignments
         // might or might not apply.
-        let _ = eliminate_dead_code(&mut func);
+        let _ = eliminate_dead_code(&mut func, &TypeTable::new());
         assert_eq!(func.blocks[1].statements.len(), 1);
         assert!(matches!(func.blocks[1].terminator, Terminator::Return));
     }
@@ -360,7 +425,7 @@ mod tests {
             vec![local_decl(0, false)],
         );
 
-        assert!(!eliminate_dead_code(&mut func));
+        assert!(!eliminate_dead_code(&mut func, &TypeTable::new()));
     }
 
     // ── Dead assignment removal ──────────────────────────────────
@@ -379,7 +444,7 @@ mod tests {
             vec![local_decl(0, false), local_decl(1, false)],
         );
 
-        assert!(eliminate_dead_code(&mut func));
+        assert!(eliminate_dead_code(&mut func, &TypeTable::new()));
         // _1 = 99 should be replaced with Nop
         assert!(matches!(func.blocks[0].statements[1], Statement::Nop));
         // _0 = 42 should remain
@@ -401,7 +466,7 @@ mod tests {
             vec![local_decl(0, false)],
         );
 
-        assert!(!eliminate_dead_code(&mut func));
+        assert!(!eliminate_dead_code(&mut func, &TypeTable::new()));
         assert!(matches!(
             func.blocks[0].statements[0],
             Statement::Assign { .. }
@@ -420,7 +485,7 @@ mod tests {
             vec![local_decl(0, false), local_decl(1, false)],
         );
 
-        assert!(!eliminate_dead_code(&mut func));
+        assert!(!eliminate_dead_code(&mut func, &TypeTable::new()));
     }
 
     #[test]
@@ -442,7 +507,7 @@ mod tests {
             vec![local_decl(0, false), local_decl(1, false)],
         );
 
-        let _ = eliminate_dead_code(&mut func);
+        let _ = eliminate_dead_code(&mut func, &TypeTable::new());
         // Drop should always be present
         let has_drop = func.blocks[0]
             .statements
@@ -475,7 +540,7 @@ mod tests {
             vec![local_decl(0, false), local_decl(1, false)],
         );
 
-        let _ = eliminate_dead_code(&mut func);
+        let _ = eliminate_dead_code(&mut func, &TypeTable::new());
         // _1 = 42 must NOT be removed (it's read by _1.*)
         assert!(
             matches!(func.blocks[0].statements[1], Statement::Assign { .. }),
@@ -500,6 +565,6 @@ mod tests {
             vec![local_decl(0, false), local_decl(1, false)],
         );
 
-        assert!(!eliminate_dead_code(&mut func));
+        assert!(!eliminate_dead_code(&mut func, &TypeTable::new()));
     }
 }
