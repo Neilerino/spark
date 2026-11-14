@@ -381,6 +381,16 @@ impl Flow<'_> {
                             index,
                             ty: *capture_ty,
                         });
+                    } else if matches!(
+                        self.table
+                            .resolve(value::strip_mutable(*capture_ty, self.table)),
+                        Ty::Channel { .. }
+                    ) {
+                        capture = capture.with_channel_capture(super::channels::Capture {
+                            owner: *def,
+                            index,
+                            ty: *capture_ty,
+                        });
                     }
                     result.join(&capture.prefixed_path(
                         &[relative.to_vec(), vec![slot]].concat(),

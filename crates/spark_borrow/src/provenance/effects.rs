@@ -18,6 +18,8 @@ use super::{
 #[derive(Clone, Default)]
 pub(super) struct Summary {
     returned: Value,
+    queues: FxHashMap<(super::channels::Target, TypeId), Value>,
+    queue_contents: FxHashMap<(super::channels::Target, TypeId), Value>,
     normal_return: bool,
     memory: FxHashMap<Port, Value>,
     modified: FxHashSet<View>,
@@ -29,6 +31,16 @@ pub(super) struct Summary {
 impl Summary {
     fn join(&mut self, other: &Self) -> bool {
         let mut changed = self.returned.join(&other.returned);
+        for (target, value) in &other.queue_contents {
+            changed |= self
+                .queue_contents
+                .entry(target.clone())
+                .or_default()
+                .join(value);
+        }
+        for (target, value) in &other.queues {
+            changed |= self.queues.entry(target.clone()).or_default().join(value);
+        }
         changed |= !self.normal_return && other.normal_return;
         self.normal_return |= other.normal_return;
         for (local, value) in &other.memory {
@@ -57,6 +69,7 @@ impl Summary {
 #[derive(Clone, Copy)]
 pub(super) struct Context<'a> {
     pub(super) mir: &'a Mir,
+    pub(super) definitions: Option<&'a spark_resolve::DefinitionTable>,
     summaries: &'a Summaries,
     pub(super) ports: &'a Ports,
 }
@@ -64,6 +77,8 @@ pub(super) struct Context<'a> {
 pub(super) struct CallOutcome {
     pub returned: Value,
     pub memory: Vec<MemoryWrite>,
+    pub queues: Vec<super::channels::Write>,
+    pub queue_contents: Vec<super::channels::Write>,
 }
 
 pub(super) struct MemoryWrite {
@@ -92,6 +107,7 @@ impl CallActuals<'_> {
 type Summaries = FxHashMap<Key, Summary>;
 type Ports = FxHashMap<DefId, Vec<Port>>;
 
+mod channel_binding;
 mod inference;
 mod selection;
 pub use inference::analyze_program;
@@ -100,6 +116,11 @@ use inference::infer_summaries;
 
 impl Flow<'_> {
     fn discover_ports(&self, summary: &Summary, ports: &mut Vec<Port>) {
+        for port in &self.queue_ports {
+            if !ports.contains(port) {
+                ports.push(port.clone());
+            }
+        }
         if summary.written_inputs.is_empty() {
             return;
         }
@@ -142,6 +163,9 @@ impl Flow<'_> {
         point: Point,
         state: &State,
     ) -> Option<Vec<CallOutcome>> {
+        if let Some(outcome) = self.channel_call(func, args, ty, point, state) {
+            return Some(vec![outcome]);
+        }
         let callee = self.operand(func, state);
         let arguments: Vec<_> = args.iter().map(|arg| self.operand(arg, state)).collect();
         let actuals = CallActuals {
@@ -168,13 +192,7 @@ impl Flow<'_> {
                 continue;
             };
             let roots = &context.ports[def];
-            let locations = roots
-                .iter()
-                .map(|port| {
-                    let input = self.port_input(port, function, actuals);
-                    (port.clone(), self.reference_locations(&input, port.pointee))
-                })
-                .collect();
+            let locations = self.call_locations(roots, function, actuals);
             for aliases in Aliases::call_variants(roots, self.table, &locations, &self.aliases) {
                 dispatched.insert(*def);
                 let key = Key {
@@ -203,15 +221,17 @@ impl Flow<'_> {
                     );
                     self.record_obligation(point, boundary.clone(), &bound);
                 }
+                let queues = self.bind_queue_writes(summary, function, actuals);
+                self.record_queue_prefix(&queues, point, state);
                 if !summary.normal_return {
                     continue;
                 }
-                outcomes.push(self.bind_outcome(summary, function, actuals, &key.aliases));
+                outcomes.push(self.bind_outcome(summary, function, actuals, &key.aliases, queues));
             }
         }
         if unknown {
             if unresolved_value {
-                self.record_unknown_arguments(point, args, &arguments);
+                self.record_unknown_arguments(point, args, &arguments, state);
             }
             self.record_obligation(
                 point,
@@ -221,15 +241,24 @@ impl Flow<'_> {
                 ),
                 &callee,
             );
-            outcomes.push(CallOutcome {
-                returned: self.opaque_result(args, actuals),
-                memory: Vec::new(),
-            });
+            let returned = self.opaque_result(args, actuals);
+            outcomes.push(self.opaque_queue_outcome(returned, args, actuals));
         }
         if open {
+            let mut returned = value::validation_hole(ty, self.table);
+            returned.join(&super::channels::validation_handles(
+                ty,
+                super::address::OpaqueSite {
+                    function: self.function.def_id,
+                    point,
+                },
+                self.table,
+            ));
             outcomes.push(CallOutcome {
-                returned: value::validation_hole(ty, self.table),
+                returned,
                 memory: Vec::new(),
+                queues: Vec::new(),
+                queue_contents: Vec::new(),
             });
         }
         (!outcomes.is_empty()).then_some(outcomes)
@@ -364,6 +393,7 @@ impl Flow<'_> {
         function: &MirFunction,
         actuals: CallActuals<'_>,
         aliases: &Aliases,
+        queues: Vec<super::channels::Write>,
     ) -> CallOutcome {
         let returned = self.bind(&summary.returned, function, actuals);
         let mut memory = Vec::new();
@@ -404,7 +434,34 @@ impl Flow<'_> {
                 value,
             });
         }
-        CallOutcome { returned, memory }
+        let queue_contents = self.bind_queue_contents(summary, function, actuals);
+        CallOutcome {
+            returned,
+            memory,
+            queues,
+            queue_contents,
+        }
+    }
+
+    fn is_builtin_callee(&self, callee: &Value) -> bool {
+        let Some(definitions) = self.program.and_then(|context| context.definitions) else {
+            return false;
+        };
+        !callee.callees.is_empty()
+            && callee.callees.values().all(|targets| {
+                !targets.open
+                    && !targets.unresolved
+                    && !targets.known.is_empty()
+                    && targets.known.iter().all(|target| {
+                        definitions.get(*target).is_some_and(|definition| {
+                            matches!(
+                                definition.kind,
+                                spark_resolve::DefinitionKind::BuiltinFunction
+                                    | spark_resolve::DefinitionKind::BuiltinMethod
+                            )
+                        })
+                    })
+            })
     }
 
     fn opaque_result(&mut self, args: &[Operand], actuals: CallActuals<'_>) -> Value {
@@ -416,12 +473,22 @@ impl Flow<'_> {
             state,
             ..
         } = actuals;
+        let expanded: Vec<_> = arguments
+            .iter()
+            .map(|value| self.reachable_queue_payloads(value, state))
+            .collect();
+        let inspected = if self.is_builtin_callee(callee) {
+            arguments
+        } else {
+            expanded.as_slice()
+        };
+        let arguments = expanded.as_slice();
         let mut origins = callee.origins();
         for arg in arguments {
             origins.extend(arg.origins());
         }
         let mut accesses = Accesses::default();
-        for (argument, operand) in arguments.iter().zip(args) {
+        for (argument, operand) in inspected.iter().zip(args) {
             let ty = match operand {
                 Operand::Copy(place) | Operand::Move(place) => Some(self.place_type(place)),
                 Operand::Constant(_) => None,
@@ -488,6 +555,7 @@ impl Flow<'_> {
             };
             self.transfer_block(BlockId(index as u32), &mut state);
             summary.normal_return = true;
+            self.export_queue_contents(&state, &mut summary);
             summary.returned.join(&export_value(
                 &state.value(Local::RETURN_PLACE),
                 self.function.def_id,
@@ -513,6 +581,9 @@ impl Flow<'_> {
                 .map(|port| self.aliases.representative(&port))
                 .collect();
             for port in ports {
+                if matches!(port.kind, super::aliases::StorageKind::Channel(_)) {
+                    continue;
+                }
                 let mut selector = port.selector();
                 if !self.aliases.is_cell(&port) {
                     if let Intent::Address(payload) = &mut selector.intent {
@@ -534,6 +605,7 @@ impl Flow<'_> {
                 );
             }
         }
+        summary.queues = self.export_queue_writes();
         for ((_, boundary), value) in &self.obligations {
             summary
                 .obligations
@@ -567,12 +639,14 @@ impl Flow<'_> {
             summary.observed.insert(observed);
         }
 
+        self.normalize_fresh_queue_roles(&mut summary);
         summary
     }
 
     fn bind(&mut self, summary: &Value, function: &MirFunction, actuals: CallActuals<'_>) -> Value {
         let mut result = Value {
             callees: summary.callees.clone(),
+            queues: self.bind_queue_handles(summary, function, actuals),
             ..Default::default()
         };
         for ((path, origin, capture), leaf) in &summary.leaves {
@@ -786,6 +860,7 @@ impl Flow<'_> {
 fn export_value(value: &Value, function: DefId) -> Value {
     let mut result = Value {
         callees: value.callees.clone(),
+        queues: value.queues.clone(),
         ..Default::default()
     };
     for ((path, origin, capture), leaf) in &value.leaves {

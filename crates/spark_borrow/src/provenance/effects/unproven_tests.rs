@@ -160,6 +160,7 @@ fn invocation_obligations_exclude_only_proven_targets_capture_environments() {
             &caller,
             &table,
             Some(Context {
+                definitions: None,
                 mir: &mir,
                 summaries: &summaries,
                 ports: &ports,
@@ -395,6 +396,9 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
     let residual = flow.residual_reference(
         &derived,
         &Port {
+            kind: crate::provenance::aliases::StorageKind::Reference,
+            channel_capture: None,
+            queue: None,
             capture: None,
             input: Local(1),
             selection: vec![Slot::Element],
@@ -584,6 +588,7 @@ fn known_function_placeholders_do_not_erase_widened_reference_captures() {
             &caller,
             &table,
             Some(Context {
+                definitions: None,
                 mir: &mir,
                 summaries: &summaries,
                 ports: &ports,

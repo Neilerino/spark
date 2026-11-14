@@ -1,0 +1,17 @@
+// TAG [SPARK-114]
+
+fn fresh(): Channel[Ref[Int]] { return Channel[Ref[Int]]() }
+fn consumeFresh(factory: (): Channel[Ref[Int]]): Void {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    queue: Channel[Ref[Int]] = factory()
+    queue.send(borrowed)
+    found: Ref[Int] = queue.recv()
+    print(found)
+}
+fn main(): Int {
+    outside: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    factory: (): Channel[Ref[Int]] = fn(): Channel[Ref[Int]] { return outside }
+    consumeFresh(factory)
+    return 0
+}

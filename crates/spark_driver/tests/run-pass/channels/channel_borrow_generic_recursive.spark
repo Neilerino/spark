@@ -1,0 +1,23 @@
+// TAG [SPARK-114]
+fn sendLater[T](queue: Channel[T], value: T, remaining: Int): Void {
+    if remaining == 0 {
+        queue.send(value)
+    } else {
+        sendLater(queue, value, remaining - 1)
+    }
+}
+fn receive[T](queue: Channel[T]): T {
+    return queue.recv()
+}
+fn relay(value: Ref[Int]): Ref[Int] {
+    queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    sendLater(queue, value, 2)
+    return receive(queue)
+}
+fn main(): Int {
+    outside: Int = 9
+    borrowed: Ref[Int] = outside
+    result: Ref[Int] = relay(borrowed)
+    print(result)
+    return 0
+}

@@ -82,6 +82,7 @@ pub(super) struct Value {
     pub leaves: FxHashMap<Contribution, Leaf>,
     pub sources: Sources,
     pub callees: FxHashMap<Path, super::callbacks::Targets>,
+    pub queues: FxHashMap<Path, FxHashSet<super::channels::Handle>>,
 }
 
 impl Value {
@@ -178,6 +179,7 @@ impl Value {
     pub fn without_reference_captures(&self) -> Self {
         let mut result = Self {
             callees: self.callees.clone(),
+            queues: self.queues.clone(),
             ..Self::default()
         };
         for ((path, origin, _), leaf) in &self.leaves {
@@ -210,6 +212,12 @@ impl Value {
             let entry = self.sources.entry(key.clone()).or_default();
             let before = entry.len();
             entry.extend(sources.iter().cloned());
+            changed |= before != entry.len();
+        }
+        for (path, targets) in &other.queues {
+            let entry = self.queues.entry(path.clone()).or_default();
+            let before = entry.len();
+            entry.extend(targets.iter().cloned());
             changed |= before != entry.len();
         }
         for (path, callees) in &other.callees {
@@ -248,13 +256,54 @@ impl Value {
         value
     }
 
+    pub fn root_queue_handles(&self) -> impl Iterator<Item = &super::channels::Handle> {
+        self.queues
+            .iter()
+            .filter(|(path, _)| path.is_empty() || **path == [Slot::Tail])
+            .flat_map(|(_, handles)| handles)
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.leaves.is_empty() && self.callees.is_empty()
+        self.leaves.is_empty() && self.callees.is_empty() && self.queues.is_empty()
+    }
+
+    pub fn with_channel_capture(&self, capture: super::channels::Capture) -> Self {
+        let mut result = self.clone();
+        for (path, handles) in &mut result.queues {
+            if path.is_empty() || *path == [Slot::Tail] {
+                *handles = handles
+                    .iter()
+                    .map(|handle| super::channels::Handle {
+                        target: handle.target.clone(),
+                        capture: Some(capture),
+                    })
+                    .collect();
+            }
+        }
+        result
+    }
+
+    pub fn select_channel_capture(&self, capture: super::channels::Capture) -> Self {
+        let mut result = Self::default();
+        for handle in self
+            .queues
+            .values()
+            .flatten()
+            .filter(|handle| handle.capture.is_none_or(|selected| selected == capture))
+        {
+            result
+                .queues
+                .entry(Vec::new())
+                .or_default()
+                .insert(handle.clone());
+        }
+        result
     }
 
     pub fn with_reference_capture(&self, capture: ReferenceCapture) -> Self {
         let mut result = Self {
             callees: self.callees.clone(),
+            queues: self.queues.clone(),
             ..Self::default()
         };
         for ((path, origin, previous), leaf) in &self.leaves {
@@ -431,6 +480,15 @@ impl Value {
 
     fn map_borrows(&self, select: impl Fn(&[Slot]) -> Option<Path>) -> Self {
         let mut result = Self::default();
+        for (path, targets) in &self.queues {
+            if let Some(path) = select(path) {
+                result
+                    .queues
+                    .entry(path)
+                    .or_default()
+                    .extend(targets.iter().cloned());
+            }
+        }
         for ((path, origin, capture), leaf) in &self.leaves {
             if let Some(path) = select(path) {
                 result.insert_contribution(path, origin.clone(), *capture, leaf);
@@ -528,6 +586,7 @@ pub(super) fn inputs(
     table: &TypeTable,
 ) -> Value {
     let mut value = Value::default();
+    super::channels::seed_inputs(&mut value, ty, local, source_ty, prefix, table);
     seed(
         ty,
         &mut Vec::new(),
@@ -559,6 +618,8 @@ pub(super) fn inputs(
                 .filter(|ty| matches!(table.resolve(strip_mutable(*ty, table)), Ty::Ref { .. }));
             let leaf = value.leaves.entry((path, origin, None)).or_default();
             leaf.dependencies.insert(Dependency::InputValue(Selector {
+                channel_capture: None,
+                queue: None,
                 input: local,
                 selection,
                 intent: Intent::Value,
@@ -673,7 +734,7 @@ fn seed(
             leaf(path.clone());
             path.pop();
         }
-        Ty::List(inner) | Ty::Set(inner) | Ty::Channel { inner } => child(Slot::Element, *inner),
+        Ty::List(inner) | Ty::Set(inner) => child(Slot::Element, *inner),
         Ty::Future { inner } => {
             child(Slot::Element, *inner);
             path.push(Slot::Tail);
@@ -847,3 +908,6 @@ mod tests {
 
 #[cfg(test)]
 mod capture_tests;
+
+#[cfg(test)]
+mod channel_tests;

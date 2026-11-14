@@ -615,3 +615,46 @@ fn typed_tail_selection_preserves_a_layout_preserving_reference_cast() {
     let selected = flow.tail_reference_value(carrier, query, Some(target_list), &state);
     assert_eq!(selected.origins(), borrowed.origins(), "a supported identity reference cast must not erase the local loan during typed Tail filtering");
 }
+
+// TAG [SPARK-114]
+#[test]
+fn opaque_argument_access_preserves_the_queued_reference_type() {
+    use super::super::address::{Dependency, Intent, QueueSelection, Selector};
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let reference = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let channel = table.intern(Ty::Channel { inner: reference });
+    let basis = QueueSelection {
+        capture: None,
+        channel,
+        projection: Vec::new(),
+    };
+    let value = Value::reference(Origin::Input {
+        local: Local(1),
+        path: Vec::new(),
+    })
+    .with_metadata(&super::super::value::Leaf {
+        dependencies: FxHashSet::from_iter([Dependency::InputValue(Selector {
+            channel_capture: None,
+            queue: Some(basis.clone()),
+            input: Local(1),
+            selection: Vec::new(),
+            intent: Intent::Value,
+            expected: Some(reference),
+            capture: None,
+        })]),
+        ..Default::default()
+    });
+    let mut accesses = Accesses::default();
+    accesses.observe_reference(&value, Some(channel), &[], AccessKind::Value);
+    let access = accesses.iter().next().expect("queued payload access");
+    let Dependency::InputValue(selector) = &access.target else {
+        panic!("expected queued input selection")
+    };
+    assert_eq!(selector.expected, Some(reference));
+    assert_eq!(selector.queue, Some(basis));
+}

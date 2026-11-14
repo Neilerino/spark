@@ -34,12 +34,14 @@ impl Flow<'_> {
         point: Point,
         operands: &[spark_mir::Operand],
         values: &[Value],
+        state: &super::State,
     ) {
         for (operand, value) in operands.iter().zip(values) {
+            let value = self.reachable_queue_payloads(value, state);
             self.record_obligation(
                 point,
                 Boundary::InvokeArgument(super::operand_type(operand, self.function)),
-                value,
+                &value,
             );
         }
     }

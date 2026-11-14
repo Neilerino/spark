@@ -102,7 +102,8 @@ pub fn check(input: BorrowInput) -> BorrowOutput {
 
     let mut diagnostics = Diagnostics::new();
 
-    let carrier_regions = provenance::analyze_program(&mir, &table, &mut diagnostics);
+    let carrier_regions =
+        provenance::analyze_program(&mir, &table, Some(&definitions), &mut diagnostics);
     for func in mir.functions.values() {
         check::check_indexed_write_storage(func, &table, &mut diagnostics);
         // Skip functions that don't use Ref types (optimization).

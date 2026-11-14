@@ -4958,3 +4958,502 @@ fn collection_borrow_captured_function_payloads_keep_the_pointed_to_capture_sour
         );
     }
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_channel_sends_preserve_payload_lifetimes() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/channels/channel_borrow_incoming.spark",
+            "run-pass/channels/channel_borrow_same_scope.spark",
+            "run-pass/channels/channel_borrow_owned_payload.spark",
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, "7\n", "{fixture} {args:?}");
+        }
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/channel_borrow_local_payload.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid.stderr.contains("reference to local storage"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_shared_and_returned_channels_preserve_payloads() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/channels/channel_borrow_returned_incoming.spark",
+            "run-pass/channels/channel_borrow_copied_handles.spark",
+            "run-pass/channels/channel_borrow_same_queue_ports.spark",
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, "7\n", "{fixture} {args:?}");
+        }
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/channel_borrow_returned_local.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid.stderr.contains("reference to local storage"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_channel_helper_aliases_preserve_read_order() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/channels/channel_borrow_disjoint_helper.spark",
+            "run-pass/channels/channel_borrow_read_before_send.spark",
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, "9\n", "{fixture} {args:?}");
+        }
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/channel_borrow_aliased_helper_return.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("cannot return reference to local variable"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_channels_preserve_publication_and_source_lifetimes() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, stdout) in [
+            (
+                "run-pass/channels/channel_borrow_external_store_incoming.spark",
+                "7\n",
+            ),
+            (
+                "run-pass/channels/channel_borrow_scoped_string.spark",
+                "seven\n",
+            ),
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, stdout, "{fixture} {args:?}");
+        }
+        for (fixture, diagnostic) in [
+            (
+                "compile-fail/borrow_errors/channel_borrow_nonreturning_send.spark",
+                "reference to local storage",
+            ),
+            (
+                "compile-fail/borrow_errors/channel_borrow_published_empty.spark",
+                "reference to local storage",
+            ),
+            (
+                "compile-fail/borrow_errors/channel_borrow_external_store.spark",
+                "reference to local storage",
+            ),
+            (
+                "compile-fail/borrow_errors/channel_borrow_dropped_string.spark",
+                "borrowed value does not live long enough",
+            ),
+            (
+                "compile-fail/borrow_errors/channel_borrow_replaced_list.spark",
+                "cannot assign to a borrowed value",
+            ),
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(
+                invalid.exit_code, 1,
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+            assert!(
+                invalid.stderr.contains(diagnostic),
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_opaque_channels_preserve_payload_support() {
+    let native = include_str!("run-pass/channels/copy_channel.c");
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/channels/channel_borrow_opaque_incoming.spark"),
+        "9",
+    );
+    assert_native_borrow_error_fixture(
+        native,
+        include_str!("compile-fail/borrow_errors/channel_borrow_opaque_return.spark"),
+        "cannot return reference to local variable",
+    );
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_nested_callbacks_preserve_channel_payload_reads() {
+    let cases = [
+        (
+            include_str!("run-pass/channels/channel_borrow_nested_callback_incoming.spark"),
+            true,
+        ),
+        (
+            include_str!("compile-fail/borrow_errors/channel_borrow_nested_callback_local.spark"),
+            false,
+        ),
+        (
+            include_str!("run-pass/channels/channel_borrow_nested_channel_pointer.spark"),
+            true,
+        ),
+        (
+            include_str!("compile-fail/borrow_errors/channel_borrow_nested_channel_pointer.spark"),
+            false,
+        ),
+        (
+            include_str!("run-pass/channels/channel_borrow_queued_map_pointee.spark"),
+            true,
+        ),
+        (
+            include_str!("compile-fail/borrow_errors/channel_borrow_queued_map_pointee.spark"),
+            false,
+        ),
+    ];
+    let dir = tempfile::tempdir().expect("create queue callback directory");
+    for (case, (template, valid)) in cases.into_iter().enumerate() {
+        for depth in 0..=6 {
+            let mut callback = "read".to_string();
+            for _ in 0..depth {
+                callback = format!("nest({callback})");
+            }
+            let path = dir.path().join(format!("case{case}_depth{depth}.spark"));
+            std::fs::write(&path, template.replace("nest(nest(read))", &callback))
+                .expect("write queue callback source");
+            let fixture = path.to_str().expect("UTF-8 source path");
+            for args in [&[][..], &["--no-opt"][..]] {
+                if valid {
+                    let safe = run_spark_with_args(fixture, args);
+                    assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+                    assert_eq!(safe.stdout, "9\n", "{fixture} {args:?}");
+                } else {
+                    let invalid = build_spark_with_args(fixture, args);
+                    assert_eq!(
+                        invalid.exit_code, 1,
+                        "{fixture} {args:?}: {}",
+                        invalid.stderr
+                    );
+                    assert!(
+                        invalid
+                            .stderr
+                            .contains("cannot return reference to local variable"),
+                        "{fixture} {args:?}: {}",
+                        invalid.stderr
+                    );
+                }
+            }
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_callbacks_distinguish_same_type_channel_captures() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/channels/channel_borrow_same_type_captures.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "7\n9\n", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/channel_borrow_same_type_captures.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("cannot return reference to local variable"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_queued_reference_reads_keep_nested_channel_handles() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/channels/channel_borrow_queued_channel_pointer.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "9\n", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/channel_borrow_queued_channel_pointer.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("cannot return reference to local variable"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_channels_preserve_nested_prefixes_and_recursive_sends() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/channels/channel_borrow_nested_publication_incoming.spark",
+            "run-pass/channels/channel_borrow_recursive_field_send.spark",
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, "9\n", "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/channel_borrow_nested_nonreturning_send.spark",
+            "compile-fail/borrow_errors/channel_borrow_recursive_field_send.spark",
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(
+                invalid.exit_code, 1,
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+            assert!(
+                invalid.stderr.contains("reference to local storage"),
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_returned_factories_keep_distinct_queue_roles() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, expected) in [
+            (
+                "run-pass/channels/channel_borrow_distinct_factory_outputs.spark",
+                "9\n",
+            ),
+            (
+                "run-pass/channels/channel_borrow_owned_factory_outputs.spark",
+                "9\n7\n",
+            ),
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, expected, "{fixture} {args:?}");
+        }
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/channel_borrow_factory_output_escape.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("cannot return reference to local variable"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_opaque_queue_aliases_preserve_later_writes_and_helper_inputs() {
+    let native = include_str!("run-pass/channels/copy_channel.c");
+    for fixture in [
+        include_str!("run-pass/channels/channel_borrow_opaque_helper_incoming.spark"),
+        include_str!("run-pass/channels/channel_borrow_opaque_alias_write.spark"),
+    ] {
+        assert_native_ownership_fixture(native, fixture, "9");
+    }
+    for fixture in [
+        include_str!("compile-fail/borrow_errors/channel_borrow_opaque_helper_return.spark"),
+        include_str!("compile-fail/borrow_errors/channel_borrow_opaque_alias_write.spark"),
+    ] {
+        assert_native_borrow_error_fixture(
+            native,
+            fixture,
+            "cannot return reference to local variable",
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_open_queue_factories_keep_validation_separate_from_opaque_effects() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/channels/channel_borrow_open_factory_local.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "7\n", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/channel_borrow_open_factory_shared.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid.stderr.contains("reference to local storage"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+        let metadata = run_spark_with_args(
+            "run-pass/channels/channel_borrow_dead_payload_metadata.spark",
+            args,
+        );
+        assert_eq!(metadata.exit_code, 0, "{args:?}: {}", metadata.stderr);
+        assert_eq!(metadata.stdout, "1\n", "{args:?}");
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_factory_memory_outputs_preserve_roles_and_returned_aliases() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/channels/channel_borrow_memory_factory_outputs.spark",
+            "run-pass/channels/channel_borrow_owned_memory_factory.spark",
+            "run-pass/channels/channel_borrow_returned_and_stored_alias.spark",
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, "9\n", "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/channel_borrow_memory_factory_escape.spark",
+            "compile-fail/borrow_errors/channel_borrow_returned_and_stored_alias.spark",
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(
+                invalid.exit_code, 1,
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+            assert!(
+                invalid
+                    .stderr
+                    .contains("cannot return reference to local variable"),
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_channel_receives_close_and_reallocation_preserve_may_contents() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, expected) in [
+            (
+                "run-pass/channels/channel_borrow_buffered_after_close.spark",
+                "9\n10\n",
+            ),
+            (
+                "run-pass/channels/channel_borrow_repeated_allocation_site.spark",
+                "9\n",
+            ),
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, expected, "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/channel_borrow_buffered_after_close.spark",
+            "compile-fail/borrow_errors/channel_borrow_repeated_allocation_site.spark",
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(
+                invalid.exit_code, 1,
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+            assert!(
+                invalid.stderr.contains("reference to local storage"),
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_channel_effects_require_resolved_builtin_methods() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/channels/channel_borrow_user_send_name.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "9\n", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/channel_borrow_user_send_name.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid.stderr.contains("reference to local storage"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_generic_recursive_channels_preserve_payload_provenance() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/channels/channel_borrow_generic_recursive.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "9\n", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/channel_borrow_generic_recursive.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("cannot return reference to local variable"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}

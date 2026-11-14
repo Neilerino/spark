@@ -3,6 +3,7 @@
 mod address;
 mod aliases;
 mod callbacks;
+mod channels;
 mod demand;
 mod effects;
 mod obligations;
@@ -39,6 +40,8 @@ enum Origin {
 type Origins = FxHashSet<Origin>;
 #[derive(Clone, Debug, Default)]
 struct State {
+    queues: FxHashMap<(channels::Target, TypeId), Value>,
+    exposed_queues: FxHashSet<channels::Target>,
     values: FxHashMap<Local, Value>,
     live: FxHashSet<Local>,
     cells: FxHashMap<Local, Value>,
@@ -81,6 +84,13 @@ impl State {
         let before = self.live.len();
         self.live.extend(other.live.iter().copied());
         let mut changed = before != self.live.len();
+        let before = self.exposed_queues.len();
+        self.exposed_queues
+            .extend(other.exposed_queues.iter().cloned());
+        changed |= before != self.exposed_queues.len();
+        for (target, value) in &other.queues {
+            changed |= self.queues.entry(target.clone()).or_default().join(value);
+        }
         for (local, value) in &other.values {
             changed |= self.values.entry(*local).or_default().join(value);
         }
@@ -116,6 +126,9 @@ struct Flow<'a> {
     requests: FxHashSet<aliases::Key>,
     written_inputs: FxHashSet<aliases::View>,
     obligations: FxHashMap<(Point, obligations::Boundary), Value>,
+    queue_sends: FxHashMap<(Point, channels::Target, TypeId), Value>,
+    queue_ports: FxHashSet<aliases::Port>,
+    queue_escapes: FxHashMap<Point, Value>,
     accesses: FxHashMap<Point, Accesses>,
     transfers: FxHashMap<Point, demand::Transfer>,
     invalid_reads: FxHashSet<(Point, Point, Origin)>,
@@ -151,6 +164,9 @@ impl<'a> Flow<'a> {
             requests: FxHashSet::default(),
             written_inputs: FxHashSet::default(),
             obligations: FxHashMap::default(),
+            queue_sends: FxHashMap::default(),
+            queue_ports: FxHashSet::default(),
+            queue_escapes: FxHashMap::default(),
             accesses: FxHashMap::default(),
             transfers: FxHashMap::default(),
             invalid_reads: FxHashSet::default(),
@@ -263,6 +279,18 @@ impl<'a> Flow<'a> {
                 for alternative in outcome {
                     self.transfers.insert(point, common.clone());
                     let mut after = state.clone();
+                    for write in alternative.queue_contents {
+                        self.import_queue_contents(
+                            &write.target,
+                            &write.value,
+                            write.ty,
+                            point,
+                            &mut after,
+                        );
+                    }
+                    for write in alternative.queues {
+                        self.queue_send(&write.target, &write.value, write.ty, point, &mut after);
+                    }
                     for write in alternative.memory {
                         self.store_references(
                             &write.target,
@@ -359,6 +387,9 @@ impl<'a> Flow<'a> {
                 let result = Value::reference(Origin::Loan(point)).with_metadata(&metadata);
                 accesses.observe_reference(&result, Some(ty), &[], AccessKind::Address);
                 result
+            }
+            Rvalue::Aggregate(AggregateKind::Channel, _) => {
+                channels::allocation(self.function.def_id, point, ty)
             }
             Rvalue::Aggregate(kind, operands) => {
                 self.aggregate(kind, operands, ty, state, &mut accesses)
@@ -469,6 +500,16 @@ impl<'a> Flow<'a> {
                         index,
                         ty: capture_ty,
                     });
+                } else if matches!(
+                    self.table
+                        .resolve(value::strip_mutable(capture_ty, self.table)),
+                    Ty::Channel { .. }
+                ) {
+                    value = value.with_channel_capture(channels::Capture {
+                        owner,
+                        index,
+                        ty: capture_ty,
+                    });
                 }
             }
             result.join(&value.prefixed(slot, ty, self.table));
@@ -523,7 +564,7 @@ impl<'a> Flow<'a> {
             }
             self.transfer_block(block, &mut state);
             self.report_external_stores(&state, block, diagnostics);
-            let value = state.value(Local::RETURN_PLACE);
+            let value = self.reachable_queue_payloads(&state.value(Local::RETURN_PLACE), &state);
             for root in value.frame_sources(self.function.def_id) {
                 if reported.insert(root) {
                     self.report_return(root, &value, block, facts, diagnostics);

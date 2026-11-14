@@ -122,6 +122,7 @@ fn pending_memory_summary_is_not_a_returning_empty_clear() {
             &caller,
             &table,
             Some(Context {
+                definitions: None,
                 mir: &mir,
                 summaries: &summaries,
                 ports: &ports,
@@ -433,12 +434,18 @@ fn field_write_footprints_are_separate_within_one_input() {
     flow.solve(&crate::facts::extract_facts(&function));
     let summary = flow.summary();
     let written = Port {
+        kind: crate::provenance::aliases::StorageKind::Reference,
+        channel_capture: None,
+        queue: None,
         capture: None,
         input: Local(1),
         selection: vec![Slot::Tuple(0)],
         pointee: map,
     };
     let untouched = Port {
+        kind: crate::provenance::aliases::StorageKind::Reference,
+        channel_capture: None,
+        queue: None,
         capture: None,
         input: Local(1),
         selection: vec![Slot::Tuple(1)],

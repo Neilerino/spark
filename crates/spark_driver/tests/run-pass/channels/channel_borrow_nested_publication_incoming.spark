@@ -1,0 +1,18 @@
+// TAG [SPARK-114]
+
+fn spin(): Void { spin() }
+fn forward(outside: Channel[Channel[Ref[Int]]], incoming: Ref[Int]): Void {
+    inner: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    outside.send(inner)
+    inner.send(incoming)
+}
+fn main(): Int {
+    outside: Channel[Channel[Ref[Int]]] = Channel[Channel[Ref[Int]]]()
+    value: Int = 9
+    borrowed: Ref[Int] = value
+    forward(outside, borrowed)
+    inner: Channel[Ref[Int]] = outside.recv()
+    found: Ref[Int] = inner.recv()
+    print(found)
+    return 0
+}

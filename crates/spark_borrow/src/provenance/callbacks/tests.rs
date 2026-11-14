@@ -239,6 +239,8 @@ fn callable_facts_only_materialize_owned_function_locations() {
         }
         if ty == pointer {
             let address = super::super::address::Selector {
+                channel_capture: None,
+                queue: None,
                 input: Local(1),
                 selection: vec![],
                 capture: None,
@@ -279,6 +281,8 @@ fn widened_pointees_do_not_reuse_surrounding_function_value_targets() {
     let owned = flow.symbolic_input(callable, Local(1), callable, &[Slot::Tail]);
     assert_eq!(owned.callees[&vec![]].known, FxHashSet::from_iter([target]));
     let address = super::super::address::Selector {
+        channel_capture: None,
+        queue: None,
         input: Local(1),
         selection: vec![Slot::Tail],
         capture: None,
@@ -336,6 +340,8 @@ fn captured_pointee_facts_do_not_collide_with_surrounding_function_facts() {
     );
     assert!(!surrounding.callees[&vec![]].open);
     let address = super::super::address::Selector {
+        channel_capture: None,
+        queue: None,
         input: Local(1),
         selection: vec![Slot::Tail],
         capture: Some(capture),

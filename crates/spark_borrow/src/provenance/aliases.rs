@@ -10,8 +10,17 @@ use spark_types::{TypeId, TypeTable};
 use super::address::{DerefKind, Endpoint, Intent, Selector, TypedPath};
 use super::{child_type, Flow, Path, Slot, Value};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum StorageKind {
+    Reference,
+    Channel(TypeId),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Port {
+    pub channel_capture: Option<super::channels::Capture>,
+    pub kind: StorageKind,
+    pub queue: Option<super::address::QueueSelection>,
     pub input: Local,
     pub selection: Path,
     pub pointee: TypeId,
@@ -19,12 +28,21 @@ pub(super) struct Port {
 }
 
 impl Port {
+    pub fn compatible(&self, other: &Self, table: &TypeTable) -> bool {
+        matches!(
+            (self.kind, other.kind),
+            (StorageKind::Reference, StorageKind::Reference)
+                | (StorageKind::Channel(_), StorageKind::Channel(_))
+        ) && compatible(self.pointee, other.pointee, table)
+    }
+
     pub fn from_selector(
         selector: &Selector,
         function: &MirFunction,
         table: &TypeTable,
     ) -> Option<Self> {
         let root = function.locals[selector.input.index()].ty;
+        let mut basis = selector.clone();
         let (selection, pointee) = match &selector.intent {
             Intent::Address(payload) => (selector.selection.clone(), payload.pointee),
             Intent::Value => {
@@ -40,20 +58,17 @@ impl Port {
                 let ty = selector.expected.unwrap_or_else(|| {
                     Self::selected_type(payload.pointee, &payload.projection, table)
                 });
-                let selection = super::value::normalize(
-                    root,
-                    [
-                        selector.selection.clone(),
-                        vec![payload.kind.slot()],
-                        payload.projection.clone(),
-                    ]
-                    .concat(),
-                    table,
-                );
-                (selection, child_type(ty, &Slot::Deref, table)?)
+                basis.select_payload(payload, root, table);
+                (
+                    basis.selection.clone(),
+                    child_type(ty, &Slot::Deref, table)?,
+                )
             }
         };
         Some(Self {
+            kind: StorageKind::Reference,
+            channel_capture: None,
+            queue: basis.queue,
             input: selector.input,
             selection,
             pointee,
@@ -63,6 +78,9 @@ impl Port {
 
     pub const fn root(input: Local, pointee: TypeId) -> Self {
         Self {
+            kind: StorageKind::Reference,
+            channel_capture: None,
+            queue: None,
             input,
             selection: Vec::new(),
             pointee,
@@ -71,7 +89,20 @@ impl Port {
     }
 
     pub fn selector(&self) -> Selector {
+        if let StorageKind::Channel(ty) = self.kind {
+            return Selector {
+                channel_capture: self.channel_capture,
+                queue: self.queue.clone(),
+                capture: self.capture,
+                input: self.input,
+                selection: self.selection.clone(),
+                intent: Intent::Value,
+                expected: Some(ty),
+            };
+        }
         Selector {
+            channel_capture: None,
+            queue: self.queue.clone(),
             capture: self.capture,
             input: self.input,
             selection: self.selection.clone(),
@@ -176,6 +207,9 @@ impl Aliases {
         table: &TypeTable,
     ) -> Vec<Self> {
         let exclusive = |port: &Port| {
+            if matches!(port.kind, StorageKind::Channel(_)) {
+                return false;
+            }
             let ty = Port::selected_type(
                 function.locals[port.input.index()].ty,
                 &port.selection,
@@ -277,7 +311,7 @@ impl Aliases {
         let mut roots = Vec::new();
         for named in ports
             .iter()
-            .filter(|named| self.is_cell(named) && compatible(port.pointee, named.pointee, table))
+            .filter(|named| self.is_cell(named) && port.compatible(named, table))
         {
             let root = self.representative(named);
             if !roots.contains(&root) {
@@ -347,7 +381,6 @@ impl Aliases {
                 return;
             }
             let local = ports[index].clone();
-            let ty = local.pointee;
             let mut representatives = FxHashSet::default();
             let mut candidates = vec![local.clone()];
             for previous in &ports[..index] {
@@ -355,12 +388,7 @@ impl Aliases {
                 if !representatives.insert(representative.clone()) {
                     continue;
                 }
-                let other = representative.pointee;
-                if matches!(
-                    spark_types::check_expr::cast_kind(ty, other, table),
-                    Ok(spark_types::check_expr::CastKind::Identity
-                        | spark_types::check_expr::CastKind::Deferred)
-                ) {
+                if local.compatible(&representative, table) {
                     candidates.push(representative);
                 }
             }
@@ -417,6 +445,7 @@ pub(super) enum Location {
         path: Path,
     },
     Input(Port),
+    ChannelAllocation(super::channels::Target),
     Residual {
         port: Port,
         excluded: Vec<Port>,
@@ -425,7 +454,7 @@ pub(super) enum Location {
 
 impl Location {
     pub(super) const fn unique(&self) -> bool {
-        !matches!(self, Self::Residual { .. })
+        !matches!(self, Self::Residual { .. } | Self::ChannelAllocation(_))
     }
 
     fn may_equal(&self, other: &Self, aliases: &Aliases) -> bool {
@@ -436,7 +465,9 @@ impl Location {
             (Self::Residual { excluded, .. }, Self::Input(port))
             | (Self::Input(port), Self::Residual { excluded, .. }) => !excluded.contains(port),
             (Self::Residual { .. }, Self::Frame { .. })
-            | (Self::Frame { .. }, Self::Residual { .. }) => false,
+            | (Self::Frame { .. }, Self::Residual { .. })
+            | (Self::Residual { .. }, Self::ChannelAllocation(_))
+            | (Self::ChannelAllocation(_), Self::Residual { .. }) => false,
             _ => self == other,
         }
     }
@@ -471,7 +502,7 @@ impl Flow<'_> {
             .filter(|other| {
                 !self.aliases.is_cell(other)
                     && *other != port
-                    && compatible(port.pointee, other.pointee, self.table)
+                    && port.compatible(other, self.table)
                     && self.family(other).residual
                     && self.aliases.residuals_overlap(port, other)
             })
@@ -715,6 +746,9 @@ mod tests {
             span: Span::DUMMY,
         };
         let family = Port {
+            kind: crate::provenance::aliases::StorageKind::Reference,
+            channel_capture: None,
+            queue: None,
             capture: None,
             input: Local(1),
             selection: vec![Slot::Element],
@@ -790,6 +824,9 @@ mod tests {
         let (table, _, family, _) = family_fixture();
         let ports: Vec<_> = (1..=3)
             .map(|input| Port {
+                kind: crate::provenance::aliases::StorageKind::Reference,
+                channel_capture: None,
+                queue: None,
                 capture: None,
                 input: Local(input),
                 ..family.clone()
@@ -822,6 +859,8 @@ mod tests {
         let reference = child_type(family.pointee, &Slot::Value, &table).unwrap();
         let inner = child_type(reference, &Slot::Deref, &table).unwrap();
         let selector = Selector {
+            channel_capture: None,
+            queue: None,
             capture: None,
             input: family.input,
             selection: family.selection,
