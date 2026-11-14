@@ -6,9 +6,69 @@ use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_mir::BlockId;
 
 use super::address::{Dependency, Endpoint, Intent, Selector};
-use super::aliases::Port;
+use super::aliases::{Port, View};
 use super::demand::{Coordinate, Storage};
 use super::{Flow, Path, Point, State, Value};
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Coverage(rustc_hash::FxHashSet<View>);
+
+impl Coverage {
+    pub fn insert(&mut self, view: View) {
+        if self
+            .0
+            .iter()
+            .any(|defined| defined.root == view.root && view.path.starts_with(&defined.path))
+        {
+            return;
+        }
+        self.0
+            .retain(|defined| defined.root != view.root || !defined.path.starts_with(&view.path));
+        self.0.insert(view);
+    }
+
+    pub fn intersect(&mut self, other: &Self) -> bool {
+        let mut common = Self::default();
+        for left in &self.0 {
+            for right in &other.0 {
+                if left.root != right.root {
+                    continue;
+                }
+                if left.path.starts_with(&right.path) {
+                    common.insert(left.clone());
+                } else if right.path.starts_with(&left.path) {
+                    common.insert(right.clone());
+                }
+            }
+        }
+        let changed = *self != common;
+        *self = common;
+        changed
+    }
+
+    fn relative(&self, view: &View) -> Vec<Path> {
+        self.0
+            .iter()
+            .filter_map(|defined| {
+                if defined.root != view.root {
+                    None
+                } else if view.path.starts_with(&defined.path) {
+                    Some(Vec::new())
+                } else {
+                    defined
+                        .path
+                        .strip_prefix(view.path.as_slice())
+                        .map(<[super::Slot]>::to_vec)
+                }
+            })
+            .collect()
+    }
+}
+
+pub(super) fn owned_path(path: &[super::Slot]) -> bool {
+    path.iter()
+        .all(|slot| matches!(slot, super::Slot::Field(_) | super::Slot::Tuple(_)))
+}
 
 impl Flow<'_> {
     pub(super) fn store_references(
@@ -34,12 +94,12 @@ impl Flow<'_> {
                     });
                 }
                 Endpoint::Input(selector) => {
-                    if let Some((port, path, whole)) = self.external_target(selector) {
+                    if let Some((view, exact_view)) = self.external_target(selector) {
                         let coordinate = Coordinate {
-                            storage: Storage::External(port),
-                            path,
+                            storage: Storage::External(view.root),
+                            path: view.path,
                         };
-                        if whole {
+                        if exact_view {
                             exact.insert(coordinate.clone());
                         }
                         destinations.insert(coordinate);
@@ -62,7 +122,7 @@ impl Flow<'_> {
             };
             let strong = unique
                 && match storage {
-                    Storage::Cell(_) => path.is_empty(),
+                    Storage::Cell(_) => owned_path(path),
                     Storage::External(_) => exact.contains(&destination),
                     Storage::Logical(_) => false,
                 };
@@ -79,10 +139,14 @@ impl Flow<'_> {
             current.sources.clear();
             match storage {
                 Storage::External(port) => {
-                    self.written_inputs.insert(port.clone());
-                    state.modified_ports.insert(port.clone());
+                    let view = View {
+                        root: port.clone(),
+                        path: path.clone(),
+                    };
+                    self.written_inputs.insert(view.clone());
+                    state.modified_views.insert(view.clone());
                     if strong {
-                        state.external_defined.insert(port.clone());
+                        state.external_defined.insert(view);
                     }
                     state.external.insert(port.clone(), current);
                 }
@@ -110,31 +174,35 @@ impl Flow<'_> {
         }
     }
 
-    fn external_target(&self, selector: &Selector) -> Option<(Port, Path, bool)> {
+    pub(super) fn external_target(&self, selector: &Selector) -> Option<(View, bool)> {
         let port = Port::from_selector(selector, self.function, self.table)?;
-        let representative = self.aliases.representative(&port);
-        let projection = match &selector.intent {
-            Intent::Address(payload) => payload.projection.clone(),
-            Intent::Value | Intent::Payload(_) => Vec::new(),
-        };
-        let whole = port.exact() && representative.exact() && projection.is_empty();
-        Some((representative, projection, whole))
+        let mut view = View::whole(self.aliases.representative(&port));
+        if let Intent::Address(payload) = &selector.intent {
+            view.path.extend(payload.projection.iter().cloned());
+        }
+        view.path = super::value::normalize(view.root.pointee, view.path, self.table);
+        let exact = port.exact() && view.root.exact() && owned_path(&view.path);
+        Some((view, exact))
     }
 
-    pub(super) fn external_contents(&self, selector: &Selector, state: &State) -> (Value, bool) {
-        let Some((port, path, _)) = self.external_target(selector) else {
-            return (Value::default(), false);
+    pub(super) fn external_contents(
+        &self,
+        selector: &Selector,
+        state: &State,
+    ) -> (Value, Vec<Path>) {
+        let Some((view, _)) = self.external_target(selector) else {
+            return (Value::default(), Vec::new());
         };
         let mut value = state
             .external
-            .get(&port)
+            .get(&view.root)
             .cloned()
             .unwrap_or_default()
-            .sourced(&Storage::External(port.clone()));
-        for slot in &path {
+            .sourced(&Storage::External(view.root.clone()));
+        for slot in &view.path {
             value = value.project(slot);
         }
-        (value, state.external_defined.contains(&port))
+        (value, state.external_defined.relative(&view))
     }
 
     pub(super) fn report_external_stores(
@@ -181,6 +249,48 @@ mod tests {
     use spark_resolve::DefId;
     use spark_span::Span;
     use spark_types::{IntWidth, LifetimeId, Ty, TypeTable};
+
+    #[test]
+    fn coverage_join_preserves_the_common_subfield_not_the_whole_parent() {
+        let root = Port::root(Local(1), spark_types::TypeId::ERROR);
+        let field = View {
+            root: root.clone(),
+            path: vec![super::super::Slot::Tuple(0)],
+        };
+        let sibling = View {
+            root: root.clone(),
+            path: vec![super::super::Slot::Tuple(1)],
+        };
+        let mut whole = Coverage::default();
+        whole.insert(View::whole(root.clone()));
+        let mut partial = Coverage::default();
+        partial.insert(field.clone());
+        assert!(whole.intersect(&partial));
+        assert_eq!(whole.relative(&View::whole(root)), vec![field.path.clone()]);
+        assert_eq!(
+            whole.relative(&field),
+            vec![Vec::<super::super::Slot>::new()]
+        );
+        assert!(whole.relative(&sibling).is_empty());
+        assert!(!whole.intersect(&partial));
+        assert!(whole.intersect(&Coverage::default()));
+        assert!(
+            whole.0.is_empty(),
+            "a path without the clear prevents a definite definition"
+        );
+    }
+
+    #[test]
+    fn whole_owner_coverage_does_not_define_an_independent_reference_pointee() {
+        let root = Port::root(Local(1), spark_types::TypeId::ERROR);
+        let pointee = Port {
+            selection: vec![super::super::Slot::Deref, super::super::Slot::Tuple(0)],
+            ..root.clone()
+        };
+        let mut covered = Coverage::default();
+        covered.insert(View::whole(root));
+        assert!(covered.relative(&View::whole(pointee)).is_empty());
+    }
 
     #[test]
     fn physical_writes_preserve_consumed_logical_bindings() {

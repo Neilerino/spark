@@ -269,8 +269,8 @@ impl Flow<'_> {
             intent: Intent::Address(payload.clone()),
             expected: Some(ty),
         };
-        let (stored, complete) = self.external_contents(&address, state);
-        if complete {
+        let (stored, covered) = self.external_contents(&address, state);
+        if covered.iter().any(Vec::is_empty) {
             return stored;
         }
         let prefix = value::normalize(
@@ -284,6 +284,12 @@ impl Flow<'_> {
             self.table,
         );
         let mut result = value::inputs(ty, selector.input, source_ty, &prefix, self.table);
+        result
+            .leaves
+            .retain(|(path, _), _| !covered.iter().any(|prefix| path.starts_with(prefix)));
+        result
+            .callees
+            .retain(|path, _| !covered.iter().any(|prefix| path.starts_with(prefix)));
         for ((path, _), leaf) in &mut result.leaves {
             leaf.dependencies.clear();
             leaf.dependencies.insert(Dependency::InputValue(Selector {

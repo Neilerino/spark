@@ -1,0 +1,22 @@
+fn clearFirst[T](pair: Ref[Tup[T!, T]]!, empty: T): Void {
+    pair.0 = empty
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    borrowed: Ref[Int] = value
+    left: Map[String, Ref[Int]]! = {"one": borrowed}
+    right: Map[String, Ref[Int]] = {"one": safe}
+    pair: Tup[Map[String, Ref[Int]]!, Map[String, Ref[Int]]]! = (left, right)
+    view: Ref[Tup[Map[String, Ref[Int]]!, Map[String, Ref[Int]]]]! = pair
+    empty: Map[String, Ref[Int]] = {}
+    clearFirst(view, empty)
+    snapshot: Tup[Map[String, Ref[Int]]!, Map[String, Ref[Int]]] = view
+    print(snapshot.0.len())
+    return snapshot.1
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    entries: Map[String, Ref[Int]] = produce(borrowed, 7)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

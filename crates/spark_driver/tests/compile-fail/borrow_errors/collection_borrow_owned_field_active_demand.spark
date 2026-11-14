@@ -1,0 +1,22 @@
+struct Container { entries: Map[String, Ref[List[Int]]]! }
+fn clear(holder: Ref[Container]!): Void {
+    empty: Map[String, Ref[List[Int]]] = {}
+    holder.entries = empty
+}
+fn exercise(holder: Ref[Container]!): Void {
+    source: List[Int]! = [1]
+    borrowed: Ref[List[Int]] = source
+    entries: Map[String, Ref[List[Int]]] = {"one": borrowed}
+    holder.entries = entries
+    source[0] = 9
+    snapshot: Map[String, Ref[List[Int]]] = holder.entries
+    snapshot["one"] to { found: Ref[List[Int]] -> print(found.len()), Null -> print(0) }
+    clear(holder)
+}
+fn main(): Int {
+    empty: Map[String, Ref[List[Int]]] = {}
+    container: Container! = Container { entries: empty }
+    view: Ref[Container]! = container
+    exercise(view)
+    return 0
+}
