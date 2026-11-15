@@ -122,6 +122,7 @@ fn pending_memory_summary_is_not_a_returning_empty_clear() {
             &caller,
             &table,
             Some(Context {
+                proofs: None,
                 definitions: None,
                 mir: &mir,
                 summaries: &summaries,

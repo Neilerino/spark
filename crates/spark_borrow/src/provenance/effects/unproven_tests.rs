@@ -160,6 +160,7 @@ fn invocation_obligations_exclude_only_proven_targets_capture_environments() {
             &caller,
             &table,
             Some(Context {
+                proofs: None,
                 definitions: None,
                 mir: &mir,
                 summaries: &summaries,
@@ -588,6 +589,7 @@ fn known_function_placeholders_do_not_erase_widened_reference_captures() {
             &caller,
             &table,
             Some(Context {
+                proofs: None,
                 definitions: None,
                 mir: &mir,
                 summaries: &summaries,

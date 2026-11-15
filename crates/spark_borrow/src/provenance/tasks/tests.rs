@@ -105,3 +105,16 @@ fn completing_a_current_copy_preserves_result_borrows_and_unproved_other_instanc
         .flatten()
         .all(|handle| handle.pending));
 }
+
+#[test]
+fn future_result_keeps_result_borrows_without_pending_capture_tails() {
+    let capture = Origin::Loan(Point::new(BlockId::ENTRY, 10));
+    let result = Origin::Loan(Point::new(BlockId::ENTRY, 11));
+    let mut value = Value::default();
+    value.insert(&[Slot::Tail], FxHashSet::from_iter([capture]));
+    value.insert(&[Slot::Element], FxHashSet::from_iter([result.clone()]));
+    assert_eq!(
+        value.future_result().origins(),
+        FxHashSet::from_iter([result])
+    );
+}

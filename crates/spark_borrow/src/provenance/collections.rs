@@ -2,6 +2,7 @@
 
 //! Carrier contents changed by collection builtins.
 
+use crate::provenance::tasks::proofs::CallProof;
 use spark_intern::kw;
 use spark_mir::Operand;
 use spark_resolve::DefinitionKind;
@@ -41,6 +42,7 @@ impl Flow<'_> {
             tasks: Vec::new(),
             completed_task: None,
             clobbered_copies: Vec::new(),
+            future_proof: CallProof::default(),
             returned: Value::default(),
             place_writes: vec![(place.clone(), contents)],
             memory: Vec::new(),

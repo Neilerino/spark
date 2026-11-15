@@ -1,0 +1,30 @@
+// TAG [SPARK-114]
+
+async fn lengthAfter(signal: Channel[Int], values: List[Ref[String]]): Int {
+    token: Int = signal.recv()
+    fallback: String = "outside"
+    fallbackRef: Ref[String] = fallback
+    value: Ref[String] = values[0] ?? fallbackRef
+    print(value.len())
+    return value.len()
+}
+async fn zero(): Int { return 0 }
+fn finishTask(task: Future[Int]): Int {
+    current: Future[Int]! = task
+    current = spawn { zero() }
+    chosen: Future[Int] = current
+    return await chosen
+}
+fn main(): Int {
+    signal: Channel[Int] = Channel[Int]()
+    pending: Future[Int]! = spawn { zero() }
+    if true {
+        text: String = " seven ".trim()
+        borrowed: Ref[String] = text
+        values: List[Ref[String]] = [borrowed]
+        pending = spawn { lengthAfter(signal, values) }
+        ignored: Int = finishTask(pending)
+    }
+    signal.send(1)
+    return 0
+}

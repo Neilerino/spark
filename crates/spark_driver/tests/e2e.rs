@@ -5679,3 +5679,100 @@ fn collection_borrow_future_foreign_slot_replacement_detaches_copy_proof() {
         "borrowed value does not live long enough",
     );
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_helper_await_completes_caller() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/async/future_helper_await_completes_caller.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "5", "{args:?}: {}", result.stderr);
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_helper_returned_alias_completes_source() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/async/future_helper_returned_alias_completes_source.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "5", "{args:?}: {}", result.stderr);
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_helper_guarantees_cover_recursive_and_generic_calls() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/async/future_helper_recursive_completion.spark",
+            "run-pass/async/future_helper_generic_alias.spark",
+            "run-pass/async/future_helper_diverging_alternative.spark",
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout.trim(), "5", "{fixture} {args:?}");
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_helper_guarantees_require_every_normal_return() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "compile-fail/borrow_errors/future_helper_conditional_does_not_complete_input.spark",
+            "compile-fail/borrow_errors/future_helper_replacement_does_not_complete_input.spark",
+            "compile-fail/borrow_errors/future_helper_recursive_does_not_complete_input.spark",
+            "compile-fail/borrow_errors/future_helper_alternative_return_is_not_input_alias.spark",
+        ] {
+            let result = build_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result
+                    .stderr
+                    .contains("borrowed value does not live long enough"),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_helper_completion_preserves_borrowed_results() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/async/future_helper_borrowed_result_scoped.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout.trim(), "5", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_helper_borrowed_result_escape.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid.stderr.contains("reference to local storage"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_helper_proof_refinement_reaches_a_fixed_point() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/async/future_helper_proof_closure.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+    }
+}

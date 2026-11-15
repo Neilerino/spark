@@ -45,6 +45,7 @@ struct State {
     queues: FxHashMap<(channels::Target, TypeId), Value>,
     tasks: FxHashMap<tasks::Target, tasks::Record>,
     future_copies: tasks::Copies,
+    joined_inputs: FxHashSet<Local>,
     exposed_queues: FxHashSet<channels::Target>,
     values: FxHashMap<Local, Value>,
     live: FxHashSet<Local>,
@@ -90,6 +91,10 @@ impl State {
         self.live.extend(other.live.iter().copied());
         let mut changed = before != self.live.len();
         changed |= self.future_copies.intersect(&other.future_copies);
+        let before = self.joined_inputs.len();
+        self.joined_inputs
+            .retain(|input| other.joined_inputs.contains(input));
+        changed |= before != self.joined_inputs.len();
         for (target, record) in &other.tasks {
             if let Some(current) = self.tasks.get_mut(target) {
                 changed |= current.join(record);
@@ -196,6 +201,14 @@ impl<'a> Flow<'a> {
             let external = decl.local.0 > 0
                 && decl.local.0 <= self.function.param_count + self.function.captures.len() as u32;
             if external {
+                if decl.local.0 <= self.function.param_count
+                    && matches!(
+                        self.table.resolve(strip_mutable(decl.ty, self.table)),
+                        Ty::Future { .. }
+                    )
+                {
+                    state.future_copies.seed_input(decl.local);
+                }
                 state.set(
                     decl.local,
                     self.symbolic_input(decl.ty, decl.local, decl.ty, &[]),
@@ -295,9 +308,11 @@ impl<'a> Flow<'a> {
                 for alternative in outcome {
                     self.transfers.insert(point, common.clone());
                     let mut after = state.clone();
-                    for local in alternative.clobbered_copies {
-                        after.future_copies.forget(local);
-                    }
+                    let returned_copy = self.apply_call_future_proof(
+                        alternative.future_proof,
+                        &alternative.clobbered_copies,
+                        &mut after,
+                    );
                     self.import_tasks(alternative.tasks, point, &mut after);
                     if let Some((local, result)) = alternative.completed_task {
                         self.complete_future(local, &result, &mut after);
@@ -328,6 +343,7 @@ impl<'a> Flow<'a> {
                         self.store(&place, value, point, &mut after);
                     }
                     self.store(destination, alternative.returned, point, &mut after);
+                    self.store_future_copy(destination, returned_copy, &mut after);
                     let transfer = self.transfers[&point].clone();
                     if let Some((joined, ledger)) = &mut alternatives {
                         joined.join(&after);
