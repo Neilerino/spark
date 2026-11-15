@@ -130,6 +130,7 @@ type Ports = FxHashMap<DefId, Vec<Port>>;
 mod channel_binding;
 mod inference;
 mod opaque;
+mod prefix;
 mod selection;
 mod task_binding;
 pub use inference::analyze_program;
@@ -239,21 +240,10 @@ impl Flow<'_> {
                     aliases: Some(&key.aliases),
                     ..actuals
                 };
-                self.observe(summary, function, actuals);
                 self.observe_writes(summary, function, actuals);
-                for (boundary, value) in &summary.obligations {
-                    let bound = self.bind(
-                        value,
-                        function,
-                        CallActuals {
-                            ty: boundary.ty(),
-                            ..actuals
-                        },
-                    );
-                    self.record_obligation(point, boundary.clone(), &bound);
-                }
-                let queues = self.bind_queue_writes(summary, function, actuals);
-                self.record_queue_prefix(&queues, point, state);
+                let prefix = self.bind_prefix(summary, function, actuals);
+                self.observe_prefix(&prefix, point, state);
+                let queues = prefix.queues;
                 if !summary.normal_return {
                     continue;
                 }
@@ -730,11 +720,6 @@ impl Flow<'_> {
             accesses.observe_reference(&selected, None, &access.selection, access.kind);
         }
         accesses
-    }
-
-    fn observe(&mut self, summary: &Summary, function: &MirFunction, actuals: CallActuals<'_>) {
-        let accesses = self.bound_accesses(summary, function, actuals);
-        self.record_accesses(actuals.point, accesses, actuals.state);
     }
 
     fn residual_reference(

@@ -1,0 +1,19 @@
+// TAG [SPARK-114]
+
+struct Holder { value: Ref[String] }
+async fn publish(output: Channel[Ref[String]], holder: Holder): Int {
+    output.send(holder.value)
+    return 0
+}
+fn main(): Int {
+    output: Channel[Ref[String]] = Channel[Ref[String]]()
+    if true {
+        text: String = " seven ".trim()
+        borrowed: Ref[String] = text
+        holder: Holder = Holder { value: borrowed }
+        pending: Future[Int] = spawn { publish(output, holder) }
+    }
+    result: Ref[String] = output.recv()
+    print(result.len())
+    return 0
+}

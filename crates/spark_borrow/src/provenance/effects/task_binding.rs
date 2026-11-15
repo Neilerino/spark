@@ -19,7 +19,7 @@ pub(super) enum TaskDispatch {
 #[derive(Default)]
 pub(in crate::provenance) struct TaskFacts {
     pub returned: Value,
-    pub accesses: super::Accesses,
+    pub prefix: super::prefix::Prefix,
     pub normal_return: bool,
 }
 
@@ -51,6 +51,7 @@ impl Flow<'_> {
                 callback_ty: super::super::operand_type(argument, self.function),
             };
             let facts = self.task_facts(&record, point, state, *inner);
+            self.observe_prefix(&facts.prefix, point, state);
             let (target, mut returned) =
                 super::super::tasks::birth(self.function.def_id, point, ty);
             returned.join(&callback.task_lineage());
@@ -63,7 +64,7 @@ impl Flow<'_> {
                 future_proof: CallProof::default(),
                 place_writes: Vec::new(),
                 memory: Vec::new(),
-                queues: Vec::new(),
+                queues: facts.prefix.queues,
                 queue_contents: Vec::new(),
             }]));
         }
@@ -86,6 +87,7 @@ impl Flow<'_> {
         }
         let mut returned = future.future_result();
         let mut normal = false;
+        let mut queues = Vec::new();
         for handle in handles {
             if let Some(record) = state.tasks.get(&handle.target) {
                 let mut record = record.clone();
@@ -97,7 +99,8 @@ impl Flow<'_> {
                     ));
                 let facts = self.task_facts(&record, point, state, ty);
                 if handle.pending {
-                    self.record_accesses(point, facts.accesses, state);
+                    self.observe_prefix(&facts.prefix, point, state);
+                    queues.extend(facts.prefix.queues);
                 }
                 returned.join(&facts.returned);
                 normal |= facts.normal_return || !handle.pending;
@@ -125,7 +128,7 @@ impl Flow<'_> {
             future_proof: CallProof::default(),
             place_writes: Vec::new(),
             memory: Vec::new(),
-            queues: Vec::new(),
+            queues,
             queue_contents: Vec::new(),
         }]))
     }
@@ -173,8 +176,8 @@ impl Flow<'_> {
                     ..actuals
                 };
                 facts
-                    .accesses
-                    .merge(self.bound_accesses(summary, function, actuals));
+                    .prefix
+                    .merge(self.bind_prefix(summary, function, actuals));
                 facts.normal_return |= summary.normal_return;
                 if summary.normal_return {
                     facts

@@ -342,7 +342,7 @@ impl super::Flow<'_> {
                 continue;
             };
             let facts = self.task_facts(&record, point, state, inner);
-            self.record_accesses(point, facts.accesses, state);
+            self.observe_prefix(&facts.prefix, point, state);
         }
         for reference in unknown {
             let mut accesses = super::Accesses::default();

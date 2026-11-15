@@ -36,6 +36,43 @@ fn certificates_are_closed_against_their_own_refined_may_summaries() {
     assert!(requests.iter().all(|key| summaries.contains_key(key)));
 }
 
+#[test]
+fn task_queue_writes_are_exported_even_when_the_task_never_returns() {
+    let output = lower_source(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_task_queue_prefix_before_divergence.spark"
+    )));
+    assert!(!output.diagnostics.has_errors());
+    let facts = output
+        .mir
+        .functions
+        .iter()
+        .map(|(id, function)| (*id, crate::facts::extract_facts(function)))
+        .collect();
+    let (summaries, _, _) = infer_summaries_with_definitions(
+        &output.mir,
+        &output.table,
+        &facts,
+        Some(&output.definitions),
+    );
+    for name in ["publishForever", "launch"] {
+        let matching: Vec<_> = summaries
+            .iter()
+            .filter(|(key, _)| {
+                output
+                    .definitions
+                    .get(key.function)
+                    .is_some_and(|definition| definition.name.as_str() == name)
+            })
+            .collect();
+        assert!(!matching.is_empty(), "{name}");
+        for (_, summary) in matching {
+            assert!(!summary.queues.is_empty(), "{name}");
+            assert_eq!(summary.normal_return, name == "launch", "{name}");
+        }
+    }
+}
+
 fn make_graph(file_id: spark_span::FileId, ast: &spark_ast::Ast) -> ModuleGraph {
     use spark_ast::Item;
     use spark_modules::{ModuleInfo, ModulePath};

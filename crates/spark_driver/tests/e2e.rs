@@ -5776,3 +5776,106 @@ fn collection_borrow_future_helper_proof_refinement_reaches_a_fixed_point() {
         assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
     }
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_tasks_publish_borrowed_queue_payloads() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/async/future_task_queue_publication_scoped.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout.trim(), "5", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_queue_publication_owner_drop.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_task_queue_effects_preserve_collection_sources_and_private_queues() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/async/future_task_queue_list_payload_scoped.spark",
+            "run-pass/async/future_task_private_queue_scoped.spark",
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout.trim(), "5", "{fixture} {args:?}");
+        }
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_task_queue_list_payload_owner_drop.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+        let prefix = run_spark_with_args(
+            "run-pass/async/future_task_queue_prefix_before_divergence.spark",
+            args,
+        );
+        assert_eq!(prefix.exit_code, 0, "{args:?}: {}", prefix.stderr);
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_task_queue_publication_survives_helpers_and_implicit_joins() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for fixture in [
+            "run-pass/async/future_task_queue_helper_scoped.spark",
+            "run-pass/async/future_task_queue_implicit_join_scoped.spark",
+        ] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout.trim(), "5", "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/future_task_queue_helper_owner_drop.spark",
+            "compile-fail/borrow_errors/future_task_queue_implicit_join_owner_drop.spark",
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(
+                invalid.exit_code, 1,
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+            assert!(
+                invalid
+                    .stderr
+                    .contains("borrowed value does not live long enough"),
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_completed_tasks_do_not_publish_again() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(
+            "run-pass/async/future_task_completed_relay_does_not_publish_again.spark",
+            args,
+        );
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "5\n0", "{args:?}");
+    }
+}
