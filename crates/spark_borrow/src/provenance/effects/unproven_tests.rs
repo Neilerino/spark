@@ -285,6 +285,7 @@ fn imported_invocation_keeps_its_original_dispatch_witness() {
             ty: callable,
             point,
             state: &state,
+            instantiation_site: None,
             aliases: None,
         },
     );
@@ -361,6 +362,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
             ty: reference,
             point,
             state: &state,
+            instantiation_site: None,
             aliases: None,
         },
     );
@@ -382,6 +384,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
             ty: reference,
             point,
             state: &state,
+            instantiation_site: None,
             aliases: None,
         },
     );
@@ -412,6 +415,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
             ty: reference,
             point,
             state: &state,
+            instantiation_site: None,
             aliases: Some(&aliases),
         },
     );
@@ -501,6 +505,7 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
             ty: reference,
             point,
             state: &state,
+            instantiation_site: None,
             aliases: None,
         },
     );
@@ -520,6 +525,7 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
             ty: reference,
             point,
             state: &state,
+            instantiation_site: None,
             aliases: None,
         },
     );
@@ -533,6 +539,7 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
             ty: reference,
             point,
             state: &state,
+            instantiation_site: None,
             aliases: None,
         },
     );

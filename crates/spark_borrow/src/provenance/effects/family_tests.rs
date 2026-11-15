@@ -106,6 +106,7 @@ fn residual_binding_filters_endpoints_without_erasing_opaque_or_ambiguous_altern
             ty: map_ref,
             point,
             state: &state,
+            instantiation_site: None,
             aliases: Some(&aliases),
         };
         let filtered = flow.residual_reference(&selected, &family, &callee, actuals);
@@ -130,6 +131,7 @@ fn residual_binding_filters_endpoints_without_erasing_opaque_or_ambiguous_altern
         ty: map_ref,
         point,
         state: &state,
+        instantiation_site: None,
         aliases: Some(&aliases),
     };
     let filtered = flow.residual_reference(&selected, &family, &callee, actuals);

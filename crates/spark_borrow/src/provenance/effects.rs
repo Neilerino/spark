@@ -113,11 +113,20 @@ struct CallActuals<'a> {
     arguments: &'a [Value],
     ty: TypeId,
     point: Point,
+    instantiation_site: Option<super::address::OpaqueSite>,
     state: &'a State,
     aliases: Option<&'a Aliases>,
 }
 
 impl CallActuals<'_> {
+    fn instantiation_site(self, caller: DefId) -> super::address::OpaqueSite {
+        self.instantiation_site
+            .unwrap_or(super::address::OpaqueSite {
+                function: caller,
+                point: self.point,
+            })
+    }
+
     fn is_cell(self, port: &Port) -> bool {
         self.aliases
             .map_or_else(|| port.exact(), |aliases| aliases.is_cell(port))
@@ -206,6 +215,7 @@ impl Flow<'_> {
             ty,
             point,
             state,
+            instantiation_site: None,
             aliases: None,
         };
         let targets = self.callee_targets(&callee, super::operand_type(func, self.function));
