@@ -11,6 +11,7 @@ pub(super) enum Storage {
     Cell(Local),
     External(Port),
     Queue(super::channels::Target, spark_types::TypeId),
+    Task(super::tasks::Target, spark_types::TypeId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -130,7 +131,7 @@ impl super::Flow<'_> {
                 self.function.locals[local.index()].ty
             }
             Storage::External(port) => port.pointee,
-            Storage::Queue(_, ty) => *ty,
+            Storage::Queue(_, ty) | Storage::Task(_, ty) => *ty,
         };
         let transfer = self.transfers.entry(point).or_default();
         if strong {
@@ -317,6 +318,12 @@ impl super::State {
                     .iter()
                     .map(|((target, ty), value)| (Storage::Queue(target.clone(), *ty), value)),
             )
+            .chain(self.tasks.iter().map(|(target, record)| {
+                (
+                    Storage::Task(target.clone(), record.callback_ty),
+                    &record.callback,
+                )
+            }))
             .flat_map(|(storage, value)| {
                 value
                     .clone()
@@ -334,6 +341,7 @@ impl super::State {
             Storage::Cell(local) => self.cells.get(local),
             Storage::External(port) => self.external.get(port),
             Storage::Queue(target, ty) => self.queues.get(&(target.clone(), *ty)),
+            Storage::Task(target, _) => self.tasks.get(target).map(|record| &record.callback),
         }
     }
 

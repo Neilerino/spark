@@ -5554,3 +5554,128 @@ fn collection_borrow_append_preserves_callback_and_channel_metadata() {
         }
     }
 }
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_joins_preserve_capture_owner_lifetimes() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        for (fixture, expected) in [
+            ("run-pass/async/future_borrow_scoped_await.spark", "5\n"),
+            (
+                "run-pass/async/future_borrow_scoped_implicit_join.spark",
+                "5\n",
+            ),
+            (
+                "run-pass/async/future_borrow_completed_retained.spark",
+                "5\n",
+            ),
+            ("run-pass/async/spawn_closure.spark", "123\n"),
+        ] {
+            let safe = run_spark_with_args(fixture, args);
+            assert_eq!(safe.exit_code, 0, "{fixture} {args:?}: {}", safe.stderr);
+            assert_eq!(safe.stdout, expected, "{fixture} {args:?}");
+        }
+        for fixture in [
+            "compile-fail/borrow_errors/future_borrow_owner_drop_before_await.spark",
+            "compile-fail/borrow_errors/future_borrow_owner_drop_before_implicit_join.spark",
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(
+                invalid.exit_code, 1,
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+            assert!(
+                invalid
+                    .stderr
+                    .contains("borrowed value does not live long enough"),
+                "{fixture} {args:?}: {}",
+                invalid.stderr
+            );
+        }
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_pending_reads_do_not_require_an_eventual_join() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let safe = run_spark_with_args(
+            "run-pass/async/future_borrow_dead_payload_metadata.spark",
+            args,
+        );
+        assert_eq!(safe.exit_code, 0, "{args:?}: {}", safe.stderr);
+        assert_eq!(safe.stdout, "1\n", "{args:?}");
+        let invalid = build_spark_with_args(
+            "compile-fail/borrow_errors/future_borrow_owner_drop_before_diverging_caller.spark",
+            args,
+        );
+        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
+        assert!(
+            invalid
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{args:?}: {}",
+            invalid.stderr
+        );
+    }
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_foreign_readers_observe_nested_references() {
+    let native = include_str!("run-pass/async/future_read_refs.c");
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/async/future_borrow_foreign_scoped.spark"),
+        "5",
+    );
+    assert_native_borrow_error_fixture(
+        native,
+        include_str!("compile-fail/borrow_errors/future_borrow_foreign_owner_drop.spark"),
+        "borrowed value does not live long enough",
+    );
+    assert_native_borrow_error_fixture(
+        native,
+        include_str!("compile-fail/borrow_errors/future_borrow_foreign_implicit_join.spark"),
+        "borrowed value does not live long enough",
+    );
+}
+
+// TAG [SPARK-114]
+#[test]
+fn collection_borrow_future_foreign_slot_replacement_detaches_copy_proof() {
+    let native = include_str!("run-pass/async/future_replace.c");
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/async/future_replace_slot_helper.spark"),
+        "10\n20",
+    );
+    assert_native_borrow_error_fixture(
+        native,
+        include_str!("compile-fail/borrow_errors/future_replace_slot_helper_pending.spark"),
+        "borrowed value does not live long enough",
+    );
+
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/async/future_replace_slot_nested.spark"),
+        "10\n20",
+    );
+    assert_native_borrow_error_fixture(
+        native,
+        include_str!("compile-fail/borrow_errors/future_replace_slot_nested_pending.spark"),
+        "borrowed value does not live long enough",
+    );
+
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/async/future_replace_slot.spark"),
+        "10\n20",
+    );
+    assert_native_borrow_error_fixture(
+        native,
+        include_str!("compile-fail/borrow_errors/future_replace_slot_pending.spark"),
+        "borrowed value does not live long enough",
+    );
+}

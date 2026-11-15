@@ -391,6 +391,16 @@ impl Flow<'_> {
                             index,
                             ty: *capture_ty,
                         });
+                    } else if matches!(
+                        self.table
+                            .resolve(value::strip_mutable(*capture_ty, self.table)),
+                        Ty::Future { .. }
+                    ) {
+                        capture = capture.with_future_capture(super::tasks::Capture {
+                            owner: *def,
+                            index,
+                            ty: *capture_ty,
+                        });
                     }
                     result.join(&capture.prefixed_path(
                         &[relative.to_vec(), vec![slot]].concat(),

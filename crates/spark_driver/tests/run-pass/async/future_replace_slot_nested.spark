@@ -1,0 +1,15 @@
+link "union_probe"
+extern fn replace_nested(slots: List[Ref[Future[Int]]!], replacement: Future[Int]): Void
+async fn ten(): Int { return 10 }
+async fn twenty(): Int { return 20 }
+fn main(): Int {
+    original: Future[Int] = spawn { ten() }
+    copied: Future[Int]! = original
+    slot: Ref[Future[Int]]! = copied
+    replacement: Future[Int] = spawn { twenty() }
+    replace_nested([slot], replacement)
+    selected: Future[Int] = copied
+    print(await original)
+    print(await selected)
+    return 0
+}

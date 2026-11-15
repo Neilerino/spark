@@ -391,6 +391,9 @@ impl Flow<'_> {
             return None;
         };
         Some(super::effects::CallOutcome {
+            tasks: Vec::new(),
+            completed_task: None,
+            clobbered_copies: Vec::new(),
             place_writes: Vec::new(),
             returned,
             memory: Vec::new(),
@@ -518,6 +521,22 @@ impl Flow<'_> {
                 }),
                 capture: None,
             }));
+        }
+        for (relative, handles) in &mut result.futures {
+            *handles = handles
+                .iter()
+                .map(|handle| super::tasks::Handle {
+                    target: super::tasks::Target::Input {
+                        input: local,
+                        path: path.clone(),
+                        ty: handle.target.ty(),
+                        capture: None,
+                        queue: Some(basis(relative)),
+                    },
+                    pending: handle.pending,
+                    capture: handle.capture,
+                })
+                .collect();
         }
         for (relative, targets) in &mut result.queues {
             *targets = targets
