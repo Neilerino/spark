@@ -23,7 +23,7 @@ fn produce(value: Int): Map[String, Ref[Int]] {
 }
 fn main(): Int {
     value: Int = 7
-    
+
     entries: Map[String, Ref[Int]] = produce(value)
     entries["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
     return 0

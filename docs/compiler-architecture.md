@@ -17,6 +17,14 @@
 
 The front end tracks source locations with [spark_span](../crates/spark_span/src/lib.rs), interns names with [spark_intern](../crates/spark_intern/src/lib.rs), and reports source diagnostics through [spark_diagnostics](../crates/spark_diagnostics/src/lib.rs). For operator precedence, consult the [parser's expression binding powers](../crates/spark_parser/src/expr.rs).
 
+## Borrow checking
+
+The borrow checker runs on specialized MIR before the async state-machine transform. It tracks a reference's address separately from the borrowed contents of values reached through that address. Carrier paths describe fields, collection elements, and captured values. Backward demand through each MIR point keeps a loan active while a reachable read still needs it.
+
+Known calls summarize possible reads and effects, with separate guarantees for all normal returns. The caller binds summary paths to its actual arguments and uses their alias relationships to decide when a write can replace earlier contents. An ambiguous collection index may refer to any element of the same kind, so an indexed write preserves existing possible origins alongside the new value.
+
+Task provenance separates the borrows needed by pending execution from those carried by a result or published to a queue or shared memory. An await or a proven final-handle join can end execution demand. A returned value, queued message, or saved read keeps its own dependencies after that join.
+
 ## Runtime and representation
 
 [spark_stdlib](../crates/spark_stdlib/src/lib.rs) supplies bundled Spark sources that the driver includes when compiling. [spark_runtime](../crates/spark_runtime/src/lib.rs) provides the native entry points linked into the executable. Build the runtime alongside the compiler to keep their ABI in sync.

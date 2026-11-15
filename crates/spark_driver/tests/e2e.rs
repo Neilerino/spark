@@ -867,14 +867,6 @@ fn list_index_write_rejects_invalid_targets_and_values() {
             "indexed compound assignment is unsupported",
         ),
         (
-            "borrow_errors/list_index_write_borrowed_value.spark",
-            "indexed assignment requires an owned value type",
-        ),
-        (
-            "borrow_errors/list_index_write_borrowed_escape.spark",
-            "indexed assignment requires an owned value type",
-        ),
-        (
             "borrow_errors/list_index_write_live_loan.spark",
             "cannot write to a borrowed collection",
         ),
@@ -1362,14 +1354,6 @@ fn map_index_write_rejects_invalid_targets_and_values() {
 }
 
 #[test]
-fn map_index_write_rejects_borrowed_capture_storage() {
-    assert_compile_error(
-        "compile-fail/borrow_errors/map_index_write_borrowed_capture.spark",
-        "indexed assignment requires an owned value type",
-    );
-}
-
-#[test]
 fn map_lookup_default_is_lazy_and_owns_payload() {
     let fixture = "run-pass/collections/map_lookup_default.spark";
     for args in [&[][..], &["--no-opt"][..]] {
@@ -1565,6 +1549,74 @@ fn collection_borrow_rejects_local_and_parameter_storage_escape() {
                 result.stderr
             );
         }
+    }
+}
+
+#[test]
+fn collection_borrow_indexed_writes_preserve_same_scope_references() {
+    for (name, expected) in [
+        ("collection_borrow_indexed_write", "8\n3\n8\n9\n"),
+        ("list_index_write_borrowed_value", "8\n"),
+    ] {
+        let fixture = format!("run-pass/collections/{name}.spark");
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(&fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout, expected, "{fixture} {args:?}");
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_indexed_writes_reject_escaping_references() {
+    for (name, diagnostic) in [
+        (
+            "list_index_write_borrowed_escape",
+            "returned value contains a reference to local storage",
+        ),
+        (
+            "map_index_write_borrowed_capture",
+            "returned value contains a reference to local storage",
+        ),
+        (
+            "list_index_write_borrowed_owner_drop",
+            "borrowed value does not live long enough",
+        ),
+    ] {
+        let fixture = format!("compile-fail/borrow_errors/{name}.spark");
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = build_spark_with_args(&fixture, args);
+            assert_eq!(result.exit_code, 1, "{fixture} {args:?}: {}", result.stderr);
+            assert!(
+                result.stderr.contains(diagnostic),
+                "{fixture} {args:?}: {}",
+                result.stderr
+            );
+        }
+    }
+}
+
+#[test]
+fn collection_borrow_indexed_writes_keep_pending_queue_publication() {
+    let scoped = "run-pass/async/future_index_write_late_queue_scoped.spark";
+    let escaping = "compile-fail/borrow_errors/future_index_write_late_queue_owner_drop.spark";
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args(scoped, args);
+        assert_eq!(result.exit_code, 0, "{scoped} {args:?}: {}", result.stderr);
+        assert_eq!(result.stdout, "5\n", "{scoped} {args:?}");
+        let result = build_spark_with_args(escaping, args);
+        assert_eq!(
+            result.exit_code, 1,
+            "{escaping} {args:?}: {}",
+            result.stderr
+        );
+        assert!(
+            result
+                .stderr
+                .contains("borrowed value does not live long enough"),
+            "{escaping} {args:?}: {}",
+            result.stderr
+        );
     }
 }
 
