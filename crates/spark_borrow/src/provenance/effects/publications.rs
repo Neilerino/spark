@@ -77,6 +77,7 @@ impl Flow<'_> {
         args: Option<&[Operand]>,
     ) -> PrefixWrites {
         PrefixWrites {
+            residuals: Vec::new(),
             memory: self.bind_memory_events(&publications.memory, function, actuals, key, args),
             queues: self.bind_queue_writes(&publications.queues, function, actuals, key, args),
         }
@@ -94,7 +95,7 @@ impl Flow<'_> {
             for target in self.queue_targets(&event.write.target) {
                 let mut value = event.write.value.clone();
                 value.sources.clear();
-                value.clear_observation_imports();
+                value.clear_task_imports();
                 publications
                     .queues
                     .entry((event.site, target, event.write.ty))

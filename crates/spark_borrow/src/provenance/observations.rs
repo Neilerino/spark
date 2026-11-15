@@ -138,6 +138,10 @@ impl History {
         self.insert(lane, Carrier::seal(value));
     }
 
+    pub fn clear_imports(&mut self) {
+        self.imports.clear();
+    }
+
     pub fn freeze_imports(&mut self, transfer: &super::demand::Transfer) {
         for sources in self.imports.values_mut() {
             transfer.freeze_annotations(sources);
@@ -374,20 +378,8 @@ impl<'a> ReadView<'a> {
     }
 }
 
-impl Value {
-    pub(super) fn clear_observation_imports(&mut self) {
-        for view in self
-            .task_views
-            .values_mut()
-            .flat_map(|views| views.values_mut())
-        {
-            view.history.imports.clear();
-        }
-    }
-}
-
 impl Flow<'_> {
-    pub(super) fn import_value_observations(
+    pub(super) fn import_observation_sources(
         &mut self,
         value: &mut Value,
         point: Point,
@@ -422,7 +414,7 @@ impl Flow<'_> {
             .map(|event| &mut event.write.value)
             .chain(queues.iter_mut().map(|event| &mut event.write.value))
         {
-            self.import_value_observations(value, point, state);
+            self.import_task_sources(value, point, state);
         }
     }
 
@@ -452,6 +444,12 @@ impl Flow<'_> {
         if let Some(prefix) = read.envelope.and_then(|envelope| envelope.get(&storage)) {
             value.join(prefix);
         }
+        let root = match &sample.memory {
+            Memory::Frame { ty, .. } | Memory::Queue(_, ty) => *ty,
+            Memory::External(port) => port.pointee,
+            Memory::Unavailable(_) => sample.ty,
+        };
+        value.join(&self.async_memory(&storage, root, read.state));
         if let Memory::Frame { ty, .. } = sample.memory {
             let value = self.project_path(value, ty, &sample.path, read);
             if sample.path.contains(&Slot::Tail) {

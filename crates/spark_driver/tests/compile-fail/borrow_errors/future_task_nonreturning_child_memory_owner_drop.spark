@@ -1,0 +1,45 @@
+// TAG [SPARK-114]
+struct Cell { entries: Map[String, Ref[String]]! }
+struct Shared { cell: Ref[Cell]! }
+async fn install(shared: Shared, input: Channel[Ref[String]], started: Channel[Int], ready: Channel[Int]): Int {
+    started.send(1)
+    value: Ref[String] = input.recv()
+    entries: Map[String, Ref[String]] = {"one": value}
+    cell: Ref[Cell]! = shared.cell
+    cell.entries = entries
+    ready.send(1)
+    return 0
+}
+async fn retainChild(shared: Shared, input: Channel[Ref[String]], started: Channel[Int], ready: Channel[Int], retained: Channel[Future[Int]], holding: Channel[Int], stop: Channel[Int]): Int {
+    if true {
+        child: Future[Int] = spawn { install(shared, input, started, ready) }
+        running: Int = started.recv()
+        retained.send(child)
+    }
+    holding.send(1)
+    loop { }
+    return 0
+}
+fn main(): Int {
+    empty: Map[String, Ref[String]] = {}
+    cell: Cell! = Cell { entries: empty }
+    cellRef: Ref[Cell]! = cell
+    shared: Shared = Shared { cell: cellRef }
+    input: Channel[Ref[String]] = Channel[Ref[String]]()
+    started: Channel[Int] = Channel[Int]()
+    ready: Channel[Int] = Channel[Int]()
+    retained: Channel[Future[Int]] = Channel[Future[Int]]()
+    holding: Channel[Int] = Channel[Int]()
+    stop: Channel[Int] = Channel[Int]()
+    parent: Future[Int] = spawn { retainChild(shared, input, started, ready, retained, holding, stop) }
+    held: Int = holding.recv()
+    if true {
+        text: String = " seven ".trim()
+        borrowed: Ref[String] = text
+        input.send(borrowed)
+        installed: Int = ready.recv()
+    }
+    snapshot: Cell = cell
+    snapshot.entries["one"] to { value: Ref[String] -> print(value.len()), Null -> print(99) }
+    return 0
+}

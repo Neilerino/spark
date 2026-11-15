@@ -25,11 +25,14 @@ struct TaskQuery {
     result: Value,
     normal_return: bool,
     history: Option<History>,
+    memory: super::memory::Delta,
+    memory_support: bool,
+    residuals: Vec<super::residual::Import>,
 }
 
 impl Flow<'_> {
     pub(in crate::provenance) fn settle_pending_tasks(&mut self, point: Point, state: &mut State) {
-        self.settle_pending_tasks_in(point, state, &[], &[]);
+        self.settle_pending_tasks_in(point, state, &[], &[], &[]);
     }
 
     pub(in crate::provenance) fn settle_pending_tasks_in(
@@ -38,9 +41,17 @@ impl Flow<'_> {
         state: &mut State,
         events: &[MemoryEvent],
         queues: &[crate::provenance::channels::QueueEvent],
+        residuals: &[super::residual::Import],
     ) {
-        let Some(guarded) = GuardedReads::new(self, events, queues, state) else {
-            self.close_task_effects(point, state, events, queues, &mut Publications::default());
+        let Some(guarded) = GuardedReads::new(self, events, queues, residuals, state) else {
+            self.close_task_effects(
+                point,
+                state,
+                events,
+                queues,
+                residuals,
+                &mut Publications::default(),
+            );
             return;
         };
         let entry = self.transfers[&point].clone();
@@ -50,6 +61,7 @@ impl Flow<'_> {
             &mut candidate,
             events,
             queues,
+            residuals,
             &mut Publications::probe(),
         ) {
             *state = candidate;
@@ -67,14 +79,18 @@ impl Flow<'_> {
         state: &mut State,
         events: &[MemoryEvent],
         queues: &[crate::provenance::channels::QueueEvent],
+        residuals: &[super::residual::Import],
         publications: &mut Publications<'_>,
     ) -> bool {
+        self.import_residuals(residuals, point, state);
         loop {
             let entry_relation = self.transfers[&point].clone();
             let previous_queues = state.queues.clone();
             let mut writes = Vec::new();
             let mut results = Vec::new();
             let mut histories = Vec::new();
+            let mut memories = Vec::new();
+            let mut residuals = Vec::new();
             for (storage, root_ty, carrier) in self.task_carriers(state) {
                 let carrier = carrier.sourced(&storage);
                 for (path, handles) in &carrier.futures {
@@ -90,11 +106,26 @@ impl Flow<'_> {
                             .unwrap_or_else(|| {
                                 let envelope = self.prefix_envelope(events, queues, &storage, path);
                                 self.query_pending_task(
-                                    &carrier, path, handle, point, state, &envelope,
+                                    (&carrier, &storage),
+                                    path,
+                                    handle,
+                                    point,
+                                    state,
+                                    &envelope,
                                 )
                             });
                         publications.record(&storage, path, handle, &query);
                         writes.append(&mut query.writes);
+                        residuals.append(&mut query.residuals);
+                        if query.memory_support || !query.memory.is_empty() {
+                            memories.push((
+                                storage.clone(),
+                                path.clone(),
+                                Subject::from(handle),
+                                query.memory,
+                                query.memory_support,
+                            ));
+                        }
                         if query.normal_return {
                             results.push((storage.clone(), root_ty, path.clone(), query.result));
                         }
@@ -112,7 +143,26 @@ impl Flow<'_> {
             let before_publications = publications
                 .is_probe()
                 .then(|| self.transfers[&point].clone());
+            for (_, _, _, delta, _) in &mut memories {
+                self.freeze_memory_delta(delta, point);
+            }
+            for residual in &mut residuals {
+                residual.freeze_sources(self, point);
+            }
             let mut changed = false;
+            for residual in residuals {
+                changed |= self.import_residual(residual, point, state);
+            }
+            for (storage, path, actor, delta, support) in memories {
+                changed |= self.cache_pending_memory(
+                    &storage,
+                    path,
+                    actor,
+                    (delta, support),
+                    point,
+                    state,
+                );
+            }
             for write in writes {
                 self.apply_queue_event(&write, point, state);
             }
@@ -136,7 +186,7 @@ impl Flow<'_> {
 
     fn query_pending_task(
         &mut self,
-        carrier: &Value,
+        (carrier, carrier_storage): (&Value, &Storage),
         path: &Path,
         handle: &Handle,
         point: Point,
@@ -150,6 +200,7 @@ impl Flow<'_> {
         let subject = Subject::from(handle);
         let (records, unknown) = views::pending_records(carrier, path, handle, state);
         if unknown {
+            query.memory_support = true;
             let mut accesses = crate::provenance::Accesses::default();
             accesses.observe_reference(
                 &carrier.task_lineage(),
@@ -165,9 +216,13 @@ impl Flow<'_> {
         let mut changed = self.remember_samples(resampled, &mut history, point, state);
         let trace = RefCell::default();
         for mut record in records {
-            record.callback = record
-                .callback
-                .sourced(&Storage::Task(handle.target.clone(), record.callback_ty));
+            let source = match carrier_storage {
+                Storage::Residual(key) => {
+                    Storage::ResidualCallback(key.clone(), record.callback_ty)
+                }
+                _ => Storage::Task(handle.target.clone(), record.callback_ty),
+            };
+            record.callback = record.callback.sourced(&source);
             let read = ReadView::task(state, &subject, &history, &trace).with_envelope(envelope);
             let mut facts = self.task_facts_in(&record, &handle.target, point, read, inner);
             self.import_prefix_observations(
@@ -176,7 +231,12 @@ impl Flow<'_> {
                 point,
                 state,
             );
+            query.memory_support |= facts.memory_support;
+            query
+                .memory
+                .extend(self.task_memory_delta(&facts.prefix.memory, &subject));
             self.observe_prefix(&facts.prefix, point, state);
+            query.residuals.extend(facts.prefix.residuals);
             self.expose_prefix_memory(&facts.prefix.memory, state);
             for mut write in facts.prefix.queues {
                 write.write.value = self.freeze_sources(point, write.write.value);
@@ -216,7 +276,10 @@ impl Flow<'_> {
         Self::replace_task_carrier(storage, current, state)
     }
 
-    fn task_carriers(&self, state: &State) -> Vec<(Storage, TypeId, Value)> {
+    pub(in crate::provenance) fn task_carriers(
+        &self,
+        state: &State,
+    ) -> Vec<(Storage, TypeId, Value)> {
         state
             .values
             .iter()
@@ -227,6 +290,12 @@ impl Flow<'_> {
                     value.clone(),
                 )
             })
+            .chain(
+                state
+                    .residuals
+                    .iter()
+                    .map(|(key, value)| (Storage::Residual(key.clone()), key.ty, value.clone())),
+            )
             .chain(state.external.iter().map(|(port, value)| {
                 (Storage::External(port.clone()), port.pointee, value.clone())
             }))
@@ -253,7 +322,7 @@ impl Flow<'_> {
         state: &mut State,
     ) -> bool {
         let mut result = self.freeze_sources(point, result.clone());
-        self.import_value_observations(&mut result, point, state);
+        self.import_task_sources(&mut result, point, state);
         let result = &result;
         path.push(Slot::Element);
         let mut current = state.stored_value(storage).cloned().unwrap_or_default();
@@ -286,9 +355,19 @@ impl Flow<'_> {
         Self::replace_task_carrier(storage, current, state)
     }
 
-    fn replace_task_carrier(storage: &Storage, current: Value, state: &mut State) -> bool {
+    pub(in crate::provenance) fn replace_task_carrier(
+        storage: &Storage,
+        current: Value,
+        state: &mut State,
+    ) -> bool {
         match storage {
-            Storage::Observation(_) => return false,
+            Storage::Observation(_)
+            | Storage::PendingWrite(_)
+            | Storage::SettledMemory(_)
+            | Storage::ResidualCallback(_, _) => return false,
+            Storage::Residual(key) => {
+                state.residuals.insert(key.clone(), current);
+            }
             Storage::Logical(local) => {
                 state.set(*local, current);
             }

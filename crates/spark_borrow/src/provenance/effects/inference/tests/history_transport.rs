@@ -57,3 +57,66 @@ fn returned_task_summary_keeps_the_observed_pointer_before_helper_retargeting() 
         "the saved Holder value must retain its entry target, observed inputs: {saved_inputs:?}"
     );
 }
+
+#[test]
+fn parent_activity_obeys_prefix_and_normal_return_contracts() {
+    let diverging = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/build-pass/future_task_nonreturning_child_memory_scoped.spark"
+    ));
+    let returning = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../spark_driver/tests/run-pass/async/future_task_retained_child_memory_scoped.spark"
+    ));
+    for (source, returns) in [(diverging, false), (returning, true)] {
+        let output = lower_source(source);
+        assert!(!output.diagnostics.has_errors());
+        let facts = output
+            .mir
+            .functions
+            .iter()
+            .map(|(id, function)| (*id, crate::facts::extract_facts(function)))
+            .collect();
+        let (summaries, _, _) = infer_summaries_with_definitions(
+            &output.mir,
+            &output.table,
+            &facts,
+            Some(&output.definitions),
+        );
+        let matching: Vec<_> = summaries
+            .iter()
+            .filter(|(key, _)| {
+                output
+                    .definitions
+                    .get(key.function)
+                    .is_some_and(|definition| definition.name.as_str() == "retainChild")
+            })
+            .collect();
+        assert!(!matching.is_empty());
+        for (_, summary) in matching {
+            assert_eq!(summary.normal_return, returns);
+            assert_eq!(summary.residuals.is_empty(), !returns);
+            assert!(
+                summary.returned.futures.is_empty(),
+                "the helper returns only a scalar"
+            );
+            if returns {
+                assert!(
+                    !summary.residual_callbacks.is_empty(),
+                    "continuing activity exports its own callback recipes"
+                );
+            }
+            assert!(
+                !summary.prefix_residuals.is_empty(),
+                "a reachable child loss is not a normal-return effect"
+            );
+            assert!(
+                summary
+                    .prefix_residuals
+                    .values()
+                    .any(|activity| !activity.callbacks.is_empty()),
+                "prefix activity needs real callback recipes after the parent frame disappears"
+            );
+        }
+    }
+}

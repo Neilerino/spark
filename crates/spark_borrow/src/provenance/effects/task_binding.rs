@@ -21,6 +21,7 @@ pub(in crate::provenance) struct TaskFacts {
     pub returned: Value,
     pub prefix: super::prefix::Prefix,
     pub normal_return: bool,
+    pub memory_support: bool,
 }
 
 impl Flow<'_> {
@@ -65,6 +66,7 @@ impl Flow<'_> {
             callback: callback.clone(),
             callback_ty: super::super::operand_type(argument, self.function),
         };
+        let fresh_leaf_task = self.leaf_task(&record);
         let (target, mut returned) = super::super::tasks::birth(self.function.def_id, point, ty);
         let facts = self.task_facts(&record, &target, point, state, *inner);
         self.observe_prefix(&facts.prefix, point, state);
@@ -78,6 +80,9 @@ impl Flow<'_> {
         returned.join(&callback.task_lineage());
         returned.join(&facts.returned.prefixed(Slot::Element, ty, self.table));
         Some(TaskDispatch::Returns(vec![CallOutcome {
+            fresh_leaf_task,
+            residuals: facts.prefix.residuals,
+            async_memory: Vec::new(),
             returned,
             tasks: vec![(target, record)],
             completed_task: None,
@@ -87,6 +92,7 @@ impl Flow<'_> {
             publications: crate::provenance::effects::PrefixWrites::default(),
             place_writes: Vec::new(),
             prefix_memory: facts.prefix.memory,
+            prefix_residuals: Vec::new(),
             memory: Vec::new(),
             queues: facts.prefix.queues,
             queue_contents: Vec::new(),
@@ -122,6 +128,7 @@ impl Flow<'_> {
         let mut normal = false;
         let mut queues = Vec::new();
         let mut prefix_memory = Vec::new();
+        let mut residuals = Vec::new();
         for (path, handle) in handles {
             if !handle.pending {
                 normal = true;
@@ -141,6 +148,7 @@ impl Flow<'_> {
                 self.observe_prefix(&facts.prefix, point, state);
                 queues.extend(facts.prefix.queues);
                 prefix_memory.extend(facts.prefix.memory);
+                residuals.extend(facts.prefix.residuals);
                 returned.join(&facts.returned);
                 normal |= facts.normal_return;
             }
@@ -154,6 +162,7 @@ impl Flow<'_> {
             return Some(TaskDispatch::NoReturn(super::PrefixWrites {
                 memory: prefix_memory,
                 queues,
+                residuals,
             }));
         }
         let completed_task = place
@@ -161,6 +170,9 @@ impl Flow<'_> {
             .is_empty()
             .then_some((place.local, returned.clone()));
         Some(TaskDispatch::Returns(vec![CallOutcome {
+            fresh_leaf_task: false,
+            residuals,
+            async_memory: Vec::new(),
             returned,
             tasks: Vec::new(),
             completed_task,
@@ -170,6 +182,7 @@ impl Flow<'_> {
             publications: crate::provenance::effects::PrefixWrites::default(),
             place_writes: Vec::new(),
             prefix_memory,
+            prefix_residuals: Vec::new(),
             memory: Vec::new(),
             queues,
             queue_contents: Vec::new(),
@@ -230,6 +243,7 @@ impl Flow<'_> {
         };
         let targets = self.callee_targets(callee, record.callback_ty);
         facts.normal_return = targets.open || targets.unresolved;
+        facts.memory_support = targets.open || targets.unresolved;
         for def in &targets.known {
             let Some(context) = self.program else {
                 continue;
@@ -257,6 +271,8 @@ impl Flow<'_> {
                     .prefix
                     .merge(self.bind_prefix(summary, function, actuals, &key, None));
                 facts.normal_return |= summary.normal_return;
+                facts.memory_support |=
+                    !summary.prefix_memory.is_empty() || summary.unknown_copy_clobber;
                 if summary.normal_return {
                     facts
                         .returned

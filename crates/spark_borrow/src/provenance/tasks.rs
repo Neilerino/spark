@@ -10,7 +10,10 @@ use spark_types::{Ty, TypeId, TypeTable};
 use super::{address::OpaqueSite, value, Path, Point, Slot, Value};
 
 mod identity;
+pub(super) mod lifecycle;
+pub(super) mod memory;
 pub(super) mod proofs;
+pub(super) mod residual;
 mod settle;
 pub(super) mod views;
 pub(super) use identity::{Copies, Witness};
@@ -210,6 +213,16 @@ pub(super) fn birth(function: DefId, point: Point, ty: TypeId) -> (Target, Value
 }
 
 impl super::Flow<'_> {
+    pub(super) fn import_task_sources(
+        &mut self,
+        value: &mut Value,
+        point: Point,
+        state: &mut super::State,
+    ) {
+        self.import_memory_sources(value, point, state);
+        self.import_observation_sources(value, point, state);
+    }
+
     pub(super) fn future_copy_witness(
         &self,
         rvalue: &spark_mir::Rvalue,
@@ -281,12 +294,14 @@ impl super::Flow<'_> {
 
     pub(super) fn complete_future_witness(
         &mut self,
-        witness: Witness,
+        mut witness: Witness,
         result: Option<&Value>,
         point: Point,
         state: &mut super::State,
     ) {
         self.ensure_transfer(point, state);
+        witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
+        self.settle_task_memory(&witness, &[], point, state);
         state.joined_inputs.extend(witness.inputs);
         for peer in witness.peers {
             if !state.live.contains(&peer) {
@@ -322,13 +337,13 @@ impl super::Flow<'_> {
                 current.join(&result.prefixed(Slot::Element, ty, self.table));
             }
             current = self.freeze_sources(point, current);
-            self.import_value_observations(&mut current, point, state);
+            self.import_task_sources(&mut current, point, state);
             self.record_store(point, &spark_mir::Place::from_local(peer), &current);
             state.set(peer, current);
         }
     }
 
-    pub(super) fn preserve_returned_task_history(
+    pub(super) fn preserve_returned_task_progress(
         returned: &mut Value,
         proof: &proofs::CallProof,
         clobbered: &[Local],
@@ -342,11 +357,11 @@ impl super::Flow<'_> {
         };
         for handle in handles.iter().filter(|handle| handle.pending) {
             let subject = views::Subject::from(handle);
-            for peer in witness
-                .peers
-                .iter()
-                .filter(|peer| state.live.contains(peer) && !clobbered.contains(peer))
-            {
+            for peer in witness.peers.iter().filter(|peer| {
+                state.live.contains(peer)
+                    && !clobbered.contains(peer)
+                    && !state.invalidated_copies.contains(peer)
+            }) {
                 let Some(current) = state.values.get(peer) else {
                     continue;
                 };
@@ -362,14 +377,14 @@ impl super::Flow<'_> {
                     .get(&Vec::new())
                     .and_then(|views| views.get(&subject))
                 {
-                    returned
+                    let returned_view = returned
                         .task_views
                         .entry(Vec::new())
                         .or_default()
                         .entry(subject.clone())
-                        .or_insert_with(views::View::unknown)
-                        .history
-                        .join(&view.history);
+                        .or_insert_with(views::View::unknown);
+                    returned_view.history.join(&view.history);
+                    returned_view.memory.join(&view.memory);
                 }
             }
         }
@@ -383,6 +398,7 @@ impl super::Flow<'_> {
         state: &mut super::State,
     ) -> Option<Witness> {
         proof.exclude(clobbered);
+        proof.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
         for local in clobbered {
             state.future_copies.forget(*local);
         }
@@ -446,7 +462,7 @@ impl super::Flow<'_> {
         self.ensure_transfer(point, state);
         for (target, mut record) in records {
             record.callback = self.freeze_sources(point, record.callback);
-            self.import_value_observations(&mut record.callback, point, state);
+            self.import_task_sources(&mut record.callback, point, state);
             self.record_path_store(
                 point,
                 super::demand::Coordinate {

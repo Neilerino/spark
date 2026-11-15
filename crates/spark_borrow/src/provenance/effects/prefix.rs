@@ -78,12 +78,14 @@ pub(in crate::provenance) type Memory = rustc_hash::FxHashMap<MemoryKey, Value>;
 pub(in crate::provenance) enum EventKey {
     Memory(MemoryKey),
     Queue(OpaqueSite),
+    Residual(std::sync::Arc<crate::provenance::tasks::residual::Key>),
 }
 
 #[derive(Clone, Default)]
 pub(in crate::provenance) struct PrefixWrites {
     pub memory: Vec<MemoryEvent>,
     pub queues: Vec<QueueEvent>,
+    pub residuals: Vec<crate::provenance::tasks::residual::Import>,
 }
 
 #[derive(Clone)]
@@ -95,6 +97,7 @@ pub(in crate::provenance) struct MemoryEvent {
 
 #[derive(Default)]
 pub(in crate::provenance) struct Prefix {
+    pub residuals: Vec<crate::provenance::tasks::residual::Import>,
     accesses: Accesses,
     pub queues: Vec<QueueEvent>,
     pub memory: Vec<MemoryEvent>,
@@ -109,6 +112,7 @@ impl Prefix {
         self.accesses.merge(other.accesses);
         self.queues.extend(other.queues);
         self.memory.extend(other.memory);
+        self.residuals.extend(other.residuals);
         self.obligations.extend(other.obligations);
         self.returned.extend(other.returned);
         self.publications.memory.extend(other.publications.memory);
@@ -167,6 +171,11 @@ impl Summary {
 
 impl Flow<'_> {
     pub(super) fn export_prefix(&self, summary: &mut Summary) {
+        summary.prefix_residuals = self
+            .prefix_residuals
+            .iter()
+            .map(|(key, activity)| (key.clone(), activity.exported(self.function.def_id)))
+            .collect();
         summary.prefix_memory = self
             .prefix_memory
             .iter()
@@ -242,7 +251,9 @@ impl Flow<'_> {
             PrefixWrites::default()
         };
         let snapshots = self.bind_receive_snapshots(summary, function, actuals, key, args);
+        let residuals = self.bind_prefix_residuals(summary, function, actuals, key, args);
         let prefix = Prefix {
+            residuals,
             snapshots,
             publications,
             returned: actuals

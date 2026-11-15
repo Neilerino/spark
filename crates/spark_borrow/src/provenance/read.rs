@@ -206,6 +206,13 @@ impl Flow<'_> {
             .value(place.local)
             .sourced(&super::demand::Storage::Logical(place.local));
         let mut ty = self.function.locals[place.local.index()].ty;
+        if state.live.contains(&place.local) {
+            value.join(&self.async_memory(
+                &super::demand::Storage::Logical(place.local),
+                ty,
+                state,
+            ));
+        }
         for (index, projection) in place.projections.iter().enumerate() {
             let slot = projection_slot(projection, ty, self.table);
             value = if slot == Slot::Deref {

@@ -39,6 +39,163 @@ impl Flow<'_> {
         (bound, unbound)
     }
 
+    pub(super) fn bind_task_memory(
+        &mut self,
+        memory: &crate::provenance::tasks::memory::Effects,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        actor: &Subject,
+    ) -> crate::provenance::tasks::memory::Effects {
+        let mut bound = crate::provenance::tasks::memory::Effects::default();
+        bound.may_write = memory.may_write;
+        for (lane, value) in memory.samples() {
+            let value = self.bind(
+                &value,
+                function,
+                CallActuals {
+                    ty: lane.location.ty,
+                    ..actuals
+                },
+            );
+            for location in self.bind_observation_sample(&lane.location, function, actuals) {
+                bound.import(
+                    std::sync::Arc::new(crate::provenance::tasks::memory::Lane {
+                        event: lane.event,
+                        actor: actor.clone(),
+                        location,
+                    }),
+                    value.clone(),
+                );
+            }
+        }
+        bound
+    }
+
+    pub(super) fn bind_residuals(
+        &mut self,
+        summary: &super::Summary,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        context: &super::Key,
+        args: Option<&[spark_mir::Operand]>,
+    ) -> Vec<crate::provenance::tasks::residual::Import> {
+        let mut result = Vec::new();
+        for (key, value) in &summary.residuals {
+            let activity = crate::provenance::tasks::residual::Activity {
+                value: value.clone(),
+                callbacks: summary
+                    .residual_callbacks
+                    .iter()
+                    .filter(|((owner, _), _)| owner == key)
+                    .map(|((_, ty), value)| (*ty, value.clone()))
+                    .collect(),
+            };
+            let fence = self.event_fence(
+                context,
+                &super::EventKey::Residual(key.clone()),
+                args,
+                actuals.read.state,
+            );
+            result.extend(self.bind_residual_activity(
+                key,
+                &activity,
+                function,
+                actuals,
+                &crate::provenance::tasks::residual::Visibility::Continuation(fence),
+            ));
+        }
+        result
+    }
+
+    fn bind_residual_activity(
+        &mut self,
+        key: &std::sync::Arc<crate::provenance::tasks::residual::Key>,
+        activity: &crate::provenance::tasks::residual::Activity,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        visibility: &crate::provenance::tasks::residual::Visibility,
+    ) -> Vec<crate::provenance::tasks::residual::Import> {
+        let mut result = Vec::new();
+        let value = self.bind(
+            &activity.value,
+            function,
+            CallActuals {
+                ty: key.ty,
+                ..actuals
+            },
+        );
+        for handle in value
+            .futures
+            .get(&Vec::new())
+            .into_iter()
+            .flatten()
+            .filter(|handle| handle.pending)
+        {
+            let actor = Subject::from(handle);
+            let view = crate::provenance::tasks::views::contribution(&value, &[], handle);
+            if !view.memory.may_write && view.memory.samples().next().is_none() && !view.fallback {
+                continue;
+            }
+            let callbacks = view
+                .callbacks
+                .iter()
+                .map(|(ty, callback)| {
+                    let bound = if let Some(recipe) = activity.callbacks.get(ty) {
+                        self.bind(recipe, function, CallActuals { ty: *ty, ..actuals })
+                    } else {
+                        callback
+                            .value()
+                            .sourced(&crate::provenance::demand::Storage::Task(
+                                actor.target.clone(),
+                                *ty,
+                            ))
+                    };
+                    (*ty, bound)
+                })
+                .collect();
+            let key = std::sync::Arc::new(crate::provenance::tasks::residual::Key {
+                actor: actor.clone(),
+                ty: handle.target.ty(),
+                ..(**key).clone()
+            });
+            result.push(crate::provenance::tasks::residual::Import {
+                key,
+                value: crate::provenance::tasks::residual::select(value.clone(), &actor),
+                callbacks,
+                visibility: visibility.clone(),
+            });
+        }
+
+        result
+    }
+
+    pub(super) fn bind_prefix_residuals(
+        &mut self,
+        summary: &super::Summary,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        context: &super::Key,
+        args: Option<&[spark_mir::Operand]>,
+    ) -> Vec<crate::provenance::tasks::residual::Import> {
+        let mut result = Vec::new();
+        for (key, activity) in &summary.prefix_residuals {
+            let fence = self.event_fence(
+                context,
+                &super::EventKey::Residual(key.clone()),
+                args,
+                actuals.read.state,
+            );
+            result.extend(self.bind_residual_activity(
+                key,
+                activity,
+                function,
+                actuals,
+                &crate::provenance::tasks::residual::Visibility::Occurrence(fence),
+            ));
+        }
+        result
+    }
+
     fn bind_external_sample(
         &self,
         port: &crate::provenance::aliases::Port,

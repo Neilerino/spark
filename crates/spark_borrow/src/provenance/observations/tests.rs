@@ -616,6 +616,9 @@ fn returned_history_follows_only_live_unclobbered_pending_copy_witnesses() {
             })
             .collect();
         let outcome = CallOutcome {
+            fresh_leaf_task: false,
+            residuals: Vec::new(),
+            async_memory: Vec::new(),
             returned,
             tasks: Vec::new(),
             completed_task: None,
@@ -633,6 +636,7 @@ fn returned_history_follows_only_live_unclobbered_pending_copy_witnesses() {
             place_writes: Vec::new(),
             memory: Vec::new(),
             prefix_memory: Vec::new(),
+            prefix_residuals: Vec::new(),
             queues: Vec::new(),
             queue_contents: Vec::new(),
         };

@@ -30,6 +30,10 @@ pub(super) struct Summary {
     normal_publications: PublicationValues,
     receive_snapshots: ReceiveSnapshots,
     modified: FxHashSet<View>,
+    async_modified: FxHashSet<View>,
+    residuals: FxHashMap<std::sync::Arc<super::tasks::residual::Key>, Value>,
+    prefix_residuals: super::tasks::residual::Activities,
+    residual_callbacks: FxHashMap<(std::sync::Arc<super::tasks::residual::Key>, TypeId), Value>,
     written_inputs: FxHashSet<View>,
     unknown_copy_clobber: bool,
     observed: Accesses,
@@ -95,6 +99,30 @@ impl Summary {
         let before = self.modified.len();
         self.modified.extend(other.modified.iter().cloned());
         changed |= before != self.modified.len();
+        for (key, activity) in &other.prefix_residuals {
+            let absent = !self.prefix_residuals.contains_key(key);
+            changed |= self
+                .prefix_residuals
+                .entry(key.clone())
+                .or_default()
+                .join(activity)
+                || absent;
+        }
+        for (key, value) in &other.residuals {
+            let absent = !self.residuals.contains_key(key);
+            changed |= self.residuals.entry(key.clone()).or_default().join(value) || absent;
+        }
+        for (key, value) in &other.residual_callbacks {
+            changed |= self
+                .residual_callbacks
+                .entry(key.clone())
+                .or_default()
+                .join(value);
+        }
+        let before = self.async_modified.len();
+        self.async_modified
+            .extend(other.async_modified.iter().cloned());
+        changed |= before != self.async_modified.len();
         let before = self.written_inputs.len();
         self.written_inputs
             .extend(other.written_inputs.iter().cloned());
@@ -185,10 +213,10 @@ impl Flow<'_> {
                 ports.push(port.clone());
             }
         }
-        if summary.written_inputs.is_empty() {
+        if summary.written_inputs.is_empty() && summary.async_modified.is_empty() {
             return;
         }
-        for view in &summary.written_inputs {
+        for view in summary.written_inputs.iter().chain(&summary.async_modified) {
             if !value::inputs(
                 view.root.pointee,
                 view.root.input,
@@ -294,11 +322,11 @@ impl Flow<'_> {
                     dispatch.diverging.push(PrefixWrites {
                         memory: prefix.memory,
                         queues: prefix.queues,
+                        residuals: prefix.residuals,
                     });
                     continue;
                 }
-                let mut outcome =
-                    self.bind_outcome(summary, function, actuals, &key.aliases, prefix);
+                let mut outcome = self.bind_outcome(summary, function, actuals, &key, args, prefix);
                 outcome.future_proof = self.call_future_proof(&key, args, state);
                 dispatch.returning.push(outcome);
             }
@@ -346,6 +374,9 @@ impl Flow<'_> {
             true,
         ));
         CallOutcome {
+            fresh_leaf_task: false,
+            residuals: Vec::new(),
+            async_memory: Vec::new(),
             tasks: Vec::new(),
             completed_task: None,
             clobbered_copies: Vec::new(),
@@ -354,6 +385,7 @@ impl Flow<'_> {
             publications: crate::provenance::effects::PrefixWrites::default(),
             place_writes: Vec::new(),
             prefix_memory: Vec::new(),
+            prefix_residuals: Vec::new(),
             returned,
             memory: Vec::new(),
             queues: Vec::new(),
@@ -531,6 +563,20 @@ impl Flow<'_> {
                 .join(&state.publications.exported(self.function.def_id));
             self.export_queue_contents(&state, &mut summary);
             self.export_tasks(&state, &mut summary);
+            for (key, value) in &state.residuals {
+                summary
+                    .residuals
+                    .entry(key.clone())
+                    .or_default()
+                    .join(&export_value(value, self.function.def_id));
+            }
+            for (key, value) in &state.residual_callbacks {
+                summary
+                    .residual_callbacks
+                    .entry(key.clone())
+                    .or_default()
+                    .join(&export_value(value, self.function.def_id));
+            }
             summary.returned.join(&export_value(
                 &state.value(Local::RETURN_PLACE),
                 self.function.def_id,
@@ -540,6 +586,9 @@ impl Flow<'_> {
                 .map(|context| context.ports[&self.function.def_id].clone())
                 .unwrap_or_default();
             ports.extend(self.written_inputs.iter().map(|view| view.root.clone()));
+            let async_modified = Self::async_modified(&state);
+            ports.extend(async_modified.iter().map(|view| view.root.clone()));
+            summary.async_modified.extend(async_modified);
             for declaration in self
                 .function
                 .locals

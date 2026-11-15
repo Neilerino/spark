@@ -413,10 +413,14 @@ impl Flow<'_> {
             return None;
         };
         let publications = super::effects::PrefixWrites {
+            residuals: Vec::new(),
             memory: Vec::new(),
             queues: queues.clone(),
         };
         Some(super::effects::CallOutcome {
+            fresh_leaf_task: false,
+            residuals: Vec::new(),
+            async_memory: Vec::new(),
             tasks: Vec::new(),
             completed_task: None,
             clobbered_copies: Vec::new(),
@@ -425,6 +429,7 @@ impl Flow<'_> {
             publications,
             place_writes: Vec::new(),
             prefix_memory: Vec::new(),
+            prefix_residuals: Vec::new(),
             returned,
             memory: Vec::new(),
             queues,
@@ -828,7 +833,7 @@ impl Flow<'_> {
     ) {
         self.ensure_transfer(point, state);
         let mut payload = self.freeze_sources(point, payload.clone());
-        self.import_value_observations(&mut payload, point, state);
+        self.import_task_sources(&mut payload, point, state);
         let payload = &payload;
         for target in self.queue_targets(target) {
             self.record_path_store(
@@ -856,7 +861,7 @@ impl Flow<'_> {
     ) {
         self.ensure_transfer(point, state);
         let mut payload = self.freeze_sources(point, payload.clone());
-        self.import_value_observations(&mut payload, point, state);
+        self.import_task_sources(&mut payload, point, state);
         let payload = &payload;
         if let Some(port) = target.port(self.table) {
             self.queue_ports.insert(port);

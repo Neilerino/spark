@@ -9,6 +9,13 @@ use super::{aliases::Port, Origin, Path, Slot};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Storage {
+    Residual(std::sync::Arc<super::tasks::residual::Key>),
+    ResidualCallback(
+        std::sync::Arc<super::tasks::residual::Key>,
+        spark_types::TypeId,
+    ),
+    PendingWrite(std::sync::Arc<super::tasks::memory::Lane>),
+    SettledMemory(super::observations::Sample),
     Logical(Local),
     Cell(Local),
     External(Port),
@@ -108,6 +115,7 @@ impl Transfer {
             .flat_map(|views| views.values_mut())
         {
             view.history.freeze_imports(self);
+            view.memory.freeze_imports(self);
         }
         value
     }
@@ -215,8 +223,11 @@ impl super::Flow<'_> {
                 self.function.locals[local.index()].ty
             }
             Storage::External(port) => port.pointee,
-            Storage::Queue(_, ty) | Storage::Task(_, ty) => *ty,
+            Storage::Queue(_, ty) | Storage::Task(_, ty) | Storage::ResidualCallback(_, ty) => *ty,
             Storage::Observation(lane) => lane.sample.ty,
+            Storage::PendingWrite(lane) => lane.location.ty,
+            Storage::SettledMemory(location) => location.ty,
+            Storage::Residual(key) => key.ty,
         }
     }
 
@@ -268,6 +279,21 @@ impl super::Flow<'_> {
         );
     }
 
+    fn external_return_frontier(&self, state: &super::State) -> Frontier {
+        state
+            .external
+            .iter()
+            .map(|(port, value)| value.clone().sourced(&Storage::External(port.clone())))
+            .chain(Self::external_async_values(state))
+            .flat_map(|value| {
+                self.reachable_queue_payloads(&value, state)
+                    .sources
+                    .into_values()
+                    .flatten()
+            })
+            .collect()
+    }
+
     pub(super) fn carrier_regions(
         &mut self,
         facts: &crate::facts::BorrowFacts,
@@ -290,19 +316,7 @@ impl super::Flow<'_> {
                         .value(Local::RETURN_PLACE)
                         .sourced(&Storage::Logical(Local::RETURN_PLACE));
                     let returned = self.reachable_queue_payloads(&returned, &state);
-                    let external: Frontier = state
-                        .external
-                        .iter()
-                        .flat_map(|(local, value)| {
-                            self.reachable_queue_payloads(
-                                &value.clone().sourced(&Storage::External(local.clone())),
-                                &state,
-                            )
-                            .sources
-                            .into_values()
-                            .flatten()
-                        })
-                        .collect();
+                    let external = self.external_return_frontier(&state);
                     self.transfers.entry(point).or_default().seed(
                         &returned
                             .sources
@@ -441,6 +455,26 @@ impl super::State {
                     .iter()
                     .map(|(lane, value)| (Storage::Observation(lane.clone()), value)),
             )
+            .chain(
+                self.pending_memory
+                    .iter()
+                    .map(|(lane, value)| (Storage::PendingWrite(lane.clone()), value)),
+            )
+            .chain(
+                self.settled_memory
+                    .iter()
+                    .map(|(location, value)| (Storage::SettledMemory(location.clone()), value)),
+            )
+            .chain(
+                self.residuals
+                    .iter()
+                    .map(|(key, value)| (Storage::Residual(key.clone()), value)),
+            )
+            .chain(
+                self.residual_callbacks
+                    .iter()
+                    .map(|((key, ty), value)| (Storage::ResidualCallback(key.clone(), *ty), value)),
+            )
             .flat_map(|(storage, value)| {
                 value
                     .leaves
@@ -466,6 +500,10 @@ impl super::State {
             Storage::Queue(target, ty) => self.queues.get(&(target.clone(), *ty)),
             Storage::Task(target, _) => self.tasks.get(target).map(|record| &record.callback),
             Storage::Observation(lane) => self.observations.get(lane),
+            Storage::PendingWrite(lane) => self.pending_memory.get(lane),
+            Storage::SettledMemory(location) => self.settled_memory.get(location),
+            Storage::Residual(key) => self.residuals.get(key),
+            Storage::ResidualCallback(key, ty) => self.residual_callbacks.get(&(key.clone(), *ty)),
         }
     }
 

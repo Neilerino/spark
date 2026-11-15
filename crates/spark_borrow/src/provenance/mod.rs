@@ -45,8 +45,15 @@ type Origins = FxHashSet<Origin>;
 struct State {
     queues: FxHashMap<(channels::Target, TypeId), Value>,
     observations: observations::Samples,
+    pending_memory: FxHashMap<std::sync::Arc<tasks::memory::Lane>, Value>,
+    settled_memory: FxHashMap<observations::Sample, Value>,
+    residuals: FxHashMap<std::sync::Arc<tasks::residual::Key>, Value>,
+    residual_callbacks: FxHashMap<(std::sync::Arc<tasks::residual::Key>, TypeId), Value>,
     tasks: FxHashMap<tasks::Target, tasks::Record>,
     future_copies: tasks::Copies,
+    future_owners: tasks::lifecycle::Owners,
+    // Cleared at each MIR point; qualifies entry-captured call witnesses within its alternatives.
+    invalidated_copies: FxHashSet<Local>,
     joined_inputs: FxHashSet<Local>,
     reached_prefix: effects::ReachedPrefix,
     publications: effects::PublicationValues,
@@ -88,14 +95,54 @@ impl State {
         self.values.remove(&local);
         self.live.remove(&local);
         self.future_copies.forget(local);
+        self.future_owners.forget(local);
+    }
+
+    fn join_task_backing(&mut self, other: &Self) -> bool {
+        let mut changed = false;
+        for (lane, value) in &other.observations {
+            let absent = !self.observations.contains_key(lane);
+            changed |= self
+                .observations
+                .entry(lane.clone())
+                .or_default()
+                .join(value)
+                || absent;
+        }
+        for (lane, value) in &other.pending_memory {
+            let absent = !self.pending_memory.contains_key(lane);
+            changed |= self
+                .pending_memory
+                .entry(lane.clone())
+                .or_default()
+                .join(value)
+                || absent;
+        }
+        for (location, value) in &other.settled_memory {
+            let absent = !self.settled_memory.contains_key(location);
+            changed |= self
+                .settled_memory
+                .entry(location.clone())
+                .or_default()
+                .join(value)
+                || absent;
+        }
+        changed
     }
 
     fn join(&mut self, other: &Self) -> bool {
+        self.invalidated_copies
+            .extend(other.invalidated_copies.iter().copied());
         let before = self.live.len();
         self.live.extend(other.live.iter().copied());
         let mut changed = before != self.live.len();
         changed |= effects::join_prefix(&mut self.reached_prefix, &other.reached_prefix);
         changed |= self.publications.join(&other.publications);
+        changed |= self.future_owners.intersect(
+            &self.future_copies,
+            &other.future_owners,
+            &other.future_copies,
+        );
         changed |= self.future_copies.intersect(&other.future_copies);
         let before = self.joined_inputs.len();
         self.joined_inputs
@@ -113,15 +160,20 @@ impl State {
         self.exposed_queues
             .extend(other.exposed_queues.iter().cloned());
         changed |= before != self.exposed_queues.len();
-        for (lane, value) in &other.observations {
-            changed |= self
-                .observations
-                .entry(lane.clone())
-                .or_default()
-                .join(value);
-        }
+        changed |= self.join_task_backing(other);
         for (target, value) in &other.queues {
             changed |= self.queues.entry(target.clone()).or_default().join(value);
+        }
+        for (key, value) in &other.residuals {
+            let absent = !self.residuals.contains_key(key);
+            changed |= self.residuals.entry(key.clone()).or_default().join(value) || absent;
+        }
+        for (key, value) in &other.residual_callbacks {
+            changed |= self
+                .residual_callbacks
+                .entry(key.clone())
+                .or_default()
+                .join(value);
         }
         for (local, value) in &other.values {
             changed |= self.values.entry(*local).or_default().join(value);
@@ -161,6 +213,7 @@ struct Flow<'a> {
     obligations: FxHashMap<(Point, obligations::Boundary), Value>,
     queue_sends: FxHashMap<channels::QueueKey, Value>,
     prefix_memory: effects::PrefixMemory,
+    prefix_residuals: tasks::residual::Activities,
     receive_snapshots: effects::ReceiveSnapshots,
     event_guards: tasks::proofs::EventGuards,
     queue_ports: FxHashSet<aliases::Port>,
@@ -204,6 +257,7 @@ impl<'a> Flow<'a> {
             obligations: FxHashMap::default(),
             queue_sends: FxHashMap::default(),
             prefix_memory: effects::PrefixMemory::default(),
+            prefix_residuals: tasks::residual::Activities::default(),
             receive_snapshots: effects::ReceiveSnapshots::default(),
             event_guards: tasks::proofs::EventGuards::default(),
             queue_ports: FxHashSet::default(),
@@ -289,6 +343,7 @@ impl<'a> Flow<'a> {
     fn transfer_terminator(&mut self, block: BlockId, state: &mut State) -> bool {
         let body = &self.function.blocks[block.index()];
         let point = Point::new(block, body.statements.len() as u32);
+        state.invalidated_copies.clear();
         self.transfers
             .insert(point, demand::Transfer::at_entry(state.atoms()));
         self.settle_pending_tasks(point, state);
@@ -334,11 +389,13 @@ impl<'a> Flow<'a> {
     }
 
     fn transfer_statement(&mut self, statement: &Statement, point: Point, state: &mut State) {
+        state.invalidated_copies.clear();
         self.transfers
             .insert(point, demand::Transfer::at_entry(state.atoms()));
         self.settle_pending_tasks(point, state);
         match statement {
             Statement::Assign { place, rvalue, .. } => {
+                let owned = self.owning_rvalue(rvalue, place, state);
                 let future_copy = self.future_copy_witness(rvalue, state);
                 let result = self.rvalue(rvalue, self.place_type(place), point, state);
                 let result = self.freeze_sources(point, result);
@@ -350,6 +407,10 @@ impl<'a> Flow<'a> {
                 }
                 self.store(place, result, point, state);
                 self.store_future_copy(place, future_copy, state);
+                state.future_owners.forget(place.local);
+                if owned {
+                    state.future_owners.grant(place.local, &state.future_copies);
+                }
             }
             Statement::IndexedAssign {
                 root,
@@ -375,6 +436,7 @@ impl<'a> Flow<'a> {
                 self.record_consumed(point, *value);
             }
             Statement::Drop { place, .. } => {
+                self.preserve_writer_loss(place, point, state);
                 let mut accesses = Accesses::default();
                 self.read_access(place, state, AccessKind::Value, &mut accesses);
                 self.record_accesses(point, accesses, state);
@@ -549,7 +611,7 @@ impl<'a> Flow<'a> {
     fn store(&mut self, place: &Place, value: Value, point: Point, state: &mut State) {
         self.ensure_transfer(point, state);
         let mut value = self.freeze_sources(point, value);
-        self.import_value_observations(&mut value, point, state);
+        self.import_task_sources(&mut value, point, state);
         if place
             .projections
             .iter()

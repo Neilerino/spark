@@ -18,6 +18,7 @@ impl Flow<'_> {
         let mut bound_view = View {
             fallback: view.fallback || unbound,
             history,
+            memory: self.bind_task_memory(&view.memory, function, actuals, actor),
             ..View::default()
         };
         for (ty, callback) in &view.callbacks {
@@ -157,6 +158,7 @@ pub(super) fn export(value: &Value, function: spark_resolve::DefId) -> Views {
                             callbacks,
                             fallback: view.fallback,
                             history: view.history.exported(function),
+                            memory: view.memory.exported(function),
                         },
                     )
                 })
