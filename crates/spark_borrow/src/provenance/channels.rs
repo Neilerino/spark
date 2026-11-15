@@ -827,7 +827,9 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         self.ensure_transfer(point, state);
-        let payload = &self.freeze_sources(point, payload.clone());
+        let mut payload = self.freeze_sources(point, payload.clone());
+        self.import_value_observations(&mut payload, point, state);
+        let payload = &payload;
         for target in self.queue_targets(target) {
             self.record_path_store(
                 point,
@@ -853,7 +855,9 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         self.ensure_transfer(point, state);
-        let payload = &self.freeze_sources(point, payload.clone());
+        let mut payload = self.freeze_sources(point, payload.clone());
+        self.import_value_observations(&mut payload, point, state);
+        let payload = &payload;
         if let Some(port) = target.port(self.table) {
             self.queue_ports.insert(port);
         }

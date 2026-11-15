@@ -218,3 +218,135 @@ fn callable_resolution_reads_the_task_envelope_and_retained_cells() {
         );
     }
 }
+
+#[test]
+fn a_bound_empty_history_uses_caller_storage_and_installs_observation_backing() {
+    use crate::provenance::{
+        address::{Endpoint, FrameLifetime},
+        aliases::Port,
+        observations::{FrameScope, History, Memory, ReadView, Sample},
+        value::Leaf,
+        Origin,
+    };
+    use rustc_hash::FxHashSet;
+    use spark_types::LifetimeId;
+    use std::cell::RefCell;
+
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let reference = table.intern(Ty::Ref {
+        inner: int,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let outer = table.intern(Ty::Ref {
+        inner: reference,
+        mutable: false,
+        lifetime: LifetimeId::ANONYMOUS,
+    });
+    let future = table.intern(Ty::Future { inner: int });
+    let function = |id, param_count, types: Vec<_>| MirFunction {
+        def_id: DefId::new(id),
+        param_count,
+        return_type: future,
+        locals: types
+            .into_iter()
+            .enumerate()
+            .map(|(index, ty)| LocalDecl {
+                local: Local(index as u32),
+                ty,
+                name: None,
+                is_user_variable: false,
+                mutable: true,
+                span: Span::DUMMY,
+            })
+            .collect(),
+        blocks: Vec::new(),
+        captures: Vec::new(),
+        is_async: false,
+        span: Span::DUMMY,
+    };
+    let caller = function(9991, 0, vec![future, outer, reference]);
+    let callee = function(9992, 1, vec![future, outer]);
+    let point = Point::new(BlockId::ENTRY, 0);
+    let (target, mut summary) = crate::provenance::tasks::birth(callee.def_id, point, future);
+    let actor = Subject {
+        target,
+        capture: None,
+    };
+    let port = Port::root(Local(1), reference);
+    let mut history = History::default();
+    let trace = RefCell::default();
+    let mut old_state = State::default();
+    ReadView::task(&old_state, &actor, &history, &trace)
+        .select(callee.def_id, &port.selector())
+        .observe(
+            Sample {
+                memory: Memory::External(port.clone()),
+                path: Vec::new(),
+                ty: reference,
+            },
+            Value::default(),
+        );
+    let mut old_flow = Flow::new(&callee, &table, None);
+    old_flow.ensure_transfer(point, &old_state);
+    old_flow.remember_samples(trace.into_inner(), &mut history, point, &mut old_state);
+    summary.task_views.entry(Vec::new()).or_default().insert(
+        actor,
+        View {
+            history,
+            ..View::default()
+        },
+    );
+
+    let pointer = Value::reference(Origin::Loan(point)).with_metadata(&Leaf {
+        endpoints: FxHashSet::from_iter([Endpoint::Frame {
+            lifetime: FrameLifetime::Local,
+            function: caller.def_id,
+            root: point,
+            local: Local(2),
+            root_ty: reference,
+            pointee: reference,
+            location: Vec::new(),
+        }]),
+        ..Leaf::default()
+    });
+    let mut state = State::default();
+    state.set(Local(1), pointer.clone());
+    let mut flow = Flow::new(&caller, &table, None);
+    let callee_value = Value::default();
+    let bound = flow.bind(
+        &summary,
+        &callee,
+        CallActuals {
+            callee: &callee_value,
+            arguments: &[pointer],
+            ty: future,
+            point,
+            instantiation_site: None,
+            frame_caller: Some(caller.def_id),
+            read: ReadView::current(&state),
+            aliases: None,
+        },
+    );
+    let handle = bound.futures[&Vec::new()].iter().next().unwrap();
+    let history = &bound.task_views[&Vec::new()][&Subject::from(handle)].history;
+    let samples: Vec<_> = history.samples().collect();
+    assert_eq!(samples.len(), 1);
+    let lane = samples[0].0.clone();
+    assert!(matches!(lane.sample.memory, Memory::Frame {
+        scope: FrameScope::Current, function, local: Local(2), ..
+    } if function == caller.def_id));
+    flow.store(
+        &spark_mir::Place::from_local(Local(0)),
+        bound,
+        point,
+        &mut state,
+    );
+    assert!(state.observations.contains_key(&lane));
+    assert!(state.observations[&lane].is_empty());
+    assert!(state.atoms().iter().all(|atom| !matches!(
+        atom.coordinate.storage,
+        crate::provenance::demand::Storage::Observation(_),
+    )));
+}

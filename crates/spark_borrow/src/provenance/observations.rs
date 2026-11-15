@@ -19,15 +19,23 @@ use super::{
     value, Flow, Path, Point, Slot, State, Value,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum FrameScope {
+    Current,
+    Foreign,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Memory {
     Frame {
+        scope: FrameScope,
         function: DefId,
         local: Local,
         ty: TypeId,
     },
     External(Port),
     Queue(channels::Target, TypeId),
+    Unavailable(super::address::OpaqueSite),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -57,29 +65,98 @@ pub(super) struct Lane {
     pub sample: Sample,
 }
 
+impl Lane {
+    pub fn rebound(&self, actor: Subject, sample: Sample) -> Arc<Self> {
+        Arc::new(Self {
+            actor,
+            sample,
+            ..self.clone()
+        })
+    }
+}
+
 pub(super) type Samples = FxHashMap<Arc<Lane>, Value>;
 pub(super) type Envelope = FxHashMap<Storage, Value>;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct History(FxHashMap<Arc<Lane>, Carrier>);
+pub(super) struct History {
+    facts: FxHashMap<Arc<Lane>, Carrier>,
+    imports: FxHashMap<Arc<Lane>, super::demand::Sources>,
+}
 
 impl History {
     pub fn join(&mut self, other: &Self) -> bool {
         let mut changed = false;
-        for (lane, facts) in &other.0 {
+        for (lane, facts) in &other.facts {
             changed |= self.insert(lane.clone(), facts.clone());
+        }
+        for (lane, sources) in &other.imports {
+            let missing = !self.imports.contains_key(lane);
+            let current = self.imports.entry(lane.clone()).or_default();
+            changed |= missing;
+            for (contribution, incoming) in sources {
+                let current = current.entry(contribution.clone()).or_default();
+                let before = current.len();
+                current.extend(incoming.iter().cloned());
+                changed |= before != current.len();
+            }
         }
         changed
     }
 
     pub fn retire_frames(&mut self, boundary: super::address::OpaqueSite) {
-        for carrier in self.0.values_mut() {
+        for carrier in self.facts.values_mut() {
             carrier.retire_frames(boundary);
         }
     }
 
+    pub fn exported(&self, function: DefId) -> Self {
+        Self {
+            facts: self
+                .facts
+                .iter()
+                .map(|(lane, facts)| {
+                    (
+                        lane.clone(),
+                        Carrier::seal(super::effects::export_value(&facts.value(), function)),
+                    )
+                })
+                .collect(),
+            imports: FxHashMap::default(),
+        }
+    }
+
+    pub fn samples(&self) -> impl Iterator<Item = (&Arc<Lane>, Value)> {
+        self.facts.iter().map(|(lane, facts)| (lane, facts.value()))
+    }
+
+    pub fn import_sample(&mut self, lane: Arc<Lane>, mut value: Value) {
+        let sources = self.imports.entry(lane.clone()).or_default();
+        for (contribution, incoming) in std::mem::take(&mut value.sources) {
+            sources.entry(contribution).or_default().extend(incoming);
+        }
+        self.insert(lane, Carrier::seal(value));
+    }
+
+    pub fn freeze_imports(&mut self, transfer: &super::demand::Transfer) {
+        for sources in self.imports.values_mut() {
+            transfer.freeze_annotations(sources);
+        }
+    }
+
+    fn take_imports(&mut self) -> Samples {
+        std::mem::take(&mut self.imports)
+            .into_iter()
+            .map(|(lane, sources)| {
+                let mut value = self.facts[&lane].value();
+                value.sources = sources;
+                (lane, value)
+            })
+            .collect()
+    }
+
     pub fn projected_samples(&self, state: &State, transfer: &super::demand::Transfer) -> Samples {
-        self.0
+        self.facts
             .iter()
             .filter(|(lane, _)| state.observations.contains_key(*lane))
             .map(|(lane, carrier)| {
@@ -91,7 +168,7 @@ impl History {
 
     fn insert(&mut self, lane: Arc<Lane>, facts: Carrier) -> bool {
         use std::collections::hash_map::Entry;
-        match self.0.entry(lane) {
+        match self.facts.entry(lane) {
             Entry::Occupied(mut entry) => entry.get_mut().join(&facts),
             Entry::Vacant(entry) => {
                 entry.insert(facts);
@@ -282,7 +359,7 @@ impl<'a> ReadView<'a> {
             .entry(lane.clone())
             .or_default()
             .join(&current);
-        for (old, value) in &task.history.0 {
+        for (old, value) in &task.history.facts {
             if old.site == lane.site
                 && old.function == lane.function
                 && old.selector == lane.selector
@@ -297,18 +374,72 @@ impl<'a> ReadView<'a> {
     }
 }
 
+impl Value {
+    pub(super) fn clear_observation_imports(&mut self) {
+        for view in self
+            .task_views
+            .values_mut()
+            .flat_map(|views| views.values_mut())
+        {
+            view.history.imports.clear();
+        }
+    }
+}
+
 impl Flow<'_> {
+    pub(super) fn import_value_observations(
+        &mut self,
+        value: &mut Value,
+        point: Point,
+        state: &mut State,
+    ) {
+        for view in value
+            .task_views
+            .values_mut()
+            .flat_map(|views| views.values_mut())
+        {
+            let imports = view.history.take_imports();
+            self.remember_samples(imports, &mut view.history, point, state);
+        }
+    }
+
+    pub(super) fn import_prefix_observations(
+        &mut self,
+        memory: &mut [super::effects::MemoryEvent],
+        queues: &mut [super::channels::QueueEvent],
+        point: Point,
+        state: &mut State,
+    ) {
+        for value in memory
+            .iter_mut()
+            .map(|event| &mut event.write.value)
+            .chain(queues.iter_mut().map(|event| &mut event.write.value))
+        {
+            *value = self.freeze_sources(point, std::mem::take(value));
+        }
+        for value in memory
+            .iter_mut()
+            .map(|event| &mut event.write.value)
+            .chain(queues.iter_mut().map(|event| &mut event.write.value))
+        {
+            self.import_value_observations(value, point, state);
+        }
+    }
+
     pub(super) fn read_memory(&self, sample: Sample, read: ReadView<'_>) -> Value {
         let current = self.sample_memory(&sample, read);
         read.observe(sample, current)
     }
 
-    fn sample_memory(&self, sample: &Sample, read: ReadView<'_>) -> Value {
+    pub(super) fn sample_memory(&self, sample: &Sample, read: ReadView<'_>) -> Value {
         let storage = match &sample.memory {
             Memory::Frame {
-                function, local, ..
+                scope: FrameScope::Current,
+                function,
+                local,
+                ..
             } if *function == self.function.def_id => Storage::Cell(*local),
-            Memory::Frame { .. } => return Value::default(),
+            Memory::Frame { .. } | Memory::Unavailable(_) => return Value::default(),
             Memory::External(port) => Storage::External(port.clone()),
             Memory::Queue(target, ty) => Storage::Queue(target.clone(), *ty),
         };
@@ -338,7 +469,7 @@ impl Flow<'_> {
 
     pub(super) fn resample_history(&self, history: &History, current: ReadView<'_>) -> Samples {
         history
-            .0
+            .facts
             .keys()
             .map(|lane| (lane.clone(), self.sample_memory(&lane.sample, current)))
             .collect()

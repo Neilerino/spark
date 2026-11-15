@@ -168,6 +168,7 @@ pub(super) use prefix::{
     ReachedPrefix, Receive,
 };
 pub(super) use receive_snapshots::ReceiveSnapshots;
+mod history;
 mod selection;
 mod task_binding;
 mod task_views;
@@ -867,7 +868,7 @@ impl Flow<'_> {
     }
 }
 
-fn export_value(value: &Value, function: DefId) -> Value {
+pub(super) fn export_value(value: &Value, function: DefId) -> Value {
     let mut result = Value {
         callees: value.callees.clone(),
         queues: value.queues.clone(),

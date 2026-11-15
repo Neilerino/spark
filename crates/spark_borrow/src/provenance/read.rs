@@ -281,6 +281,7 @@ impl Flow<'_> {
                     } if *function == self.function.def_id => self.read_memory(
                         Sample {
                             memory: Memory::Frame {
+                                scope: crate::provenance::observations::FrameScope::Current,
                                 function: *function,
                                 local: *local,
                                 ty: *root_ty,
@@ -413,9 +414,12 @@ impl Flow<'_> {
         };
         let source_ty = self.function.locals[address.input.index()].ty;
         let selection = &address.selection;
-        let (stored, covered) = self.external_contents(address, ty, read);
+        let (stored, covered, sample) = self.external_contents(address, ty, read);
         if covered.iter().any(Vec::is_empty) {
-            return stored;
+            return match sample {
+                Some(sample) => read.observe(sample, stored),
+                None => stored,
+            };
         }
         let prefix = value::normalize(
             source_ty,
@@ -465,7 +469,10 @@ impl Flow<'_> {
             ));
         }
         result.join(&stored);
-        result
+        match sample {
+            Some(sample) => read.observe(sample, result),
+            None => result,
+        }
     }
 
     pub(super) fn project_path(

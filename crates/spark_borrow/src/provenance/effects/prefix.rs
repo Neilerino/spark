@@ -93,12 +93,6 @@ pub(in crate::provenance) struct MemoryEvent {
     pub fence: crate::provenance::tasks::proofs::EventFence,
 }
 
-impl MemoryEvent {
-    pub(super) fn freeze_sources(&mut self, flow: &Flow<'_>, point: Point) {
-        self.write.value = flow.freeze_sources(point, std::mem::take(&mut self.write.value));
-    }
-}
-
 #[derive(Default)]
 pub(in crate::provenance) struct Prefix {
     accesses: Accesses,
