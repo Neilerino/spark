@@ -70,7 +70,7 @@ impl Flow<'_> {
             })
             .filter(|origin| *origin != Origin::ValidationHole)
             .collect();
-        let sources: super::super::demand::Demand = arguments
+        let sources: super::super::demand::Frontier = arguments
             .iter()
             .chain(std::iter::once(callee))
             .flat_map(Value::all_sources)

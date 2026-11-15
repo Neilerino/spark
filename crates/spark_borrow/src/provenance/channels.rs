@@ -684,6 +684,7 @@ impl Flow<'_> {
         point: Point,
         state: &State,
     ) {
+        self.ensure_transfer(point, state);
         if let Some(port) = target.port(self.table) {
             self.queue_ports.insert(port);
         }
@@ -696,8 +697,7 @@ impl Flow<'_> {
             self.transfers
                 .entry(point)
                 .or_default()
-                .seeds
-                .extend(reachable.all_sources());
+                .seed(&reachable.all_sources());
         }
         self.queue_sends
             .entry((point, target.clone(), ty))
@@ -740,6 +740,8 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
+        self.ensure_transfer(point, state);
+        let payload = &self.freeze_sources(point, payload.clone());
         for target in self.queue_targets(target) {
             self.record_path_store(
                 point,
@@ -750,7 +752,9 @@ impl Flow<'_> {
                 payload,
                 false,
             );
-            state.queues.entry((target, ty)).or_default().join(payload);
+            let stored = state.queues.entry((target, ty)).or_default();
+            stored.join(payload);
+            stored.sources.clear();
         }
     }
 
@@ -762,6 +766,8 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
+        self.ensure_transfer(point, state);
+        let payload = &self.freeze_sources(point, payload.clone());
         if let Some(port) = target.port(self.table) {
             self.queue_ports.insert(port);
         }
@@ -852,6 +858,8 @@ impl Flow<'_> {
             payload,
             false,
         );
-        state.queues.entry((target, ty)).or_default().join(payload);
+        let stored = state.queues.entry((target, ty)).or_default();
+        stored.join(payload);
+        stored.sources.clear();
     }
 }

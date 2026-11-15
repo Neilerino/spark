@@ -1,5 +1,7 @@
 //! Owner invalidation and the actual accesses that require an owned payload.
 
+// TAG [SPARK-114]
+
 use rustc_hash::FxHashSet;
 use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_mir::Place;
@@ -36,6 +38,7 @@ impl Flow<'_> {
     }
 
     pub(super) fn record_accesses(&mut self, point: Point, accesses: Accesses, state: &State) {
+        self.ensure_transfer(point, state);
         for access in &accesses {
             let mut expired = FxHashSet::default();
             self.expired_access(
@@ -53,8 +56,7 @@ impl Flow<'_> {
         self.transfers
             .entry(point)
             .or_default()
-            .seeds
-            .extend(accesses.demands.iter().cloned());
+            .seed(&accesses.demands);
         self.accesses.entry(point).or_default().merge(accesses);
     }
 

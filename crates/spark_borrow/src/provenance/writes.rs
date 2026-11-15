@@ -115,6 +115,8 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
+        self.ensure_transfer(point, state);
+        let value = &self.freeze_sources(point, value.clone());
         let targets = self.write_targets(metadata);
         if targets.unknown {
             let reachable = self.reachable_queue_payloads(value, state);
