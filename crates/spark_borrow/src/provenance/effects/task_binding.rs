@@ -38,39 +38,65 @@ impl Flow<'_> {
             return None;
         }
         if info.name == kw::SPARK_SPAWN {
-            let Ty::Future { inner } = self
-                .table
-                .resolve(super::value::strip_mutable(ty, self.table))
-            else {
-                return None;
-            };
-            let argument = args.first()?;
-            let callback = self.operand(argument, state);
-            let record = Record {
-                callback: callback.clone(),
-                callback_ty: super::super::operand_type(argument, self.function),
-            };
-            let (target, mut returned) =
-                super::super::tasks::birth(self.function.def_id, point, ty);
-            let facts = self.task_facts(&record, &target, point, state, *inner);
-            self.observe_prefix(&facts.prefix, point, state);
-            returned.join(&callback.task_lineage());
-            returned.join(&facts.returned.prefixed(Slot::Element, ty, self.table));
-            return Some(TaskDispatch::Returns(vec![CallOutcome {
-                returned,
-                tasks: vec![(target, record)],
-                completed_task: None,
-                clobbered_copies: Vec::new(),
-                future_proof: CallProof::default(),
-                place_writes: Vec::new(),
-                memory: Vec::new(),
-                queues: facts.prefix.queues,
-                queue_contents: Vec::new(),
-            }]));
+            self.spawn_task(args, ty, point, state)
+        } else if info.name == kw::SPARK_AWAIT {
+            self.await_task(args, ty, point, state)
+        } else {
+            None
         }
-        if info.name != kw::SPARK_AWAIT {
+    }
+
+    fn spawn_task(
+        &mut self,
+        args: &[Operand],
+        ty: TypeId,
+        point: Point,
+        state: &super::super::State,
+    ) -> Option<TaskDispatch> {
+        let Ty::Future { inner } = self
+            .table
+            .resolve(super::value::strip_mutable(ty, self.table))
+        else {
             return None;
-        }
+        };
+        let argument = args.first()?;
+        let callback = self.operand(argument, state);
+        let record = Record {
+            callback: callback.clone(),
+            callback_ty: super::super::operand_type(argument, self.function),
+        };
+        let (target, mut returned) = super::super::tasks::birth(self.function.def_id, point, ty);
+        let facts = self.task_facts(&record, &target, point, state, *inner);
+        self.observe_prefix(&facts.prefix, point, state);
+        returned.task_views.entry(Vec::new()).or_default().insert(
+            super::super::tasks::views::Subject {
+                target: target.clone(),
+                capture: None,
+            },
+            super::super::tasks::views::View::pending(callback.clone(), record.callback_ty),
+        );
+        returned.join(&callback.task_lineage());
+        returned.join(&facts.returned.prefixed(Slot::Element, ty, self.table));
+        Some(TaskDispatch::Returns(vec![CallOutcome {
+            returned,
+            tasks: vec![(target, record)],
+            completed_task: None,
+            clobbered_copies: Vec::new(),
+            future_proof: CallProof::default(),
+            place_writes: Vec::new(),
+            memory: Vec::new(),
+            queues: facts.prefix.queues,
+            queue_contents: Vec::new(),
+        }]))
+    }
+
+    fn await_task(
+        &mut self,
+        args: &[Operand],
+        ty: TypeId,
+        point: Point,
+        state: &super::super::State,
+    ) -> Option<TaskDispatch> {
         let argument = args.first()?;
         let (Operand::Copy(place) | Operand::Move(place)) = argument else {
             return None;
@@ -80,7 +106,11 @@ impl Flow<'_> {
             .futures
             .iter()
             .filter(|(path, _)| path.is_empty() || **path == [Slot::Tail])
-            .flat_map(|(_, handles)| handles.iter().cloned())
+            .flat_map(|(path, handles)| {
+                handles
+                    .iter()
+                    .map(move |handle| (path.clone(), handle.clone()))
+            })
             .collect();
         if handles.is_empty() {
             return None;
@@ -88,9 +118,15 @@ impl Flow<'_> {
         let mut returned = future.future_result();
         let mut normal = false;
         let mut queues = Vec::new();
-        for handle in handles {
-            if let Some(record) = state.tasks.get(&handle.target) {
-                let mut record = record.clone();
+        for (path, handle) in handles {
+            if !handle.pending {
+                normal = true;
+                continue;
+            }
+            let (records, unknown) =
+                super::super::tasks::views::pending_records(&future, &path, &handle, state);
+            normal |= records.is_empty() || unknown;
+            for mut record in records {
                 record.callback = record
                     .callback
                     .sourced(&super::super::demand::Storage::Task(
@@ -98,19 +134,15 @@ impl Flow<'_> {
                         record.callback_ty,
                     ));
                 let facts = self.task_facts(&record, &handle.target, point, state, ty);
-                if handle.pending {
-                    self.observe_prefix(&facts.prefix, point, state);
-                    queues.extend(facts.prefix.queues);
-                }
+                self.observe_prefix(&facts.prefix, point, state);
+                queues.extend(facts.prefix.queues);
                 returned.join(&facts.returned);
-                normal |= facts.normal_return || !handle.pending;
-            } else {
-                normal = true;
-                if handle.pending {
-                    let mut accesses = super::Accesses::default();
-                    accesses.observe_reference(&future, None, &[], super::AccessKind::Value);
-                    self.record_accesses(point, accesses, state);
-                }
+                normal |= facts.normal_return;
+            }
+            if unknown {
+                let mut accesses = super::Accesses::default();
+                accesses.observe_reference(&future, None, &[], super::AccessKind::Value);
+                self.record_accesses(point, accesses, state);
             }
         }
         if !normal {

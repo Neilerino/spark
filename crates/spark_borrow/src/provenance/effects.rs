@@ -163,6 +163,7 @@ mod opaque;
 mod prefix;
 mod selection;
 mod task_binding;
+mod task_views;
 pub use inference::analyze_program;
 #[cfg(test)]
 use inference::infer_summaries;
@@ -701,6 +702,7 @@ impl Flow<'_> {
             callees: summary.callees.clone(),
             queues: self.bind_queue_handles(summary, function, actuals),
             futures: self.bind_task_handles(summary, function, actuals),
+            task_views: self.bind_task_views(summary, function, actuals),
             ..Default::default()
         };
         for ((path, origin, capture), leaf) in &summary.leaves {
@@ -921,6 +923,7 @@ fn export_value(value: &Value, function: DefId) -> Value {
         callees: value.callees.clone(),
         queues: value.queues.clone(),
         futures: value.futures.clone(),
+        task_views: task_views::export(value, function),
         ..Default::default()
     };
     for ((path, origin, capture), leaf) in &value.leaves {

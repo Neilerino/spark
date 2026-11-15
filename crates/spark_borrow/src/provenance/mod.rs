@@ -270,6 +270,7 @@ impl<'a> Flow<'a> {
         let point = Point::new(block, body.statements.len() as u32);
         self.transfers
             .insert(point, demand::Transfer::at_entry(state.atoms()));
+        self.settle_pending_tasks(point, state);
         match &body.terminator {
             Terminator::Call {
                 func,
@@ -316,6 +317,7 @@ impl<'a> Flow<'a> {
     fn transfer_statement(&mut self, statement: &Statement, point: Point, state: &mut State) {
         self.transfers
             .insert(point, demand::Transfer::at_entry(state.atoms()));
+        self.settle_pending_tasks(point, state);
         match statement {
             Statement::Assign { place, rvalue, .. } => {
                 let future_copy = self.future_copy_witness(rvalue, state);
@@ -354,7 +356,6 @@ impl<'a> Flow<'a> {
                 self.record_consumed(point, *value);
             }
             Statement::Drop { place, .. } => {
-                self.observe_pending_tasks(point, state);
                 let mut accesses = Accesses::default();
                 self.read_access(place, state, AccessKind::Value, &mut accesses);
                 self.record_accesses(point, accesses, state);
@@ -363,7 +364,7 @@ impl<'a> Flow<'a> {
                     state.consume(place.local);
                     self.record_consumed(point, place.local);
                 }
-                self.observe_pending_tasks(point, state);
+                self.settle_pending_tasks(point, state);
             }
             Statement::Nop => {}
         }

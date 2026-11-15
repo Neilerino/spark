@@ -11,6 +11,8 @@ use super::{address::OpaqueSite, value, Path, Point, Slot, Value};
 
 mod identity;
 pub(super) mod proofs;
+mod settle;
+pub(super) mod views;
 pub(super) use identity::{Copies, Witness};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -304,6 +306,13 @@ impl super::Flow<'_> {
                         .collect();
                 }
             }
+            for (path, subjects) in &mut current.task_views {
+                if path.is_empty() || *path == [Slot::Tail] {
+                    for view in subjects.values_mut() {
+                        *view = views::View::default();
+                    }
+                }
+            }
             current.leaves.retain(|(path, ..), _| *path != [Slot::Tail]);
             current
                 .sources
@@ -333,49 +342,6 @@ impl super::Flow<'_> {
         }
         proof.returned
     }
-
-    pub(super) fn observe_pending_tasks(&mut self, point: Point, state: &super::State) {
-        let mut pending = FxHashSet::default();
-        let mut unknown = Vec::new();
-        for value in state
-            .values
-            .values()
-            .chain(state.external.values())
-            .chain(state.queues.values())
-            .chain(state.tasks.values().map(|record| &record.callback))
-        {
-            for handle in value
-                .futures
-                .values()
-                .flatten()
-                .filter(|handle| handle.pending)
-            {
-                if state.tasks.contains_key(&handle.target) {
-                    pending.insert(handle.target.clone());
-                } else if !matches!(handle.target, Target::Validation { .. }) {
-                    unknown.push(value.task_lineage());
-                }
-            }
-        }
-        for target in pending {
-            let record = &state.tasks[&target];
-            let mut record = record.clone();
-            record.callback = record.callback.sourced(&super::demand::Storage::Task(
-                target.clone(),
-                record.callback_ty,
-            ));
-            let Some(inner) = value::child_type(target.ty(), &Slot::Element, self.table) else {
-                continue;
-            };
-            let facts = self.task_facts(&record, &target, point, state, inner);
-            self.observe_prefix(&facts.prefix, point, state);
-        }
-        for reference in unknown {
-            let mut accesses = super::Accesses::default();
-            accesses.observe_reference(&reference, None, &[], super::AccessKind::Value);
-            self.record_accesses(point, accesses, state);
-        }
-    }
 }
 
 impl Value {
@@ -384,6 +350,7 @@ impl Value {
         result.leaves.retain(|(path, ..), _| *path != [Slot::Tail]);
         result.sources.retain(|(path, ..), _| *path != [Slot::Tail]);
         result.futures.retain(|path, _| *path != [Slot::Tail]);
+        result.task_views.retain(|path, _| *path != [Slot::Tail]);
         result.queues.retain(|path, _| *path != [Slot::Tail]);
         result.callees.retain(|path, _| *path != [Slot::Tail]);
         result.project(&Slot::Element)
@@ -391,6 +358,17 @@ impl Value {
 
     pub(super) fn with_future_capture(&self, capture: Capture) -> Self {
         let mut result = self.clone();
+        result.task_views = views::map(
+            self,
+            |path| Some(path.to_vec()),
+            |path, handle| {
+                let mut subject = views::Subject::from(handle);
+                if path.is_empty() || path == [Slot::Tail] {
+                    subject.capture = Some(capture);
+                }
+                subject
+            },
+        );
         for (path, handles) in &mut result.futures {
             if path.is_empty() || *path == [Slot::Tail] {
                 *handles = handles

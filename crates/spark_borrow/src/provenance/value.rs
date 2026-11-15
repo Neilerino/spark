@@ -84,6 +84,7 @@ pub(super) struct Value {
     pub callees: FxHashMap<Path, super::callbacks::Targets>,
     pub queues: FxHashMap<Path, FxHashSet<super::channels::Handle>>,
     pub futures: FxHashMap<Path, FxHashSet<super::tasks::Handle>>,
+    pub task_views: super::tasks::views::Views,
 }
 
 impl Value {
@@ -197,6 +198,7 @@ impl Value {
             callees: self.callees.clone(),
             queues: self.queues.clone(),
             futures: self.futures.clone(),
+            task_views: self.task_views.clone(),
             ..Self::default()
         };
         for ((path, origin, _), leaf) in &self.leaves {
@@ -220,7 +222,7 @@ impl Value {
     }
 
     pub fn join(&mut self, other: &Self) -> bool {
-        let mut changed = false;
+        let mut changed = super::tasks::views::join(&mut self.task_views, &self.futures, other);
         for (key, leaf) in &other.leaves {
             let exists = self.leaves.contains_key(key);
             changed |= self.leaves.entry(key.clone()).or_default().join(leaf) || !exists;
@@ -291,6 +293,7 @@ impl Value {
             && self.callees.is_empty()
             && self.queues.is_empty()
             && self.futures.is_empty()
+            && self.task_views.is_empty()
     }
 
     pub fn with_channel_capture(&self, capture: super::channels::Capture) -> Self {
@@ -331,6 +334,7 @@ impl Value {
             callees: self.callees.clone(),
             queues: self.queues.clone(),
             futures: self.futures.clone(),
+            task_views: self.task_views.clone(),
             ..Self::default()
         };
         for ((path, origin, previous), leaf) in &self.leaves {
@@ -506,7 +510,12 @@ impl Value {
     }
 
     fn map_borrows(&self, select: impl Fn(&[Slot]) -> Option<Path>) -> Self {
-        let mut result = Self::default();
+        let mut result = Self {
+            task_views: super::tasks::views::map(self, &select, |_, handle| {
+                super::tasks::views::Subject::from(handle)
+            }),
+            ..Self::default()
+        };
         for (path, targets) in &self.futures {
             if let Some(path) = select(path) {
                 result

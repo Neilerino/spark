@@ -47,6 +47,9 @@ impl Flow<'_> {
             }
         }
         remap_handles(&mut summary.returned, &bindings);
+        for record in summary.tasks.values_mut() {
+            remap_handles(&mut record.callback, &bindings);
+        }
         for value in summary
             .memory
             .values_mut()
@@ -387,16 +390,14 @@ impl Flow<'_> {
 }
 
 fn remap_handles(value: &mut Value, bindings: &FxHashMap<Target, Target>) {
-    for handles in value.queues.values_mut() {
-        *handles = handles
-            .iter()
-            .map(|handle| Handle {
-                target: bindings
-                    .get(&handle.target)
-                    .cloned()
-                    .unwrap_or_else(|| handle.target.clone()),
-                capture: handle.capture,
-            })
-            .collect();
+    super::super::channels::remap_queues(&mut value.queues, bindings);
+    for view in value
+        .task_views
+        .values_mut()
+        .flat_map(|subjects| subjects.values_mut())
+    {
+        for callback in view.callbacks.values_mut() {
+            callback.remap_queues(bindings);
+        }
     }
 }
