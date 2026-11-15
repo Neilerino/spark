@@ -8,7 +8,7 @@ use spark_types::ty::Ty;
 use spark_types::{TypeId, TypeTable};
 
 use crate::hir::{HirExpr, HirExprKind, HirStmt};
-use crate::lower_expr::{auto_deref_ref, coerce_ref, lower_collection_value, lower_expr, LowerCtx};
+use crate::lower_expr::{auto_deref_ref, coerce_ref, lower_expr, lower_slot_value, LowerCtx};
 
 /// Lowers a statement from the AST to HIR.
 #[allow(clippy::too_many_lines)]
@@ -103,7 +103,7 @@ pub(crate) fn lower_stmt(stmt: &Stmt, ctx: &mut LowerCtx<'_>) -> HirStmt {
                         .map(|index| lower_expr(index, ctx))
                         .collect(),
                     slot_ty,
-                    value: lower_collection_value(value, slot_ty, ctx),
+                    value: lower_slot_value(value, slot_ty, ctx),
                 };
             }
 

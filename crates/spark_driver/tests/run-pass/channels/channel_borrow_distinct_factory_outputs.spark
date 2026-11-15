@@ -1,0 +1,19 @@
+// TAG [SPARK-114]
+
+fn empty(): Channel[Ref[Int]] { return Channel[Ref[Int]]() }
+fn pair(): Tup[Channel[Ref[Int]], Channel[Ref[Int]]] { return (empty(), empty()) }
+fn produce(input: Ref[Int]): Ref[Int] {
+    local: Int = 7
+    localRef: Ref[Int] = local
+    queues: Tup[Channel[Ref[Int]], Channel[Ref[Int]]] = pair()
+    queues.0.send(localRef)
+    queues.1.send(input)
+    return queues.1.recv()
+}
+fn main(): Int {
+    value: Int = 9
+    input: Ref[Int] = value
+    found: Ref[Int] = produce(input)
+    print(found)
+    return 0
+}

@@ -1,0 +1,27 @@
+fn change(out: Ref[Map[String, Ref[Int]]]!, reader: Ref[Map[String, Ref[Int]]], value: Ref[Int]): Map[String, Ref[Int]] {
+    next: Map[String, Ref[Int]] = {"one": value}
+    out = next
+    return reader
+}
+fn produce(safe: Ref[Int], left: Bool, right: Bool): Map[String, Ref[Int]] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    a: Map[String, Ref[Int]]! = {"one": safe}
+    b: Map[String, Ref[Int]]! = {"one": safe}
+    c: Map[String, Ref[Int]] = {"one": safe}
+    d: Map[String, Ref[Int]] = {"one": safe}
+    ar: Ref[Map[String, Ref[Int]]]! = a
+    br: Ref[Map[String, Ref[Int]]]! = b
+    cr: Ref[Map[String, Ref[Int]]] = c
+    dr: Ref[Map[String, Ref[Int]]] = d
+    out: Ref[Map[String, Ref[Int]]]! = if left { ar } else { br }
+    reader: Ref[Map[String, Ref[Int]]] = if right { cr } else { dr }
+    return change(out, reader, borrowed)
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    entries: Map[String, Ref[Int]] = produce(borrowed, false, true)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

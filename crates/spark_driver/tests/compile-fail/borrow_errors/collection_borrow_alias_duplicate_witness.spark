@@ -1,0 +1,10 @@
+fn invalid(out: Ref[Map[String, Ref[Int]]]!, reader: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
+    print(reader.len())
+    empty: Map[String, Ref[Int]] = {}
+    out = empty
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    entries: Map[String, Ref[Int]] = {"one": borrowed}
+    return entries
+}
+fn main(): Int { return 0 }

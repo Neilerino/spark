@@ -1,0 +1,20 @@
+// TAG [SPARK-114]
+
+fn nest(callback: (): Int): (): Int {
+    return fn(): Int { return callback() }
+}
+fn main(): Int {
+    retained: Map[Int, (): Int]! = {}
+    if true {
+        text: String = "seven"
+        borrowed: Ref[String] = text
+        original: (): Int = fn(): Int { return borrowed.len() }
+        once: (): Int = nest(original)
+        twice: (): Int = nest(once)
+        three: (): Int = nest(twice)
+        entries: Map[Int, (): Int] = {1: three}
+        retained = entries
+    }
+    retained[1] to { callback: (): Int -> print(callback()), Null -> print(0) }
+    return 0
+}

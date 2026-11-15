@@ -1,0 +1,15 @@
+// TAG [SPARK-114]
+
+fn make(callback: (Ref[Int]): Int): (): Int {
+    return fn(): Int {
+        value: Int = 7
+        borrowed: Ref[Int] = value
+        return callback(borrowed)
+    }
+}
+fn read(value: Ref[Int]): Int { return value }
+fn main(): Int {
+    callback: (): Int = make(read)
+    print(callback())
+    return 0
+}

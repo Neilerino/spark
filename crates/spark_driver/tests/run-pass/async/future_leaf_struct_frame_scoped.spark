@@ -1,0 +1,18 @@
+// TAG [SPARK-151]
+struct Cell { entries: Map[String, Int]! }
+struct Shared { cell: Ref[Cell]! }
+async fn install(shared: Shared): Int {
+    cell: Ref[Cell]! = shared.cell
+    entries: Map[String, Int] = {"one": 7}
+    cell.entries = entries
+    return 0
+}
+fn main(): Int {
+    empty: Map[String, Int] = {}
+    cell: Cell! = Cell { entries: empty }
+    cellRef: Ref[Cell]! = cell
+    shared: Shared = Shared { cell: cellRef }
+    if true { pending: Future[Int] = spawn { install(shared) } }
+    print(cell.entries.len())
+    return 0
+}

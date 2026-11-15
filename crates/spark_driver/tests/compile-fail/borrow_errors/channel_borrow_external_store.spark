@@ -1,0 +1,16 @@
+// TAG [SPARK-114]
+
+fn publish(target: Ref[Channel[Ref[Int]]] !, value: Int): Void {
+    queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    borrowed: Ref[Int] = value
+    queue.send(borrowed)
+    target = queue
+}
+fn main(): Int {
+    queue: Channel[Ref[Int]]! = Channel[Ref[Int]]()
+    target: Ref[Channel[Ref[Int]]] ! = queue
+    publish(target, 7)
+    found: Ref[Int] = queue.recv()
+    print(found)
+    return 0
+}

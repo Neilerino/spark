@@ -1,0 +1,9 @@
+// TAG [SPARK-117]
+async fn fraction(): Float { return 1.5 }
+async fn relay(pending: Future[Float]): Float { return await pending }
+fn main(): Int {
+    pending: Future[Float] = spawn { fraction() }
+    forwarded: Future[Float] = spawn { relay(pending) }
+    print(await forwarded)
+    return 0
+}

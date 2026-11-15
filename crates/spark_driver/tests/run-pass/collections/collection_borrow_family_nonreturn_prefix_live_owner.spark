@@ -1,0 +1,22 @@
+// TAG [SPARK-114]
+
+fn touch(outputs: List[Ref[Map[String, Ref[String]]]]): Void {
+    outputs[0] to {
+        view: Ref[Map[String, Ref[String]]] -> {
+            entries: Map[String, Ref[String]] = view
+            entries["one"] to { found: Ref[String] -> print(found.len()), Null -> print(0) }
+        },
+        Null -> {}
+    }
+    touch(outputs)
+}
+fn main(): Int {
+    entries: Map[String, Ref[String]]! = {}
+    text: String = "seven"
+    borrowed: Ref[String] = text
+    entries = {"one": borrowed}
+    target: Ref[Map[String, Ref[String]]] = entries
+    outputs: List[Ref[Map[String, Ref[String]]]] = [target]
+    touch(outputs)
+    return 0
+}

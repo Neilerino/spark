@@ -1,0 +1,11 @@
+// TAG [SPARK-114]
+
+fn main(): Int {
+    queue: Channel[Ref[String]] = Channel[Ref[String]]()
+    text: String = "seven"
+    borrowed: Ref[String] = text
+    queue.send(borrowed)
+    found: Ref[String] = queue.recv()
+    print(found)
+    return 0
+}

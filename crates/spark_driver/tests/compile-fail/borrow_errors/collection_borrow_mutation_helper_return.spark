@@ -1,0 +1,9 @@
+fn box(value: Ref[List[Int]]): Map[String, Ref[List[Int]]] { return {"one": value} }
+fn main(): Int {
+    values: List[Int]! = [1, 2]
+    borrowed: Ref[List[Int]] = values
+    values[0] = 9
+    entries: Map[String, Ref[List[Int]]] = box(borrowed)
+    entries["one"] to { found: Ref[List[Int]] -> print(found.len()), Null -> print(99) }
+    return 0
+}

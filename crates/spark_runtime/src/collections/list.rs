@@ -1,5 +1,8 @@
 //! List runtime storage and operations.
 
+// TAG [SPARK-152]
+use crate::heap::RefCount;
+
 pub use spark_abi::{SORT_TAG_BOOL, SORT_TAG_FLOAT, SORT_TAG_INT, SORT_TAG_STRING};
 use spark_abi::{
     SORT_TAG_I16, SORT_TAG_I32, SORT_TAG_I8, SORT_TAG_U16, SORT_TAG_U32, SORT_TAG_U64, SORT_TAG_U8,
@@ -22,7 +25,7 @@ use super::MIN_CAP;
 #[repr(C)]
 pub struct SparkList {
     /// Reference count.
-    pub rc: usize,
+    pub(crate) rc: RefCount,
     pub elem_desc: *mut SparkValueDesc,
     /// Pointer to the contiguous data buffer.
     pub data: *mut u8,
@@ -57,7 +60,7 @@ pub extern "C" fn __spark_list_new(elem_desc: *mut u8) -> *mut u8 {
         std::process::abort();
     }
     let list = Box::new(SparkList {
-        rc: 1,
+        rc: RefCount::new(),
         elem_desc: elem_desc.cast(),
         data: std::ptr::null_mut(),
         len: 0,
@@ -469,9 +472,8 @@ pub unsafe extern "C" fn __spark_list_rc_dec(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    let list = unsafe { &mut *(ptr.cast::<SparkList>()) };
-    list.rc -= 1;
-    if list.rc == 0 {
+    let list = unsafe { &*(ptr.cast::<SparkList>()) };
+    if list.rc.release() {
         if list.elem().has_drop() && !list.data.is_null() {
             for i in 0..list.len {
                 let elem_ptr = unsafe { list.data.add(i * list.elem_size()) };
@@ -501,7 +503,7 @@ pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8) -> *mut u8 {
         return ptr;
     }
     let list = unsafe { &*(ptr.cast::<SparkList>()) };
-    if list.rc == 1 {
+    if list.rc.get() == 1 {
         return ptr;
     }
     let data_byte_size = byte_size(list.cap, list.elem_size());
@@ -523,14 +525,12 @@ pub unsafe extern "C" fn __spark_list_cow(ptr: *mut u8) -> *mut u8 {
         }
     }
     let new = Box::new(SparkList {
-        rc: 1,
+        rc: RefCount::new(),
         elem_desc: unsafe { value_desc_clone(list.elem_desc) },
         data: new_data,
         len: list.len,
         cap: list.cap,
     });
-    // Decrement old rc.
-    let old = unsafe { &mut *(ptr.cast::<SparkList>()) };
-    old.rc -= 1;
+    unsafe { __spark_list_rc_dec(ptr) };
     Box::into_raw(new).cast::<u8>()
 }

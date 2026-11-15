@@ -1,0 +1,23 @@
+struct Container { entries: Map[String, Ref[Int]]! }
+fn clear(holder: Ref[Container]!): Void {
+    empty: Map[String, Ref[Int]] = {}
+    holder.entries = empty
+}
+fn fillThenClear(holder: Ref[Container]!): Map[String, Ref[Int]] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    next: Map[String, Ref[Int]] = {"one": borrowed}
+    holder.entries = next
+    clear(holder)
+    snapshot: Container = holder
+    return snapshot.entries
+}
+fn main(): Int {
+    initial: Map[String, Ref[Int]] = {}
+    container: Container! = Container { entries: initial }
+    holder: Ref[Container]! = container
+    result: Map[String, Ref[Int]] = fillThenClear(holder)
+    print(result.len())
+    print(container.entries.len())
+    return 0
+}

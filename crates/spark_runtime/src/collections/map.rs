@@ -1,5 +1,8 @@
 //! Map runtime storage and operations.
 
+// TAG [SPARK-152]
+use crate::heap::RefCount;
+
 use std::mem::size_of;
 
 use crate::value::{buffer_align, value_desc_clone, value_desc_free, SparkValueDesc};
@@ -22,7 +25,7 @@ use super::storage::{alloc_buffer, byte_size, clone_buffer, copy_owned_slot, dea
 #[repr(C)]
 pub struct SparkMap {
     /// Reference count.
-    rc: usize,
+    rc: RefCount,
     key_desc: *mut SparkValueDesc,
     value_desc: *mut SparkValueDesc,
     /// Hash per slot (`HASH_EMPTY` = empty, `HASH_TOMBSTONE` = deleted, `≥ 2` = occupied).
@@ -74,7 +77,7 @@ pub extern "C" fn __spark_map_new(key_desc: *mut u8, value_desc: *mut u8) -> *mu
         std::process::abort();
     }
     let map = Box::new(SparkMap {
-        rc: 1,
+        rc: RefCount::new(),
         key_desc: key_desc.cast(),
         value_desc: value_desc.cast(),
         hashes: std::ptr::null_mut(),
@@ -370,9 +373,8 @@ pub unsafe extern "C" fn __spark_map_rc_dec(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    let map = unsafe { &mut *(ptr.cast::<SparkMap>()) };
-    map.rc -= 1;
-    if map.rc == 0 {
+    let map = unsafe { &*(ptr.cast::<SparkMap>()) };
+    if map.rc.release() {
         if map.cap > 0 && !map.hashes.is_null() {
             unsafe {
                 for_occupied_slots(map.hashes, map.cap, |i| {
@@ -413,7 +415,7 @@ pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8) -> *mut u8 {
         return ptr;
     }
     let map = unsafe { &*(ptr.cast::<SparkMap>()) };
-    if map.rc == 1 {
+    if map.rc.get() == 1 {
         return ptr;
     }
     let key_align = buffer_align(map.key_align());
@@ -470,7 +472,7 @@ pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8) -> *mut u8 {
     }
 
     let new = Box::new(SparkMap {
-        rc: 1,
+        rc: RefCount::new(),
         key_desc: unsafe { value_desc_clone(map.key_desc) },
         value_desc: unsafe { value_desc_clone(map.value_desc) },
         hashes: new_hashes,
@@ -480,8 +482,6 @@ pub unsafe extern "C" fn __spark_map_cow(ptr: *mut u8) -> *mut u8 {
         cap: map.cap,
         tombstones: map.tombstones,
     });
-    // Decrement old rc.
-    let old = unsafe { &mut *(ptr.cast::<SparkMap>()) };
-    old.rc -= 1;
+    unsafe { __spark_map_rc_dec(ptr) };
     Box::into_raw(new).cast::<u8>()
 }

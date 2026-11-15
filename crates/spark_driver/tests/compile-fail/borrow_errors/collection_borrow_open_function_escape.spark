@@ -1,0 +1,14 @@
+// TAG [SPARK-114]
+
+fn forward(callback: (Ref[Int]): (Ref[Int]): Int): (Ref[Int]): Int {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    return callback(borrowed)
+}
+fn wrap(value: Ref[Int]): (Ref[Int]): Int {
+    return fn(ignored: Ref[Int]): Int { return value }
+}
+fn main(): Int {
+    callback: (Ref[Int]): Int = forward(wrap)
+    return 0
+}

@@ -1,0 +1,17 @@
+// TAG [SPARK-114]
+
+fn relay(source: Channel[Ref[Int]], destination: Channel[Ref[Int]], incoming: Ref[Int]): Ref[Int] {
+    source.send(incoming)
+    return destination.recv()
+}
+fn produce(): Ref[Int] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    return relay(queue, queue, borrowed)
+}
+fn main(): Int {
+    result: Ref[Int] = produce()
+    print(result)
+    return 0
+}

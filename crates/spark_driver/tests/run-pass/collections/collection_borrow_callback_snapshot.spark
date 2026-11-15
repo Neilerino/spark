@@ -1,0 +1,28 @@
+// TAG [SPARK-114]
+
+fn apply(callback: (): Void, reader: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
+    snapshot: Map[String, Ref[Int]] = reader
+    callback()
+
+    return snapshot
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {"one": safe}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    reader: Ref[Map[String, Ref[Int]]] = target
+    borrowed: Ref[Int] = value
+    callback: (): Void = fn(): Void {
+        next: Map[String, Ref[Int]] = {"one": borrowed}
+        target = next
+    }
+    return apply(callback, reader)
+}
+fn main(): Int {
+    initial: Int = 8
+    safe: Ref[Int] = initial
+    value: Int = 7
+
+    entries: Map[String, Ref[Int]] = produce(safe, value)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    return 0
+}

@@ -1,0 +1,19 @@
+fn main(): Int {
+    empty: Map[String, Ref[String]] = {}
+    snapshot: String! = "initial"
+    entries: Map[String, Ref[String]]! = {}
+    if true {
+        text: String = "seven"
+        borrowed: Ref[String] = text
+        entries = {"one": borrowed}
+        snapshot = borrowed
+    }
+    print(snapshot)
+    entries = empty
+    text: String! = "old"
+    text = "kept"
+    borrowed: Ref[String] = text
+    entries = {"one": borrowed}
+    entries["one"] to { found: Ref[String] -> print(found), Null -> print("missing") }
+    return 0
+}

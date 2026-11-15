@@ -1,0 +1,31 @@
+// TAG [SPARK-114]
+
+fn choose(flag: Bool, borrowed: Ref[String], safe: Ref[String]): (): Int {
+    if flag {
+        return fn(): Int {
+            ignored: Ref[String] = borrowed
+            return 1
+        }
+    }
+    return fn(): Int { return safe.len() }
+}
+fn exercise(flag: Bool): Int {
+    stable: String = "seven"
+    safe: Ref[String] = stable
+    retained: Map[Int, (): Int]! = {}
+    if true {
+        text: String = "temporary"
+        borrowed: Ref[String] = text
+        callback: (): Int = choose(flag, borrowed, safe)
+        next: Map[Int, (): Int] = {1: callback}
+        retained = next
+    }
+    retained[1] to { callback: (): Int -> print(callback()), Null -> print(0) }
+    return 0
+}
+
+fn main(): Int {
+    exercise(false)
+    exercise(true)
+    return 0
+}

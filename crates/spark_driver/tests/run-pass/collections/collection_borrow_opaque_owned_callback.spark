@@ -1,0 +1,21 @@
+// TAG [SPARK-114]
+
+link "union_probe"
+extern fn opaque_map(target: Ref[Map[Int, (): Int]]!): Ref[Map[Int, (): Int]]!
+fn publish(target: Ref[Map[Int, (): Int]]!, callback: (): Int): Void {
+    pointer: Ref[Map[Int, (): Int]]! = opaque_map(target)
+    next: Map[Int, (): Int] = {1: callback}
+    pointer = next
+}
+fn produce(target: Ref[Map[Int, (): Int]]!, value: Int): Void {
+    owned: List[Int] = [value]
+    callback: (): Int = fn(): Int { return owned[0] ?? 0 }
+    publish(target, callback)
+}
+fn main(): Int {
+    entries: Map[Int, (): Int]! = {}
+    target: Ref[Map[Int, (): Int]]! = entries
+    produce(target, 7)
+    entries[1] to { callback: (): Int -> print(callback()), Null -> print(0) }
+    return 0
+}

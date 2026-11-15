@@ -1,0 +1,18 @@
+fn change[T](out: Ref[T]!, reader: Ref[T], replacement: T, depth: Int): T {
+    if depth > 0 { return change(out, reader, replacement, depth - 1) }
+    out = replacement
+    return reader
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {"one": safe}
+    borrowed: Ref[Int] = value
+    replacement: Map[String, Ref[Int]] = {"one": borrowed}
+    return change(entries, entries, replacement, 2)
+}
+fn main(): Int {
+    safe: Int = 8
+    borrowed: Ref[Int] = safe
+    entries: Map[String, Ref[Int]] = produce(borrowed, 7)
+    print(entries.len())
+    return 0
+}

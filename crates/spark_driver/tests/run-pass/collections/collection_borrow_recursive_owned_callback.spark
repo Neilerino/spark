@@ -1,0 +1,19 @@
+// TAG [SPARK-114]
+
+fn invoke(callback: (): Int): Int { return callback() }
+fn forward(callback: (): Int): Int { return invoke(callback) }
+fn recursive(callback: (): Int, depth: Int): Int {
+    if depth == 0 { return forward(callback) }
+    return recursive(callback, depth - 1)
+}
+fn main(): Int {
+    retained: Map[Int, (): Int]! = {}
+    if true {
+        text: String = "seven"
+        callback: (): Int = fn(): Int { return text.len() }
+        next: Map[Int, (): Int] = {1: callback}
+        retained = next
+    }
+    retained[1] to { callback: (): Int -> print(recursive(callback, 2)), Null -> print(0) }
+    return 0
+}

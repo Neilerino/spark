@@ -1,0 +1,27 @@
+fn middle(outputs: List[Ref[Map[String, Ref[Int]]] !], reader: Ref[Map[String, Ref[Int]]], value: Ref[Int]): Map[String, Ref[Int]] { return leaf(outputs, reader, value) }
+fn relay(outputs: List[Ref[Map[String, Ref[Int]]] !], reader: Ref[Map[String, Ref[Int]]], value: Ref[Int]): Map[String, Ref[Int]] { return middle(outputs, reader, value) }
+fn leaf(outputs: List[Ref[Map[String, Ref[Int]]] !], reader: Ref[Map[String, Ref[Int]]], value: Ref[Int]): Map[String, Ref[Int]] {
+    next: Map[String, Ref[Int]] = {"one": value}
+    outputs[0] to {
+        out: Ref[Map[String, Ref[Int]]]! -> { out = next },
+        Null -> {}
+    }
+    snapshot: Map[String, Ref[Int]] = reader
+    return snapshot
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {"one": safe}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    separate: Map[String, Ref[Int]] = {"one": safe}
+    reader: Ref[Map[String, Ref[Int]]] = separate
+    outputs: List[Ref[Map[String, Ref[Int]]]! ] = [target]
+    borrowed: Ref[Int] = value
+    return relay(outputs, reader, borrowed)
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    entries: Map[String, Ref[Int]] = produce(borrowed, 7)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

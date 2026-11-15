@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Conflict detection and borrow validation.
 //!
 //! Walks each program point and checks for violations of the borrowing rules:
@@ -26,32 +28,11 @@ pub fn check_borrows(
 ) {
     check_conflicting_borrows(func, facts, regions, diagnostics);
     check_indexed_write_loans(func, facts, regions, diagnostics);
+    check_assignment_loans(func, facts, regions, diagnostics);
     check_use_after_move(func, facts, diagnostics);
     check_borrow_of_moved(func, facts, diagnostics);
     check_mutation_through_immutable_ref(func, facts, diagnostics);
     check_aliasing_call_args(func, facts, diagnostics);
-}
-
-/// Enforces owned slots until collection borrows can be tracked across escapes.
-pub fn check_indexed_write_storage(
-    func: &MirFunction,
-    table: &TypeTable,
-    diagnostics: &mut Diagnostics,
-) {
-    for stmt in func.blocks.iter().flat_map(|block| &block.statements) {
-        if let Statement::IndexedAssign { value, span, .. } = stmt {
-            let ty = func.locals[value.index()].ty;
-            if can_carry_borrowed_reference(ty, table, &mut FxHashSet::default()) {
-                diagnostics.push(
-                    Diagnostic::error("indexed assignment requires an owned value type")
-                        .with_label(Label::primary(
-                            *span,
-                            "this slot type can carry a borrowed reference",
-                        )),
-                );
-            }
-        }
-    }
 }
 
 pub(crate) fn can_carry_borrowed_reference(
@@ -119,7 +100,7 @@ fn check_indexed_write_loans(
                 continue;
             };
             let point = Point::new(spark_mir::BlockId(block_idx as u32), stmt_idx as u32);
-            reject_borrowed_collection_write(*root, point, *span, facts, regions, diagnostics);
+            reject_borrowed_collection_write(root.local, point, *span, facts, regions, diagnostics);
         }
     }
 }
@@ -188,6 +169,44 @@ fn reject_borrowed_collection_write(
             Diagnostic::error("cannot write to a borrowed collection")
                 .with_label(Label::primary(span, "collection is still borrowed")),
         );
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn check_assignment_loans(
+    func: &MirFunction,
+    facts: &BorrowFacts,
+    regions: &[Region],
+    diagnostics: &mut Diagnostics,
+) {
+    for (block_index, block) in func.blocks.iter().enumerate() {
+        for (index, statement) in block.statements.iter().enumerate() {
+            let Statement::Assign { place, span, .. } = statement else {
+                continue;
+            };
+            if place
+                .projections
+                .iter()
+                .any(|projection| matches!(projection, Projection::Deref))
+            {
+                continue;
+            }
+            let point = Point::new(spark_mir::BlockId(block_index as u32), index as u32);
+            if facts.loans.iter().zip(regions).any(|(loan, region)| {
+                region.points.contains(&point)
+                    && !loan
+                        .place
+                        .projections
+                        .iter()
+                        .any(|projection| matches!(projection, Projection::Deref))
+                    && places_overlap(place, &loan.place)
+            }) {
+                diagnostics.push(
+                    Diagnostic::error("cannot assign to a borrowed value")
+                        .with_label(Label::primary(*span, "value is still borrowed")),
+                );
+            }
+        }
     }
 }
 
@@ -1407,7 +1426,7 @@ mod tests {
                         },
                     ],
                     terminator: Terminator::Call {
-                        func: Operand::Constant(Constant::Void), // placeholder
+                        func: Operand::Constant(Constant::FunctionRef(DefId::new(9999))),
                         args: vec![
                             Operand::Move(Place::from_local(Local(2))),
                             Operand::Copy(Place::from_local(Local(3))),
@@ -1937,6 +1956,72 @@ mod tests {
             diags.has_errors(),
             "Returning a reference to a by-value parameter must fail: {:?}",
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn reassigning_a_reference_holder_does_not_overwrite_its_reborrowed_pointee() {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(spark_types::IntWidth::I64));
+        let reference = table.intern(Ty::Ref {
+            inner: int,
+            mutable: false,
+            lifetime: spark_types::LifetimeId::ANONYMOUS,
+        });
+        let local = |index| Place::from_local(Local(index));
+        let function = MirFunction {
+            def_id: DefId::new(9802),
+            param_count: 2,
+            return_type: reference,
+            locals: (0..4)
+                .map(|index| LocalDecl {
+                    local: Local(index),
+                    ty: reference,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: true,
+                    span: Span::DUMMY,
+                })
+                .collect(),
+            blocks: vec![BasicBlock {
+                statements: vec![
+                    Statement::Assign {
+                        place: local(3),
+                        rvalue: Rvalue::Ref {
+                            place: Place {
+                                local: Local(1),
+                                projections: vec![Projection::Deref],
+                            },
+                            mutable: false,
+                        },
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: local(1),
+                        rvalue: Rvalue::Use(Operand::Copy(local(2))),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: local(0),
+                        rvalue: Rvalue::Use(Operand::Copy(local(3))),
+                        span: Span::DUMMY,
+                    },
+                ],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+        let facts = extract_facts(&function);
+        let liveness = compute_liveness(&function, &facts);
+        let regions = compute_regions(&facts, &liveness);
+        let mut diagnostics = Diagnostics::new();
+        check_borrows(&function, &facts, &regions, &mut diagnostics);
+        assert!(
+            !diagnostics.has_errors(),
+            "rebinding the holder must leave the old incoming pointee borrow valid"
         );
     }
 }

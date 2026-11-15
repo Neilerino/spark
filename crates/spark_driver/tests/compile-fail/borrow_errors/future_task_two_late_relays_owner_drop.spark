@@ -1,0 +1,39 @@
+// TAG [SPARK-114]
+
+async fn relay(input: Channel[Ref[String]], output: Channel[Ref[String]], started: Channel[Int], ready: Channel[Int], finish: Channel[Int]): Int {
+    started.send(1)
+    value: Ref[String] = input.recv()
+    output.send(value)
+    ready.send(1)
+    release: Int = finish.recv()
+    return 0
+}
+fn main(): Int {
+    input: Channel[Ref[String]] = Channel[Ref[String]]()
+    middle: Channel[Ref[String]] = Channel[Ref[String]]()
+    output: Channel[Ref[String]] = Channel[Ref[String]]()
+    startedFirst: Channel[Int] = Channel[Int]()
+    readyFirst: Channel[Int] = Channel[Int]()
+    finishFirst: Channel[Int] = Channel[Int]()
+    startedSecond: Channel[Int] = Channel[Int]()
+    readySecond: Channel[Int] = Channel[Int]()
+    finishSecond: Channel[Int] = Channel[Int]()
+    first: Future[Int] = spawn { relay(input, middle, startedFirst, readyFirst, finishFirst) }
+    enteredFirst: Int = startedFirst.recv()
+    second: Future[Int] = spawn { relay(middle, output, startedSecond, readySecond, finishSecond) }
+    enteredSecond: Int = startedSecond.recv()
+    if true {
+        text: String = " seven ".trim()
+        borrowed: Ref[String] = text
+        input.send(borrowed)
+        arrivedFirst: Int = readyFirst.recv()
+        arrivedSecond: Int = readySecond.recv()
+        finishFirst.send(1)
+        joinedFirst: Int = await first
+        finishSecond.send(1)
+        joinedSecond: Int = await second
+    }
+    result: Ref[String] = output.recv()
+    print(result.len())
+    return 0
+}

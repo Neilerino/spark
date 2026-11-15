@@ -7,12 +7,19 @@
 //! analysis:
 //!
 //! 1. **Fact extraction**: Walk the MIR to find loans, uses, moves, and CFG edges.
-//! 2. **Liveness analysis**: Backward dataflow to determine which locals are live
-//!    at each program point.
-//! 3. **Region inference**: Compute the set of program points where each loan
-//!    (borrow) must be active.
+//! 2. **Value provenance**: Track borrowed contributions in logical values and
+//!    addressable cells through the control-flow graph.
+//! 3. **Region inference**: Trace demanded carrier slots backward to determine
+//!    where each loan must remain active.
 //! 4. **Conflict detection**: Check for overlapping mutable borrows, use after move,
 //!    mutation through immutable references, etc.
+//!
+//! Collection and capture provenance records the source of each borrowed
+//! contribution. Calls bind summary effects to actual argument paths, while
+//! guarantees required on every normal return use a separate analysis. Task
+//! execution demand and borrows published to results, queues, or memory have
+//! separate lifetimes. See the repository's compiler architecture guide for
+//! the relationship between borrow checking and async lowering.
 //!
 //! ## Quick Start
 //!
@@ -45,6 +52,7 @@ pub mod liveness;
 mod provenance;
 pub mod regions;
 
+use rustc_hash::FxHashSet;
 use spark_diagnostics::Diagnostics;
 use spark_mir::Mir;
 use spark_resolve::DefinitionTable;
@@ -101,33 +109,66 @@ pub fn check(input: BorrowInput) -> BorrowOutput {
 
     let mut diagnostics = Diagnostics::new();
 
-    provenance::check_program_returns(&mir, &table, &mut diagnostics);
+    let carrier_regions =
+        provenance::analyze_program(&mir, &table, Some(&definitions), &mut diagnostics);
     for func in mir.functions.values() {
-        check::check_indexed_write_storage(func, &table, &mut diagnostics);
         // Skip functions that don't use Ref types (optimization).
         if !function_uses_refs(func, &table) {
             continue;
         }
 
         let borrow_facts = facts::extract_facts(func);
-        let live = liveness::compute_liveness(func, &borrow_facts);
-        let regs = regions::compute_regions(&borrow_facts, &live);
-        check::check_borrows(func, &borrow_facts, &regs, &mut diagnostics);
-        check::check_set_mutation_loans(
-            func,
-            &borrow_facts,
-            &regs,
-            &table,
-            &definitions,
-            &mut diagnostics,
-        );
+        for regs in &carrier_regions[&func.def_id] {
+            check::check_borrows(func, &borrow_facts, regs, &mut diagnostics);
+            check::check_set_mutation_loans(
+                func,
+                &borrow_facts,
+                regs,
+                &table,
+                &definitions,
+                &mut diagnostics,
+            );
+        }
     }
 
     BorrowOutput {
         mir,
         table,
-        diagnostics,
+        diagnostics: unique_diagnostics(diagnostics),
     }
+}
+
+fn unique_diagnostics(diagnostics: Diagnostics) -> Diagnostics {
+    let mut seen = FxHashSet::default();
+    let mut unique = Diagnostics::new();
+    for diagnostic in diagnostics {
+        let identity = (
+            diagnostic.level,
+            diagnostic.code.clone(),
+            diagnostic.message.clone(),
+            diagnostic
+                .labels
+                .iter()
+                .map(|label| (label.span, label.message.clone(), label.is_primary))
+                .collect::<Vec<_>>(),
+            diagnostic.notes.clone(),
+            diagnostic
+                .suggestions
+                .iter()
+                .map(|suggestion| {
+                    (
+                        suggestion.span,
+                        suggestion.message.clone(),
+                        suggestion.replacement.clone(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        if seen.insert(identity) {
+            unique.push(diagnostic);
+        }
+    }
+    unique
 }
 
 /// Returns true if a function's parameter or return types involve `Ty::Ref`.

@@ -1,0 +1,14 @@
+// TAG [SPARK-114]
+
+fn publish(channel: Channel[Ref[Int]], value: Ref[Int]): Void {
+    channel.send(value)
+}
+fn main(): Int {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    channel: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    publish(channel, borrowed)
+    result: Ref[Int] = channel.recv()
+    print(result)
+    return 0
+}

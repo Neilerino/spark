@@ -1,0 +1,19 @@
+fn make(out: Ref[Map[String, Ref[Int]]]!, reader: Ref[Map[String, Ref[Int]]]!): Map[String, Ref[Int]] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    temporary: Map[String, Ref[Int]] = {"one": borrowed}
+    out = temporary
+    snapshot: Map[String, Ref[Int]] = reader
+    empty: Map[String, Ref[Int]] = {}
+    out = empty
+    return snapshot
+}
+fn main(): Int {
+    value: Int = 9
+    borrowed: Ref[Int] = value
+    out: Map[String, Ref[Int]]! = {}
+    reader: Map[String, Ref[Int]]! = {"one": borrowed}
+    result: Map[String, Ref[Int]] = make(out, reader)
+    result["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

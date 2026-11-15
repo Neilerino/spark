@@ -1,0 +1,27 @@
+// TAG [SPARK-114]
+
+fn relay(outputs: List[Ref[Map[String, Ref[Int]]]!], reader: Ref[Map[String, Ref[Int]]], value: Ref[Int], depth: Int): Map[String, Ref[Int]] {
+    if depth > 0 { return relay(outputs, reader, value, depth - 1) }
+    next: Map[String, Ref[Int]] = {"one": value}
+    outputs[0] to {
+        out: Ref[Map[String, Ref[Int]]]! -> { out = next },
+        Null -> {}
+    }
+    snapshot: Map[String, Ref[Int]] = reader
+    return snapshot
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {"one": safe}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    reader: Ref[Map[String, Ref[Int]]] = target
+    outputs: List[Ref[Map[String, Ref[Int]]]!] = [target]
+    borrowed: Ref[Int] = value
+    return relay(outputs, reader, borrowed, 2)
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    entries: Map[String, Ref[Int]] = produce(borrowed, 7)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

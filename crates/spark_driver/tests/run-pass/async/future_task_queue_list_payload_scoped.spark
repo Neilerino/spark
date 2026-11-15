@@ -1,0 +1,17 @@
+// TAG [SPARK-114]
+
+async fn publish(output: Channel[Ref[String]], values: List[Ref[String]]): Int {
+    values[0] to { value: Ref[String] -> output.send(value), Null -> {} }
+    return 0
+}
+fn main(): Int {
+    output: Channel[Ref[String]] = Channel[Ref[String]]()
+    text: String = " seven ".trim()
+    borrowed: Ref[String] = text
+    values: List[Ref[String]] = [borrowed]
+    pending: Future[Int] = spawn { publish(output, values) }
+    completed: Int = await pending
+    result: Ref[String] = output.recv()
+    print(result.len())
+    return 0
+}

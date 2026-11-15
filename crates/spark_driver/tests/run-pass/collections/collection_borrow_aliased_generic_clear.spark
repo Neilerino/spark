@@ -1,0 +1,16 @@
+fn clear[T](out: Ref[T]!, reader: Ref[T], empty: T): T {
+    out = empty
+    return reader
+}
+fn produce(): Map[String, Ref[Int]] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    entries: Map[String, Ref[Int]]! = {"one": borrowed}
+    empty: Map[String, Ref[Int]] = {}
+    return clear(entries, entries, empty)
+}
+fn main(): Int {
+    entries: Map[String, Ref[Int]] = produce()
+    print(entries.len())
+    return 0
+}

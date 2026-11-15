@@ -1,0 +1,41 @@
+// TAG [SPARK-114]
+
+struct Node { outputs: List[Ref[Map[String, Ref[Int]]]!], children: List[Node] }
+fn relay(node: Node, reader: Ref[Map[String, Ref[Int]]], value: Ref[Int]): Map[String, Ref[Int]] {
+    next: Map[String, Ref[Int]] = {"one": value}
+    node.children[0] to {
+        child: Node -> {
+            child.children[0] to {
+                leaf: Node -> {
+                    leaf.outputs[0] to { out: Ref[Map[String, Ref[Int]]]! -> { out = next }, Null -> {} }
+                },
+                Null -> {}
+            }
+        },
+        Null -> {}
+    }
+    snapshot: Map[String, Ref[Int]] = reader
+    return snapshot
+}
+fn produce(safe: Ref[Int], value: Ref[Int]): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {"one": safe}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    reader: Ref[Map[String, Ref[Int]]] = target
+    outputs: List[Ref[Map[String, Ref[Int]]]!] = [target]
+    emptyOutputs: List[Ref[Map[String, Ref[Int]]]!] = []
+    emptyNodes: List[Node] = []
+    leaf: Node = Node { outputs: outputs, children: emptyNodes }
+    middle: Node = Node { outputs: emptyOutputs, children: [leaf] }
+    root: Node = Node { outputs: emptyOutputs, children: [middle] }
+    borrowed: Ref[Int] = value
+    return relay(root, reader, borrowed)
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    other: Int = 7
+    incoming: Ref[Int] = other
+    entries: Map[String, Ref[Int]] = produce(borrowed, incoming)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    return 0
+}

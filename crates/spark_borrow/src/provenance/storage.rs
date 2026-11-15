@@ -1,0 +1,526 @@
+//! Owner invalidation and the actual accesses that require an owned payload.
+
+// TAG [SPARK-114]
+
+use rustc_hash::FxHashSet;
+use spark_diagnostics::{Diagnostic, Diagnostics, Label};
+use spark_mir::Place;
+use spark_types::{Ty, TypeId, TypeTable};
+
+use super::address::{Dependency, Endpoint, FrameLifetime, OpaqueSite};
+use super::{value, AccessKind, Accesses, Flow, Origin, Path, Point, Slot, State};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Invalidation {
+    Drop(Point),
+    Return(OpaqueSite),
+}
+
+impl super::value::Leaf {
+    pub(super) fn retire_frames(&mut self, boundary: OpaqueSite) {
+        self.endpoints = std::mem::take(&mut self.endpoints)
+            .into_iter()
+            .map(|endpoint| endpoint.retire_frame(boundary))
+            .collect();
+        self.dependencies = std::mem::take(&mut self.dependencies)
+            .into_iter()
+            .map(|dependency| match dependency {
+                Dependency::Address(endpoint) => {
+                    Dependency::Address(endpoint.retire_frame(boundary))
+                }
+                input @ Dependency::InputValue(..) => input,
+            })
+            .collect();
+    }
+}
+
+impl super::Value {
+    pub(super) fn retire_frames(&mut self, boundary: OpaqueSite) {
+        for leaf in self.leaves.values_mut() {
+            leaf.retire_frames(boundary);
+        }
+        for view in self
+            .task_views
+            .values_mut()
+            .flat_map(|views| views.values_mut())
+        {
+            for callback in view.callbacks.values_mut() {
+                callback.retire_frames(boundary);
+            }
+            view.history.retire_frames(boundary);
+            view.memory.retire_frames(boundary);
+        }
+    }
+}
+
+impl Flow<'_> {
+    pub(super) fn retire_call_frames(&mut self, point: Point, state: &mut State) {
+        let boundary = OpaqueSite {
+            function: self.function.def_id,
+            point,
+        };
+        if !self.frame_boundaries.contains(&boundary) {
+            return;
+        }
+        if let Some(scope) = &mut self.completion_scope {
+            scope.retire_frames(boundary);
+        }
+        for value in state
+            .values
+            .values_mut()
+            .chain(state.cells.values_mut())
+            .chain(state.external.values_mut())
+            .chain(state.queues.values_mut())
+            .chain(
+                state
+                    .queue_current
+                    .values_mut()
+                    .map(|message| &mut message.value),
+            )
+            .chain(state.observations.values_mut())
+            .chain(state.pending_memory.values_mut())
+            .chain(state.settled_memory.values_mut())
+            .chain(state.residuals.values_mut())
+            .chain(state.residual_callbacks.values_mut())
+            .chain(state.tasks.values_mut().map(|task| &mut task.callback))
+            .chain(state.executions.values_mut())
+        {
+            value.retire_frames(boundary);
+        }
+    }
+
+    pub(super) fn invalidate(&self, place: &Place, point: Point, state: &mut State) {
+        if place
+            .projections
+            .iter()
+            .any(|p| matches!(p, spark_mir::Projection::Deref))
+        {
+            return;
+        }
+        let (prefix, ty) = self.projection_path(
+            self.function.locals[place.local.index()].ty,
+            &place.projections,
+        );
+        for path in owned_paths(ty, self.table) {
+            let mut path = [prefix.clone(), path].concat();
+            path = value::normalize(
+                self.function.locals[place.local.index()].ty,
+                path,
+                self.table,
+            );
+            state
+                .invalidated
+                .entry((place.local, path))
+                .or_default()
+                .insert(point);
+        }
+    }
+
+    pub(super) fn record_accesses(&mut self, point: Point, accesses: Accesses, state: &State) {
+        self.ensure_transfer(point, state);
+        let accesses = accesses.at_site(super::read::ReadSite {
+            function: self.function.def_id,
+            point,
+        });
+        for access in &accesses {
+            let mut expired = FxHashSet::default();
+            self.expired_access(
+                &access.target,
+                &access.selection,
+                access.kind,
+                state,
+                &mut expired,
+            );
+            for drop in expired {
+                self.invalid_reads
+                    .insert((point, drop, access.origin.clone()));
+            }
+        }
+        self.transfers
+            .entry(point)
+            .or_default()
+            .seed(&accesses.demands);
+        self.accesses.entry(point).or_default().merge(accesses);
+    }
+
+    fn expired_access(
+        &self,
+        target: &Dependency,
+        selection: &[Slot],
+        kind: AccessKind,
+        state: &State,
+        expired: &mut FxHashSet<Invalidation>,
+    ) {
+        if let Dependency::Address(Endpoint::Frame {
+            lifetime,
+            function,
+            local,
+            location,
+            ..
+        }) = target
+        {
+            match lifetime {
+                FrameLifetime::Returned(site) => {
+                    expired.insert(Invalidation::Return(*site));
+                    return;
+                }
+                FrameLifetime::Local if *function == self.function.def_id => {}
+                _ => return,
+            }
+            let selected = [location.as_slice(), selection].concat();
+            for ((owner, path), drops) in &state.invalidated {
+                if owner != local {
+                    continue;
+                }
+                let needed = match kind {
+                    AccessKind::Value => overlaps(path, &selected),
+                    AccessKind::Address => {
+                        path.len() < selected.len() && overlaps_prefix(path, &selected)
+                    }
+                };
+                if needed {
+                    expired.extend(drops.iter().copied().map(Invalidation::Drop));
+                }
+            }
+        }
+    }
+
+    pub(super) fn report_reads(&self, diagnostics: &mut Diagnostics) {
+        let mut reported = FxHashSet::default();
+        for (access, invalidation, origin) in &self.invalid_reads {
+            if !reported.insert((*access, *invalidation)) {
+                continue;
+            }
+            let (site, label) = match invalidation {
+                Invalidation::Drop(point) => (
+                    OpaqueSite {
+                        function: self.function.def_id,
+                        point: *point,
+                    },
+                    "its owner was dropped here",
+                ),
+                Invalidation::Return(site) => (*site, "its owner's frame ended at this call"),
+            };
+            let mut diagnostic = Diagnostic::error("borrowed value does not live long enough")
+                .with_label(Label::primary(
+                    crate::errors::span_for_point(*access, self.function),
+                    "this read needs the borrowed value",
+                ));
+            let scope = if site.function == self.function.def_id {
+                Some(self.function)
+            } else {
+                self.program
+                    .and_then(|context| context.mir.functions.get(&site.function))
+            };
+            if let Some(scope) = scope {
+                diagnostic = diagnostic.with_label(Label::secondary(
+                    crate::errors::span_for_point(site.point, scope),
+                    label,
+                ));
+            }
+            if let Origin::Loan(point) = origin {
+                diagnostic = diagnostic.with_label(Label::secondary(
+                    crate::errors::span_for_point(*point, self.function),
+                    "borrow created here",
+                ));
+            }
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+
+pub(super) fn prefix(left: &[Slot], right: &[Slot]) -> bool {
+    !left.contains(&Slot::Tail) && right.starts_with(left)
+}
+
+fn overlaps_prefix(left: &[Slot], right: &[Slot]) -> bool {
+    for (index, slot) in left.iter().enumerate() {
+        if *slot == Slot::Tail || right.get(index) == Some(&Slot::Tail) {
+            return true;
+        }
+        if right.get(index) != Some(slot) {
+            return false;
+        }
+    }
+    true
+}
+
+pub(super) fn overlaps(left: &[Slot], right: &[Slot]) -> bool {
+    overlaps_prefix(left, right) || overlaps_prefix(right, left)
+}
+
+fn owned_paths(ty: TypeId, table: &TypeTable) -> Vec<Path> {
+    fn visit(
+        ty: TypeId,
+        path: &mut Path,
+        seen: &mut FxHashSet<TypeId>,
+        table: &TypeTable,
+        paths: &mut Vec<Path>,
+    ) {
+        let ty = value::strip_mutable(ty, table);
+        if !seen.insert(ty) {
+            let mut tail = path.clone();
+            tail.push(Slot::Tail);
+            paths.push(tail);
+            return;
+        }
+        if spark_drop::needs_rc(ty, table)
+            || matches!(table.resolve(ty), Ty::Function { .. } | Ty::Param(_))
+        {
+            paths.push(path.clone());
+        } else {
+            for (slot, child) in value::inline_slots(ty, table) {
+                path.push(slot);
+                visit(child, path, seen, table, paths);
+                path.pop();
+            }
+        }
+        seen.remove(&ty);
+    }
+    let mut paths = Vec::new();
+    visit(
+        ty,
+        &mut Vec::new(),
+        &mut FxHashSet::default(),
+        table,
+        &mut paths,
+    );
+    paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spark_mir::{
+        AggregateKind, BasicBlock, Constant, Local, LocalDecl, Mir, MirFunction, Operand,
+        Projection, Rvalue, Statement, Terminator,
+    };
+    use spark_resolve::DefId;
+    use spark_span::Span;
+    use spark_types::{IntWidth, LifetimeId};
+
+    #[test]
+    fn cleanup_preserves_raw_reference_fields_in_addressable_cells() {
+        for local_source in [false, true] {
+            let mut table = TypeTable::new();
+            let int = table.intern(Ty::Int(IntWidth::I64));
+            let string = table.intern(Ty::String);
+            let reference = table.intern(Ty::Ref {
+                inner: int,
+                mutable: false,
+                lifetime: LifetimeId::ANONYMOUS,
+            });
+            let tuple = table.intern(Ty::Tuple(vec![reference, string]));
+            let tuple_ref = table.intern(Ty::Ref {
+                inner: tuple,
+                mutable: false,
+                lifetime: LifetimeId::ANONYMOUS,
+            });
+            let map = table.intern(Ty::Map(string, reference));
+            let span = Span::DUMMY;
+            let place = |index| Place::from_local(Local(index));
+            let copy = |index| Operand::Copy(place(index));
+            let assign = |index, rvalue| Statement::Assign {
+                place: place(index),
+                rvalue,
+                span,
+            };
+            let function = MirFunction {
+                def_id: DefId::new(0),
+                param_count: u32::from(!local_source),
+                return_type: map,
+                locals: [
+                    map,
+                    if local_source { int } else { reference },
+                    reference,
+                    tuple,
+                    tuple_ref,
+                    reference,
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| LocalDecl {
+                    local: Local(index as u32),
+                    ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span,
+                })
+                .collect(),
+                blocks: vec![BasicBlock {
+                    statements: vec![
+                        if local_source {
+                            assign(1, Rvalue::Use(Operand::Constant(Constant::Int(7))))
+                        } else {
+                            Statement::Nop
+                        },
+                        assign(
+                            2,
+                            if local_source {
+                                Rvalue::Ref {
+                                    place: place(1),
+                                    mutable: false,
+                                }
+                            } else {
+                                Rvalue::Use(copy(1))
+                            },
+                        ),
+                        assign(
+                            3,
+                            Rvalue::Aggregate(
+                                AggregateKind::Tuple,
+                                vec![
+                                    copy(2),
+                                    Operand::Constant(Constant::String(spark_intern::sym("owner"))),
+                                ],
+                            ),
+                        ),
+                        assign(
+                            4,
+                            Rvalue::Ref {
+                                place: place(3),
+                                mutable: false,
+                            },
+                        ),
+                        Statement::Drop {
+                            place: place(3),
+                            span,
+                        },
+                        assign(
+                            5,
+                            Rvalue::Use(Operand::Copy(Place {
+                                local: Local(4),
+                                projections: vec![
+                                    Projection::Deref,
+                                    Projection::Field(spark_intern::sym("0")),
+                                ],
+                            })),
+                        ),
+                        assign(
+                            0,
+                            Rvalue::Aggregate(
+                                AggregateKind::Map,
+                                vec![
+                                    Operand::Constant(Constant::String(spark_intern::sym("one"))),
+                                    copy(5),
+                                ],
+                            ),
+                        ),
+                    ],
+                    terminator: Terminator::Return,
+                    is_cleanup: false,
+                }],
+                captures: vec![],
+                is_async: false,
+                span,
+            };
+            let mir = Mir {
+                functions: std::collections::HashMap::from([(function.def_id, function)]),
+            };
+            let mut diagnostics = Diagnostics::new();
+            super::super::analyze_program(&mir, &table, None, &mut diagnostics);
+            assert_eq!(diagnostics.has_errors(), local_source);
+            if local_source {
+                assert!(diagnostics.iter().any(|diagnostic| diagnostic.message
+                    == "returned value contains a reference to local storage"));
+            }
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.message
+                        != "borrowed value does not live long enough"),
+                "reading a raw reference field must not read its dropped String sibling"
+            );
+        }
+    }
+    #[test]
+    fn branch_conditions_observe_projected_reference_reads() {
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(IntWidth::I64));
+        let boolean = table.intern(Ty::Bool);
+        let list = table.intern(Ty::List(boolean));
+        let reference = table.intern(Ty::Ref {
+            inner: boolean,
+            mutable: false,
+            lifetime: LifetimeId::ANONYMOUS,
+        });
+        let span = Span::DUMMY;
+        let place = |index| Place::from_local(Local(index));
+        let assign = |index, rvalue| Statement::Assign {
+            place: place(index),
+            rvalue,
+            span,
+        };
+        let function = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 0,
+            return_type: int,
+            locals: [int, list, int, reference]
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| LocalDecl {
+                    local: Local(index as u32),
+                    ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span,
+                })
+                .collect(),
+            blocks: vec![
+                BasicBlock {
+                    statements: vec![
+                        assign(
+                            1,
+                            Rvalue::Aggregate(
+                                AggregateKind::List,
+                                vec![Operand::Constant(Constant::Bool(true))],
+                            ),
+                        ),
+                        assign(2, Rvalue::Use(Operand::Constant(Constant::Int(0)))),
+                        assign(
+                            3,
+                            Rvalue::Ref {
+                                place: Place {
+                                    local: Local(1),
+                                    projections: vec![Projection::Index(Local(2))],
+                                },
+                                mutable: false,
+                            },
+                        ),
+                        Statement::Drop {
+                            place: place(1),
+                            span,
+                        },
+                    ],
+                    terminator: Terminator::SwitchInt {
+                        discriminant: Operand::Copy(Place {
+                            local: Local(3),
+                            projections: vec![Projection::Deref],
+                        }),
+                        targets: vec![(1, spark_mir::BlockId(1))],
+                        otherwise: spark_mir::BlockId(1),
+                    },
+                    is_cleanup: false,
+                },
+                BasicBlock {
+                    statements: vec![assign(0, Rvalue::Use(Operand::Constant(Constant::Int(0))))],
+                    terminator: Terminator::Return,
+                    is_cleanup: false,
+                },
+            ],
+            captures: vec![],
+            is_async: false,
+            span,
+        };
+        let mir = Mir {
+            functions: std::collections::HashMap::from([(function.def_id, function)]),
+        };
+        let mut diagnostics = Diagnostics::new();
+        super::super::analyze_program(&mir, &table, None, &mut diagnostics);
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "borrowed value does not live long enough"));
+    }
+}

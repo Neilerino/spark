@@ -1,0 +1,18 @@
+fn fillThenClear(out: Ref[Map[String, Ref[Int]]]!, reader: Ref[Map[String, Ref[Int]]]): Void {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    initial: Map[String, Ref[Int]] = {"one": borrowed}
+    out = initial
+    empty: Map[String, Ref[Int]] = {}
+    out = empty
+    print(reader.len())
+}
+fn main(): Int {
+    value: Int = 9
+    borrowed: Ref[Int] = value
+    entries: Map[String, Ref[Int]]! = {}
+    other: Map[String, Ref[Int]] = {"one": borrowed}
+    fillThenClear(entries, entries)
+    fillThenClear(entries, other)
+    return 0
+}

@@ -1,0 +1,931 @@
+// TAG [SPARK-114]
+
+//! Apply each possible call before joining its continuation with the other alternatives.
+
+use spark_mir::Place;
+
+use super::{
+    Aliases, CallActuals, Flow, Local, MemoryEvent, MirFunction, Operand, Point, PrefixWrites,
+    State, Summary, TypeId, Value,
+};
+
+#[derive(Default)]
+pub(in crate::provenance) struct Dispatch {
+    pub returning: Vec<CallOutcome>,
+    pub diverging: Vec<PrefixWrites>,
+}
+
+impl Dispatch {
+    pub const fn returning(returning: Vec<CallOutcome>) -> Self {
+        Self {
+            returning,
+            diverging: Vec::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub(in crate::provenance) struct CallOutcome {
+    pub returned: Value,
+    pub tasks: Vec<(
+        crate::provenance::tasks::Target,
+        crate::provenance::tasks::Record,
+    )>,
+    pub completed_task: Option<(Local, Value)>,
+    pub clobbered_copies: Vec<Local>,
+    pub future_proof: crate::provenance::tasks::proofs::CallProof,
+    pub returned_prefix: super::ReachedPrefix,
+    pub publications: PrefixWrites,
+    pub place_writes: Vec<(spark_mir::Place, Value)>,
+    pub memory: Vec<MemoryWrite>,
+    pub async_memory: Vec<MemoryWrite>,
+    pub actual_definitions: Vec<crate::provenance::value::Leaf>,
+    pub ordered_definitions: Vec<(
+        crate::provenance::tasks::Witness,
+        crate::provenance::value::Leaf,
+    )>,
+    pub fresh_outputs: Vec<crate::provenance::effects::fresh_output_binding::Bound>,
+    pub spawn_outputs: Vec<super::spawn_outputs::Reservation>,
+    pub producer_events: Vec<crate::provenance::channels::QueueEvent>,
+    pub queue_accesses: crate::provenance::channels::access::Accesses,
+    pub queue_send_counts: crate::provenance::channels::counts::Sends,
+    pub receipt: Option<crate::provenance::channels::Receipt>,
+    pub direct_queue_send: Option<crate::provenance::channels::messages::Send>,
+    pub spawned_memory: Option<bool>,
+    pub spawn_return: Option<crate::provenance::tasks::fresh::Transfer>,
+    pub fresh_leaf_task: bool,
+    pub returned_owner_tags: crate::provenance::tasks::lifecycle::Tags,
+    pub retained_captures: Vec<crate::provenance::tasks::Witness>,
+    pub returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs,
+    pub spawn_owners: Option<crate::provenance::tasks::execution::ExecutionTransfer>,
+    pub residuals: Vec<crate::provenance::tasks::residual::Import>,
+    pub prefix_memory: Vec<MemoryEvent>,
+    pub prefix_residuals: Vec<crate::provenance::tasks::residual::Import>,
+    pub queues: Vec<crate::provenance::channels::QueueEvent>,
+    pub queue_contents: Vec<crate::provenance::channels::Write>,
+}
+
+impl CallOutcome {
+    fn completions(&self, state: &State) -> Vec<crate::provenance::tasks::Witness> {
+        let mut completed = self.future_proof.completed.clone();
+        if let Some((local, _)) = &self.completed_task {
+            completed.push(state.future_copies.witness(*local));
+        }
+        completed
+    }
+
+    fn finish_completions(
+        &mut self,
+        flow: &mut Flow<'_>,
+        mut settled: Vec<crate::provenance::tasks::memory::SettledCompletion>,
+        point: Point,
+        state: &mut State,
+    ) {
+        let joined = self.completed_task.as_ref().and_then(|_| settled.pop());
+        for completion in settled {
+            completion.finish(flow, None, point, state);
+        }
+        flow.import_tasks(std::mem::take(&mut self.tasks), point, state);
+        if let (Some((_, result)), Some(completion)) = (self.completed_task.take(), joined) {
+            completion.finish(flow, Some(&result), point, state);
+        }
+    }
+
+    fn transfers_argument(&self, index: usize) -> bool {
+        self.future_proof
+            .forwarded
+            .as_ref()
+            .is_some_and(|forwarded| forwarded.covers(index))
+            || self
+                .future_proof
+                .output_owners
+                .as_ref()
+                .is_some_and(|output| output.covered.contains(&index))
+    }
+
+    fn reserves_queue_move(&self, index: usize) -> bool {
+        index == 1
+            && self
+                .direct_queue_send
+                .as_ref()
+                .is_some_and(crate::provenance::channels::messages::Send::reserves_move)
+    }
+
+    fn finish_result(
+        &mut self,
+        flow: &mut Flow<'_>,
+        destination: &Place,
+        point: Point,
+        state: &mut State,
+    ) {
+        if let Some(receipt) = self.receipt.take() {
+            receipt.finish(flow, destination, &self.clobbered_copies, point, state);
+        }
+        if let Some(spawn) = self.spawn_return.take() {
+            spawn.install(flow, destination, &self.clobbered_copies, state);
+        }
+    }
+
+    fn apply_queue_accesses(&self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        let access = flow.expand_queue_accesses(&self.queue_accesses, state);
+        let mut poison_access = access.clone();
+        if let Some(receipt) = &self.receipt {
+            receipt.poison_access(&mut poison_access);
+        }
+        flow.poison_queue_promises(&poison_access, &self.queue_send_counts, point, state);
+        state.queue_accesses.join(&access);
+        state.queue_send_counts.then(&self.queue_send_counts);
+    }
+
+    fn apply_prefix(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        self.import_observations(flow, point, state);
+        for output in &mut self.spawn_outputs {
+            if !output.reserve(flow, point, state) {
+                self.queues.append(&mut output.events);
+            }
+        }
+        let mut completed: Vec<_> = self
+            .future_proof
+            .completed
+            .iter()
+            .flat_map(crate::provenance::tasks::Witness::locals)
+            .collect();
+        if let Some((local, _)) = &self.completed_task {
+            completed.push(*local);
+        }
+        for local in completed {
+            if let Some(handles) = state.value(local).futures.get(&Vec::new()) {
+                if handles.len() == 1 {
+                    if let Some(handle) = handles.iter().next() {
+                        let mut remaining = Vec::new();
+                        for mut event in self.queues.drain(..) {
+                            if flow.route_producer_queue_event(
+                                &crate::provenance::demand::Storage::Logical(local),
+                                &[],
+                                handle,
+                                &mut event,
+                                point,
+                                state,
+                            ) {
+                                self.producer_events.push(event);
+                            } else {
+                                remaining.push(event);
+                            }
+                        }
+                        self.queues = remaining;
+                    }
+                }
+            }
+        }
+        flow.apply_call_prefix(self, point, state);
+        self.clobbered_copies
+            .extend(state.invalidated_copies.iter().copied());
+        Flow::preserve_returned_task_progress(
+            &mut self.returned,
+            &self.future_proof,
+            &self.clobbered_copies,
+            state,
+        );
+        state.reached_prefix.extend(self.returned_prefix.drain());
+        flow.remember_publications(&self.publications, &mut state.publications);
+        for witness in &self.retained_captures {
+            state.future_owners.revoke(witness, &state.future_copies);
+        }
+    }
+
+    fn prepare_owner_transfers(
+        &mut self,
+        flow: &mut Flow<'_>,
+        args: &[Operand],
+        destination: &Place,
+        point: Point,
+        state: &mut State,
+    ) {
+        if let Some(send) = &mut self.direct_queue_send {
+            send.prepare(&self.queues, &self.clobbered_copies, state);
+        }
+        self.future_proof.forwarded = flow.forward_input(
+            &self.future_proof,
+            args,
+            destination,
+            &self.clobbered_copies,
+            point,
+            state,
+        );
+        if !destination.projections.is_empty()
+            || self
+                .spawn_owners
+                .as_ref()
+                .is_some_and(|owners| !owners.valid(&self.clobbered_copies, state))
+        {
+            self.spawn_owners = None;
+        }
+        if let Some(owners) = &self.spawn_owners {
+            owners.detach(flow, point, state);
+        }
+        if !destination.projections.is_empty()
+            || self
+                .future_proof
+                .output_owners
+                .as_ref()
+                .is_some_and(|output| {
+                    !output.valid(flow, destination, &self.clobbered_copies, state)
+                })
+        {
+            self.future_proof.output_owners = None;
+        }
+        if let Some(output) = &self.future_proof.output_owners {
+            output.carry_progress(
+                flow,
+                &mut self.returned_callbacks,
+                &self.clobbered_copies,
+                point,
+                state,
+            );
+        }
+    }
+
+    fn install_owner_outputs(
+        &mut self,
+        flow: &mut Flow<'_>,
+        destination: &Place,
+        output: Option<crate::provenance::tasks::outputs::BoundOutput>,
+        point: Point,
+        state: &mut State,
+    ) {
+        if destination.projections.is_empty()
+            && matches!(
+                flow.table.resolve(crate::provenance::value::strip_mutable(
+                    flow.place_type(destination),
+                    flow.table
+                )),
+                spark_types::Ty::Function { .. }
+            )
+        {
+            state
+                .input_owners
+                .mark_unresolved_environment(destination.local);
+        }
+        let tags = std::mem::take(&mut self.returned_owner_tags);
+        if destination.projections.is_empty() {
+            state.input_owners.add_output(
+                crate::provenance::tasks::Role::root(destination.local),
+                tags,
+            );
+        } else {
+            state.input_owners.escape_tags(tags);
+        }
+        if let Some(owners) = self.spawn_owners.take() {
+            owners.install(flow, destination.local, point, state);
+        }
+        flow.install_callback_outputs(
+            std::mem::take(&mut self.returned_callbacks),
+            destination,
+            point,
+            state,
+        );
+        if let Some(output) = output {
+            output.install(destination.local, state);
+        }
+    }
+
+    fn record_normal_definitions(
+        &self,
+        flow: &Flow<'_>,
+        joined_at_entry: &rustc_hash::FxHashSet<Local>,
+        state: &mut State,
+    ) {
+        for definition in &self.actual_definitions {
+            flow.record_actual_definition(definition, state);
+            flow.record_ordered_definition(definition, joined_at_entry, state);
+        }
+        for (witness, definition) in &self.ordered_definitions {
+            if witness.peers.iter().all(|role| {
+                !role.frame_clobbered(&self.clobbered_copies, &state.invalidated_copies)
+            }) {
+                flow.record_ordered_definition(definition, &witness.inputs, state);
+            }
+        }
+    }
+
+    fn apply_certified_stores(&self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        for metadata in &self.actual_definitions {
+            let targets = flow.write_targets(metadata);
+            for destination in targets
+                .all
+                .iter()
+                .filter(|target| targets.strongly_defines(target))
+            {
+                flow.trace_completion_write(destination.clone(), point);
+                flow.clear_entry_settled_memory(destination, point, state);
+            }
+        }
+        for (witness, metadata) in &self.ordered_definitions {
+            if witness
+                .peers
+                .iter()
+                .any(|role| role.frame_clobbered(&self.clobbered_copies, &state.invalidated_copies))
+            {
+                continue;
+            }
+            let targets = flow.write_targets(metadata);
+            for destination in targets
+                .all
+                .iter()
+                .filter(|target| targets.strongly_defines(target))
+            {
+                if flow.helper_clear_covers_settlement(destination, &witness.peers, point) {
+                    flow.clear_settled_memory(destination, point, state);
+                }
+            }
+        }
+    }
+
+    fn apply_writes(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        for write in self.queue_contents.drain(..) {
+            flow.import_queue_contents(&write.target, &write.value, write.ty, point, state);
+        }
+        if let Some(send) = &self.direct_queue_send {
+            flow.apply_direct_queue_send(send, &self.queues, point, state);
+        } else {
+            for write in self.queues.drain(..) {
+                flow.apply_queue_event(&write, point, state);
+            }
+        }
+        for write in self.async_memory.drain(..) {
+            flow.import_settled_memory(&write, point, state);
+        }
+        for write in self.memory.drain(..) {
+            flow.apply_memory_snapshot(&write.target, &write.value, write.ty, point, state);
+        }
+        for (place, value) in self.place_writes.drain(..) {
+            flow.store(&place, value, point, state);
+        }
+    }
+
+    fn visit_values(&mut self, mut visit: impl FnMut(&mut Value)) {
+        visit(&mut self.returned);
+        for event in &mut self.producer_events {
+            visit(&mut event.write.value);
+        }
+        for output in &mut self.spawn_outputs {
+            output.visit_values(&mut visit);
+        }
+        for output in &mut self.fresh_outputs {
+            output.visit_values(&mut visit);
+        }
+        for output in self.returned_callbacks.values_mut() {
+            visit(&mut output.callback);
+        }
+        if let Some(owners) = &mut self.spawn_owners {
+            owners.visit_callback(&mut visit);
+        }
+        for residual in self.residuals.iter_mut().chain(&mut self.prefix_residuals) {
+            residual.visit_values(&mut visit);
+        }
+        for (_, record) in &mut self.tasks {
+            visit(&mut record.callback);
+        }
+        if let Some((_, result)) = &mut self.completed_task {
+            visit(result);
+        }
+        for (_, value) in &mut self.place_writes {
+            visit(value);
+        }
+        if let Some(receipt) = &mut self.receipt {
+            visit(&mut receipt.value);
+        }
+        for value in self
+            .memory
+            .iter_mut()
+            .map(|write| &mut write.value)
+            .chain(self.async_memory.iter_mut().map(|write| &mut write.value))
+            .chain(
+                self.prefix_memory
+                    .iter_mut()
+                    .map(|event| &mut event.write.value),
+            )
+            .chain(self.queues.iter_mut().map(|event| &mut event.write.value))
+            .chain(self.queue_contents.iter_mut().map(|write| &mut write.value))
+            .chain(
+                self.publications
+                    .memory
+                    .iter_mut()
+                    .map(|event| &mut event.write.value),
+            )
+            .chain(
+                self.publications
+                    .queues
+                    .iter_mut()
+                    .map(|event| &mut event.write.value),
+            )
+        {
+            visit(value);
+        }
+    }
+
+    pub(super) fn freeze_sources(&mut self, flow: &Flow<'_>, point: Point) {
+        self.visit_values(|value| *value = flow.freeze_sources(point, std::mem::take(value)));
+    }
+
+    fn import_observations(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        self.visit_values(|value| flow.import_task_sources(value, point, state));
+    }
+}
+
+#[derive(Clone)]
+pub(in crate::provenance) struct MemoryWrite {
+    pub target: crate::provenance::value::Leaf,
+    pub ty: TypeId,
+    pub value: Value,
+}
+
+impl Flow<'_> {
+    pub(super) fn bind_memory_snapshots(
+        &mut self,
+        summary: &Summary,
+        views: &rustc_hash::FxHashSet<super::View>,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        aliases: &Aliases,
+    ) -> Vec<MemoryWrite> {
+        let mut memory = Vec::new();
+        for modified in views {
+            if views.iter().any(|other| {
+                other != modified
+                    && other.root == modified.root
+                    && modified.path.starts_with(&other.path)
+            }) {
+                continue;
+            }
+            let Some(snapshot) = summary.memory.get(&modified.root) else {
+                continue;
+            };
+            let bound = self.bind(
+                snapshot,
+                function,
+                CallActuals {
+                    ty: modified.root.pointee,
+                    ..actuals
+                },
+            );
+            let targets = self.bind_memory_target(modified, function, actuals, aliases);
+            let mut value = bound;
+            for slot in &modified.path {
+                value = value.project(slot);
+            }
+            memory.push(MemoryWrite {
+                target: targets,
+                ty: self.selected_type(modified.root.pointee, &modified.path),
+                value,
+            });
+        }
+        memory
+    }
+
+    fn bind_memory_target(
+        &self,
+        view: &super::View,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        aliases: &Aliases,
+    ) -> crate::provenance::value::Leaf {
+        let mut targets = crate::provenance::value::Leaf::default();
+        for member in aliases.members(&view.root) {
+            let mut input = self.port_input(&member, function, actuals);
+            if !aliases.is_cell(&member) {
+                input = self.residual_reference(&input, &member, function, actuals);
+            }
+            targets.join(&self.project_reference(&input, member.pointee, &view.path));
+        }
+        targets
+    }
+
+    pub(super) fn bind_outcome(
+        &mut self,
+        summary: &Summary,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        context: &super::Key,
+        args: &[Operand],
+        mut prefix: super::prefix::Prefix,
+    ) -> CallOutcome {
+        let returned = self.bind(&summary.returned, function, actuals);
+        let memory = self.bind_memory_snapshots(
+            summary,
+            &summary.modified,
+            function,
+            actuals,
+            &context.aliases,
+        );
+        let async_memory = self.bind_memory_snapshots(
+            summary,
+            &summary.async_modified,
+            function,
+            actuals,
+            &context.aliases,
+        );
+        let mut queue_contents = self.bind_queue_contents(summary, function, actuals);
+        let mut fresh_outputs = self.bind_fresh_outputs(summary, function, actuals, context, args);
+        for output in &mut fresh_outputs {
+            output.partition(&mut prefix.queues, &mut queue_contents);
+        }
+        let certificate = self
+            .program
+            .and_then(|program| program.proofs)
+            .and_then(|proofs| proofs.get(context))
+            .and_then(crate::provenance::tasks::proofs::Proof::certificate)
+            .cloned()
+            .unwrap_or_default();
+        let actual_definitions = certificate
+            .actual_definitions
+            .views()
+            .iter()
+            .map(|view| self.bind_memory_target(view, function, actuals, &context.aliases))
+            .collect();
+        let mut ordered_definitions = Vec::new();
+        for (input, coverage) in &certificate.ordered_definitions.0 {
+            let Some(witness) =
+                crate::provenance::tasks::proofs::actual_witness(*input, args, actuals.read.state)
+            else {
+                continue;
+            };
+            ordered_definitions.extend(coverage.views().iter().map(|view| {
+                (
+                    witness.clone(),
+                    self.bind_memory_target(view, function, actuals, &context.aliases),
+                )
+            }));
+        }
+        let tasks = self.bind_tasks(summary, function, actuals);
+        let clobbered_copies = self.bound_copy_clobbers(summary, function, actuals);
+        let residuals = self.bind_residuals(summary, function, actuals, context, Some(args));
+        CallOutcome {
+            fresh_outputs,
+            queue_accesses: self.bind_queue_accesses(summary, function, actuals, context, args),
+            queue_send_counts: self.bind_normal_queue_sends(summary, function, actuals),
+            returned_owner_tags: self.bind_owner_tags(
+                &summary.returned_owner_tags,
+                function,
+                actuals,
+                args,
+            ),
+            retained_captures: self.retained_capture_witnesses(Some((summary, function)), actuals),
+            returned_callbacks: self.bind_callback_outputs(summary, function, actuals, args),
+            residuals,
+            async_memory,
+            actual_definitions,
+            ordered_definitions,
+            publications: prefix.publications,
+            tasks,
+            clobbered_copies,
+            returned_prefix: prefix.returned,
+            prefix_memory: prefix.memory,
+            prefix_residuals: prefix.residuals,
+            returned,
+            memory,
+            queues: prefix.queues,
+            queue_contents,
+            ..Default::default()
+        }
+    }
+
+    pub(in crate::provenance) fn apply_dispatch(
+        &mut self,
+        dispatch: Dispatch,
+        args: &[Operand],
+        destination: &Place,
+        point: Point,
+        state: &mut State,
+    ) -> bool {
+        self.has_diverging_call |= !dispatch.diverging.is_empty();
+        for mut events in dispatch.diverging {
+            if events.memory.is_empty() && events.queues.is_empty() && events.residuals.is_empty() {
+                continue;
+            }
+            let mut entry = self.transfers[&point].clone();
+            let mut divergent = state.clone();
+            for residual in &mut events.residuals {
+                residual.freeze_sources(self, point);
+            }
+            self.import_prefix_observations(
+                &mut events.memory,
+                &mut events.queues,
+                point,
+                &mut divergent,
+            );
+            self.apply_prefix_writes(
+                &events.memory,
+                &events.queues,
+                &events.residuals,
+                point,
+                &mut divergent,
+            );
+            entry
+                .seeds
+                .extend(self.transfers[&point].seeds.iter().cloned());
+            self.transfers.insert(point, entry);
+        }
+        if dispatch.returning.is_empty() {
+            return false;
+        }
+        self.apply_call_outcomes(args, destination, dispatch.returning, point, state);
+        true
+    }
+
+    pub(in crate::provenance) fn apply_prefix_writes(
+        &mut self,
+        memory: &[MemoryEvent],
+        queues: &[crate::provenance::channels::QueueEvent],
+        residuals: &[crate::provenance::tasks::residual::Import],
+        point: Point,
+        state: &mut State,
+    ) {
+        if !memory.is_empty() || !queues.is_empty() || !residuals.is_empty() {
+            self.expose_prefix_memory(memory, state);
+            self.settle_pending_tasks_in(point, state, memory, queues, residuals);
+        }
+    }
+
+    fn apply_call_prefix(&mut self, outcome: &CallOutcome, point: Point, state: &mut State) {
+        if outcome.completed_task.is_none() {
+            self.record_call_prefix_interference(
+                &outcome.prefix_memory,
+                outcome.spawned_memory.unwrap_or(false),
+                point,
+                state,
+            );
+        }
+        let queues: Vec<_> = outcome
+            .queues
+            .iter()
+            .chain(
+                outcome
+                    .fresh_outputs
+                    .iter()
+                    .flat_map(|output| output.events.iter()),
+            )
+            .chain(outcome.producer_events.iter())
+            .chain(
+                outcome
+                    .spawn_outputs
+                    .iter()
+                    .flat_map(|output| output.events.iter()),
+            )
+            .cloned()
+            .collect();
+        if outcome.prefix_residuals.is_empty() {
+            self.apply_prefix_writes(
+                &outcome.prefix_memory,
+                &queues,
+                &outcome.residuals,
+                point,
+                state,
+            );
+            return;
+        }
+        let entry = state.clone();
+        let entry_transfer = self.transfers[&point].clone();
+        let entry_scope = self.completion_scope.clone();
+        self.apply_prefix_writes(
+            &outcome.prefix_memory,
+            &queues,
+            &outcome.residuals,
+            point,
+            state,
+        );
+        let live = std::mem::replace(state, entry);
+        let live_transfer = self.transfers[&point].clone();
+        let live_scope = std::mem::replace(&mut self.completion_scope, entry_scope);
+        self.transfers.insert(point, entry_transfer);
+        self.apply_prefix_writes(
+            &outcome.prefix_memory,
+            &queues,
+            &outcome.prefix_residuals,
+            point,
+            state,
+        );
+        if let (Some(scope), Some(live_scope)) = (&mut self.completion_scope, live_scope) {
+            scope.retain_common_sources(&live_scope);
+        }
+        state.join_task_backing(&live);
+        state.residuals = live.residuals;
+        state.residual_callbacks = live.residual_callbacks;
+        self.transfers
+            .get_mut(&point)
+            .expect("current call transfer")
+            .join_alternative(&live_transfer);
+    }
+
+    fn consume_call_arguments(
+        &mut self,
+        args: &[Operand],
+        outcome: &mut CallOutcome,
+        completed: &[crate::provenance::tasks::memory::SettledCompletion],
+        point: Point,
+        state: &mut State,
+    ) {
+        outcome.future_proof.completed.clear();
+        let released: Vec<_> = args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                let (Operand::Copy(place) | Operand::Move(place)) = arg else {
+                    return false;
+                };
+                place.projections.is_empty()
+                    && outcome
+                        .future_proof
+                        .released_owners
+                        .get(&index)
+                        .is_some_and(|witness| {
+                            witness.contains_local(place.local)
+                                && witness.peers.iter().all(|peer| {
+                                    !peer.frame_clobbered(
+                                        &outcome.clobbered_copies,
+                                        &state.invalidated_copies,
+                                    )
+                                })
+                        })
+            })
+            .collect();
+        for (index, (arg, released)) in args.iter().zip(&released).enumerate() {
+            if *released
+                || outcome.transfers_argument(index)
+                || (index == 0 && outcome.spawn_owners.is_some())
+            {
+                continue;
+            }
+            let borrowed_await = matches!(arg, Operand::Copy(place) if place.projections.is_empty()
+                && outcome.completed_task.as_ref().is_some_and(|(local, _)| *local == place.local));
+            if !borrowed_await {
+                self.escape_input_owner_operand(arg, state);
+                Self::lose_owning_operand(arg, state);
+            }
+        }
+        if let Some(output) = &mut outcome.future_proof.output_owners {
+            output.restrict_coverage(state);
+        }
+        if let Some(forwarded) = &mut outcome.future_proof.forwarded {
+            forwarded.detach(self, point, state);
+        }
+        for (index, (arg, released)) in args.iter().zip(released).enumerate() {
+            if let Operand::Move(place) = arg {
+                self.retire_execution_owner(place.local, point, state);
+                if index == 0 && outcome.spawn_owners.is_some() {
+                    if let Some(local) = crate::provenance::consume(arg, state) {
+                        self.record_consumed(point, local);
+                    }
+                    continue;
+                }
+                if outcome.reserves_queue_move(index) || outcome.transfers_argument(index) {
+                    state.input_owners.drop_local(place.local);
+                } else if released {
+                    state.input_owners.drop_local(place.local);
+                    if !outcome
+                        .future_proof
+                        .forwarded
+                        .as_ref()
+                        .is_some_and(|forwarded| forwarded.reserves(place.local))
+                        && !outcome
+                            .future_proof
+                            .output_owners
+                            .as_ref()
+                            .is_some_and(|output| output.reserves(place.local))
+                        && !completed
+                            .iter()
+                            .any(|settled| settled.contains_local(self, point, place.local))
+                    {
+                        self.preserve_writer_loss(place, point, state);
+                    }
+                } else {
+                    let completed = completed
+                        .iter()
+                        .any(|settled| settled.contains_local(self, point, place.local));
+                    let returned = outcome
+                        .future_proof
+                        .returned
+                        .as_ref()
+                        .is_some_and(|witness| witness.contains_local(place.local));
+                    let joined = outcome
+                        .completed_task
+                        .as_ref()
+                        .is_some_and(|(local, _)| *local == place.local);
+                    if outcome.clobbered_copies.contains(&place.local)
+                        || !(completed || returned || joined)
+                    {
+                        self.preserve_writer_loss(place, point, state);
+                    }
+                }
+            }
+            if let Some(local) = crate::provenance::consume(arg, state) {
+                self.record_consumed(point, local);
+            }
+        }
+    }
+
+    pub(in crate::provenance) fn apply_call_outcomes(
+        &mut self,
+        args: &[Operand],
+        destination: &spark_mir::Place,
+        mut outcome: Vec<CallOutcome>,
+        point: Point,
+        state: &mut State,
+    ) {
+        for alternative in &mut outcome {
+            alternative.freeze_sources(self, point);
+        }
+        let common = self.transfers[&point].clone();
+        let mut alternatives: Option<(State, crate::provenance::demand::Transfer)> = None;
+        for mut alternative in outcome {
+            self.transfers.insert(point, common.clone());
+            self.completion_scope = None;
+            let mut after = state.clone();
+            let joined_at_entry = after.joined_inputs.clone();
+            let completed = alternative.completions(&after);
+            let requests = self.reserve_completions(completed.clone(), point);
+            alternative.apply_queue_accesses(self, point, &mut after);
+            alternative.apply_prefix(self, point, &mut after);
+            let completed_outputs =
+                after.completed_queue_outputs(&completed, &alternative.clobbered_copies);
+            let prepared = self.prepare_reserved_memory(
+                requests,
+                &alternative.clobbered_copies,
+                point,
+                &mut after,
+            );
+            let settled = self.commit_task_memory(prepared, point, &mut after);
+            for residual in alternative.residuals.drain(..) {
+                self.import_residual(residual, point, &mut after);
+            }
+            alternative.prepare_owner_transfers(self, args, destination, point, &mut after);
+            self.consume_call_arguments(args, &mut alternative, &settled, point, &mut after);
+            let output_owners = alternative.future_proof.output_owners.take();
+            let forwarded = alternative.future_proof.forwarded.take();
+            let returned_copy = self.apply_call_copy_proof(
+                alternative.future_proof.returned.take(),
+                &alternative.clobbered_copies,
+                &mut after,
+            );
+            alternative.finish_completions(self, settled, point, &mut after);
+
+            alternative.apply_writes(self, point, &mut after);
+            alternative.record_normal_definitions(self, &joined_at_entry, &mut after);
+            alternative.apply_certified_stores(self, point, &mut after);
+            self.store(
+                destination,
+                std::mem::take(&mut alternative.returned),
+                point,
+                &mut after,
+            );
+            self.store_future_copy(destination, returned_copy, &mut after);
+            after.future_owners.forget(destination.local);
+            if alternative.fresh_leaf_task && destination.projections.is_empty() {
+                after
+                    .future_owners
+                    .grant(destination.local, &after.future_copies);
+            }
+            alternative.install_owner_outputs(self, destination, output_owners, point, &mut after);
+            if let Some(forwarded) = forwarded {
+                forwarded.install(self, destination.local, point, &mut after);
+            }
+            for output in alternative.fresh_outputs.drain(..) {
+                output.install(self, point, &alternative.clobbered_copies, &mut after);
+            }
+            for output in alternative.spawn_outputs.drain(..) {
+                output.finish(
+                    self,
+                    destination,
+                    &alternative.clobbered_copies,
+                    point,
+                    &mut after,
+                );
+            }
+            self.retire_call_frames(point, &mut after);
+            self.establish_present_outputs(
+                completed_outputs,
+                &alternative.clobbered_copies,
+                point,
+                &mut after,
+            );
+            alternative.finish_result(self, destination, point, &mut after);
+            self.validate_queue_promises(point, &mut after);
+            self.finish_final_writes(point, &mut after);
+            self.completion_scope = None;
+            let transfer = self.transfers[&point].clone();
+            if let Some((joined, ledger)) = &mut alternatives {
+                joined.join(&after);
+                ledger.join_alternative(&transfer);
+            } else {
+                alternatives = Some((after, transfer));
+            }
+        }
+        if let Some((after, transfer)) = alternatives {
+            *state = after;
+            self.transfers.insert(point, transfer);
+        }
+    }
+}
+
+#[cfg(test)]
+mod owner_tests;

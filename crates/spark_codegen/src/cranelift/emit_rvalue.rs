@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Rvalue lowering: MIR rvalues → Cranelift IR instructions.
 //!
 //! Handles `Use`, `BinaryOp`, `UnaryOp`, `Ref`, `Aggregate`, `Discriminant`,
@@ -33,6 +35,10 @@ pub fn emit_rvalue<M: Module>(
     diagnostics: &mut Diagnostics,
 ) -> Option<Value> {
     match rvalue {
+        Rvalue::ReadFutureResult { pointer } => {
+            emit_future_result(ctx, *pointer, dest_local, ecx, module)
+        }
+
         Rvalue::Use(operand) => emit_operand(ctx, operand, ecx, module),
 
         Rvalue::BinaryOp(op, lhs, rhs) => {
@@ -144,6 +150,35 @@ pub fn emit_rvalue<M: Module>(
     }
 }
 
+fn emit_future_result<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    pointer: Local,
+    destination: Local,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+) -> Option<Value> {
+    let address = ctx.read_local(pointer);
+    let ty = ctx.local_type_id(destination);
+    let value = if abi::is_scalar(ty, ecx.table) {
+        let clif_ty = abi::spark_type_to_clif(ty, ecx.table, ctx.ptr_type)?;
+        ctx.load(clif_ty, address, 0)
+    } else {
+        address
+    };
+    if spark_drop::needs_drop(ty, ecx.table) {
+        emit_typed_retain(
+            &mut ctx.builder,
+            value,
+            ty,
+            ecx.table,
+            ctx.stubs,
+            module,
+            ctx.ptr_type,
+        );
+    }
+    Some(value)
+}
+
 /// Emits an operand, returning the Cranelift value.
 pub fn emit_operand<M: Module>(
     ctx: &mut FunctionContext<'_>,
@@ -221,7 +256,7 @@ fn emit_string_comparison<M: Module>(
     Some(ctx.builder.ins().icmp_imm(condition, result, 0))
 }
 
-fn emit_borrowed_operand<M: Module>(
+pub(super) fn emit_borrowed_operand<M: Module>(
     ctx: &mut FunctionContext<'_>,
     operand: &Operand,
     ecx: &EmitCtx<'_>,
@@ -1248,7 +1283,7 @@ fn emit_closure_construction<M: Module>(
     let mut capture_offsets = Vec::with_capacity(operands.len());
     for operand in operands {
         let cap_ty = match operand {
-            Operand::Copy(place) | Operand::Move(place) => ctx.local_type_id(place.local),
+            Operand::Copy(place) | Operand::Move(place) => resolve_place_type(ctx, place, table),
             Operand::Constant(_) => {
                 capture_offsets.push(env_size);
                 env_size += 8; // fallback
@@ -1282,7 +1317,7 @@ fn emit_closure_construction<M: Module>(
     // Store each captured value into the environment.
     for (i, operand) in operands.iter().enumerate() {
         let cap_ty = match operand {
-            Operand::Copy(place) | Operand::Move(place) => ctx.local_type_id(place.local),
+            Operand::Copy(place) | Operand::Move(place) => resolve_place_type(ctx, place, table),
             Operand::Constant(_) => continue,
         };
         let val = emit_operand(ctx, operand, ecx, module)?;

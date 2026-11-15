@@ -3,8 +3,6 @@
 //! Every expression is lowered into a [`Local`] that holds its result.
 //! Control flow expressions (if, loop, match) create new basic blocks.
 
-use std::borrow::Cow;
-
 use rustc_hash::FxHashMap;
 use spark_diagnostics::{Diagnostic, Label};
 use spark_hir::{HirExpr, HirExprKind, HirLiteral};
@@ -136,8 +134,10 @@ pub fn lower_expr(
         // ── Access ───────────────────────────────────────────────
         HirExprKind::FieldAccess { base, field } => {
             let base_ty = unwrap_type_wrappers(base.ty, type_table);
-            let scoped = matches!(type_table.resolve(base_ty), Ty::Tuple(_))
-                && spark_drop::needs_drop(base_ty, type_table);
+            let scoped = matches!(
+                type_table.resolve(base_ty),
+                Ty::Tuple(_) | Ty::Struct(_) | Ty::Applied { .. }
+            ) && spark_drop::needs_drop(base_ty, type_table);
             if scoped {
                 fb.push_scope();
             }
@@ -241,14 +241,25 @@ pub fn lower_expr(
                 return temp;
             }
 
-            // Lower each field value in source order first (order of evaluation).
-            let source_fields: Vec<(Symbol, Operand)> = fields
-                .iter()
-                .map(|(name, val)| {
-                    let local = lower_expr(val, fb, mir, type_table, defs);
-                    (*name, Operand::Copy(Place::from_local(local)))
-                })
-                .collect();
+            // TAG [SPARK-151]
+            fb.push_scope();
+            let mut source_fields = Vec::with_capacity(fields.len());
+            for (name, value) in fields {
+                let source = lower_expr(value, fb, mir, type_table, defs);
+                if fb.is_terminated() {
+                    fb.pop_finished_scope();
+                    return void_temp(fb, expr);
+                }
+                let staged = stage_value(
+                    fb,
+                    source,
+                    fb.local_type(source),
+                    None,
+                    value.span,
+                    type_table,
+                );
+                source_fields.push((*name, Operand::Move(Place::from_local(staged))));
+            }
 
             // Reorder to match the struct's declaration order so that
             // codegen stores each value at the correct memory offset.
@@ -284,6 +295,7 @@ pub fn lower_expr(
                 ),
                 expr.span,
             );
+            fb.pop_finished_scope();
             temp
         }
 
@@ -716,12 +728,9 @@ fn lower_call<'a>(
             DefinitionKind::BuiltinFunction | DefinitionKind::ExternFunction
         )
     });
-    let tagged_params = if spark_call {
-        call_parameter_types(callee.ty, expr.span, type_table)
-            .filter(|params| takes_tagged_arguments(params, type_table))
-    } else {
-        None
-    };
+    let tagged_params = type_table
+        .call_parameter_types(callee.ty, expr.span)
+        .filter(|params| spark_call && takes_tagged_arguments(params, type_table));
     let function_reference =
         matches!(callee.kind, HirExprKind::Local(def) if fb.lookup_def(def).is_none());
     let func_local = lower_expr(callee, fb, mir, type_table, defs);
@@ -815,27 +824,6 @@ fn lower_call<'a>(
         fb.pop_scope_drops(None, expr.span);
     }
     dest
-}
-
-fn call_parameter_types(
-    callee_ty: TypeId,
-    span: spark_span::Span,
-    table: &TypeTable,
-) -> Option<Cow<'_, [TypeId]>> {
-    let Ty::Function { params, .. } = table.resolve(unwrap_type_wrappers(callee_ty, table)) else {
-        return None;
-    };
-    // NOTE [SPARK-111] Checking interns the parameter types for each generic
-    // call, so MIR can use the recorded specialization before building arguments.
-    let Some((_, subst)) = table.mono_instances().get(&span) else {
-        return Some(Cow::Borrowed(params));
-    };
-    Some(Cow::Owned(
-        params
-            .iter()
-            .map(|&param| spark_types::substitute::substitute(param, subst, table))
-            .collect(),
-    ))
 }
 
 fn takes_tagged_arguments(params: &[TypeId], table: &TypeTable) -> bool {
@@ -1072,7 +1060,7 @@ fn tagged_method_callee(
         return None;
     }
     let ty = table.get_def_type(method)?;
-    let params = call_parameter_types(ty, span, table)?;
+    let params = table.call_parameter_types(ty, span)?;
     takes_tagged_arguments(&params, table)
         .then(|| HirExpr::new(HirExprKind::Local(method), ty, span))
 }
@@ -1860,7 +1848,14 @@ fn lower_spawn(
         expr.span,
     );
 
-    let args = vec![Operand::Copy(Place::from_local(closure_local))];
+    // TAG [SPARK-149] Spawn consumes one callback owner.
+    let closure = Place::from_local(closure_local);
+    let argument = if fb.is_def_local(closure_local) || fb.owns_local(closure_local) {
+        Operand::Copy(closure)
+    } else {
+        Operand::Move(closure)
+    };
+    let args = vec![argument];
 
     let dest = fb.fresh_temp(expr.ty, expr.span);
     let cont = fb.new_block();

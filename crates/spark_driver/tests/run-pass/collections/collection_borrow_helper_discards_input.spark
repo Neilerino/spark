@@ -1,0 +1,12 @@
+fn select(used: Ref[List[Int]], ignored: Ref[List[Int]]): Map[String, Ref[List[Int]]] { return {"one": used} }
+fn main(): Int {
+    used: List[Int] = [1, 2]
+    ignored: List[Int]! = [8, 9]
+    first: Ref[List[Int]] = used
+    second: Ref[List[Int]] = ignored
+    ignored[0] = 7
+    entries: Map[String, Ref[List[Int]]] = select(first, second)
+    entries["one"] to { found: Ref[List[Int]] -> print(found.len()), Null -> print(99) }
+    print(ignored[0] ?? 99)
+    return 0
+}

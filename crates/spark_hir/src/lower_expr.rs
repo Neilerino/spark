@@ -167,7 +167,10 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
             } else {
                 lower_expr(callee, ctx)
             };
-            let param_types = extract_param_types(callee_hir.ty, ctx.table);
+            let param_types = ctx
+                .table
+                .call_parameter_types(callee_hir.ty, expr.span)
+                .unwrap_or_default();
             let is_print = is_print_call(callee, ctx.resolutions, ctx.definitions);
             let lowered_args: Vec<HirExpr> = args
                 .iter()
@@ -291,11 +294,36 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
                 .resolutions
                 .and_then(|res| res.get_path(path.span))
                 .unwrap_or(spark_resolve::DefId::DUMMY);
+            let substitution = match ctx.table.resolve(expr_type(expr.id, ctx.table)) {
+                Ty::Applied { base, args } => spark_types::substitute::build_subst_map(
+                    ctx.table.get_generic_params(*base).unwrap_or_default(),
+                    args,
+                ),
+                _ => spark_types::substitute::SubstMap::default(),
+            };
             HirExprKind::StructInit {
                 def_id,
                 fields: fields
                     .iter()
-                    .map(|f| (f.name.name, lower_expr(&f.value, ctx)))
+                    .map(|field| {
+                        // TAG [SPARK-105]
+                        let expected = ctx.table.get_struct_fields(def_id).and_then(|fields| {
+                            fields
+                                .iter()
+                                .find_map(|(name, ty)| (*name == field.name.name).then_some(*ty))
+                        });
+                        let value = if let Some(expected) = expected {
+                            let expected = spark_types::substitute::substitute(
+                                expected,
+                                &substitution,
+                                ctx.table,
+                            );
+                            lower_slot_value(&field.value, expected, ctx)
+                        } else {
+                            lower_expr(&field.value, ctx)
+                        };
+                        (field.name.name, value)
+                    })
                     .collect(),
             }
         }
@@ -325,7 +353,7 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
             HirExprKind::ListLit(
                 elems
                     .iter()
-                    .map(|e| lower_collection_value(e, slot, ctx))
+                    .map(|e| lower_slot_value(e, slot, ctx))
                     .collect(),
             )
         }
@@ -341,7 +369,7 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
                     .iter()
                     .map(|entry| {
                         let key = lower_expr(&entry.key, ctx);
-                        let value = lower_collection_value(&entry.value, slot, ctx);
+                        let value = lower_slot_value(&entry.value, slot, ctx);
                         (key, value)
                     })
                     .collect(),
@@ -455,9 +483,17 @@ fn lower_expr_kind(expr: &Expr, ctx: &mut LowerCtx<'_>) -> HirExprKind {
                     }
                 })
                 .collect();
+            // TAG [SPARK-114]
+            let enclosing_return = ctx.current_fn_ret;
+            ctx.current_fn_ret = match ctx.table.resolve(expr_type(expr.id, ctx.table)) {
+                Ty::Function { ret, .. } => Some(*ret),
+                _ => None,
+            };
+            let body = lower_expr(body, ctx);
+            ctx.current_fn_ret = enclosing_return;
             HirExprKind::Lambda {
                 params: hir_params,
-                body: Box::new(lower_expr(body, ctx)),
+                body: Box::new(body),
             }
         }
 
@@ -1387,7 +1423,7 @@ fn extract_fn_ret_ty(ty: TypeId, table: &TypeTable, default: TypeId) -> TypeId {
     }
 }
 
-pub(crate) fn lower_collection_value(expr: &Expr, slot: TypeId, ctx: &mut LowerCtx<'_>) -> HirExpr {
+pub(crate) fn lower_slot_value(expr: &Expr, slot: TypeId, ctx: &mut LowerCtx<'_>) -> HirExpr {
     use spark_types::check_expr::{collection_value_coercion, CollectionValueCoercion};
 
     let value = lower_expr(expr, ctx);

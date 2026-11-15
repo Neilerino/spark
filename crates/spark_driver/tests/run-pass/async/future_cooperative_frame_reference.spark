@@ -1,0 +1,14 @@
+// TAG [SPARK-154]
+async fn value(): Int { return 7 }
+async fn relay(pending: Future[Int]): Int {
+    source: Int = 10
+    observed: Ref[Int] = source
+    child: Int = await pending
+    return observed + child
+}
+fn main(): Int {
+    child: Future[Int] = spawn { value() }
+    parent: Future[Int] = spawn { relay(child) }
+    print(await parent)
+    return 0
+}

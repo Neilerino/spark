@@ -1,0 +1,19 @@
+// TAG [SPARK-114]
+
+fn apply(callback: (): Ref[Int]): Ref[Int] { return callback() }
+fn nest(callback: (): Ref[Int]): (): Ref[Int] { return fn(): Ref[Int] { return callback() } }
+fn produce(): Ref[Int] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    queue.send(borrowed)
+    pointer: Ref[Channel[Ref[Int]]] = queue
+    read: (): Ref[Int] = fn(): Ref[Int] { copied: Channel[Ref[Int]] = pointer
+        return copied.recv() }
+    return apply(nest(nest(read)))
+}
+fn main(): Int {
+    found: Ref[Int] = produce()
+    print(found)
+    return 0
+}

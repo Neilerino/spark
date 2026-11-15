@@ -1,0 +1,16 @@
+// TAG [SPARK-114]
+
+fn spin(): Void { spin() }
+fn forward(queue: Channel[Ref[Int]], value: Ref[Int]): Void {
+    queue.send(value)
+    spin()
+}
+fn publish(queue: Channel[Ref[Int]], value: Int): Void {
+    borrowed: Ref[Int] = value
+    forward(queue, borrowed)
+}
+fn main(): Int {
+    queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    publish(queue, 7)
+    return 0
+}

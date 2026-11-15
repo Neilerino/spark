@@ -1,0 +1,21 @@
+// TAG [SPARK-114]
+
+link "union_probe"
+extern fn opaque_map(target: Ref[Map[String, Ref[Int]]]!): Ref[Map[String, Ref[Int]]]!
+fn publish(target: Ref[Map[String, Ref[Int]]]!, value: Ref[Int]): Void {
+    pointer: Ref[Map[String, Ref[Int]]]! = opaque_map(target)
+    next: Map[String, Ref[Int]] = {"one": value}
+    pointer = next
+}
+fn forward(target: Ref[Map[String, Ref[Int]]]!, value: Ref[Int]): Void { publish(target, value) }
+fn produce(target: Ref[Map[String, Ref[Int]]]!, value: Int): Void {
+    borrowed: Ref[Int] = value
+    forward(target, borrowed)
+}
+fn main(): Int {
+    entries: Map[String, Ref[Int]]! = {}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    produce(target, 7)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    return 0
+}

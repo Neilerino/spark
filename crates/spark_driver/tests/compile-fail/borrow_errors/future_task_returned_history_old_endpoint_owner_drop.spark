@@ -1,0 +1,54 @@
+// TAG [SPARK-114]
+
+struct Cell { entries: Map[String, Ref[String]]! }
+struct Holder { target: Ref[Cell]! }
+struct Shared { holder: Ref[Holder]! }
+async fn remember(shared: Shared, goSave: Channel[Int], savedReady: Channel[Int], goRead: Channel[Int], ready: Channel[Int], output: Channel[Ref[String]], started: Channel[Int]): Int {
+    started.send(1)
+    first: Int = goSave.recv()
+    saved: Ref[Cell]! = shared.holder.target
+    savedReady.send(1)
+    second: Int = goRead.recv()
+    snapshot: Cell = saved
+    snapshot.entries["one"] to { value: Ref[String] -> output.send(value), Null -> {} }
+    ready.send(1)
+    return 0
+}
+fn launch(shared: Shared, replacement: Ref[Cell]!, goSave: Channel[Int], savedReady: Channel[Int], goRead: Channel[Int], ready: Channel[Int], output: Channel[Ref[String]], started: Channel[Int]): Future[Int] {
+    pending: Future[Int] = spawn { remember(shared, goSave, savedReady, goRead, ready, output, started) }
+    running: Int = started.recv()
+    goSave.send(1)
+    saved: Int = savedReady.recv()
+    holder: Ref[Holder]! = shared.holder
+    holder.target = replacement
+    return pending
+}
+fn main(): Int {
+    empty: Map[String, Ref[String]] = {}
+    a: Cell! = Cell { entries: empty }
+    b: Cell! = Cell { entries: empty }
+    aRef: Ref[Cell]! = a
+    bRef: Ref[Cell]! = b
+    holder: Holder! = Holder { target: aRef }
+    holderRef: Ref[Holder]! = holder
+    shared: Shared = Shared { holder: holderRef }
+    goSave: Channel[Int] = Channel[Int]()
+    savedReady: Channel[Int] = Channel[Int]()
+    goRead: Channel[Int] = Channel[Int]()
+    ready: Channel[Int] = Channel[Int]()
+    output: Channel[Ref[String]] = Channel[Ref[String]]()
+    started: Channel[Int] = Channel[Int]()
+    pending: Future[Int] = launch(shared, bRef, goSave, savedReady, goRead, ready, output, started)
+    if true {
+        text: String = " seven ".trim()
+        borrowed: Ref[String] = text
+        next: Map[String, Ref[String]] = {"one": borrowed}
+        aRef.entries = next
+        goRead.send(1)
+        arrived: Int = ready.recv()
+        joined: Int = await pending
+    }
+    result: Ref[String] = output.recv()
+    print(result.len())
+    return 0
+}
