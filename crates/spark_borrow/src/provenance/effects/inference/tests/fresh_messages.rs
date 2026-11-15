@@ -296,6 +296,7 @@ fn late_spawn_and_send_imports_cannot_restore_fresh_birth_provenance() {
             };
             actor.1.memory.import(
                 std::sync::Arc::new(Lane {
+                    execution: crate::provenance::effects::Execution::Current,
                     event: birth.site,
                     actor: actor.0.clone(),
                     location: Sample {
@@ -351,6 +352,7 @@ fn late_spawn_and_send_imports_cannot_restore_fresh_birth_provenance() {
         let ty = flow.function.locals[child.index()].ty;
         view.memory.import(
             std::sync::Arc::new(Lane {
+                execution: crate::provenance::effects::Execution::Current,
                 event: OpaqueSite {
                     function: flow.function.def_id,
                     point,

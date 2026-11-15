@@ -54,12 +54,13 @@ impl Flow<'_> {
         actuals: CallActuals<'_>,
         key: &Key,
         args: Option<&[Operand]>,
+        execution: super::prefix::Execution,
     ) -> FxHashMap<Arc<Receive>, PrefixWrites> {
         let mut bound = FxHashMap::default();
         for (receive, values) in &summary.receive_snapshots {
             let writes = self.bind_publications(values, function, actuals, key, args);
             let mut caller_values = actuals.read.state.publications.clone();
-            self.remember_publications(&writes, &mut caller_values);
+            self.remember_publications_as(&writes, execution, &mut caller_values);
             if let Some(source) = &receive.source {
                 for target in self.bind_queue_target(source, function, actuals) {
                     let caller_receive = Arc::new(Receive {

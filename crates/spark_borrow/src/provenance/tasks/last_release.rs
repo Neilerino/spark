@@ -76,7 +76,8 @@ impl LastRelease {
         let Some(current) = state.current_execution_record(self.local) else {
             return true;
         };
-        let settled = flow.task_facts(&current, &self.handle.target, point, state, self.result);
+        let mut settled = flow.task_facts(&current, &self.handle.target, point, state, self.result);
+        settled.prefix.enter_task_boundary();
         flow.observe_prefix(&settled.prefix, point, state);
         flow.apply_prefix_writes(
             &settled.prefix.memory,
@@ -91,7 +92,8 @@ impl LastRelease {
         let Some(current) = state.current_execution_record(self.local) else {
             return true;
         };
-        let checked = flow.task_facts(&current, &self.handle.target, point, state, self.result);
+        let mut checked = flow.task_facts(&current, &self.handle.target, point, state, self.result);
+        checked.prefix.enter_task_boundary();
         flow.observe_prefix(&checked.prefix, point, state);
         if checked.return_status == ReturnStatus::MayReturn {
             if settled.return_status == ReturnStatus::MayReturn
@@ -131,13 +133,14 @@ impl Flow<'_> {
         let Some(release) = LastRelease::at_drop(self, place, state) else {
             return true;
         };
-        let facts = self.task_facts(
+        let mut facts = self.task_facts(
             &release.record,
             &release.handle.target,
             point,
             state,
             release.result,
         );
+        facts.prefix.enter_task_boundary();
         self.observe_prefix(&facts.prefix, point, state);
         self.apply_prefix_writes(
             &facts.prefix.memory,

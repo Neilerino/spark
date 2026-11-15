@@ -6,7 +6,7 @@ use spark_types::Ty;
 
 use super::super::tasks::{Handle, Record, ReturnStatus, Target};
 use super::{
-    Aliases, CallActuals, CallOutcome, Flow, FxHashMap, FxHashSet, Intent, Key, MirFunction,
+    Aliases, CallActuals, CallOutcome, Flow, FxHashMap, FxHashSet, Intent, Key, Local, MirFunction,
     Operand, Point, Selector, Slot, TypeId, Value,
 };
 
@@ -20,10 +20,20 @@ pub(in crate::provenance) struct TaskFacts {
     pub returned: Value,
     pub prefix: super::prefix::Prefix,
     pub normal_return: bool,
+    pub normal_memory: crate::provenance::tasks::memory::NormalMemory,
     pub return_status: crate::provenance::tasks::ReturnStatus,
     pub contexts: FxHashSet<Key>,
     pub memory_support: bool,
+    pub unknown_memory_write: bool,
     pub clean_captures: FxHashSet<Slot>,
+}
+
+impl TaskFacts {
+    const fn incomplete_context(&mut self, status: ReturnStatus) {
+        self.return_status.join(status);
+        self.normal_memory.incomplete = true;
+        self.unknown_memory_write = true;
+    }
 }
 
 impl Flow<'_> {
@@ -71,6 +81,7 @@ impl Flow<'_> {
         let fresh_leaf_task = self.leaf_task(&record);
         let (target, mut returned) = super::super::tasks::birth(self.function.def_id, point, ty);
         let mut facts = self.task_facts(&record, &target, point, state, *inner);
+        facts.prefix.enter_task_boundary();
         self.observe_prefix(&facts.prefix, point, state);
         let mut spawn_outputs =
             self.spawn_queue_outputs(argument, &record, &target, *inner, point, state);
@@ -84,6 +95,7 @@ impl Flow<'_> {
             },
             super::super::tasks::views::View::pending(callback.clone(), record.callback_ty),
         );
+        Self::seed_spawn_interference(&mut returned, state);
         returned.join(&callback.task_lineage());
         returned.join(&facts.returned.prefixed(Slot::Element, ty, self.table));
         Some(TaskDispatch::Returns(vec![CallOutcome {
@@ -92,6 +104,7 @@ impl Flow<'_> {
             spawn_return: crate::provenance::tasks::fresh::Transfer::at_spawn(
                 self, args, &record, ty, point,
             ),
+            spawned_memory: Some(facts.unknown_memory_write),
             fresh_leaf_task,
             spawn_owners: self.spawn_owner_transfer(args, fresh_leaf_task, state),
             residuals: facts.prefix.residuals,
@@ -151,7 +164,8 @@ impl Flow<'_> {
             };
             normal |= records.is_empty() || unknown;
             for record in records {
-                let facts = self.task_facts(&record, &handle.target, point, state, ty);
+                let mut facts = self.task_facts(&record, &handle.target, point, state, ty);
+                facts.prefix.enter_task_boundary();
                 self.observe_prefix(&facts.prefix, point, state);
                 queues.extend(facts.prefix.queues);
                 prefix_memory.extend(facts.prefix.memory);
@@ -236,6 +250,29 @@ impl Flow<'_> {
         read: super::super::observations::ReadView<'_>,
         ty: TypeId,
     ) -> TaskFacts {
+        self.task_facts_with_memory(record, target, point, read, ty, false)
+    }
+
+    pub(in crate::provenance) fn normal_task_facts_in(
+        &mut self,
+        record: &Record,
+        target: &Target,
+        point: Point,
+        read: super::super::observations::ReadView<'_>,
+        ty: TypeId,
+    ) -> TaskFacts {
+        self.task_facts_with_memory(record, target, point, read, ty, true)
+    }
+
+    fn task_facts_with_memory(
+        &mut self,
+        record: &Record,
+        target: &Target,
+        point: Point,
+        read: super::super::observations::ReadView<'_>,
+        ty: TypeId,
+        include_normal_memory: bool,
+    ) -> TaskFacts {
         let mut facts = TaskFacts::default();
         let callee = &record.callback;
         let actuals = CallActuals {
@@ -255,15 +292,20 @@ impl Flow<'_> {
         } else {
             ReturnStatus::NoReturn
         };
+        facts.normal_memory.incomplete = !include_normal_memory
+            || targets.open
+            || targets.unresolved
+            || targets.known.is_empty();
         facts.normal_return = targets.open || targets.unresolved;
         facts.memory_support = targets.open || targets.unresolved;
+        facts.unknown_memory_write = targets.open || targets.unresolved || targets.known.is_empty();
         for def in &targets.known {
             let Some(context) = self.program else {
-                facts.return_status.join(ReturnStatus::MayReturn);
+                facts.incomplete_context(ReturnStatus::MayReturn);
                 continue;
             };
             let Some(function) = context.mir.functions.get(def) else {
-                facts.return_status.join(ReturnStatus::MayReturn);
+                facts.incomplete_context(ReturnStatus::MayReturn);
                 continue;
             };
             let roots = &context.ports[def];
@@ -282,7 +324,7 @@ impl Flow<'_> {
                 clean.retain(|slot| proven.contains(slot));
                 let Some(summary) = context.summaries.get(&key) else {
                     clean.clear();
-                    facts.return_status.join(ReturnStatus::Pending);
+                    facts.incomplete_context(ReturnStatus::Pending);
                     self.requests.insert(key);
                     continue;
                 };
@@ -290,33 +332,27 @@ impl Flow<'_> {
                     aliases: Some(&key.aliases),
                     ..actuals
                 };
-                let resident = clean
-                    .iter()
-                    .filter_map(|slot| {
-                        let Slot::Capture(_, index, _) = slot else {
-                            return None;
-                        };
-                        callee
-                            .futures
-                            .get(&vec![slot.clone()])
-                            .filter(|handles| !handles.is_empty())
-                            .map(|_| spark_mir::Local(function.param_count + 1 + *index as u32))
-                    })
-                    .collect();
+                let resident = Self::resident_task_captures(callee, function, &clean);
                 facts.prefix.merge(self.bind_prefix(
                     summary,
                     function,
                     actuals,
                     &key,
-                    None,
-                    Some(&resident),
+                    super::prefix::PrefixContext::Task(&resident),
                 ));
                 facts.normal_return |= summary.normal_return;
                 if summary.normal_return {
                     facts.return_status.join(ReturnStatus::MayReturn);
+                    if include_normal_memory {
+                        facts
+                            .normal_memory
+                            .join(self.bind_normal_memory(summary, function, actuals, &key));
+                    }
                 }
-                facts.memory_support |=
-                    !summary.prefix_memory.is_empty() || summary.unknown_copy_clobber;
+                facts.unknown_memory_write |= summary.unknown_memory_write;
+                facts.memory_support |= !summary.prefix_memory.is_empty()
+                    || summary.unknown_copy_clobber
+                    || summary.unknown_memory_write;
                 if summary.normal_return {
                     facts
                         .returned
@@ -324,13 +360,61 @@ impl Flow<'_> {
                 }
             }
             if !observed {
-                facts.return_status.join(ReturnStatus::MayReturn);
+                facts.incomplete_context(ReturnStatus::MayReturn);
             }
             if observed && !targets.open && !targets.unresolved {
                 facts.clean_captures.extend(clean);
             }
         }
+        self.unknown_memory_write |= facts.unknown_memory_write;
         facts
+    }
+
+    fn bind_normal_memory(
+        &mut self,
+        summary: &super::Summary,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        key: &Key,
+    ) -> crate::provenance::tasks::memory::NormalMemory {
+        let Some(certificate) = self
+            .program
+            .and_then(|context| context.proofs)
+            .and_then(|proofs| proofs.get(key))
+            .and_then(crate::provenance::tasks::proofs::Proof::certificate)
+        else {
+            return crate::provenance::tasks::memory::NormalMemory {
+                incomplete: true,
+                ..Default::default()
+            };
+        };
+        let views = certificate.actual_definitions.views();
+        let writes = self.bind_memory_snapshots(summary, views, function, actuals, &key.aliases);
+        crate::provenance::tasks::memory::NormalMemory {
+            incomplete: writes.len() != views.len(),
+            alternatives: vec![writes],
+            ..Default::default()
+        }
+    }
+
+    fn resident_task_captures(
+        callee: &Value,
+        function: &MirFunction,
+        clean: &FxHashSet<Slot>,
+    ) -> FxHashSet<Local> {
+        clean
+            .iter()
+            .filter_map(|slot| {
+                let Slot::Capture(_, index, _) = slot else {
+                    return None;
+                };
+                callee
+                    .futures
+                    .get(&vec![slot.clone()])
+                    .filter(|handles| !handles.is_empty())
+                    .map(|_| Local(function.param_count + 1 + *index as u32))
+            })
+            .collect()
     }
 
     fn future_capture_slots(&self, function: &MirFunction) -> FxHashSet<Slot> {

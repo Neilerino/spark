@@ -345,6 +345,7 @@ fn producer_reservations_revalidate_copy_move_and_late_imported_clobbers() {
                         };
                         view.memory.import(
                             std::sync::Arc::new(Lane {
+                                execution: crate::provenance::effects::Execution::Current,
                                 event: OpaqueSite {
                                     function: flow.function.def_id,
                                     point,

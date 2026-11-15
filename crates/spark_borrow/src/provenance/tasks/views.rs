@@ -97,6 +97,7 @@ impl View {
     pub(in crate::provenance) fn retains_activity(&self) -> bool {
         self.fallback
             || self.memory.may_write
+            || self.memory.unknown_write
             || self.memory.samples().next().is_some()
             || self
                 .callbacks
@@ -332,14 +333,25 @@ impl Value {
             &mut super::memory::Effects,
         ),
     ) {
-        for view in self
-            .task_views
-            .values_mut()
-            .flat_map(|subjects| subjects.values_mut())
-        {
-            visit(&mut view.history, &mut view.memory);
-            for callback in view.callbacks.values_mut() {
-                callback.visit_progress(&mut visit);
+        self.visit_task_progress_except_root(None, &mut visit);
+    }
+
+    pub(super) fn visit_task_progress_except_root(
+        &mut self,
+        own: Option<&Subject>,
+        mut visit: impl FnMut(
+            &mut crate::provenance::observations::History,
+            &mut super::memory::Effects,
+        ),
+    ) {
+        for (path, subjects) in &mut self.task_views {
+            for (subject, view) in subjects {
+                if !path.is_empty() || own != Some(subject) {
+                    visit(&mut view.history, &mut view.memory);
+                }
+                for callback in view.callbacks.values_mut() {
+                    callback.visit_progress(&mut visit);
+                }
             }
         }
     }

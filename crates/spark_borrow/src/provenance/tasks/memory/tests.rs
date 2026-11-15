@@ -39,6 +39,7 @@ fn function(types: &[TypeId]) -> MirFunction {
 
 fn lane(function: &MirFunction, point: Point, actor: &Subject, local: Local) -> Arc<Lane> {
     Arc::new(Lane {
+        execution: crate::provenance::effects::Execution::Current,
         event: OpaqueSite {
             function: function.def_id,
             point,
@@ -86,6 +87,7 @@ fn projected_pending_writes_invalidate_current_future_copy_peers_even_without_da
         (
             vec![(lane(&function, point, &actor, Local(1)), Value::default())],
             true,
+            false,
         ),
         point,
         &mut state,
@@ -133,16 +135,21 @@ fn pending_and_settled_memory_reach_the_original_rhs_after_argument_consumption(
         &Storage::Logical(Local(0)),
         Vec::new(),
         actor.clone(),
-        (vec![(lane(&function, point, &actor, Local(2)), rhs)], true),
+        (
+            vec![(lane(&function, point, &actor, Local(2)), rhs)],
+            true,
+            false,
+        ),
         point,
         &mut state,
     );
-    flow.settle_task_memory(
-        &state.future_copies.witness(Local(0)),
+    let prepared = flow.prepare_task_memory(
+        vec![state.future_copies.witness(Local(0))],
         &[],
         point,
         &mut state,
     );
+    flow.commit_task_memory(prepared, point, &mut state);
     state.consume(Local(1));
     flow.record_consumed(point, Local(1));
     let read = flow.read(&Place::from_local(Local(2)), &state);
@@ -196,11 +203,17 @@ fn a_captured_call_witness_cannot_complete_a_peer_written_during_the_prefix() {
         (
             vec![(lane(&function, point, &actor, Local(1)), Value::default())],
             true,
+            false,
         ),
         point,
         &mut state,
     );
-    let returned = flow.apply_call_future_proof(proof, &[], point, &mut state);
+    let prepared = flow.prepare_task_memory(proof.completed, &[], point, &mut state);
+    let settled = flow.commit_task_memory(prepared, point, &mut state);
+    let returned = flow.apply_call_copy_proof(proof.returned, &[], &mut state);
+    for completion in settled {
+        completion.finish(&mut flow, None, point, &mut state);
+    }
     flow.store_future_copy(&Place::from_local(Local(3)), returned, &mut state);
     let pending = |local| {
         state
@@ -311,7 +324,7 @@ fn a_writer_with_no_resolved_target_survives_uncertain_root_loss() {
         &Storage::Logical(Local(1)),
         Vec::new(),
         actor,
-        (Vec::new(), true),
+        (Vec::new(), true, false),
         point,
         &mut state,
     );
@@ -483,6 +496,8 @@ fn prefix_only_activity_does_not_become_a_normal_continuation_owner() {
         place_writes: Vec::new(),
         memory: Vec::new(),
         async_memory: Vec::new(),
+        actual_definitions: Vec::new(),
+        ordered_definitions: Vec::new(),
         fresh_outputs: Vec::new(),
         spawn_outputs: Vec::new(),
         producer_events: Vec::new(),
@@ -490,6 +505,7 @@ fn prefix_only_activity_does_not_become_a_normal_continuation_owner() {
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         receipt: None,
         direct_queue_send: None,
+        spawned_memory: None,
         spawn_return: None,
         fresh_leaf_task: false,
         spawn_owners: None,
@@ -585,6 +601,8 @@ fn normal_activity_keeps_its_exact_facts_when_a_prefix_instance_has_the_same_key
         place_writes: Vec::new(),
         memory: Vec::new(),
         async_memory: Vec::new(),
+        actual_definitions: Vec::new(),
+        ordered_definitions: Vec::new(),
         fresh_outputs: Vec::new(),
         spawn_outputs: Vec::new(),
         producer_events: Vec::new(),
@@ -592,6 +610,7 @@ fn normal_activity_keeps_its_exact_facts_when_a_prefix_instance_has_the_same_key
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         receipt: None,
         direct_queue_send: None,
+        spawned_memory: None,
         spawn_return: None,
         fresh_leaf_task: false,
         spawn_owners: None,
@@ -734,6 +753,8 @@ fn restored_live_history_keeps_data_sampled_only_by_the_normal_closure() {
         place_writes: Vec::new(),
         memory: Vec::new(),
         async_memory: Vec::new(),
+        actual_definitions: Vec::new(),
+        ordered_definitions: Vec::new(),
         fresh_outputs: Vec::new(),
         spawn_outputs: Vec::new(),
         producer_events: Vec::new(),
@@ -741,6 +762,7 @@ fn restored_live_history_keeps_data_sampled_only_by_the_normal_closure() {
         queue_send_counts: crate::provenance::channels::counts::Sends::default(),
         receipt: None,
         direct_queue_send: None,
+        spawned_memory: None,
         spawn_return: None,
         fresh_leaf_task: false,
         spawn_owners: None,
@@ -825,7 +847,7 @@ fn completing_a_reused_static_task_does_not_retire_an_older_residual_writer() {
         &Storage::Logical(Local(1)),
         Vec::new(),
         actor.clone(),
-        (vec![(write.clone(), Value::default())], true),
+        (vec![(write.clone(), Value::default())], true, false),
         point,
         &mut state,
     );
@@ -849,7 +871,7 @@ fn completing_a_reused_static_task_does_not_retire_an_older_residual_writer() {
         &Storage::Residual(key),
         Vec::new(),
         actor,
-        (vec![(write, rhs)], true),
+        (vec![(write, rhs)], true, false),
         point,
         &mut state,
     );
@@ -935,11 +957,12 @@ fn a_capture_only_child_settles_its_last_write_before_its_backing_is_removed() {
             &Storage::ExecutionCallback(Local(0), callback),
             path,
             actor,
-            (vec![(write.clone(), rhs)], true),
+            (vec![(write.clone(), rhs)], true, false),
             point,
             &mut state,
         );
-        flow.settle_task_memory(&witness, &[], point, &mut state);
+        let prepared = flow.prepare_task_memory(vec![witness], &[], point, &mut state);
+        flow.commit_task_memory(prepared, point, &mut state);
         assert!(
             state
                 .settled_memory
@@ -971,4 +994,377 @@ fn a_capture_only_child_settles_its_last_write_before_its_backing_is_removed() {
             expected
         );
     }
+}
+
+#[test]
+fn unsupported_frame_writes_keep_payload_sources_and_unknown_support() {
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let future = table.intern(Ty::Future { inner: int });
+    let function = function(&[future, int]);
+    let point = Point::new(BlockId::ENTRY, 0);
+    let (target, current) = tasks::birth(function.def_id, point, future);
+    let actor = Subject {
+        target,
+        capture: None,
+    };
+    for (scope, owner) in [
+        (FrameScope::Foreign, function.def_id),
+        (FrameScope::Current, DefId::new(10011)),
+    ] {
+        let mut state = State::default();
+        state.set(Local(0), current.clone());
+        let origin = Origin::Loan(point);
+        state.set(Local(1), Value::reference(origin.clone()));
+        let mut flow = Flow::new(&function, &table, None);
+        flow.ensure_transfer(point, &state);
+        let mut write = (*lane(&function, point, &actor, Local(1))).clone();
+        let Memory::Frame {
+            scope: actual_scope,
+            function: actual_owner,
+            ..
+        } = &mut write.location.memory
+        else {
+            unreachable!()
+        };
+        *actual_scope = scope;
+        *actual_owner = owner;
+        let write = Arc::new(write);
+        let rhs = state.value(Local(1)).sourced(&Storage::Logical(Local(1)));
+        flow.cache_pending_memory(
+            &Storage::Logical(Local(0)),
+            Vec::new(),
+            actor.clone(),
+            (vec![(write.clone(), rhs)], true, false),
+            point,
+            &mut state,
+        );
+        assert!(flow.unknown_memory_write);
+        let view = &state.values[&Local(0)].task_views[&Vec::new()][&actor];
+        assert!(view.memory.unknown_write);
+        let (_, value) = view.memory.samples().next().unwrap();
+        let sampled = Flow::sample_pending_write(&write, value, &state);
+        assert!(sampled.origins().contains(&origin));
+        let atom = |storage| Atom {
+            coordinate: Coordinate {
+                storage,
+                path: Vec::new(),
+            },
+            origin: origin.clone(),
+            capture: None,
+        };
+        assert_eq!(
+            flow.transfers[&point].before(&Demand::from_iter([atom(Storage::PendingWrite(write))])),
+            Demand::from_iter([atom(Storage::Logical(Local(1)))])
+        );
+    }
+}
+
+#[test]
+fn only_a_destination_written_on_every_normal_path_can_replace_memory() {
+    use crate::provenance::effects::MemoryWrite;
+
+    let mut table = TypeTable::new();
+    let ty = table.intern(Ty::Int(IntWidth::I64));
+    let function = function(&[ty, ty, ty]);
+    let flow = Flow::new(&function, &table, None);
+    let state = State::default();
+    let point = Point::new(BlockId::ENTRY, 0);
+    let store = |local| MemoryWrite {
+        target: flow.reference_metadata(&Place::from_local(Local(local)), point, &state),
+        ty,
+        value: Value::default(),
+    };
+
+    let all_paths = flow.normalize_final_writes(
+        NormalMemory {
+            alternatives: vec![vec![store(1), store(2)], vec![store(1)]],
+            ..Default::default()
+        },
+        point,
+    );
+    assert_eq!(all_paths.exact.len(), 1);
+    assert!(matches!(
+        all_paths.exact.keys().next().unwrap().memory,
+        Memory::Frame {
+            local: Local(1),
+            ..
+        }
+    ));
+    assert_eq!(all_paths.weak.len(), 1);
+
+    let skipped = flow.normalize_final_writes(
+        NormalMemory {
+            alternatives: vec![vec![store(1)], vec![]],
+            ..Default::default()
+        },
+        point,
+    );
+    assert!(skipped.exact.is_empty());
+    assert_eq!(skipped.weak.len(), 1);
+}
+
+#[test]
+fn unresolved_nested_settlement_preserves_an_earlier_borrow() {
+    let mut table = TypeTable::new();
+    let ty = table.intern(Ty::Int(IntWidth::I64));
+    let function = function(&[ty, ty, ty]);
+    let mut flow = Flow::new(&function, &table, None);
+    let point = Point::new(BlockId::ENTRY, 0);
+    let mut state = State::default();
+    flow.ensure_transfer(point, &state);
+    let (_, parent) = tasks::birth(function.def_id, point, ty);
+    let actor = Subject::from(parent.futures[&Vec::new()].iter().next().unwrap());
+    let known = lane(&function, point, &actor, Local(1));
+    let known_sample = known.location.clone();
+    let before = Value::reference(Origin::Loan(point));
+    flow.store_settled_sample(known_sample.clone(), before.clone(), point, &mut state);
+
+    let request = flow
+        .reserve_completions(vec![state.future_copies.witness(Local(2))], point)
+        .pop()
+        .unwrap();
+    let destination = flow.physical_sample(&known_sample).unwrap();
+    flow.stage_final_write(
+        tasks::Role::root(Local(2)),
+        known_sample.clone(),
+        destination,
+        Vec::new(),
+        Value::default(),
+        point,
+    );
+    request
+        .settle(&mut flow, point)
+        .unwrap()
+        .finish(&mut flow, None, point, &mut state);
+
+    let mut without_nested = state.clone();
+    let saved_scope = flow.completion_scope.clone();
+    flow.finish_final_writes(point, &mut without_nested);
+    assert_ne!(
+        without_nested.settled_memory.get(&known_sample),
+        Some(&before)
+    );
+    flow.completion_scope = saved_scope;
+
+    let mut unresolved = (*known).clone();
+    unresolved.location.memory = Memory::Unavailable(unresolved.event);
+    let nested = PreparedMemory {
+        requests: Vec::new(),
+        facets: vec![PreparedFacet {
+            emitter: None,
+            interference: Effects::default(),
+            prefix: vec![(Arc::new(unresolved), Value::default())],
+            normal: NormalMemory::default(),
+        }],
+    };
+    flow.commit_task_memory(nested, point, &mut state);
+    flow.finish_final_writes(point, &mut state);
+    assert_eq!(state.settled_memory.get(&known_sample), Some(&before));
+}
+
+#[test]
+fn helper_clear_keeps_the_new_source_of_the_same_loan() {
+    use crate::provenance::demand::Source;
+
+    let mut table = TypeTable::new();
+    let ty = table.intern(Ty::Int(IntWidth::I64));
+    let function = function(&[ty, ty, ty, ty]);
+    let mut flow = Flow::new(&function, &table, None);
+    let point = Point::new(BlockId::ENTRY, 0);
+    let mut state = State::default();
+    let origin = Origin::Loan(point);
+    let value = Value::reference(origin.clone());
+    state.set(Local(2), value.clone());
+    state.set(Local(3), value.clone());
+    flow.ensure_transfer(point, &state);
+    let sample = Sample {
+        memory: Memory::Frame {
+            scope: FrameScope::Current,
+            function: function.def_id,
+            local: Local(1),
+            ty,
+        },
+        path: Vec::new(),
+        ty,
+    };
+    let destination = flow.physical_sample(&sample).unwrap();
+    flow.store_settled_sample(
+        sample.clone(),
+        value.clone().sourced(&Storage::Logical(Local(2))),
+        point,
+        &mut state,
+    );
+    flow.reserve_completions(Vec::new(), point);
+    let new = flow.freeze_sources(point, value.sourced(&Storage::Logical(Local(3))));
+    let (_, mut writer) = tasks::birth(function.def_id, point, ty);
+    let actor = Subject::from(writer.futures[&Vec::new()].iter().next().unwrap());
+    let publication = lane(&function, point, &actor, Local(1));
+    let view = writer
+        .task_views
+        .entry(Vec::new())
+        .or_default()
+        .entry(actor)
+        .or_default();
+    view.memory.import(publication.clone(), new.clone());
+    flow.record_path_store(
+        point,
+        Coordinate {
+            storage: Storage::PendingWrite(publication.clone()),
+            path: Vec::new(),
+        },
+        &new,
+        false,
+    );
+    state.pending_memory.insert(publication, new);
+    flow.preserve_pending_loss(&writer, &Vec::new(), point, &mut state, true);
+    let observe = |state: &State| {
+        state.settled_memory[&sample]
+            .clone()
+            .sourced(&Storage::SettledMemory(sample.clone()))
+    };
+    let before = flow.freeze_sources(point, observe(&state));
+    assert_eq!(before.all_sources().len(), 2);
+
+    flow.clear_entry_settled_memory(&destination, point, &mut state);
+
+    let after = flow.freeze_sources(point, observe(&state));
+    assert_eq!(
+        after.all_sources(),
+        FxHashSet::from_iter([Source::Entry(Atom {
+            coordinate: Coordinate {
+                storage: Storage::Logical(Local(3)),
+                path: Vec::new()
+            },
+            origin,
+            capture: None,
+        })])
+    );
+    assert_eq!(
+        before.all_sources().len(),
+        2,
+        "a previously saved read retains both sources"
+    );
+}
+
+#[test]
+fn helper_field_clear_keeps_new_data_and_the_untouched_sibling() {
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let ty = table.intern(Ty::Tuple(vec![int, int]));
+    let function = function(&[int, ty, int, int, int]);
+    let point = Point::new(BlockId::ENTRY, 0);
+    let mut state = State::default();
+    let loan = |index| Value::reference(Origin::Loan(Point::new(BlockId::ENTRY, index)));
+    for index in 2..=4 {
+        state.set(Local(index), loan(index));
+    }
+    let mut flow = Flow::new(&function, &table, None);
+    flow.ensure_transfer(point, &state);
+    let sample = Sample {
+        memory: Memory::Frame {
+            scope: FrameScope::Current,
+            function: function.def_id,
+            local: Local(1),
+            ty,
+        },
+        path: Vec::new(),
+        ty,
+    };
+    let field = crate::provenance::Slot::Tuple;
+    let sourced = |local| {
+        state
+            .value(Local(local))
+            .sourced(&Storage::Logical(Local(local)))
+    };
+    let mut before = sourced(2).prefixed(field(0), ty, &table);
+    before.join(&sourced(3).prefixed(field(1), ty, &table));
+    let fresh = flow.freeze_sources(point, sourced(4).prefixed(field(0), ty, &table));
+    flow.store_settled_sample(sample.clone(), before, point, &mut state);
+    flow.reserve_completions(Vec::new(), point);
+    let root = flow.physical_sample(&sample).unwrap();
+    flow.trace_completion_import(root.clone(), point);
+    flow.store_settled_sample(sample.clone(), fresh, point, &mut state);
+    let destination = Coordinate {
+        storage: root.storage,
+        path: vec![field(0)],
+    };
+
+    flow.clear_entry_settled_memory(&destination, point, &mut state);
+
+    let after = &state.settled_memory[&sample];
+    assert_eq!(after.project(&field(0)).origins(), loan(4).origins());
+    assert_eq!(after.project(&field(1)).origins(), loan(3).origins());
+}
+
+#[test]
+fn staged_final_value_retires_its_helper_frame_before_installation() {
+    use crate::provenance::address::{Endpoint, FrameLifetime};
+    use crate::provenance::value::Leaf;
+
+    let ty = TypeId::ERROR;
+    let table = TypeTable::new();
+    let function = function(&[ty, ty, ty]);
+    let mut flow = Flow::new(&function, &table, None);
+    let point = Point::new(BlockId::ENTRY, 0);
+    let boundary = OpaqueSite {
+        function: function.def_id,
+        point,
+    };
+    let mut state = State::default();
+    flow.ensure_transfer(point, &state);
+    flow.frame_boundaries.insert(boundary);
+    let sample = Sample {
+        memory: Memory::Frame {
+            scope: FrameScope::Current,
+            function: function.def_id,
+            local: Local(1),
+            ty,
+        },
+        path: Vec::new(),
+        ty,
+    };
+    let mut endpoint = Endpoint::Frame {
+        lifetime: FrameLifetime::DuringCall {
+            boundary,
+            owner_return: boundary,
+        },
+        function: DefId::new(10011),
+        root: point,
+        local: Local(1),
+        root_ty: ty,
+        pointee: ty,
+        location: Vec::new(),
+    };
+    let value = Value::reference(Origin::Loan(point)).with_metadata(&Leaf {
+        endpoints: FxHashSet::from_iter([endpoint.clone()]),
+        ..Leaf::default()
+    });
+    let request = flow
+        .reserve_completions(vec![state.future_copies.witness(Local(2))], point)
+        .pop()
+        .unwrap();
+    flow.stage_final_write(
+        tasks::Role::root(Local(2)),
+        sample.clone(),
+        flow.physical_sample(&sample).unwrap(),
+        Vec::new(),
+        value,
+        point,
+    );
+    request
+        .settle(&mut flow, point)
+        .unwrap()
+        .finish(&mut flow, None, point, &mut state);
+    flow.retire_call_frames(point, &mut state);
+    flow.finish_final_writes(point, &mut state);
+
+    if let Endpoint::Frame { lifetime, .. } = &mut endpoint {
+        *lifetime = FrameLifetime::Returned(boundary);
+    }
+    let installed = &state.settled_memory[&sample];
+    assert!(installed
+        .leaves
+        .values()
+        .any(|leaf| leaf.endpoints.contains(&endpoint)));
 }

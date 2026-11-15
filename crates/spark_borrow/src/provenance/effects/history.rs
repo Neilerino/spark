@@ -48,6 +48,21 @@ impl Flow<'_> {
     ) -> crate::provenance::tasks::memory::Effects {
         let mut bound = crate::provenance::tasks::memory::Effects::default();
         bound.may_write = memory.may_write;
+        bound.unknown_write = memory.unknown_write;
+        bound.unknown_interference = memory.unknown_interference;
+        for sample in &memory.interference {
+            for location in self.bind_observation_sample(sample, function, actuals) {
+                bound.unknown_interference |= matches!(
+                    location.memory,
+                    Memory::Unavailable(_)
+                        | Memory::Frame {
+                            scope: FrameScope::Foreign,
+                            ..
+                        }
+                );
+                bound.interference.insert(location);
+            }
+        }
         for (lane, value) in memory.samples() {
             let value = self.bind(
                 &value,
@@ -62,6 +77,7 @@ impl Flow<'_> {
                     std::sync::Arc::new(crate::provenance::tasks::memory::Lane {
                         event: lane.event,
                         actor: actor.clone(),
+                        execution: lane.execution,
                         location,
                     }),
                     value.clone(),

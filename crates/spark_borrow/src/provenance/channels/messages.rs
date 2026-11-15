@@ -244,6 +244,13 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
+        self.overwrite_completion_sources(
+            &crate::provenance::demand::Coordinate {
+                storage: Storage::QueueCurrent(slot.clone()),
+                path: Vec::new(),
+            },
+            point,
+        );
         state.queue_promises.remove(slot);
         state.channel_copies.forget_output(slot);
         state.future_copies.forget_output(slot);

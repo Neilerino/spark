@@ -482,6 +482,7 @@ fn late_prefix_memory_clobbers_cancel_only_affected_final_release_proofs() {
                 .unwrap();
             view.memory.import(
                 std::sync::Arc::new(Lane {
+                    execution: crate::provenance::effects::Execution::Current,
                     event: OpaqueSite {
                         function: flow.function.def_id,
                         point,

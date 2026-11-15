@@ -38,7 +38,7 @@ impl PublicationValues {
     pub fn events(&self) -> impl Iterator<Item = (OpaqueSite, &Value)> {
         self.memory
             .iter()
-            .map(|((site, _), value)| (*site, value))
+            .map(|(event, value)| (event.site, value))
             .chain(
                 self.queues
                     .iter()
@@ -88,8 +88,21 @@ impl Flow<'_> {
         writes: &PrefixWrites,
         publications: &mut PublicationValues,
     ) {
+        self.remember_publications_as(writes, super::Execution::Current, publications);
+    }
+
+    pub(super) fn remember_publications_as(
+        &self,
+        writes: &PrefixWrites,
+        execution: super::Execution,
+        publications: &mut PublicationValues,
+    ) {
         for event in &writes.memory {
-            self.remember_memory_publication(event, &mut publications.memory);
+            self.remember_memory_publication(
+                event,
+                event.execution.within(execution),
+                &mut publications.memory,
+            );
         }
         for event in &writes.queues {
             for target in self.queue_targets(&event.write.target) {

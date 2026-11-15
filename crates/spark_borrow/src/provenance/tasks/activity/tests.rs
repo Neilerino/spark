@@ -233,6 +233,7 @@ fn callback_node_memory_updates_the_actual_view_without_a_catalog_row() {
         .any(|handle| handle.pending));
     flow.ensure_transfer(point, &state);
     let lane = Arc::new(Lane {
+        execution: crate::provenance::effects::Execution::Current,
         event: OpaqueSite {
             function: function.def_id,
             point,
@@ -254,7 +255,7 @@ fn callback_node_memory_updates_the_actual_view_without_a_catalog_row() {
         &storage,
         path.clone(),
         child_actor.clone(),
-        (vec![(lane, Value::reference(origin.clone()))], true),
+        (vec![(lane, Value::reference(origin.clone()))], true, false),
         point,
         &mut state
     ));

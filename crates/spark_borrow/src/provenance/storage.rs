@@ -35,7 +35,7 @@ impl super::value::Leaf {
 }
 
 impl super::Value {
-    fn retire_frames(&mut self, boundary: OpaqueSite) {
+    pub(super) fn retire_frames(&mut self, boundary: OpaqueSite) {
         for leaf in self.leaves.values_mut() {
             leaf.retire_frames(boundary);
         }
@@ -54,13 +54,16 @@ impl super::Value {
 }
 
 impl Flow<'_> {
-    pub(super) fn retire_call_frames(&self, point: Point, state: &mut State) {
+    pub(super) fn retire_call_frames(&mut self, point: Point, state: &mut State) {
         let boundary = OpaqueSite {
             function: self.function.def_id,
             point,
         };
         if !self.frame_boundaries.contains(&boundary) {
             return;
+        }
+        if let Some(scope) = &mut self.completion_scope {
+            scope.retire_frames(boundary);
         }
         for value in state
             .values
@@ -242,7 +245,7 @@ fn overlaps_prefix(left: &[Slot], right: &[Slot]) -> bool {
     true
 }
 
-fn overlaps(left: &[Slot], right: &[Slot]) -> bool {
+pub(super) fn overlaps(left: &[Slot], right: &[Slot]) -> bool {
     overlaps_prefix(left, right) || overlaps_prefix(right, left)
 }
 

@@ -122,7 +122,8 @@ impl Flow<'_> {
                 }));
             }
         }
-        for ((_, view), value) in &summary.prefix_memory {
+        for (event, value) in &summary.prefix_memory {
+            let view = &event.view;
             for (path, handles) in &value.queues {
                 pending.extend(handles.iter().map(|handle| {
                     (

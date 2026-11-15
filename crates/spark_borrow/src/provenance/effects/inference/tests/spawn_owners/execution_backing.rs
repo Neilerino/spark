@@ -271,6 +271,7 @@ fn current_execution_backing_cannot_be_restored_after_imported_memory_clobbers()
                     .next()
                     .unwrap();
                 let lane = std::sync::Arc::new(Lane {
+                    execution: crate::provenance::effects::Execution::Current,
                     event: site,
                     actor: Subject {
                         target: actor.target.clone(),
@@ -358,6 +359,7 @@ fn forwarding_cannot_restore_root_owner_coverage_after_imported_memory_clobbers(
                 .unwrap();
             view.memory.import(
                 std::sync::Arc::new(Lane {
+                    execution: crate::provenance::effects::Execution::Current,
                     event: site,
                     actor: actor.clone(),
                     location: Sample {

@@ -330,45 +330,66 @@ impl super::Flow<'_> {
 
     pub(super) fn complete_future_witness(
         &mut self,
-        mut witness: Witness,
+        witness: Witness,
         result: Option<&Value>,
         point: Point,
         state: &mut super::State,
     ) {
         self.ensure_transfer(point, state);
-        witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
-        self.settle_task_memory(&witness, &[], point, state);
+        let requests = self.reserve_completions(vec![witness], point);
+        let prepared = self.prepare_reserved_memory(requests, &[], point, state);
+        for settled in self.commit_task_memory(prepared, point, state) {
+            settled.finish(self, result, point, state);
+        }
+    }
+
+    fn finish_settled_future(
+        &mut self,
+        mut witness: Witness,
+        point: Point,
+        state: &mut super::State,
+    ) {
         witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
         let descendants = self.prepare_completion_descendants(&witness, point, state);
         self.cleanup_completed_executions(&witness, point, state);
         for (callback, role) in descendants {
             self.preserve_pending_loss(&callback, &role, point, state, true);
         }
-        for role in witness
-            .peers
-            .iter()
-            .filter(|role| role.as_local().is_none())
-        {
-            self.complete_owned_role(role, result, point, state);
-        }
-        let peers: Vec<_> = witness.locals().collect();
         state.joined_inputs.extend(witness.inputs);
-        for peer in peers {
-            if !state.live.contains(&peer) {
+    }
+
+    fn mark_future_progress(
+        &mut self,
+        request: &memory::completion::Request,
+        result: Option<&Value>,
+        point: Point,
+        state: &mut super::State,
+    ) {
+        let Some(witness) = request.witness(self, point) else {
+            return;
+        };
+        for role in witness.peers {
+            if !request.retains_role(self, point, &role)
+                || role.frame_clobbered(&[], &state.invalidated_copies)
+            {
                 continue;
             }
-            let mut current = state
-                .value(peer)
-                .sourced(&super::demand::Storage::Logical(peer));
+            let Some(mut current) = self.current_role_value(&role, state) else {
+                continue;
+            };
             current.mark_future_completed();
-            let ty = self.function.locals[peer.index()].ty;
             if let Some(result) = result {
+                let ty = self.selected_type(self.storage_type(&role.storage()), role.selection());
                 current.join(&result.prefixed(Slot::Element, ty, self.table));
             }
-            current = self.freeze_sources(point, current);
+            let mut current = self.freeze_sources(point, current);
             self.import_task_sources(&mut current, point, state);
-            self.record_store(point, &spark_mir::Place::from_local(peer), &current);
-            state.set(peer, current);
+            if request.retains_role(self, point, &role)
+                && state.role_live(&role)
+                && !role.frame_clobbered(&[], &state.invalidated_copies)
+            {
+                self.install_role_value(&role, &current, point, state);
+            }
         }
     }
 
@@ -396,22 +417,20 @@ impl super::Flow<'_> {
         }
     }
 
-    pub(super) fn apply_call_future_proof(
-        &mut self,
-        mut proof: proofs::CallProof,
+    pub(super) fn apply_call_copy_proof(
+        &self,
+        mut returned: Option<Witness>,
         clobbered: &[Local],
-        point: Point,
         state: &mut super::State,
     ) -> Option<Witness> {
-        proof.exclude(clobbered);
-        proof.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
+        if let Some(witness) = &mut returned {
+            witness.exclude(clobbered);
+            witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
+        }
         for local in clobbered {
             self.clobber_input_owners(*local, state);
         }
-        for witness in proof.completed {
-            self.complete_future_witness(witness, None, point, state);
-        }
-        proof.returned
+        returned
     }
 }
 

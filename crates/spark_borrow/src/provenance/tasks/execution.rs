@@ -165,6 +165,13 @@ impl ExecutionTransfer {
 
     pub fn detach(&self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
         self.tokens.detach(&mut state.input_owners);
+        flow.overwrite_completion_sources(
+            &Coordinate {
+                storage: Storage::ExecutionCallback(self.source, self.callback_ty),
+                path: Vec::new(),
+            },
+            point,
+        );
         if state
             .remove_execution_callback(self.source, self.callback_ty)
             .is_some()
@@ -243,6 +250,13 @@ impl ExecutionTransfer {
             && backing_inputs
                 .iter()
                 .all(|local| !state.invalidated_copies.contains(local));
+        flow.overwrite_completion_sources(
+            &Coordinate {
+                storage: Storage::ExecutionCallback(destination, self.callback_ty),
+                path: Vec::new(),
+            },
+            point,
+        );
         state.install_execution_callback(destination, self.callback_ty, self.callback, complete);
         crate::provenance::channels::identity::Captured::install_all(
             self.channels,
@@ -284,6 +298,18 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) -> bool {
+        value = self.freeze_sources(point, value);
+        self.import_task_sources(&mut value, point, state);
+        self.install_role_value(role, &value, point, state)
+    }
+
+    pub(super) fn install_role_value(
+        &mut self,
+        role: &super::Role,
+        value: &Value,
+        point: Point,
+        state: &mut State,
+    ) -> bool {
         let storage = role.storage();
         let Some(mut carrier) = state
             .stored_value(&storage)
@@ -291,10 +317,8 @@ impl Flow<'_> {
         else {
             return false;
         };
-        value = self.freeze_sources(point, value);
-        self.import_task_sources(&mut value, point, state);
         if let Some(local) = role.as_local() {
-            self.record_store(point, &Place::from_local(local), &value);
+            self.record_store(point, &Place::from_local(local), value);
         } else {
             self.record_path_store(
                 point,
@@ -302,7 +326,7 @@ impl Flow<'_> {
                     storage: storage.clone(),
                     path: role.selection().to_vec(),
                 },
-                &value,
+                value,
                 true,
             );
         }
@@ -316,6 +340,7 @@ impl Flow<'_> {
         Self::replace_task_carrier(&storage, carrier, state)
     }
 
+    #[cfg(test)]
     pub(in crate::provenance) fn complete_owned_role(
         &mut self,
         role: &super::Role,
@@ -480,6 +505,13 @@ impl Flow<'_> {
         state.future_owners.forget_execution(local, ty);
         state.future_copies.forget_execution(local, ty);
         self.preserve_pending_loss(callback, &vec![], point, state, true);
+        self.overwrite_completion_sources(
+            &Coordinate {
+                storage: Storage::ExecutionCallback(local, ty),
+                path: Vec::new(),
+            },
+            point,
+        );
         state.remove_execution_callback(local, ty);
     }
 

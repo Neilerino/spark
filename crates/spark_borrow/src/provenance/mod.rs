@@ -74,6 +74,8 @@ struct State {
     cells: FxHashMap<Local, Value>,
     external: FxHashMap<aliases::Port, Value>,
     external_defined: writes::Coverage,
+    actual_definitions: writes::Coverage,
+    ordered_definitions: writes::OrderedDefinitions,
     modified_views: FxHashSet<aliases::View>,
     invalidated: FxHashMap<(Local, Path), FxHashSet<Point>>,
 }
@@ -274,6 +276,10 @@ impl State {
             .extend(other.modified_views.iter().cloned());
         changed |= before != self.modified_views.len();
         changed |= self.external_defined.intersect(&other.external_defined);
+        changed |= self.actual_definitions.intersect(&other.actual_definitions);
+        changed |= self
+            .ordered_definitions
+            .intersect(&other.ordered_definitions);
         for (storage, points) in &other.invalidated {
             let entry = self.invalidated.entry(storage.clone()).or_default();
             let before = entry.len();
@@ -294,6 +300,8 @@ struct Flow<'a> {
     requests: FxHashSet<aliases::Key>,
     written_inputs: FxHashSet<aliases::View>,
     unknown_copy_clobber: bool,
+    unknown_memory_write: bool,
+    completion_scope: Option<tasks::memory::completion::Scope>,
     obligations: FxHashMap<(Point, obligations::Boundary), Value>,
     queue_sends: FxHashMap<channels::QueueKey, Value>,
     fresh_output_candidates: tasks::fresh_outputs::Outputs,
@@ -340,6 +348,8 @@ impl<'a> Flow<'a> {
             requests: FxHashSet::default(),
             written_inputs: FxHashSet::default(),
             unknown_copy_clobber: false,
+            unknown_memory_write: false,
+            completion_scope: None,
             obligations: FxHashMap::default(),
             queue_sends: FxHashMap::default(),
             fresh_output_candidates: tasks::fresh_outputs::Outputs::default(),
@@ -455,6 +465,7 @@ impl<'a> Flow<'a> {
     fn transfer_terminator(&mut self, block: BlockId, state: &mut State) -> bool {
         let body = &self.function.blocks[block.index()];
         let point = Point::new(block, body.statements.len() as u32);
+        self.completion_scope = None;
         state.invalidated_copies.clear();
         self.transfers
             .insert(point, demand::Transfer::at_entry(state.atoms()));
@@ -507,6 +518,7 @@ impl<'a> Flow<'a> {
         point: Point,
         state: &mut State,
     ) -> bool {
+        self.completion_scope = None;
         state.invalidated_copies.clear();
         self.transfers
             .insert(point, demand::Transfer::at_entry(state.atoms()));
@@ -591,6 +603,7 @@ impl<'a> Flow<'a> {
             Statement::Nop => {}
         }
         self.validate_queue_promises(point, state);
+        self.finish_final_writes(point, state);
         true
     }
 
@@ -793,6 +806,24 @@ impl<'a> Flow<'a> {
             self.store_references(&targets, &value, self.place_type(place), point, state);
             return;
         }
+        let (path, _) = self.projection_path(
+            self.function.locals[place.local.index()].ty,
+            &place.projections,
+        );
+        let destination = demand::Coordinate {
+            storage: demand::Storage::Cell(place.local),
+            path: path.clone(),
+        };
+        self.record_task_interference(&destination, self.place_type(place), state);
+        self.trace_completion_write(destination.clone(), point);
+        self.clear_settled_memory(&destination, point, state);
+        self.overwrite_completion_sources(
+            &demand::Coordinate {
+                storage: demand::Storage::Logical(place.local),
+                path: path.clone(),
+            },
+            point,
+        );
         self.retire_execution_owner(place.local, point, state);
         state.input_owners.escape_local(place.local);
         state.future_copies.forget(place.local);
@@ -805,10 +836,6 @@ impl<'a> Flow<'a> {
             state.set(place.local, value);
             return;
         }
-        let (path, _) = self.projection_path(
-            self.function.locals[place.local.index()].ty,
-            &place.projections,
-        );
         state.invalidated.retain(|(local, invalid), _| {
             *local != place.local || !storage::prefix(&path, invalid)
         });
