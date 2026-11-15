@@ -1,0 +1,18 @@
+// TAG [SPARK-154]
+struct Point { x: Int, y: Int }
+async fn value(): Int { return 7 }
+async fn relay(pending: Future[Int], initial: Int): Int {
+    parameterView: Ref[Int] = initial
+    point: Point = Point { x: 3, y: 4 }
+    pointView: Ref[Point] = point
+    mutableView: Ref[Int]! = 10
+    child: Int = await pending
+    mutableView = child + 10
+    return parameterView + pointView.x + mutableView
+}
+fn main(): Int {
+    child: Future[Int] = spawn { value() }
+    parent: Future[Int] = spawn { relay(child, 2) }
+    print(await parent)
+    return 0
+}

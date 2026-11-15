@@ -68,12 +68,19 @@ impl Flow<'_> {
             .chain(state.cells.values_mut())
             .chain(state.external.values_mut())
             .chain(state.queues.values_mut())
+            .chain(
+                state
+                    .queue_current
+                    .values_mut()
+                    .map(|message| &mut message.value),
+            )
             .chain(state.observations.values_mut())
             .chain(state.pending_memory.values_mut())
             .chain(state.settled_memory.values_mut())
             .chain(state.residuals.values_mut())
             .chain(state.residual_callbacks.values_mut())
             .chain(state.tasks.values_mut().map(|task| &mut task.callback))
+            .chain(state.executions.values_mut())
         {
             value.retire_frames(boundary);
         }

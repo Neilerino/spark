@@ -36,6 +36,44 @@ impl Proof {
         }
     }
 
+    pub fn seed_owner_outputs(
+        &mut self,
+        function: &MirFunction,
+        table: &TypeTable,
+        output: Option<super::outputs::CallbackRecipe>,
+    ) {
+        if let Guarantee::Returns(certificate) = &mut self.returns {
+            certificate.released_provided = future_inputs(function, table);
+            certificate
+                .retains_no_owner
+                .clone_from(&certificate.released_provided);
+            certificate.returned_owners = output.map(Box::new);
+            certificate
+                .forwarded_provided
+                .clone_from(&certificate.returned);
+            certificate.clean_ambient_captures = future_captures(function, table);
+        }
+    }
+
+    pub fn seed_fresh_outputs(
+        &mut self,
+        recipes: impl Iterator<Item = super::fresh_outputs::Recipe>,
+    ) {
+        if let Guarantee::Returns(certificate) = &mut self.returns {
+            certificate.fresh_messages.extend(recipes);
+            certificate
+                .prefix_messages
+                .clone_from(&certificate.fresh_messages);
+        }
+    }
+
+    pub const fn certificate(&self) -> Option<&Certificate> {
+        match &self.returns {
+            Guarantee::Returns(certificate) => Some(certificate),
+            Guarantee::NoReturn => None,
+        }
+    }
+
     pub fn has_effect(&self) -> bool {
         self.returns.has_effect() || self.events.values().any(|inputs| !inputs.is_empty())
     }
@@ -77,6 +115,21 @@ fn future_inputs(function: &MirFunction, table: &TypeTable) -> FxHashSet<Local> 
         .collect()
 }
 
+fn future_captures(function: &MirFunction, table: &TypeTable) -> FxHashSet<Local> {
+    function
+        .captures
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, ty))| {
+            matches!(
+                table.resolve(value::strip_mutable(*ty, table)),
+                Ty::Future { .. }
+            )
+            .then_some(Local(function.param_count + 1 + index as u32))
+        })
+        .collect()
+}
+
 fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witness> {
     let (Operand::Copy(place) | Operand::Move(place)) = args.get(input.index().checked_sub(1)?)?
     else {
@@ -90,14 +143,22 @@ fn actual_witness(input: Local, args: &[Operand], state: &State) -> Option<Witne
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct Certificate {
+    pub fresh_messages: FxHashSet<super::fresh_outputs::Recipe>,
+    pub prefix_messages: FxHashSet<super::fresh_outputs::Recipe>,
+    pub returned_owners: Option<Box<super::outputs::CallbackRecipe>>,
+    pub forwarded_provided: FxHashSet<Local>,
+    pub clean_ambient_captures: FxHashSet<Local>,
     pub completed: FxHashSet<Local>,
     pub returned: FxHashSet<Local>,
+    pub released_provided: FxHashSet<Local>,
+    /// No owner from this formal's lineage remains; aliased actuals must be bound together.
+    pub retains_no_owner: FxHashSet<Local>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::provenance) enum Guarantee {
     NoReturn,
-    Returns(Certificate),
+    Returns(Box<Certificate>),
 }
 
 impl Guarantee {
@@ -110,7 +171,7 @@ impl Guarantee {
         if !normal_return {
             return Self::NoReturn;
         }
-        let returned = completed
+        let returned: FxHashSet<_> = completed
             .iter()
             .copied()
             .filter(|input| {
@@ -118,23 +179,46 @@ impl Guarantee {
                     == value::strip_mutable(function.return_type, table)
             })
             .collect();
-        Self::Returns(Certificate {
+        Self::Returns(Box::new(Certificate {
+            fresh_messages: FxHashSet::default(),
+            prefix_messages: FxHashSet::default(),
+            returned_owners: None,
+            clean_ambient_captures: FxHashSet::default(),
+            forwarded_provided: returned.clone(),
+            released_provided: completed.clone(),
+            retains_no_owner: completed.clone(),
             completed,
             returned,
-        })
+        }))
     }
 
     pub fn has_effect(&self) -> bool {
-        matches!(self, Self::Returns(certificate) if !certificate.completed.is_empty() || !certificate.returned.is_empty())
+        matches!(self, Self::Returns(certificate) if !certificate.fresh_messages.is_empty() || certificate.returned_owners.is_some() || !certificate.completed.is_empty() || !certificate.returned.is_empty()
+            || !certificate.released_provided.is_empty() || !certificate.retains_no_owner.is_empty() || !certificate.forwarded_provided.is_empty() || !certificate.clean_ambient_captures.is_empty())
     }
 
     pub fn intersect(&mut self, other: &Self) -> bool {
         let before = self.clone();
         match (&mut *self, other) {
             (Self::Returns(left), Self::Returns(right)) => {
+                left.fresh_messages
+                    .retain(|recipe| right.fresh_messages.contains(recipe));
+                left.prefix_messages
+                    .retain(|recipe| right.prefix_messages.contains(recipe));
+                if left.returned_owners != right.returned_owners {
+                    left.returned_owners = None;
+                }
+                left.clean_ambient_captures
+                    .retain(|input| right.clean_ambient_captures.contains(input));
                 left.completed
                     .retain(|input| right.completed.contains(input));
                 left.returned.retain(|input| right.returned.contains(input));
+                left.forwarded_provided
+                    .retain(|input| right.forwarded_provided.contains(input));
+                left.released_provided
+                    .retain(|input| right.released_provided.contains(input));
+                left.retains_no_owner
+                    .retain(|input| right.retains_no_owner.contains(input));
             }
             (_, Self::NoReturn) => *self = Self::NoReturn,
             (Self::NoReturn, Self::Returns(_)) => {}
@@ -145,8 +229,12 @@ impl Guarantee {
 
 #[derive(Default)]
 pub(in crate::provenance) struct CallProof {
+    pub forwarded_provided: FxHashMap<usize, Witness>,
+    pub forwarded: Option<super::forwarding::ForwardInput>,
+    pub output_owners: Option<super::outputs::BoundOutput>,
     pub completed: Vec<Witness>,
     pub returned: Option<Witness>,
+    pub released_owners: FxHashMap<usize, Witness>,
 }
 
 impl CallProof {
@@ -170,10 +258,48 @@ impl Flow<'_> {
             if !self.transfer_block(BlockId(index as u32), &mut state) {
                 continue;
             }
-            let candidate = Guarantee::Returns(Certificate {
+            let returned = state.future_copies.inputs(Local::RETURN_PLACE);
+            let output_role = super::Role::root(Local::RETURN_PLACE);
+            let forwarded_provided = future_inputs(self.function, self.table)
+                .into_iter()
+                .filter(|input| {
+                    returned.contains(input)
+                        && value::strip_mutable(self.function.locals[input.index()].ty, self.table)
+                            == value::strip_mutable(self.function.return_type, self.table)
+                        && state.input_owners.tags(&output_role)
+                            == FxHashSet::from_iter([super::lifecycle::Token::Provided(*input)])
+                        && state
+                            .input_owners
+                            .retains_only(*input, &FxHashSet::from_iter([output_role.clone()]))
+                })
+                .collect();
+            let clean_ambient_captures = future_captures(self.function, self.table)
+                .into_iter()
+                .filter(|input| state.input_owners.retains_no_owner(*input))
+                .collect();
+            let fresh_messages = self.observed_fresh_outputs(&state);
+            let prefix_messages = fresh_messages
+                .iter()
+                .filter(|recipe| self.prefix_output_is_single(recipe))
+                .cloned()
+                .collect();
+            let candidate = Guarantee::Returns(Box::new(Certificate {
+                fresh_messages,
+                prefix_messages,
+                clean_ambient_captures,
+                forwarded_provided,
+                returned_owners: self.observed_callback_recipe(&state).map(Box::new),
                 completed: state.joined_inputs,
-                returned: state.future_copies.inputs(Local::RETURN_PLACE),
-            });
+                returned,
+                released_provided: future_inputs(self.function, self.table)
+                    .into_iter()
+                    .filter(|input| state.input_owners.released_provided(*input))
+                    .collect(),
+                retains_no_owner: future_inputs(self.function, self.table)
+                    .into_iter()
+                    .filter(|input| state.input_owners.retains_no_owner(*input))
+                    .collect(),
+            }));
             if let Some(result) = &mut result {
                 result.intersect(&candidate);
             } else {
@@ -189,18 +315,36 @@ impl Flow<'_> {
         args: &[Operand],
         state: &State,
     ) -> CallProof {
-        let Some(Guarantee::Returns(certificate)) = self
+        let Some(certificate) = self
             .program
             .and_then(|context| context.proofs)
             .and_then(|proofs| proofs.get(key))
-            .map(|proof| &proof.returns)
+            .and_then(Proof::certificate)
         else {
             return CallProof::default();
         };
         let witness = |input: &Local| actual_witness(*input, args, state);
         CallProof {
+            forwarded: None,
+            forwarded_provided: certificate
+                .forwarded_provided
+                .iter()
+                .filter_map(|input| Some((input.index().checked_sub(1)?, witness(input)?)))
+                .collect(),
+            output_owners: certificate
+                .returned_owners
+                .as_ref()
+                .and_then(|recipe| self.bind_output_recipe(recipe, args, state)),
             completed: certificate.completed.iter().filter_map(witness).collect(),
             returned: certificate.returned.iter().find_map(witness),
+            released_owners: certificate
+                .retains_no_owner
+                .iter()
+                .filter_map(|input| {
+                    let index = input.index().checked_sub(1)?;
+                    Some((index, actual_witness(*input, args, state)?))
+                })
+                .collect(),
         }
     }
 
@@ -236,8 +380,8 @@ impl Flow<'_> {
             .and_then(|proof| proof.events.get(event));
         for input in guarded.into_iter().flatten() {
             if let Some(witness) = actual_witness(*input, args, state) {
+                fence.peers.extend(witness.locals());
                 fence.inputs.extend(witness.inputs);
-                fence.peers.extend(witness.peers);
             }
         }
         fence
@@ -250,14 +394,16 @@ mod tests {
 
     #[test]
     fn a_normal_return_without_a_join_removes_the_guarantee() {
-        let mut proof = Guarantee::Returns(Certificate {
+        let mut proof = Guarantee::Returns(Box::new(Certificate {
             completed: FxHashSet::from_iter([Local(1)]),
             returned: FxHashSet::from_iter([Local(1)]),
-        });
-        let different_return = Guarantee::Returns(Certificate {
+            ..Certificate::default()
+        }));
+        let different_return = Guarantee::Returns(Box::new(Certificate {
             completed: FxHashSet::default(),
             returned: FxHashSet::from_iter([Local(2)]),
-        });
+            ..Certificate::default()
+        }));
         assert!(proof.intersect(&different_return));
         assert!(!proof.has_effect());
         assert!(!proof.intersect(&different_return));
@@ -266,11 +412,81 @@ mod tests {
     #[test]
     fn a_nonreturning_function_does_not_publish_vacuous_completion() {
         let mut proof = Guarantee::NoReturn;
-        assert!(!proof.intersect(&Guarantee::Returns(Certificate {
+        assert!(!proof.intersect(&Guarantee::Returns(Box::new(Certificate {
             completed: FxHashSet::from_iter([Local(1)]),
             returned: FxHashSet::default(),
-        })));
+            ..Certificate::default()
+        }))));
         assert_eq!(proof, Guarantee::NoReturn);
         assert!(!proof.has_effect());
     }
+    #[test]
+    fn dropping_a_moved_parameter_releases_its_owner_without_completing_the_task() {
+        use spark_mir::{BasicBlock, Constant, LocalDecl, Place, Rvalue, Statement};
+        use spark_resolve::DefId;
+        use spark_span::Span;
+        let mut table = TypeTable::new();
+        let int = table.intern(Ty::Int(spark_types::IntWidth::I64));
+        let future = table.intern(Ty::Future { inner: int });
+        let function = MirFunction {
+            def_id: DefId::new(9950),
+            param_count: 1,
+            return_type: int,
+            locals: [int, future, future]
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| LocalDecl {
+                    local: Local(index as u32),
+                    ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                })
+                .collect(),
+            blocks: vec![BasicBlock {
+                statements: vec![
+                    Statement::Assign {
+                        place: Place::from_local(Local(2)),
+                        rvalue: Rvalue::Use(Operand::Move(Place::from_local(Local(1)))),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Drop {
+                        place: Place::from_local(Local(2)),
+                        span: Span::DUMMY,
+                    },
+                    Statement::Assign {
+                        place: Place::from_local(Local(0)),
+                        rvalue: Rvalue::Use(Operand::Constant(Constant::Int(0))),
+                        span: Span::DUMMY,
+                    },
+                ],
+                terminator: Terminator::Return,
+                is_cleanup: false,
+            }],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+        let mut flow = Flow::new(&function, &table, None);
+        flow.solve(&crate::facts::extract_facts(&function));
+        let Guarantee::Returns(certificate) = flow.future_guarantee() else {
+            panic!("expected a normal return")
+        };
+        assert!(
+            certificate.completed.is_empty(),
+            "owner release does not prove a join"
+        );
+        assert_eq!(
+            certificate.released_provided,
+            FxHashSet::from_iter([Local(1)])
+        );
+        assert_eq!(
+            certificate.retains_no_owner,
+            FxHashSet::from_iter([Local(1)])
+        );
+    }
 }
+
+#[cfg(test)]
+mod owner_tests;

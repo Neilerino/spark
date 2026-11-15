@@ -35,6 +35,134 @@ fn function(id: u32, ty: TypeId) -> MirFunction {
 }
 
 #[test]
+fn capture_residence_requires_existing_value_and_callback_support() {
+    use crate::provenance::tasks::{
+        self,
+        residual::{Import, Visibility},
+        views::View,
+    };
+    use std::sync::Arc;
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let future = table.intern(Ty::Future { inner: int });
+    let callback_ty = table.intern(Ty::Function {
+        params: vec![],
+        ret: int,
+        is_async: false,
+    });
+    let caller = function(9910, int);
+    let mut callee = function(9911, int);
+    callee.param_count = 0;
+    callee.captures = vec![(DefId::new(9912), future)];
+    callee.locals[1].ty = future;
+    let point = Point::new(BlockId::ENTRY, 0);
+    let capture = crate::provenance::Slot::Capture(callee.def_id, 0, future);
+    let (target, mut child) = tasks::birth(caller.def_id, point, future);
+    let subject = Subject {
+        target,
+        capture: None,
+    };
+    let callback = Value::reference(Origin::Loan(point));
+    child.task_views.entry(Vec::new()).or_default().insert(
+        subject.clone(),
+        View::pending(callback.clone(), callback_ty),
+    );
+    let environment = child.prefixed_path(&[capture], callback_ty, &table);
+    let state = State::default();
+    let actuals = CallActuals {
+        callee: &environment,
+        callee_place: None,
+        arguments: &[],
+        ty: int,
+        point,
+        instantiation_site: None,
+        frame_caller: None,
+        read: ReadView::current(&state),
+        aliases: None,
+    };
+    let raw = tasks::residual::Key {
+        site: OpaqueSite {
+            function: callee.def_id,
+            point,
+        },
+        role: Vec::new(),
+        ty: future,
+        actor: Subject {
+            target: tasks::Target::Input {
+                input: Local(1),
+                path: Vec::new(),
+                ty: future,
+                capture: None,
+                queue: None,
+            },
+            capture: None,
+        },
+    };
+    let key = Arc::new(tasks::residual::Key {
+        actor: subject,
+        ..raw.clone()
+    });
+    let mut activity = Import {
+        key,
+        value: child,
+        callbacks: vec![(callback_ty, callback)],
+        visibility: Visibility::Occurrence(tasks::proofs::EventFence::default()),
+    };
+    let flow = Flow::new(&caller, &table, None);
+    assert!(resident_capture_activity(
+        &raw,
+        &callee,
+        &FxHashSet::from_iter([Local(1)])
+    ));
+    assert!(flow.capture_contains_activity(&raw, &activity, &callee, actuals));
+    let original = activity.clone();
+    activity.callbacks[0]
+        .1
+        .join(&Value::reference(Origin::Loan(Point::new(
+            BlockId::ENTRY,
+            1,
+        ))));
+    assert!(!flow.capture_contains_activity(&raw, &activity, &callee, actuals));
+    activity = original.clone();
+    activity
+        .value
+        .task_views
+        .values_mut()
+        .flat_map(|views| views.values_mut())
+        .next()
+        .unwrap()
+        .memory
+        .may_write = true;
+    assert!(!flow.capture_contains_activity(&raw, &activity, &callee, actuals));
+    activity = original;
+    activity
+        .value
+        .join(&Value::reference(Origin::Loan(Point::new(
+            BlockId::ENTRY,
+            2,
+        ))));
+    assert!(!flow.capture_contains_activity(&raw, &activity, &callee, actuals));
+    assert!(
+        !resident_capture_activity(&activity.key, &callee, &FxHashSet::from_iter([Local(1)])),
+        "a separately created task is not a captured-input descriptor"
+    );
+    let mut nested = raw.clone();
+    let tasks::Target::Input { path, .. } = &mut nested.actor.target else {
+        unreachable!()
+    };
+    path.push(crate::provenance::Slot::Element);
+    assert!(!resident_capture_activity(
+        &nested,
+        &callee,
+        &FxHashSet::from_iter([Local(1)])
+    ));
+    assert!(
+        !resident_capture_activity(&raw, &callee, &FxHashSet::default()),
+        "a dirty capture cannot contain its helper activity by this theorem"
+    );
+}
+
+#[test]
 fn binding_known_and_opaque_support_keeps_both_alternatives() {
     let mut table = TypeTable::new();
     let int = table.intern(Ty::Int(IntWidth::I64));
@@ -73,6 +201,7 @@ fn binding_known_and_opaque_support_keeps_both_alternatives() {
         },
         &callee,
         CallActuals {
+            callee_place: None,
             callee: &callee_value,
             arguments: &[pointer],
             ty: int,
@@ -128,6 +257,7 @@ fn imported_frame_support_does_not_alias_a_recursive_callers_current_frame() {
         &sample,
         &caller,
         CallActuals {
+            callee_place: None,
             callee: &callee_value,
             arguments: &[],
             ty: reference,
@@ -203,6 +333,7 @@ fn binding_known_and_unknown_queue_support_keeps_the_unknown_alternative() {
         },
         &callee,
         CallActuals {
+            callee_place: None,
             callee: &callee_value,
             arguments: &[argument],
             ty: int,
@@ -285,6 +416,7 @@ fn input_residual_binding_keeps_callbacks_with_their_current_actor() {
         },
         &callee,
         CallActuals {
+            callee_place: None,
             callee: &callee_value,
             arguments: &[actual],
             ty: future,

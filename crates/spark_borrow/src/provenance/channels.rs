@@ -2,7 +2,14 @@
 
 //! Shared channel handles and weak payload storage.
 
-use crate::provenance::tasks::proofs::CallProof;
+mod receipt;
+pub(in crate::provenance) use receipt::Receipt;
+pub(super) mod access;
+pub(super) mod counts;
+pub(super) mod identity;
+pub(super) mod messages;
+pub(super) mod protocol;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_intern::kw;
 use spark_mir::{Local, Operand};
@@ -149,7 +156,7 @@ impl Target {
         })
     }
 
-    fn from_port(port: &super::aliases::Port) -> Option<Self> {
+    pub(in crate::provenance) fn from_port(port: &super::aliases::Port) -> Option<Self> {
         let super::aliases::StorageKind::Channel(ty) = port.kind else {
             return None;
         };
@@ -331,6 +338,36 @@ impl Flow<'_> {
         )
     }
 
+    fn queue_send_events(
+        &self,
+        targets: FxHashSet<Handle>,
+        payload: &Operand,
+        ty: TypeId,
+        point: Point,
+        state: &State,
+    ) -> Vec<QueueEvent> {
+        let payload = self.operand(payload, state);
+        let site = super::address::OpaqueSite {
+            function: self.function.def_id,
+            point,
+        };
+        targets
+            .into_iter()
+            .map(|handle| QueueEvent {
+                site,
+                write: Write {
+                    target: handle.target,
+                    ty,
+                    value: payload.clone(),
+                },
+                fence: super::tasks::proofs::EventFence {
+                    inputs: state.joined_inputs.clone(),
+                    ..Default::default()
+                },
+            })
+            .collect()
+    }
+
     pub(super) fn channel_call(
         &mut self,
         func: &Operand,
@@ -344,25 +381,25 @@ impl Flow<'_> {
         if !matches!(info.kind, DefinitionKind::BuiltinMethod) {
             return None;
         }
-        let receiver = args.first()?;
-        let Ty::Channel { inner } = self.table.resolve(value::strip_mutable(
-            super::operand_type(receiver, self.function),
-            self.table,
-        )) else {
+        let receiver_operand = args.first()?;
+        let receiver_ty = super::operand_type(receiver_operand, self.function);
+        let Ty::Channel { inner } = self
+            .table
+            .resolve(value::strip_mutable(receiver_ty, self.table))
+        else {
             return None;
         };
-        let source = self.operand(receiver, state);
+        let direct_queue_send = messages::direct_send(self, info.name, args, state);
+        let source = self.operand(receiver_operand, state);
         let mut targets: FxHashSet<_> = source
             .root_queue_handles()
-            .filter(|handle| {
-                self.queue_type_matches(handle.ty(), super::operand_type(receiver, self.function))
-            })
+            .filter(|handle| self.queue_type_matches(handle.ty(), receiver_ty))
             .cloned()
             .collect();
         if targets.is_empty() {
             targets.extend(
                 opaque_handles(
-                    super::operand_type(args.first()?, self.function),
+                    receiver_ty,
                     super::address::OpaqueSite {
                         function: self.function.def_id,
                         point,
@@ -382,23 +419,7 @@ impl Flow<'_> {
         }
         let mut queues = Vec::new();
         let returned = if info.name == kw::SEND {
-            let payload = self.operand(args.get(1)?, state);
-            let site = super::address::OpaqueSite {
-                function: self.function.def_id,
-                point,
-            };
-            queues.extend(targets.into_iter().map(|handle| QueueEvent {
-                site,
-                write: Write {
-                    target: handle.target,
-                    ty: *inner,
-                    value: payload.clone(),
-                },
-                fence: super::tasks::proofs::EventFence {
-                    inputs: state.joined_inputs.clone(),
-                    ..Default::default()
-                },
-            }));
+            queues = self.queue_send_events(targets, args.get(1)?, *inner, point, state);
             Value::default()
         } else if info.name == kw::RECV || info.name == kw::TRY_RECV {
             let payload = self.receive_payload(&receiver, *inner, point, state);
@@ -413,27 +434,24 @@ impl Flow<'_> {
             return None;
         };
         let publications = super::effects::PrefixWrites {
-            residuals: Vec::new(),
-            memory: Vec::new(),
             queues: queues.clone(),
+            ..Default::default()
         };
         Some(super::effects::CallOutcome {
-            fresh_leaf_task: false,
-            residuals: Vec::new(),
-            async_memory: Vec::new(),
-            tasks: Vec::new(),
-            completed_task: None,
-            clobbered_copies: Vec::new(),
-            future_proof: CallProof::default(),
-            returned_prefix: rustc_hash::FxHashSet::default(),
+            receipt: (info.name == kw::RECV)
+                .then(|| Receipt::snapshot(self, receiver_operand, result_ty, state))
+                .flatten(),
+            queue_accesses: if info.name == kw::SEND {
+                access::Accesses::default()
+            } else {
+                self.queue_accesses(&source, state)
+            },
+            queue_send_counts: self.actual_queue_send_counts(&queues),
+            direct_queue_send,
             publications,
-            place_writes: Vec::new(),
-            prefix_memory: Vec::new(),
-            prefix_residuals: Vec::new(),
             returned,
-            memory: Vec::new(),
             queues,
-            queue_contents: Vec::new(),
+            ..Default::default()
         })
     }
 
@@ -719,6 +737,7 @@ impl Flow<'_> {
     ) {
         let mut prefix = State {
             queues: state.queues.clone(),
+            queue_current: state.queue_current.clone(),
             exposed_queues: state.exposed_queues.clone(),
             ..State::default()
         };
@@ -747,7 +766,13 @@ impl Flow<'_> {
         }
     }
 
-    fn record_queue_send(&mut self, target: &Target, payload: &Value, point: Point, state: &State) {
+    pub(in crate::provenance) fn record_queue_send(
+        &mut self,
+        target: &Target,
+        payload: &Value,
+        point: Point,
+        state: &State,
+    ) {
         self.ensure_transfer(point, state);
         if let Some(port) = target.port(self.table) {
             self.queue_ports.insert(port);
@@ -765,7 +790,7 @@ impl Flow<'_> {
         }
     }
 
-    fn record_queue_event(&mut self, event: &QueueEvent) {
+    pub(in crate::provenance) fn record_queue_event(&mut self, event: &QueueEvent) {
         self.record_event_guard(
             super::effects::EventKey::Queue(event.site),
             &event.fence.inputs,
@@ -808,7 +833,7 @@ impl Flow<'_> {
                 if !state.exposed_queues.insert(target.clone()) {
                     continue;
                 }
-                for ((candidate, _), payload) in &state.queues {
+                for (candidate, _, _, payload) in state.queue_entries() {
                     if *candidate == target {
                         pending.extend(
                             payload
@@ -847,7 +872,7 @@ impl Flow<'_> {
             );
             let stored = state.queues.entry((target, ty)).or_default();
             stored.join(payload);
-            stored.sources.clear();
+            stored.clear_sources();
         }
     }
 
@@ -940,6 +965,15 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
+        let cancelled: Vec<_> = state
+            .queue_promises
+            .iter()
+            .filter(|(_, promise)| promise.queue == target)
+            .map(|(slot, _)| slot.clone())
+            .collect();
+        for slot in cancelled {
+            self.cancel_queue_promise(&slot, point, state);
+        }
         self.record_queue_send(&target, payload, point, state);
         if target.may_outlive_function() || state.exposed_queues.contains(&target) {
             self.expose_queue_handles(payload, state);
@@ -955,7 +989,7 @@ impl Flow<'_> {
         );
         let stored = state.queues.entry((target, ty)).or_default();
         stored.join(payload);
-        stored.sources.clear();
+        stored.clear_sources();
     }
 }
 

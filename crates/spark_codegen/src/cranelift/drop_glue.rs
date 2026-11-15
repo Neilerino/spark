@@ -92,6 +92,18 @@ pub fn emit_typed_drop<M: Module>(
                 emit_typed_drop,
             );
         }
+        Ty::Struct(_) | Ty::Applied { .. } => {
+            emit_struct_rc(
+                builder,
+                ptr_val,
+                ty_id,
+                table,
+                stubs,
+                module,
+                ptr_type,
+                emit_typed_drop,
+            );
+        }
         _ => {
             if let Some(members) = tagged_payloads(ty) {
                 emit_union_rc(
@@ -143,6 +155,17 @@ pub fn emit_typed_retain<M: Module>(
             ptr_type,
             emit_typed_retain,
         );
+    } else if matches!(ty, Ty::Struct(_) | Ty::Applied { .. }) {
+        emit_struct_rc(
+            builder,
+            ptr_val,
+            ty_id,
+            table,
+            stubs,
+            module,
+            ptr_type,
+            emit_typed_retain,
+        );
     } else if let Some(members) = tagged_payloads(ty) {
         emit_union_rc(
             builder,
@@ -182,6 +205,31 @@ pub(super) fn rc_value_at(
 
 type EmitRc<M> =
     fn(&mut FunctionBuilder<'_>, Value, TypeId, &TypeTable, &RuntimeStubs, &mut M, ClifType);
+
+// TAG [SPARK-151]
+#[allow(clippy::too_many_arguments)]
+fn emit_struct_rc<M: Module>(
+    builder: &mut FunctionBuilder<'_>,
+    slot: Value,
+    ty: TypeId,
+    table: &TypeTable,
+    stubs: &RuntimeStubs,
+    module: &mut M,
+    ptr_type: ClifType,
+    emit_field: EmitRc<M>,
+) {
+    let Some(fields) = table.instantiated_struct_fields(ty) else {
+        return;
+    };
+    let layout = LayoutCache::new(ptr_type.bytes()).applied_struct_layout_of(ty, table);
+    for ((_, field), offset) in fields.into_iter().zip(layout.field_offsets) {
+        if spark_drop::needs_drop(field, table) {
+            let address = builder.ins().iadd_imm(slot, i64::from(offset));
+            let value = rc_value_at(builder, address, field, table, ptr_type);
+            emit_field(builder, value, field, table, stubs, module, ptr_type);
+        }
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn emit_tuple_rc<M: Module>(

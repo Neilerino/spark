@@ -80,6 +80,26 @@ pub(super) struct WriteTargets {
 }
 
 impl WriteTargets {
+    fn strongly_defines(&self, destination: &Coordinate) -> bool {
+        self.physical.len() == 1
+            && !self.unknown
+            && match &destination.storage {
+                Storage::Cell(_) => owned_path(&destination.path),
+                Storage::External(_) => self.exact.contains(destination),
+                Storage::Logical(_)
+                | Storage::Queue(_, _)
+                | Storage::QueueCurrent(_)
+                | Storage::Task(_, _)
+                | Storage::ExecutionCallback(_, _)
+                | Storage::Observation(_)
+                | Storage::PendingWrite(_)
+                | Storage::SettledMemory(_)
+                | Storage::Residual(_)
+                | Storage::CallbackNode(_)
+                | Storage::ResidualCallback(_, _) => false,
+            }
+    }
+
     fn may_escape(&self) -> bool {
         self.unknown
             || self
@@ -155,7 +175,7 @@ impl Flow<'_> {
                     returned_at: None,
                 });
         }
-        self.write_resolved_references(targets, &value, ty, point, state);
+        self.write_resolved_references(&targets, &value, ty, point, state);
     }
 
     pub(super) fn apply_memory_snapshot(
@@ -170,7 +190,7 @@ impl Flow<'_> {
         let mut value = self.freeze_sources(point, value.clone());
         self.import_task_sources(&mut value, point, state);
         let targets = self.write_targets(metadata);
-        self.write_resolved_references(targets, &value, ty, point, state);
+        self.write_resolved_references(&targets, &value, ty, point, state);
     }
 
     pub(super) fn import_prefix_memory(
@@ -194,7 +214,7 @@ impl Flow<'_> {
         for destination in self.write_targets(&event.write.target).all {
             if let Storage::External(port) = destination.storage {
                 let mut value = event.write.value.clone();
-                value.sources.clear();
+                value.clear_sources();
                 value.clear_task_imports();
                 publications
                     .entry((
@@ -293,7 +313,7 @@ impl Flow<'_> {
                     path: destination.path.clone(),
                 };
                 let mut data = value.clone();
-                data.sources.clear();
+                data.clear_sources();
                 data.clear_task_imports();
                 let event = (site, view);
                 self.record_event_guard(super::effects::EventKey::Memory(event.clone()), joined);
@@ -306,33 +326,20 @@ impl Flow<'_> {
 
     fn write_resolved_references(
         &mut self,
-        targets: WriteTargets,
+        targets: &WriteTargets,
         value: &Value,
         ty: spark_types::TypeId,
         point: Point,
         state: &mut State,
     ) {
-        self.observe_store_boundary(&targets, value, ty, point, state);
+        self.observe_store_boundary(targets, value, ty, point, state);
         if targets.may_escape() {
             self.expose_queue_handles(value, state);
         }
-        let unique = targets.physical.len() == 1 && !targets.unknown;
-        for destination in targets.all {
-            let Coordinate { storage, path } = &destination;
+        for destination in &targets.all {
+            let Coordinate { storage, path } = destination;
             let (root, mut current) = self.stored_carrier(storage, state);
-            let strong = unique
-                && match storage {
-                    Storage::Cell(_) => owned_path(path),
-                    Storage::External(_) => targets.exact.contains(&destination),
-                    Storage::Logical(_)
-                    | Storage::Queue(_, _)
-                    | Storage::Task(_, _)
-                    | Storage::Observation(_)
-                    | Storage::PendingWrite(_)
-                    | Storage::SettledMemory(_)
-                    | Storage::Residual(_)
-                    | Storage::ResidualCallback(_, _) => false,
-                };
+            let strong = targets.strongly_defines(destination);
             self.record_path_store(point, destination.clone(), value, strong);
             if strong {
                 current
@@ -352,13 +359,18 @@ impl Flow<'_> {
                     .retain(|stored, _| !super::storage::prefix(path, stored));
             }
             current.join(&value.prefixed_path(path, root, self.table));
-            current.sources.clear();
+            current.clear_sources();
             match storage {
                 Storage::Observation(_)
+                | Storage::QueueCurrent(_)
                 | Storage::PendingWrite(_)
                 | Storage::SettledMemory(_)
                 | Storage::Residual(_)
+                | Storage::CallbackNode(_)
                 | Storage::ResidualCallback(_, _) => {}
+                Storage::ExecutionCallback(local, ty) => {
+                    state.clobber_execution_callback(*local, *ty, current);
+                }
                 Storage::Task(target, ty) => {
                     let record = super::tasks::Record {
                         callback: current,
@@ -374,7 +386,7 @@ impl Flow<'_> {
                         root: port.clone(),
                         path: path.clone(),
                     };
-                    if targets.physical.contains(&destination) {
+                    if targets.physical.contains(destination) {
                         self.written_inputs.insert(view.clone());
                         state.modified_views.insert(view.clone());
                     }
@@ -384,8 +396,7 @@ impl Flow<'_> {
                     state.external.insert(port.clone(), current);
                 }
                 Storage::Cell(local) | Storage::Logical(local) => {
-                    state.future_owners.invalidate(*local, &state.future_copies);
-                    state.future_copies.forget(*local);
+                    self.clobber_input_owners(*local, state);
                     State::set_value(&mut state.cells, *local, current.clone());
                     if state.live.contains(local) {
                         self.record_path_store(
@@ -411,16 +422,25 @@ impl Flow<'_> {
 
     fn stored_carrier(&self, storage: &Storage, state: &State) -> (spark_types::TypeId, Value) {
         match storage {
-            Storage::PendingWrite(_)
+            Storage::ExecutionCallback(_, _)
+            | Storage::QueueCurrent(_)
+            | Storage::PendingWrite(_)
             | Storage::SettledMemory(_)
             | Storage::Residual(_)
+            | Storage::CallbackNode(_)
             | Storage::ResidualCallback(_, _) => (
                 self.storage_type(storage),
-                state.stored_value(storage).cloned().unwrap_or_default(),
+                state
+                    .stored_value(storage)
+                    .map(std::borrow::Cow::into_owned)
+                    .unwrap_or_default(),
             ),
             Storage::Observation(lane) => (
                 lane.sample.ty,
-                state.stored_value(storage).cloned().unwrap_or_default(),
+                state
+                    .stored_value(storage)
+                    .map(std::borrow::Cow::into_owned)
+                    .unwrap_or_default(),
             ),
             Storage::Task(target, ty) => (
                 *ty,

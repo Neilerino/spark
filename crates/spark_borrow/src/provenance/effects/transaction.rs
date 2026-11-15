@@ -8,7 +8,6 @@ use super::{
     Aliases, CallActuals, Flow, Local, MemoryEvent, MirFunction, Operand, Point, PrefixWrites,
     State, Summary, TypeId, Value,
 };
-use crate::provenance::tasks::proofs::CallProof;
 
 #[derive(Default)]
 pub(in crate::provenance) struct Dispatch {
@@ -25,6 +24,7 @@ impl Dispatch {
     }
 }
 
+#[derive(Default)]
 pub(in crate::provenance) struct CallOutcome {
     pub returned: Value,
     pub tasks: Vec<(
@@ -39,7 +39,19 @@ pub(in crate::provenance) struct CallOutcome {
     pub place_writes: Vec<(spark_mir::Place, Value)>,
     pub memory: Vec<MemoryWrite>,
     pub async_memory: Vec<MemoryWrite>,
+    pub fresh_outputs: Vec<crate::provenance::effects::fresh_output_binding::Bound>,
+    pub spawn_outputs: Vec<super::spawn_outputs::Reservation>,
+    pub producer_events: Vec<crate::provenance::channels::QueueEvent>,
+    pub queue_accesses: crate::provenance::channels::access::Accesses,
+    pub queue_send_counts: crate::provenance::channels::counts::Sends,
+    pub receipt: Option<crate::provenance::channels::Receipt>,
+    pub direct_queue_send: Option<crate::provenance::channels::messages::Send>,
+    pub spawn_return: Option<crate::provenance::tasks::fresh::Transfer>,
     pub fresh_leaf_task: bool,
+    pub returned_owner_tags: crate::provenance::tasks::lifecycle::Tags,
+    pub retained_captures: Vec<crate::provenance::tasks::Witness>,
+    pub returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs,
+    pub spawn_owners: Option<crate::provenance::tasks::execution::ExecutionTransfer>,
     pub residuals: Vec<crate::provenance::tasks::residual::Import>,
     pub prefix_memory: Vec<MemoryEvent>,
     pub prefix_residuals: Vec<crate::provenance::tasks::residual::Import>,
@@ -48,8 +60,243 @@ pub(in crate::provenance) struct CallOutcome {
 }
 
 impl CallOutcome {
+    fn transfers_argument(&self, index: usize) -> bool {
+        self.future_proof
+            .forwarded
+            .as_ref()
+            .is_some_and(|forwarded| forwarded.covers(index))
+            || self
+                .future_proof
+                .output_owners
+                .as_ref()
+                .is_some_and(|output| output.covered.contains(&index))
+    }
+
+    fn reserves_queue_move(&self, index: usize) -> bool {
+        index == 1
+            && self
+                .direct_queue_send
+                .as_ref()
+                .is_some_and(crate::provenance::channels::messages::Send::reserves_move)
+    }
+
+    fn finish_result(
+        &mut self,
+        flow: &mut Flow<'_>,
+        destination: &Place,
+        point: Point,
+        state: &mut State,
+    ) {
+        if let Some(receipt) = self.receipt.take() {
+            receipt.finish(flow, destination, &self.clobbered_copies, point, state);
+        }
+        if let Some(spawn) = self.spawn_return.take() {
+            spawn.install(flow, destination, &self.clobbered_copies, state);
+        }
+    }
+
+    fn apply_queue_accesses(&self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        let access = flow.expand_queue_accesses(&self.queue_accesses, state);
+        let mut poison_access = access.clone();
+        if let Some(receipt) = &self.receipt {
+            receipt.poison_access(&mut poison_access);
+        }
+        flow.poison_queue_promises(&poison_access, &self.queue_send_counts, point, state);
+        state.queue_accesses.join(&access);
+        state.queue_send_counts.then(&self.queue_send_counts);
+    }
+
+    fn apply_prefix(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        self.import_observations(flow, point, state);
+        for output in &mut self.spawn_outputs {
+            if !output.reserve(flow, point, state) {
+                self.queues.append(&mut output.events);
+            }
+        }
+        let mut completed: Vec<_> = self
+            .future_proof
+            .completed
+            .iter()
+            .flat_map(crate::provenance::tasks::Witness::locals)
+            .collect();
+        if let Some((local, _)) = &self.completed_task {
+            completed.push(*local);
+        }
+        for local in completed {
+            if let Some(handles) = state.value(local).futures.get(&Vec::new()) {
+                if handles.len() == 1 {
+                    if let Some(handle) = handles.iter().next() {
+                        let mut remaining = Vec::new();
+                        for mut event in self.queues.drain(..) {
+                            if flow.route_producer_queue_event(
+                                &crate::provenance::demand::Storage::Logical(local),
+                                &[],
+                                handle,
+                                &mut event,
+                                point,
+                                state,
+                            ) {
+                                self.producer_events.push(event);
+                            } else {
+                                remaining.push(event);
+                            }
+                        }
+                        self.queues = remaining;
+                    }
+                }
+            }
+        }
+        flow.apply_call_prefix(self, point, state);
+        self.clobbered_copies
+            .extend(state.invalidated_copies.iter().copied());
+        Flow::preserve_returned_task_progress(
+            &mut self.returned,
+            &self.future_proof,
+            &self.clobbered_copies,
+            state,
+        );
+        state.reached_prefix.extend(self.returned_prefix.drain());
+        flow.remember_publications(&self.publications, &mut state.publications);
+        for witness in &self.retained_captures {
+            state.future_owners.revoke(witness, &state.future_copies);
+        }
+    }
+
+    fn prepare_owner_transfers(
+        &mut self,
+        flow: &mut Flow<'_>,
+        args: &[Operand],
+        destination: &Place,
+        point: Point,
+        state: &mut State,
+    ) {
+        if let Some(send) = &mut self.direct_queue_send {
+            send.prepare(&self.queues, &self.clobbered_copies, state);
+        }
+        self.future_proof.forwarded = flow.forward_input(
+            &self.future_proof,
+            args,
+            destination,
+            &self.clobbered_copies,
+            point,
+            state,
+        );
+        if !destination.projections.is_empty()
+            || self
+                .spawn_owners
+                .as_ref()
+                .is_some_and(|owners| !owners.valid(&self.clobbered_copies, state))
+        {
+            self.spawn_owners = None;
+        }
+        if let Some(owners) = &self.spawn_owners {
+            owners.detach(flow, point, state);
+        }
+        if !destination.projections.is_empty()
+            || self
+                .future_proof
+                .output_owners
+                .as_ref()
+                .is_some_and(|output| {
+                    !output.valid(flow, destination, &self.clobbered_copies, state)
+                })
+        {
+            self.future_proof.output_owners = None;
+        }
+        if let Some(output) = &self.future_proof.output_owners {
+            output.carry_progress(
+                flow,
+                &mut self.returned_callbacks,
+                &self.clobbered_copies,
+                point,
+                state,
+            );
+        }
+    }
+
+    fn install_owner_outputs(
+        &mut self,
+        flow: &mut Flow<'_>,
+        destination: &Place,
+        output: Option<crate::provenance::tasks::outputs::BoundOutput>,
+        point: Point,
+        state: &mut State,
+    ) {
+        if destination.projections.is_empty()
+            && matches!(
+                flow.table.resolve(crate::provenance::value::strip_mutable(
+                    flow.place_type(destination),
+                    flow.table
+                )),
+                spark_types::Ty::Function { .. }
+            )
+        {
+            state
+                .input_owners
+                .mark_unresolved_environment(destination.local);
+        }
+        let tags = std::mem::take(&mut self.returned_owner_tags);
+        if destination.projections.is_empty() {
+            state.input_owners.add_output(
+                crate::provenance::tasks::Role::root(destination.local),
+                tags,
+            );
+        } else {
+            state.input_owners.escape_tags(tags);
+        }
+        if let Some(owners) = self.spawn_owners.take() {
+            owners.install(flow, destination.local, point, state);
+        }
+        flow.install_callback_outputs(
+            std::mem::take(&mut self.returned_callbacks),
+            destination,
+            point,
+            state,
+        );
+        if let Some(output) = output {
+            output.install(destination.local, state);
+        }
+    }
+
+    fn apply_writes(&mut self, flow: &mut Flow<'_>, point: Point, state: &mut State) {
+        for write in self.queue_contents.drain(..) {
+            flow.import_queue_contents(&write.target, &write.value, write.ty, point, state);
+        }
+        if let Some(send) = &self.direct_queue_send {
+            flow.apply_direct_queue_send(send, &self.queues, point, state);
+        } else {
+            for write in self.queues.drain(..) {
+                flow.apply_queue_event(&write, point, state);
+            }
+        }
+        for write in self.async_memory.drain(..) {
+            flow.import_settled_memory(&write, point, state);
+        }
+        for write in self.memory.drain(..) {
+            flow.apply_memory_snapshot(&write.target, &write.value, write.ty, point, state);
+        }
+        for (place, value) in self.place_writes.drain(..) {
+            flow.store(&place, value, point, state);
+        }
+    }
+
     fn visit_values(&mut self, mut visit: impl FnMut(&mut Value)) {
         visit(&mut self.returned);
+        for event in &mut self.producer_events {
+            visit(&mut event.write.value);
+        }
+        for output in &mut self.spawn_outputs {
+            output.visit_values(&mut visit);
+        }
+        for output in &mut self.fresh_outputs {
+            output.visit_values(&mut visit);
+        }
+        for output in self.returned_callbacks.values_mut() {
+            visit(&mut output.callback);
+        }
+        if let Some(owners) = &mut self.spawn_owners {
+            owners.visit_callback(&mut visit);
+        }
         for residual in self.residuals.iter_mut().chain(&mut self.prefix_residuals) {
             residual.visit_values(&mut visit);
         }
@@ -61,6 +308,9 @@ impl CallOutcome {
         }
         for (_, value) in &mut self.place_writes {
             visit(value);
+        }
+        if let Some(receipt) = &mut self.receipt {
+            visit(&mut receipt.value);
         }
         for value in self
             .memory
@@ -164,7 +414,7 @@ impl Flow<'_> {
         actuals: CallActuals<'_>,
         context: &super::Key,
         args: &[Operand],
-        prefix: super::prefix::Prefix,
+        mut prefix: super::prefix::Prefix,
     ) -> CallOutcome {
         let returned = self.bind(&summary.returned, function, actuals);
         let memory = self.bind_memory_snapshots(
@@ -181,27 +431,39 @@ impl Flow<'_> {
             actuals,
             &context.aliases,
         );
-        let queue_contents = self.bind_queue_contents(summary, function, actuals);
+        let mut queue_contents = self.bind_queue_contents(summary, function, actuals);
+        let mut fresh_outputs = self.bind_fresh_outputs(summary, function, actuals, context, args);
+        for output in &mut fresh_outputs {
+            output.partition(&mut prefix.queues, &mut queue_contents);
+        }
         let tasks = self.bind_tasks(summary, function, actuals);
         let clobbered_copies = self.bound_copy_clobbers(summary, function, actuals);
         let residuals = self.bind_residuals(summary, function, actuals, context, Some(args));
         CallOutcome {
-            fresh_leaf_task: false,
+            fresh_outputs,
+            queue_accesses: self.bind_queue_accesses(summary, function, actuals, context, args),
+            queue_send_counts: self.bind_normal_queue_sends(summary, function, actuals),
+            returned_owner_tags: self.bind_owner_tags(
+                &summary.returned_owner_tags,
+                function,
+                actuals,
+                args,
+            ),
+            retained_captures: self.retained_capture_witnesses(Some((summary, function)), actuals),
+            returned_callbacks: self.bind_callback_outputs(summary, function, actuals, args),
             residuals,
             async_memory,
             publications: prefix.publications,
             tasks,
-            completed_task: None,
             clobbered_copies,
-            future_proof: CallProof::default(),
             returned_prefix: prefix.returned,
-            place_writes: Vec::new(),
             prefix_memory: prefix.memory,
             prefix_residuals: prefix.residuals,
             returned,
             memory,
             queues: prefix.queues,
             queue_contents,
+            ..Default::default()
         }
     }
 
@@ -213,6 +475,7 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) -> bool {
+        self.has_diverging_call |= !dispatch.diverging.is_empty();
         for mut events in dispatch.diverging {
             if events.memory.is_empty() && events.queues.is_empty() && events.residuals.is_empty() {
                 continue;
@@ -247,7 +510,7 @@ impl Flow<'_> {
         true
     }
 
-    fn apply_prefix_writes(
+    pub(in crate::provenance) fn apply_prefix_writes(
         &mut self,
         memory: &[MemoryEvent],
         queues: &[crate::provenance::channels::QueueEvent],
@@ -262,10 +525,28 @@ impl Flow<'_> {
     }
 
     fn apply_call_prefix(&mut self, outcome: &CallOutcome, point: Point, state: &mut State) {
+        let queues: Vec<_> = outcome
+            .queues
+            .iter()
+            .chain(
+                outcome
+                    .fresh_outputs
+                    .iter()
+                    .flat_map(|output| output.events.iter()),
+            )
+            .chain(outcome.producer_events.iter())
+            .chain(
+                outcome
+                    .spawn_outputs
+                    .iter()
+                    .flat_map(|output| output.events.iter()),
+            )
+            .cloned()
+            .collect();
         if outcome.prefix_residuals.is_empty() {
             self.apply_prefix_writes(
                 &outcome.prefix_memory,
-                &outcome.queues,
+                &queues,
                 &outcome.residuals,
                 point,
                 state,
@@ -276,7 +557,7 @@ impl Flow<'_> {
         let entry_transfer = self.transfers[&point].clone();
         self.apply_prefix_writes(
             &outcome.prefix_memory,
-            &outcome.queues,
+            &queues,
             &outcome.residuals,
             point,
             state,
@@ -286,7 +567,7 @@ impl Flow<'_> {
         self.transfers.insert(point, entry_transfer);
         self.apply_prefix_writes(
             &outcome.prefix_memory,
-            &outcome.queues,
+            &queues,
             &outcome.prefix_residuals,
             point,
             state,
@@ -303,34 +584,101 @@ impl Flow<'_> {
     fn consume_call_arguments(
         &mut self,
         args: &[Operand],
-        outcome: &CallOutcome,
+        outcome: &mut CallOutcome,
         point: Point,
         state: &mut State,
     ) {
-        for arg in args {
+        let released: Vec<_> = args
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                let (Operand::Copy(place) | Operand::Move(place)) = arg else {
+                    return false;
+                };
+                place.projections.is_empty()
+                    && outcome
+                        .future_proof
+                        .released_owners
+                        .get(&index)
+                        .is_some_and(|witness| {
+                            witness.contains_local(place.local)
+                                && witness.peers.iter().all(|peer| {
+                                    !peer.frame_clobbered(
+                                        &outcome.clobbered_copies,
+                                        &state.invalidated_copies,
+                                    )
+                                })
+                        })
+            })
+            .collect();
+        for (index, (arg, released)) in args.iter().zip(&released).enumerate() {
+            if *released
+                || outcome.transfers_argument(index)
+                || (index == 0 && outcome.spawn_owners.is_some())
+            {
+                continue;
+            }
+            let borrowed_await = matches!(arg, Operand::Copy(place) if place.projections.is_empty()
+                && outcome.completed_task.as_ref().is_some_and(|(local, _)| *local == place.local));
+            if !borrowed_await {
+                self.escape_input_owner_operand(arg, state);
+                Self::lose_owning_operand(arg, state);
+            }
+        }
+        if let Some(output) = &mut outcome.future_proof.output_owners {
+            output.restrict_coverage(state);
+        }
+        if let Some(forwarded) = &mut outcome.future_proof.forwarded {
+            forwarded.detach(self, point, state);
+        }
+        for (index, (arg, released)) in args.iter().zip(released).enumerate() {
             if let Operand::Move(place) = arg {
-                let completed = outcome
-                    .future_proof
-                    .completed
-                    .iter()
-                    .any(|witness| witness.peers.contains(&place.local));
-                let returned = outcome
-                    .future_proof
-                    .returned
-                    .as_ref()
-                    .is_some_and(|witness| witness.peers.contains(&place.local));
-                let joined = outcome
-                    .completed_task
-                    .as_ref()
-                    .is_some_and(|(local, _)| *local == place.local);
-                if outcome.clobbered_copies.contains(&place.local)
-                    || !(completed || returned || joined)
-                {
-                    Self::lose_owning_operand(arg, state);
-                    self.preserve_writer_loss(place, point, state);
+                self.retire_execution_owner(place.local, point, state);
+                if index == 0 && outcome.spawn_owners.is_some() {
+                    if let Some(local) = crate::provenance::consume(arg, state) {
+                        self.record_consumed(point, local);
+                    }
+                    continue;
+                }
+                if outcome.reserves_queue_move(index) || outcome.transfers_argument(index) {
+                    state.input_owners.drop_local(place.local);
+                } else if released {
+                    state.input_owners.drop_local(place.local);
+                    if !outcome
+                        .future_proof
+                        .forwarded
+                        .as_ref()
+                        .is_some_and(|forwarded| forwarded.reserves(place.local))
+                        && !outcome
+                            .future_proof
+                            .output_owners
+                            .as_ref()
+                            .is_some_and(|output| output.reserves(place.local))
+                    {
+                        self.preserve_writer_loss(place, point, state);
+                    }
+                } else {
+                    let completed = outcome
+                        .future_proof
+                        .completed
+                        .iter()
+                        .any(|witness| witness.contains_local(place.local));
+                    let returned = outcome
+                        .future_proof
+                        .returned
+                        .as_ref()
+                        .is_some_and(|witness| witness.contains_local(place.local));
+                    let joined = outcome
+                        .completed_task
+                        .as_ref()
+                        .is_some_and(|(local, _)| *local == place.local);
+                    if outcome.clobbered_copies.contains(&place.local)
+                        || !(completed || returned || joined)
+                    {
+                        self.preserve_writer_loss(place, point, state);
+                    }
                 }
             }
-            Self::lose_owning_operand(arg, state);
             if let Some(local) = crate::provenance::consume(arg, state) {
                 self.record_consumed(point, local);
             }
@@ -353,23 +701,14 @@ impl Flow<'_> {
         for mut alternative in outcome {
             self.transfers.insert(point, common.clone());
             let mut after = state.clone();
-            alternative.import_observations(self, point, &mut after);
-            self.apply_call_prefix(&alternative, point, &mut after);
-            for local in &after.invalidated_copies {
-                if !alternative.clobbered_copies.contains(local) {
-                    alternative.clobbered_copies.push(*local);
-                }
+            alternative.apply_queue_accesses(self, point, &mut after);
+            alternative.apply_prefix(self, point, &mut after);
+            let mut completed = alternative.future_proof.completed.clone();
+            if let Some((local, _)) = &alternative.completed_task {
+                completed.push(after.future_copies.witness(*local));
             }
-            Self::preserve_returned_task_progress(
-                &mut alternative.returned,
-                &alternative.future_proof,
-                &alternative.clobbered_copies,
-                &after,
-            );
-            after
-                .reached_prefix
-                .extend(alternative.returned_prefix.drain());
-            self.remember_publications(&alternative.publications, &mut after.publications);
+            let completed_outputs =
+                after.completed_queue_outputs(&completed, &alternative.clobbered_copies);
             for witness in &alternative.future_proof.completed {
                 self.settle_task_memory(witness, &alternative.clobbered_copies, point, &mut after);
             }
@@ -380,46 +719,28 @@ impl Flow<'_> {
             for residual in alternative.residuals.drain(..) {
                 self.import_residual(residual, point, &mut after);
             }
-            self.consume_call_arguments(args, &alternative, point, &mut after);
+            alternative.prepare_owner_transfers(self, args, destination, point, &mut after);
+            self.consume_call_arguments(args, &mut alternative, point, &mut after);
+            let output_owners = alternative.future_proof.output_owners.take();
+            let forwarded = alternative.future_proof.forwarded.take();
             let returned_copy = self.apply_call_future_proof(
-                alternative.future_proof,
+                std::mem::take(&mut alternative.future_proof),
                 &alternative.clobbered_copies,
                 point,
                 &mut after,
             );
-            self.import_tasks(alternative.tasks, point, &mut after);
-            if let Some((local, result)) = alternative.completed_task {
+            self.import_tasks(std::mem::take(&mut alternative.tasks), point, &mut after);
+            if let Some((local, result)) = alternative.completed_task.take() {
                 self.complete_future(local, &result, point, &mut after);
             }
 
-            for write in alternative.queue_contents {
-                self.import_queue_contents(
-                    &write.target,
-                    &write.value,
-                    write.ty,
-                    point,
-                    &mut after,
-                );
-            }
-            for write in alternative.queues {
-                self.apply_queue_event(&write, point, &mut after);
-            }
-            for write in alternative.async_memory {
-                self.import_settled_memory(&write, point, &mut after);
-            }
-            for write in alternative.memory {
-                self.apply_memory_snapshot(
-                    &write.target,
-                    &write.value,
-                    write.ty,
-                    point,
-                    &mut after,
-                );
-            }
-            for (place, value) in alternative.place_writes {
-                self.store(&place, value, point, &mut after);
-            }
-            self.store(destination, alternative.returned, point, &mut after);
+            alternative.apply_writes(self, point, &mut after);
+            self.store(
+                destination,
+                std::mem::take(&mut alternative.returned),
+                point,
+                &mut after,
+            );
             self.store_future_copy(destination, returned_copy, &mut after);
             after.future_owners.forget(destination.local);
             if alternative.fresh_leaf_task && destination.projections.is_empty() {
@@ -427,7 +748,31 @@ impl Flow<'_> {
                     .future_owners
                     .grant(destination.local, &after.future_copies);
             }
+            alternative.install_owner_outputs(self, destination, output_owners, point, &mut after);
+            if let Some(forwarded) = forwarded {
+                forwarded.install(self, destination.local, point, &mut after);
+            }
+            for output in alternative.fresh_outputs.drain(..) {
+                output.install(self, point, &alternative.clobbered_copies, &mut after);
+            }
+            for output in alternative.spawn_outputs.drain(..) {
+                output.finish(
+                    self,
+                    destination,
+                    &alternative.clobbered_copies,
+                    point,
+                    &mut after,
+                );
+            }
             self.retire_call_frames(point, &mut after);
+            self.establish_present_outputs(
+                completed_outputs,
+                &alternative.clobbered_copies,
+                point,
+                &mut after,
+            );
+            alternative.finish_result(self, destination, point, &mut after);
+            self.validate_queue_promises(point, &mut after);
             let transfer = self.transfers[&point].clone();
             if let Some((joined, ledger)) = &mut alternatives {
                 joined.join(&after);
@@ -442,3 +787,6 @@ impl Flow<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod owner_tests;

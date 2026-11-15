@@ -1,0 +1,37 @@
+// TAG [SPARK-154]
+link "union_probe"
+extern fn future_rc(value: Ref[Future[Int]]): Int
+async fn zero(): Int { return 0 }
+async fn relay(input: Future[Int], replace: Bool): Int {
+    saved: Future[Int]! = input
+    snapshot: Future[Int] = input
+    if replace {
+        saved = spawn { zero() }
+    }
+    current: Future[Int] = saved
+    view: Ref[Future[Int]] = saved
+    total: Int! = 0
+    index: Int! = 0
+    loop {
+        if index >= 2 { break }
+        total = total + await current
+        index = index + 1
+    }
+    final: Int = await current
+    print(future_rc(view))
+    return total + final + 17
+}
+fn inspect(replace: Bool): Int {
+    child: Future[Int] = spawn { zero() }
+    observed: Ref[Future[Int]] = child
+    print(future_rc(observed))
+    parent: Future[Int] = spawn { relay(child, replace) }
+    print(await parent)
+    print(future_rc(observed))
+    return 0
+}
+fn main(): Int {
+    inspect(false)
+    inspect(true)
+    return 0
+}

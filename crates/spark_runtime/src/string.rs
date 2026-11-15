@@ -290,9 +290,10 @@ mod tests {
             __spark_rc_inc(second);
 
             __spark_list_remove(lines, 0);
-            let first_rc = (*first.cast::<SparkString>()).rc;
+            // TAG [SPARK-152]
+            let first_rc = (*first.cast::<SparkString>()).rc.get();
             __spark_list_rc_dec(lines);
-            let second_rc = (*second.cast::<SparkString>()).rc;
+            let second_rc = (*second.cast::<SparkString>()).rc.get();
 
             __spark_string_rc_dec(first);
             __spark_string_rc_dec(second);

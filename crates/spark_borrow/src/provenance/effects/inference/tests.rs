@@ -6,8 +6,14 @@ use spark_mir::{lower, MirInput, MirOutput};
 use spark_modules::ModuleGraph;
 use std::collections::HashMap;
 
+mod ambient_captures;
+mod fresh_messages;
 mod history_transport;
+mod output_contracts;
+mod owner_calls;
+mod queue_counts;
 mod receive_snapshots;
+mod spawn_owners;
 
 #[test]
 fn certificates_are_closed_against_their_own_refined_may_summaries() {
@@ -38,8 +44,10 @@ fn certificates_are_closed_against_their_own_refined_may_summaries() {
         .iter()
         .map(|(key, proof)| (key.clone(), proof.events.keys().cloned().collect()))
         .collect();
+    let mut outputs = OutputVocabulary::default();
+    discover_summary_outputs(&mut outputs, &summaries);
     let (rechecked, discovered, requests, new_events) =
-        program.proofs(&summaries, &ports, &mut events, Some(&proofs));
+        program.proofs(&summaries, &ports, &mut events, &mut outputs, Some(&proofs));
     assert!(!new_events);
     assert_eq!(proofs, rechecked);
     assert_eq!(ports, discovered);
@@ -169,6 +177,7 @@ fn task_created_queues_keep_their_identity_across_observation_points() {
     let earlier_point = Point::new(BlockId::ENTRY, 0);
     let later_point = Point::new(BlockId::ENTRY, 1);
     let actuals = CallActuals {
+        callee_place: None,
         callee: &callee,
         arguments: &[],
         ty: inner,
@@ -773,6 +782,7 @@ fn later_argument_binding_preserves_an_existing_receive_prefix() {
         &summaries[&Key::distinct(extract.def_id)].returned,
         extract,
         super::super::CallActuals {
+            callee_place: None,
             callee: &Value::default(),
             arguments: &[received],
             ty: extract.return_type,
@@ -958,6 +968,7 @@ fn forwarding_preserves_projected_address_sites() {
         &callee_summary,
         sample,
         super::super::CallActuals {
+            callee_place: None,
             callee: &Value::default(),
             arguments: &[state.value(Local(1))],
             ty: reference,
@@ -1022,7 +1033,7 @@ fn lower_source(source: &str) -> MirOutput {
 
     let tokens = Lexer::new(file_id, source).tokenize();
     let (ast, diagnostics) = parse(tokens, file_id);
-    assert!(!diagnostics.has_errors());
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
     let graph = make_graph(file_id, &ast);
     let mut asts = HashMap::new();
     asts.insert(file_id, ast);
@@ -1036,7 +1047,11 @@ fn lower_source(source: &str) -> MirOutput {
         graph: ModuleGraph::default(),
     });
 
-    assert!(!type_output.diagnostics.has_errors());
+    assert!(
+        !type_output.diagnostics.has_errors(),
+        "{source}\n{:?}",
+        type_output.diagnostics
+    );
     let hir_output = spark_hir::lower(spark_hir::HirInput {
         resolved: resolver_output.resolved,
         definitions: resolver_output.definitions,
@@ -1044,10 +1059,18 @@ fn lower_source(source: &str) -> MirOutput {
         builtins: type_output.builtins,
     });
 
-    assert!(!hir_output.diagnostics.has_errors());
+    assert!(
+        !hir_output.diagnostics.has_errors(),
+        "{source}\n{:?}",
+        hir_output.diagnostics
+    );
     lower(MirInput {
         hir: hir_output.hir,
         table: hir_output.table,
         definitions: hir_output.definitions,
     })
 }
+
+mod fresh_certificates;
+
+mod fresh_helper_bindings;

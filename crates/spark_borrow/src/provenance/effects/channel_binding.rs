@@ -2,7 +2,6 @@
 
 use super::super::channels::{Handle, Target};
 use super::{CallActuals, Flow, Intent, MirFunction, Path, Selector, Value};
-use crate::provenance::tasks::proofs::CallProof;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 impl Flow<'_> {
@@ -46,6 +45,12 @@ impl Flow<'_> {
                 }
             }
         }
+        if let Some(accesses) = &mut summary.normal_queue_accesses {
+            accesses.remap(&bindings);
+        }
+        if let Some(counts) = &mut summary.normal_queue_sends {
+            counts.remap(&bindings);
+        }
         remap_handles(&mut summary.returned, &bindings);
         for record in summary.tasks.values_mut() {
             remap_handles(&mut record.callback, &bindings);
@@ -53,6 +58,7 @@ impl Flow<'_> {
         for value in summary
             .memory
             .values_mut()
+            .chain(summary.fresh_outputs.values_mut())
             .chain(summary.prefix_memory.values_mut())
             .chain(summary.obligations.values_mut())
         {
@@ -160,11 +166,19 @@ impl Flow<'_> {
         pending
     }
 
-    pub(super) fn export_queue_contents(&self, state: &super::State, summary: &mut super::Summary) {
-        for (target, value) in &state.queues {
+    pub(super) fn export_queue_state(&self, state: &super::State, summary: &mut super::Summary) {
+        crate::provenance::channels::counts::join_returns(
+            &mut summary.normal_queue_sends,
+            Some(&state.queue_send_counts),
+        );
+        crate::provenance::channels::access::join_returns(
+            &mut summary.normal_queue_accesses,
+            Some(&state.queue_accesses),
+        );
+        for (target, ty, _, value) in state.queue_entries() {
             summary
                 .queue_contents
-                .entry(target.clone())
+                .entry((target.clone(), ty))
                 .or_default()
                 .join(&super::export_value(value, self.function.def_id));
         }
@@ -247,22 +261,18 @@ impl Flow<'_> {
             });
         }
         super::CallOutcome {
-            fresh_leaf_task: false,
-            residuals: Vec::new(),
-            async_memory: Vec::new(),
-            tasks: Vec::new(),
-            completed_task: None,
-            clobbered_copies: Vec::new(),
-            future_proof: CallProof::default(),
-            returned_prefix: rustc_hash::FxHashSet::default(),
-            publications: crate::provenance::effects::PrefixWrites::default(),
-            place_writes: Vec::new(),
-            prefix_memory: Vec::new(),
-            prefix_residuals: Vec::new(),
+            queue_accesses: if self.queue_free_builtin(args, actuals) {
+                crate::provenance::channels::access::Accesses::default()
+            } else {
+                crate::provenance::channels::access::Accesses::unknown()
+            },
+            queue_send_counts: crate::provenance::channels::counts::Sends {
+                unknown: !self.queue_free_builtin(args, actuals),
+                ..Default::default()
+            },
             returned,
-            memory: Vec::new(),
-            queues: Vec::new(),
             queue_contents,
+            ..Default::default()
         }
     }
 
@@ -448,5 +458,100 @@ fn remap_handles(value: &mut Value, bindings: &FxHashMap<Target, Target>) {
         for callback in view.callbacks.values_mut() {
             callback.remap_queues(bindings);
         }
+    }
+}
+
+impl Flow<'_> {
+    pub(super) fn bind_normal_queue_sends(
+        &self,
+        summary: &super::Summary,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> crate::provenance::channels::counts::Sends {
+        use crate::provenance::channels::counts::{Count, Sends};
+        let Some(counts) = &summary.normal_queue_sends else {
+            return Sends {
+                unknown: true,
+                ..Sends::default()
+            };
+        };
+        let mut bound = Sends {
+            unknown: counts.unknown,
+            ..Sends::default()
+        };
+        for target in counts.targets.keys() {
+            let count = counts.get(target);
+            let targets: FxHashSet<_> = self
+                .bind_queue_target(target, function, actuals)
+                .iter()
+                .flat_map(|target| self.queue_targets(target))
+                .collect();
+            if targets.is_empty() {
+                bound.unknown = true;
+            }
+            let count = if targets.len() == 1 {
+                count
+            } else {
+                count.union(Count::ZERO)
+            };
+            for target in targets {
+                bound.unknown |=
+                    matches!(target, Target::Unknown { .. } | Target::Validation { .. });
+                bound.add(target, count);
+            }
+        }
+        bound
+    }
+}
+
+impl Flow<'_> {
+    pub(super) fn bind_queue_accesses(
+        &self,
+        summary: &super::Summary,
+        function: &MirFunction,
+        actuals: super::CallActuals<'_>,
+        context: &super::Key,
+        args: &[spark_mir::Operand],
+    ) -> crate::provenance::channels::access::Accesses {
+        use crate::provenance::channels::access::Accesses;
+        let Some(access) = &summary.normal_queue_accesses else {
+            return Accesses::unknown();
+        };
+        let mut bound = Accesses {
+            unknown: access.unknown,
+            ..Accesses::default()
+        };
+        for target in &access.blocked {
+            let targets: FxHashSet<_> = self
+                .bind_queue_target(target, function, actuals)
+                .iter()
+                .flat_map(|target| self.queue_targets(target))
+                .collect();
+            bound.unknown |= targets.is_empty()
+                || targets.iter().any(|target| {
+                    matches!(target, Target::Unknown { .. } | Target::Validation { .. })
+                });
+            bound.blocked.extend(targets);
+        }
+        let certificate = self
+            .program
+            .and_then(|program| program.proofs)
+            .and_then(|proofs| proofs.get(context))
+            .and_then(crate::provenance::tasks::proofs::Proof::certificate);
+        for input in &access.deferred_future_inputs {
+            let operand = input
+                .index()
+                .checked_sub(1)
+                .filter(|_| input.0 <= function.param_count)
+                .and_then(|index| args.get(index));
+            if let Some(operand) =
+                operand.filter(|_| certificate.is_some_and(|proof| proof.completed.contains(input)))
+            {
+                bound.join(&self.awaited_queue_accesses(operand, actuals.read.state));
+            } else {
+                bound.unknown = true;
+            }
+        }
+        bound
     }
 }

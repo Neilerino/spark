@@ -1,0 +1,42 @@
+// TAG [SPARK-151]
+link "union_probe"
+extern fn probe_cell_rc(cell: Ref[Cell]): Int
+struct Cell { entries: Map[String, Int]! }
+fn holdList(cell: Cell): Int {
+    values: List[Cell] = [cell]
+    return values.len()
+}
+fn holdMap(cell: Cell): Int {
+    values: Map[Int, Cell] = {1: cell}
+    return values.len()
+}
+fn main(): Int {
+    cell: Cell = Cell { entries: {"one": 7} }
+    print(holdList(cell))
+    print(probe_cell_rc(cell))
+    print(holdMap(cell))
+    print(probe_cell_rc(cell))
+    if true {
+        maybe: Cell? = cell
+        print(probe_cell_rc(cell))
+    }
+    print(probe_cell_rc(cell))
+    if true {
+        callback: (): Int = fn(): Int { return cell.entries.len() }
+        print(probe_cell_rc(cell))
+        print(callback())
+        copy: (): Int = callback
+        print(copy())
+        print(probe_cell_rc(cell))
+    }
+    print(probe_cell_rc(cell))
+    if true {
+        values: List[Cell]! = [cell]
+        saved: List[Cell] = values
+        values[0] = Cell { entries: {"two": 9} }
+        print(probe_cell_rc(cell))
+        saved[0] to { first: Cell -> print(first.entries.len()), Null -> print(99) }
+    }
+    print(probe_cell_rc(cell))
+    return 0
+}

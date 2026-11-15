@@ -2,7 +2,7 @@
 
 use super::{CallActuals, Flow, MirFunction, Value};
 use crate::provenance::tasks::{
-    views::{self, Carrier, Subject, View, Views},
+    views::{self, Callback, NodeKey, Subject, View, Views},
     Target,
 };
 
@@ -22,15 +22,45 @@ impl Flow<'_> {
             ..View::default()
         };
         for (ty, callback) in &view.callbacks {
-            let callback = self.bind(
-                &callback.value(),
-                function,
-                CallActuals { ty: *ty, ..actuals },
-            );
-            bound_view.callbacks.insert(*ty, Carrier::seal(callback));
+            let callback =
+                self.bind_callback(callback, function, CallActuals { ty: *ty, ..actuals });
+            bound_view.callbacks.insert(*ty, callback);
         }
 
         bound_view
+    }
+
+    fn bind_callback(
+        &mut self,
+        callback: &Callback,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> Callback {
+        let mut result = Callback::seal(self.bind(&callback.shallow_value(), function, actuals));
+        for (key, value) in callback.nodes() {
+            let bound = Callback::seal(self.bind(
+                &value,
+                function,
+                CallActuals {
+                    ty: key.ty,
+                    ..actuals
+                },
+            ));
+            for handle in self.bind_task_target(&key.subject.target, function, actuals) {
+                result.insert_node(
+                    NodeKey {
+                        subject: Subject {
+                            target: handle.target,
+                            capture: key.subject.capture,
+                        },
+                        ty: key.ty,
+                    },
+                    &bound,
+                );
+            }
+        }
+        result.prune();
+        result
     }
 
     pub(super) fn bind_task_views(
@@ -145,12 +175,7 @@ pub(super) fn export(value: &Value, function: spark_resolve::DefId) -> Views {
                     let callbacks = view
                         .callbacks
                         .iter()
-                        .map(|(ty, callback)| {
-                            (
-                                *ty,
-                                Carrier::seal(super::export_value(&callback.value(), function)),
-                            )
-                        })
+                        .map(|(ty, callback)| (*ty, export_callback(callback, function)))
                         .collect();
                     (
                         subject.clone(),
@@ -166,6 +191,16 @@ pub(super) fn export(value: &Value, function: spark_resolve::DefId) -> Views {
             (path.clone(), subjects)
         })
         .collect()
+}
+
+fn export_callback(callback: &Callback, function: spark_resolve::DefId) -> Callback {
+    let mut result = Callback::seal(super::export_value(&callback.shallow_value(), function));
+    for (key, value) in callback.nodes() {
+        let exported = Callback::seal(super::export_value(&value, function));
+        result.insert_node(key.clone(), &exported);
+    }
+    result.prune();
+    result
 }
 
 #[cfg(test)]

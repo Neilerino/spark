@@ -166,9 +166,9 @@ impl Flow<'_> {
             value: value.clone(),
             callbacks: rustc_hash::FxHashMap::default(),
         };
-        activity.value.sources.clear();
+        activity.value.clear_sources();
         activity.value.clear_task_imports();
-        value.sources.clear();
+        value.clear_sources();
         let mut changed = state.residuals.entry(key.clone()).or_default().join(&value);
         for (ty, mut callback) in callbacks {
             self.import_task_sources(&mut callback, point, state);
@@ -181,7 +181,7 @@ impl Flow<'_> {
                 &callback,
                 false,
             );
-            callback.sources.clear();
+            callback.clear_sources();
             let mut recipe = callback.clone();
             recipe.clear_task_imports();
             activity.callbacks.entry(ty).or_default().join(&recipe);
@@ -225,18 +225,19 @@ impl Flow<'_> {
             let peers: Vec<_> = witness
                 .peers
                 .iter()
-                .copied()
-                .filter(|peer| *peer != place.local && state.live.contains(peer))
+                .filter(|peer| **peer != super::Role::root(place.local) && state.role_live(peer))
+                .cloned()
                 .collect();
             if !peers.is_empty() {
                 let proof = super::proofs::CallProof {
-                    completed: Vec::new(),
                     returned: Some(witness),
+                    ..super::proofs::CallProof::default()
                 };
                 for peer in peers {
-                    let mut current = state.value(peer);
-                    Self::preserve_returned_task_progress(&mut current, &proof, &[], state);
-                    state.set(peer, current);
+                    if let Some(mut current) = self.current_role_value(&peer, state) {
+                        Self::preserve_returned_task_progress(&mut current, &proof, &[], state);
+                        self.store_role_value(&peer, current, point, state);
+                    }
                 }
                 return;
             }
@@ -249,17 +250,25 @@ impl Flow<'_> {
         }
         let root_ty = self.function.locals[place.local.index()].ty;
         let (role, _) = self.projection_path(root_ty, &place.projections);
+        self.preserve_pending_loss(&source, &role, point, state, false);
+    }
+
+    pub(in crate::provenance) fn preserve_pending_loss(
+        &mut self,
+        source: &Value,
+        role: &Path,
+        point: Point,
+        state: &mut State,
+        all: bool,
+    ) {
         for (path, handles) in &source.futures {
             let mut selected = source.clone();
             for slot in path {
                 selected = selected.project(slot);
             }
             for handle in handles.iter().filter(|handle| handle.pending) {
-                let view = views::contribution(&source, path, handle);
-                if !view.memory.may_write
-                    && view.memory.samples().next().is_none()
-                    && !view.fallback
-                {
+                let view = views::contribution(source, path, handle);
+                if !all && !view.retains_activity() {
                     continue;
                 }
                 let actor = Subject::from(handle);
@@ -273,28 +282,19 @@ impl Flow<'_> {
                     actor: actor.clone(),
                 });
                 let selected = select(selected.clone(), &actor);
-                let callbacks = selected
-                    .task_views
-                    .values()
-                    .flat_map(|subjects| subjects.values())
-                    .flat_map(|view| view.callbacks.iter())
-                    .map(|(ty, callback)| {
-                        (
-                            *ty,
-                            self.freeze_sources(
-                                point,
-                                callback
-                                    .value()
-                                    .sourced(&Storage::Task(actor.target.clone(), *ty)),
-                            ),
-                        )
-                    })
-                    .collect();
+                let (records, _) = views::pending_records(source, path, handle, state);
+                let mut callbacks = rustc_hash::FxHashMap::default();
+                for record in records {
+                    callbacks
+                        .entry(record.callback_ty)
+                        .or_insert_with(Value::default)
+                        .join(&self.freeze_sources(point, record.callback));
+                }
                 self.import_residual(
                     Import {
                         key,
                         value: selected,
-                        callbacks,
+                        callbacks: callbacks.into_iter().collect(),
                         visibility: Visibility::Occurrence(super::proofs::EventFence {
                             inputs: state.joined_inputs.clone(),
                             ..super::proofs::EventFence::default()
@@ -305,7 +305,7 @@ impl Flow<'_> {
                 );
             }
         }
-        self.settle_lost_publications(&source, point, state);
+        self.settle_lost_publications(source, point, state);
     }
 
     fn settle_lost_publications(&mut self, value: &Value, point: Point, state: &mut State) {
@@ -318,7 +318,7 @@ impl Flow<'_> {
                             lane.location.clone(),
                             self.freeze_sources(
                                 point,
-                                value.sourced(&Storage::PendingWrite(lane.clone())),
+                                Self::sample_pending_write(lane, value, state),
                             ),
                         ));
                     }
@@ -335,7 +335,7 @@ impl Flow<'_> {
                 &value,
                 false,
             );
-            value.sources.clear();
+            value.clear_sources();
             state
                 .settled_memory
                 .entry(location)

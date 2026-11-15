@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Statement lowering: MIR statements → Cranelift IR.
 
 use cranelift_codegen::ir::{types, FuncRef, InstBuilder, MemFlags, Value};
@@ -110,7 +112,7 @@ pub fn emit_statement<M: Module>(
             value,
             span,
         } => {
-            if let Err(message) = emit_indexed_assign(ctx, *root, indices, *value, ecx, module) {
+            if let Err(message) = emit_indexed_assign(ctx, root, indices, *value, ecx, module) {
                 diagnostics.push(Diagnostic::error(message).with_label(Label::primary(
                     *span,
                     "the value type needs a stored representation",
@@ -128,7 +130,7 @@ pub fn emit_statement<M: Module>(
 
 fn emit_indexed_assign<M: Module>(
     ctx: &mut FunctionContext<'_>,
-    root: Local,
+    root: &Place,
     indices: &[Local],
     value: Local,
     ecx: &EmitCtx<'_>,
@@ -137,7 +139,7 @@ fn emit_indexed_assign<M: Module>(
     let (&terminal, prefix) = indices
         .split_last()
         .expect("indexed assignment has a selector");
-    let mut collection_ty = ctx.local_type_id(root);
+    let mut collection_ty = emit_rvalue::resolve_place_type(ctx, root, ecx.table);
     for _ in prefix {
         let (_, Ty::List(element)) = clif_types::unwrap_mutable(collection_ty, ecx.table) else {
             unreachable!("only lists can precede the terminal write");
@@ -159,7 +161,7 @@ fn emit_indexed_assign<M: Module>(
         .collect();
     let terminal_index = (!terminal_is_map).then(|| list_write_index(ctx, terminal));
 
-    let original = ctx.read_local(root);
+    let original = emit_rvalue::emit_place_read(ctx, root, ecx.table, module);
     let checked_slot = module.declare_func_in_func(ctx.stubs.list_write_slot, ctx.builder.func);
 
     // Validate the whole list path before detaching any owner.
@@ -173,10 +175,14 @@ fn emit_indexed_assign<M: Module>(
     }
 
     let list_cow = module.declare_func_in_func(ctx.stubs.list_cow, ctx.builder.func);
-    let mut owner = None;
+    let mut owner = if root.projections.is_empty() {
+        None
+    } else {
+        Some(emit_rvalue::emit_place_addr(ctx, root, ecx.table, module).0)
+    };
     collection = original;
     for index in prefix {
-        let list = detach_collection(ctx, list_cow, root, owner, collection);
+        let list = detach_collection(ctx, list_cow, root.local, owner, collection);
         let slot = list_write_slot(ctx, checked_slot, list, index);
         owner = Some(slot);
         collection = ctx.load(ctx.ptr_type, slot, 0);
@@ -190,7 +196,7 @@ fn emit_indexed_assign<M: Module>(
         ctx.builder.ins().iconst(ctx.ptr_type, 0)
     };
     if let Some(index) = terminal_index {
-        let list = detach_collection(ctx, list_cow, root, owner, collection);
+        let list = detach_collection(ctx, list_cow, root.local, owner, collection);
         let slot = list_write_slot(ctx, checked_slot, list, index);
         let replace = module.declare_func_in_func(ctx.stubs.list_replace, ctx.builder.func);
         ctx.builder
@@ -202,7 +208,7 @@ fn emit_indexed_assign<M: Module>(
         let key_address = emit_rvalue::emit_operand_addr(ctx, &key_operand, key_ty, ecx, module)
             .expect("validated map key has storage");
         let map_cow = module.declare_func_in_func(ctx.stubs.map_cow, ctx.builder.func);
-        let map = detach_collection(ctx, map_cow, root, owner, collection);
+        let map = detach_collection(ctx, map_cow, root.local, owner, collection);
         let insert = module.declare_func_in_func(ctx.stubs.map_insert, ctx.builder.func);
         ctx.builder
             .ins()

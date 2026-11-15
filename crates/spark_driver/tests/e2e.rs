@@ -6401,17 +6401,195 @@ fn collection_borrow_future_nonreturning_parents_keep_child_memory_writers() {
             args,
         );
         assert_eq!(scoped.exit_code, 0, "{args:?}: {}", scoped.stderr);
-        let invalid = build_spark_with_args(
+        for fixture in [
             "compile-fail/borrow_errors/future_task_nonreturning_child_memory_owner_drop.spark",
-            args,
-        );
-        assert_eq!(invalid.exit_code, 1, "{args:?}: {}", invalid.stderr);
-        assert!(
-            invalid
-                .stderr
-                .contains("borrowed value does not live long enough"),
-            "{args:?}: {}",
-            invalid.stderr
+            "compile-fail/borrow_errors/future_task_nonreturning_child_prefix_read_owner_drop.spark",
+        ] {
+            let invalid = build_spark_with_args(fixture, args);
+            assert_eq!(invalid.exit_code, 1, "{fixture} {args:?}: {}", invalid.stderr);
+            assert!(invalid.stderr.contains("borrowed value does not live long enough"), "{fixture} {args:?}: {}", invalid.stderr);
+        }
+    }
+}
+
+// TAG [SPARK-151]
+#[test]
+fn struct_copies_retain_and_release_owned_fields() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_cell_rc(const void *const *cell) { return *(const size_t *)*cell; }\n",
+        include_str!("run-pass/basics/struct_owned_fields.spark"),
+        "1\n1\n7\n0\n1\n2\n1\n7\n0\n1\n1\n1\n1",
+    );
+}
+
+#[test]
+fn generic_struct_fields_keep_concrete_layout_and_ownership() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         struct Box { uint8_t flag; const void *map; };\n\
+         int64_t probe_cell_rc(const void *const *cell) { return *(const size_t *)*cell; }\n\
+         int64_t probe_box_rc(const struct Box *box) { return *(const size_t *)box->map; }\n",
+        include_str!("run-pass/generics/struct_owned_fields.spark"),
+        "1\n1\n2\n3\n2\n1",
+    );
+}
+
+#[test]
+fn struct_owned_fields_follow_collection_and_closure_lifetimes() {
+    assert_native_ownership_fixture(
+        "#include <stddef.h>\n#include <stdint.h>\n\
+         int64_t probe_cell_rc(const void *const *cell) { return *(const size_t *)*cell; }\n",
+        include_str!("run-pass/basics/struct_owned_fields_integration.spark"),
+        "1\n1\n1\n1\n2\n1\n2\n1\n1\n2\n1\n2\n1\n1",
+    );
+}
+
+#[test]
+fn a_leaf_task_with_a_plain_function_reference_joins_before_frame_cleanup() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result =
+            run_spark_with_args("run-pass/async/future_leaf_struct_frame_scoped.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "1");
+    }
+}
+
+// TAG [SPARK-149]
+#[test]
+fn future_spawn_releases_its_captured_future_owner() {
+    let native = "#include <stddef.h>\n#include <stdint.h>\n\
+        int64_t future_rc(const void *const *slot) { return *(const size_t *)*slot; }\n";
+    for fixture in [
+        include_str!("run-pass/async/future_ordinary_owned_capture.spark"),
+        include_str!("run-pass/async/future_spawn_owned_capture.spark"),
+    ] {
+        assert_native_ownership_fixture(native, fixture, "1\n7\n1");
+    }
+}
+
+#[test]
+fn future_spawn_preserves_float_callback_results() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/async/future_spawn_float_result.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "1.5");
+    }
+}
+
+// TAG [SPARK-152]
+#[test]
+fn future_captures_preserve_shared_owned_values_after_the_creator_returns() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result = run_spark_with_args("run-pass/async/future_spawn_shared_owners.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "288");
+    }
+}
+
+#[test]
+fn future_cooperative_await_preserves_its_owned_handle() {
+    for args in [&[][..], &["--no-opt"][..]] {
+        let result =
+            run_spark_with_args("run-pass/async/future_cooperative_owned_await.spark", args);
+        assert_eq!(result.exit_code, 0, "{args:?}: {}", result.stderr);
+        assert_eq!(result.stdout.trim(), "7");
+    }
+}
+
+// TAG [SPARK-117]
+mod cooperative_codegen;
+
+#[test]
+fn cooperative_spawn_preserves_actual_argument_bindings_and_wrapper_effects() {
+    for (fixture, expected) in [
+        ("run-pass/async/future_cooperative_bindings.spark", "33\n23"),
+        ("run-pass/async/future_cooperative_float.spark", "1.5"),
+        (
+            "run-pass/async/future_spawn_effectful_wrapper.spark",
+            "11\n7",
+        ),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout.trim(), expected);
+        }
+    }
+}
+
+#[test]
+fn cooperative_spawn_observes_zero_sized_child_completion() {
+    let native = "#include <stdint.h>\n\
+        extern void *__spark_spawn_coop(void *, void *, int64_t, int64_t, int64_t, void *);\n\
+        static int8_t ready(void *state) { (void)state; return 1; }\n\
+        void *emptyFuture(void) { return __spark_spawn_coop((void *)ready, 0, 0, 0, 0, 0); }\n";
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/async/future_cooperative_empty_child.spark"),
+        "7",
+    );
+}
+
+// TAG [SPARK-154]
+#[test]
+fn cooperative_frame_references_use_persistent_backing() {
+    for (fixture, expected) in [
+        (
+            "run-pass/async/future_cooperative_frame_reference.spark",
+            "17",
+        ),
+        ("run-pass/async/future_cooperative_frame_places.spark", "22"),
+        (
+            "run-pass/async/future_cooperative_frame_capture.spark",
+            "18",
+        ),
+        ("run-pass/async/future_cooperative_frame_indexed.spark", "9"),
+        ("run-pass/async/future_cooperative_frame_cow.spark", "28"),
+    ] {
+        for args in [&[][..], &["--no-opt"][..]] {
+            let result = run_spark_with_args(fixture, args);
+            assert_eq!(result.exit_code, 0, "{fixture} {args:?}: {}", result.stderr);
+            assert_eq!(result.stdout.trim(), expected);
+        }
+    }
+}
+
+// TAG [SPARK-148]
+#[test]
+fn repeated_await_borrows_its_future_and_preserves_copied_aliases() {
+    let native = "#include <stddef.h>\n#include <stdint.h>\n\
+        int64_t future_rc(const void *const *slot) { return *(const size_t *)*slot; }\n";
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/async/future_await_borrowed_receiver.spark"),
+        "1\n0\n1\n0\n1\n2\n0\n2\n0\n2\n1\n1\n0\n1\n0\n1",
+    );
+}
+
+// TAG [SPARK-154]
+#[test]
+fn cooperative_frame_ownership_survives_conditional_replacement() {
+    let native = "#include <stddef.h>\n#include <stdint.h>\n\
+        int64_t future_rc(const void *const *slot) { return *(const size_t *)*slot; }\n";
+    assert_native_ownership_fixture(
+        native,
+        include_str!("run-pass/async/future_cooperative_frame_owners.spark"),
+        "1\n5\n17\n1\n1\n2\n17\n1",
+    );
+}
+
+// TAG [SPARK-117]
+#[test]
+fn future_results_own_their_cache_and_each_awaited_copy() {
+    for fixture in [
+        include_str!("run-pass/async/future_owned_result.spark"),
+        include_str!("run-pass/async/future_cooperative_owned_result.spark"),
+    ] {
+        assert_native_ownership_fixture(
+            include_str!("cooperative_codegen/result_ownership.c"),
+            fixture,
+            "7\n7",
         );
     }
 }

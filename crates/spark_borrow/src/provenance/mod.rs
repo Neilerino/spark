@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Value-slot provenance for references carried across MIR control flow.
 
 mod address;
@@ -7,6 +9,7 @@ mod channels;
 mod collections;
 mod demand;
 mod effects;
+mod identity;
 mod obligations;
 mod observations;
 mod read;
@@ -44,14 +47,22 @@ type Origins = FxHashSet<Origin>;
 #[derive(Clone, Debug, Default)]
 struct State {
     queues: FxHashMap<(channels::Target, TypeId), Value>,
+    queue_send_counts: channels::counts::Sends,
+    queue_accesses: channels::access::Accesses,
+    queue_current: FxHashMap<channels::messages::Slot, channels::messages::Contribution>,
+    queue_promises: channels::protocol::Promises,
     observations: observations::Samples,
     pending_memory: FxHashMap<std::sync::Arc<tasks::memory::Lane>, Value>,
     settled_memory: FxHashMap<observations::Sample, Value>,
     residuals: FxHashMap<std::sync::Arc<tasks::residual::Key>, Value>,
     residual_callbacks: FxHashMap<(std::sync::Arc<tasks::residual::Key>, TypeId), Value>,
     tasks: FxHashMap<tasks::Target, tasks::Record>,
+    executions: FxHashMap<(Local, TypeId), Value>,
+    execution_backing_must: FxHashSet<(Local, TypeId)>,
     future_copies: tasks::Copies,
+    channel_copies: channels::identity::Copies,
     future_owners: tasks::lifecycle::Owners,
+    input_owners: tasks::lifecycle::InputOwners,
     // Cleared at each MIR point; qualifies entry-captured call witnesses within its alternatives.
     invalidated_copies: FxHashSet<Local>,
     joined_inputs: FxHashSet<Local>,
@@ -67,7 +78,55 @@ struct State {
     invalidated: FxHashMap<(Local, Path), FxHashSet<Point>>,
 }
 
+fn literal_successor(function: &MirFunction, block: &spark_mir::BasicBlock) -> Option<BlockId> {
+    let Terminator::SwitchInt {
+        discriminant,
+        targets,
+        otherwise,
+    } = &block.terminator
+    else {
+        return None;
+    };
+    let literal = match discriminant {
+        Operand::Constant(literal) => literal,
+        Operand::Copy(place) | Operand::Move(place) if place.projections.is_empty() => {
+            let declaration = &function.locals[place.local.index()];
+            if declaration.is_user_variable || declaration.mutable || declaration.name.is_some() {
+                return None;
+            }
+            let Statement::Assign {
+                place: destination,
+                rvalue: Rvalue::Use(Operand::Constant(literal)),
+                ..
+            } = block.statements.last()?
+            else {
+                return None;
+            };
+            if destination.local != place.local || !destination.projections.is_empty() || function.blocks.iter().flat_map(|body| &body.statements).any(|statement|
+                matches!(statement, Statement::Assign { rvalue: Rvalue::Ref { place: borrowed, .. }, .. } if borrowed.local == place.local)) {
+                return None;
+            }
+            literal
+        }
+        _ => return None,
+    };
+    let spark_mir::Constant::Bool(value) = literal else {
+        return None;
+    };
+    let value = i128::from(u8::from(*value));
+    Some(
+        targets
+            .iter()
+            .find_map(|(pattern, target)| (*pattern == value).then_some(*target))
+            .unwrap_or(*otherwise),
+    )
+}
+
 impl State {
+    fn role_live(&self, role: &tasks::Role) -> bool {
+        tasks::Live::new(&self.live, &self.queue_current).contains(role)
+    }
+
     fn value(&self, local: Local) -> Value {
         self.values.get(&local).cloned().unwrap_or_default()
     }
@@ -77,7 +136,7 @@ impl State {
     }
 
     fn set(&mut self, local: Local, mut value: Value) {
-        value.sources.clear();
+        value.clear_sources();
         self.live.insert(local);
         Self::set_value(&mut self.cells, local, value.clone());
         Self::set_value(&mut self.values, local, value);
@@ -92,9 +151,13 @@ impl State {
     }
 
     fn consume(&mut self, local: Local) {
+        self.execution_backing_must
+            .retain(|(anchor, _)| *anchor != local);
+        self.input_owners.escape_local(local);
         self.values.remove(&local);
         self.live.remove(&local);
         self.future_copies.forget(local);
+        self.channel_copies.forget(local);
         self.future_owners.forget(local);
     }
 
@@ -136,6 +199,10 @@ impl State {
         let before = self.live.len();
         self.live.extend(other.live.iter().copied());
         let mut changed = before != self.live.len();
+        let before = self.execution_backing_must.len();
+        self.execution_backing_must
+            .retain(|key| other.execution_backing_must.contains(key));
+        changed |= before != self.execution_backing_must.len();
         changed |= effects::join_prefix(&mut self.reached_prefix, &other.reached_prefix);
         changed |= self.publications.join(&other.publications);
         changed |= self.future_owners.intersect(
@@ -144,6 +211,10 @@ impl State {
             &other.future_copies,
         );
         changed |= self.future_copies.intersect(&other.future_copies);
+        changed |= self.channel_copies.intersect(&other.channel_copies);
+        changed |= channels::protocol::intersect(&mut self.queue_promises, &other.queue_promises);
+        changed |= self.queue_accesses.join(&other.queue_accesses);
+        changed |= self.input_owners.join(&other.input_owners);
         let before = self.joined_inputs.len();
         self.joined_inputs
             .retain(|input| other.joined_inputs.contains(input));
@@ -156,6 +227,10 @@ impl State {
                 changed = true;
             }
         }
+        for (key, callback) in &other.executions {
+            let absent = !self.executions.contains_key(key);
+            changed |= self.executions.entry(*key).or_default().join(callback) || absent;
+        }
         let before = self.exposed_queues.len();
         self.exposed_queues
             .extend(other.exposed_queues.iter().cloned());
@@ -163,6 +238,15 @@ impl State {
         changed |= self.join_task_backing(other);
         for (target, value) in &other.queues {
             changed |= self.queues.entry(target.clone()).or_default().join(value);
+        }
+        changed |= self.queue_send_counts.join(&other.queue_send_counts);
+        for (slot, message) in &other.queue_current {
+            if let Some(current) = self.queue_current.get_mut(slot) {
+                changed |= current.join(message);
+            } else {
+                self.queue_current.insert(slot.clone(), message.clone());
+                changed = true;
+            }
         }
         for (key, value) in &other.residuals {
             let absent = !self.residuals.contains_key(key);
@@ -212,6 +296,8 @@ struct Flow<'a> {
     unknown_copy_clobber: bool,
     obligations: FxHashMap<(Point, obligations::Boundary), Value>,
     queue_sends: FxHashMap<channels::QueueKey, Value>,
+    fresh_output_candidates: tasks::fresh_outputs::Outputs,
+    has_diverging_call: bool,
     prefix_memory: effects::PrefixMemory,
     prefix_residuals: tasks::residual::Activities,
     receive_snapshots: effects::ReceiveSnapshots,
@@ -256,6 +342,8 @@ impl<'a> Flow<'a> {
             unknown_copy_clobber: false,
             obligations: FxHashMap::default(),
             queue_sends: FxHashMap::default(),
+            fresh_output_candidates: tasks::fresh_outputs::Outputs::default(),
+            has_diverging_call: false,
             prefix_memory: effects::PrefixMemory::default(),
             prefix_residuals: tasks::residual::Activities::default(),
             receive_snapshots: effects::ReceiveSnapshots::default(),
@@ -276,18 +364,38 @@ impl<'a> Flow<'a> {
             let external = decl.local.0 > 0
                 && decl.local.0 <= self.function.param_count + self.function.captures.len() as u32;
             if external {
-                if decl.local.0 <= self.function.param_count
-                    && matches!(
-                        self.table.resolve(strip_mutable(decl.ty, self.table)),
-                        Ty::Future { .. }
-                    )
-                {
-                    state.future_copies.seed_input(decl.local);
+                if matches!(
+                    self.table.resolve(strip_mutable(decl.ty, self.table)),
+                    Ty::Function { .. }
+                ) {
+                    state.input_owners.mark_unresolved_environment(decl.local);
                 }
-                state.set(
-                    decl.local,
-                    self.symbolic_input(decl.ty, decl.local, decl.ty, &[]),
-                );
+                if matches!(
+                    self.table.resolve(strip_mutable(decl.ty, self.table)),
+                    Ty::Future { .. }
+                ) {
+                    state.future_copies.seed_input(decl.local);
+                    if decl.local.0 <= self.function.param_count {
+                        state.input_owners.seed(decl.local);
+                    } else {
+                        state.input_owners.seed_ambient(decl.local);
+                    }
+                }
+                let input = self.symbolic_input(decl.ty, decl.local, decl.ty, &[]);
+                if matches!(
+                    self.table.resolve(strip_mutable(decl.ty, self.table)),
+                    Ty::Channel { .. }
+                ) {
+                    let handles: Vec<_> = input.root_queue_handles().collect();
+                    if let [handle] = handles.as_slice() {
+                        if let Some(port) = handle.target.port(self.table) {
+                            state
+                                .channel_copies
+                                .seed_input(decl.local, self.aliases.representative(&port));
+                        }
+                    }
+                }
+                state.set(decl.local, input);
             }
         }
         state
@@ -301,6 +409,8 @@ impl<'a> Flow<'a> {
         for (from, to) in &facts.cfg_edges {
             if from.index as usize == self.function.blocks[from.block.index()].statements.len()
                 && to.index == 0
+                && literal_successor(self.function, &self.function.blocks[from.block.index()])
+                    .is_none_or(|selected| selected == to.block)
             {
                 successors[from.block.index()].push(to.block);
             }
@@ -335,7 +445,9 @@ impl<'a> Flow<'a> {
         let body = &self.function.blocks[block.index()];
         for (index, statement) in body.statements.iter().enumerate() {
             let point = Point::new(block, index as u32);
-            self.transfer_statement(statement, point, state);
+            if !self.transfer_statement(statement, point, state) {
+                return false;
+            }
         }
         self.transfer_terminator(block, state)
     }
@@ -372,6 +484,7 @@ impl<'a> Flow<'a> {
                     }
                 }
                 self.record_accesses(point, accesses, state);
+                self.escape_input_owner_operand(func, state);
                 let dispatch = self.call_result(func, args, ty, point, state);
                 return self.apply_dispatch(dispatch, args, destination, point, state);
             }
@@ -388,28 +501,60 @@ impl<'a> Flow<'a> {
         true
     }
 
-    fn transfer_statement(&mut self, statement: &Statement, point: Point, state: &mut State) {
+    fn transfer_statement(
+        &mut self,
+        statement: &Statement,
+        point: Point,
+        state: &mut State,
+    ) -> bool {
         state.invalidated_copies.clear();
         self.transfers
             .insert(point, demand::Transfer::at_entry(state.atoms()));
         self.settle_pending_tasks(point, state);
         match statement {
             Statement::Assign { place, rvalue, .. } => {
+                if let Rvalue::Ref {
+                    place: borrowed, ..
+                } = rvalue
+                {
+                    self.address_queue_access(borrowed, point, state);
+                }
+                let executions = self.moving_executions(rvalue, place, point, state);
+                let input_transfer = self.input_owner_transfer(rvalue, place, state);
                 let owned = self.owning_rvalue(rvalue, place, state);
+                let captures = self.captured_future_owners(rvalue, place, state);
                 let future_copy = self.future_copy_witness(rvalue, state);
+                let channel_transfer = self.channel_transfer(rvalue, place, state);
                 let result = self.rvalue(rvalue, self.place_type(place), point, state);
                 let result = self.freeze_sources(point, result);
                 let mut accesses = Accesses::default();
                 self.read_access(place, state, AccessKind::Address, &mut accesses);
                 self.record_accesses(point, accesses, state);
+                for execution in &executions {
+                    execution.detach(self, point, state);
+                }
+                self.retire_rvalue_executions(rvalue, point, state);
+                input_transfer.detach(&mut state.input_owners);
                 for local in consume_rvalue(rvalue, state) {
                     self.record_consumed(point, local);
                 }
                 self.store(place, result, point, state);
                 self.store_future_copy(place, future_copy, state);
+                if let Some(transfer) = channel_transfer {
+                    transfer.install(place.local, state);
+                }
                 state.future_owners.forget(place.local);
-                if owned {
-                    state.future_owners.grant(place.local, &state.future_copies);
+                if let Some(coverage) = owned {
+                    state.future_owners.install_role(
+                        tasks::Role::root(place.local),
+                        coverage,
+                        &state.future_copies,
+                    );
+                }
+                tasks::lifecycle::CapturedOwner::install_all(captures, state);
+                input_transfer.install(&mut state.input_owners);
+                for execution in executions {
+                    execution.install(self, place.local, point, state);
                 }
             }
             Statement::IndexedAssign {
@@ -418,7 +563,7 @@ impl<'a> Flow<'a> {
                 value,
                 ..
             } => {
-                let mut ty = self.function.locals[root.index()].ty;
+                let mut ty = self.place_type(root);
                 let mut path = Vec::new();
                 for _ in indices {
                     let slot = index_slot(ty, self.table);
@@ -428,32 +573,59 @@ impl<'a> Flow<'a> {
                 let stored = state
                     .value(*value)
                     .sourced(&demand::Storage::Logical(*value))
-                    .prefixed_path(&path, self.function.locals[root.index()].ty, self.table);
-                let mut current = state.value(*root).sourced(&demand::Storage::Logical(*root));
+                    .prefixed_path(&path, self.place_type(root), self.table);
+                let mut accesses = Accesses::default();
+                let mut current = self.read_access(root, state, AccessKind::Value, &mut accesses);
+                self.record_accesses(point, accesses, state);
                 current.join(&stored);
-                self.store(&Place::from_local(*root), current, point, state);
+                self.store(root, current, point, state);
+                self.retire_execution_owner(*value, point, state);
                 state.consume(*value);
                 self.record_consumed(point, *value);
             }
             Statement::Drop { place, .. } => {
-                self.preserve_writer_loss(place, point, state);
-                let mut accesses = Accesses::default();
-                self.read_access(place, state, AccessKind::Value, &mut accesses);
-                self.record_accesses(point, accesses, state);
-                self.invalidate(place, point, state);
-                if place.projections.is_empty() {
-                    state.consume(place.local);
-                    self.record_consumed(point, place.local);
+                if !self.transfer_drop(place, point, state) {
+                    return false;
                 }
-                self.settle_pending_tasks(point, state);
             }
             Statement::Nop => {}
         }
+        self.validate_queue_promises(point, state);
+        true
+    }
+
+    fn transfer_drop(&mut self, place: &Place, point: Point, state: &mut State) -> bool {
+        if !self.future_drop_continues(place, point, state) {
+            return false;
+        }
+        self.retire_execution_owner(place.local, point, state);
+        if place.projections.is_empty() {
+            state.input_owners.drop_local(place.local);
+        } else {
+            self.escape_input_owner_operand(&Operand::Move(place.clone()), state);
+        }
+        self.preserve_writer_loss(place, point, state);
+        let mut accesses = Accesses::default();
+        self.read_access(place, state, AccessKind::Value, &mut accesses);
+        self.record_accesses(point, accesses, state);
+        self.invalidate(place, point, state);
+        if place.projections.is_empty() {
+            state.consume(place.local);
+            self.record_consumed(point, place.local);
+        }
+        self.settle_pending_tasks(point, state);
+        true
     }
 
     fn rvalue(&mut self, rvalue: &Rvalue, ty: TypeId, point: Point, state: &State) -> Value {
         let mut accesses = Accesses::default();
         let value = match rvalue {
+            Rvalue::ReadFutureResult { pointer } => self.read_access(
+                &Place::from_local(*pointer),
+                state,
+                AccessKind::Value,
+                &mut accesses,
+            ),
             Rvalue::Use(operand) => self.read_operand(operand, state, &mut accesses),
             Rvalue::Ref { place, .. } => {
                 self.read_access(place, state, AccessKind::Address, &mut accesses);
@@ -621,7 +793,10 @@ impl<'a> Flow<'a> {
             self.store_references(&targets, &value, self.place_type(place), point, state);
             return;
         }
+        self.retire_execution_owner(place.local, point, state);
+        state.input_owners.escape_local(place.local);
         state.future_copies.forget(place.local);
+        state.channel_copies.forget(place.local);
         self.record_store(point, place, &value);
         if place.projections.is_empty() {
             state
@@ -657,7 +832,9 @@ impl<'a> Flow<'a> {
             if !matches!(self.function.blocks[index].terminator, Terminator::Return) {
                 continue;
             }
-            self.transfer_block(block, &mut state);
+            if !self.transfer_block(block, &mut state) {
+                continue;
+            }
             self.report_external_stores(&state, block, diagnostics);
             let value = self.reachable_queue_payloads(&state.value(Local::RETURN_PLACE), &state);
             for root in value.frame_sources(self.function.def_id) {

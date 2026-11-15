@@ -293,6 +293,7 @@ fn imported_invocation_keeps_its_original_dispatch_witness() {
         &symbolic,
         &wrapper,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &arguments,
             ty: callable,
@@ -371,6 +372,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
         &hole,
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &[],
             ty: reference,
@@ -398,6 +400,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
         &exported,
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &[],
             ty: reference,
@@ -434,6 +437,7 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
         },
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &[],
             ty: reference,
@@ -533,6 +537,7 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
     let result = flow.opaque_result(
         &[Operand::Constant(spark_mir::Constant::Void)],
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &arguments,
             ty: reference,
@@ -558,6 +563,7 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
     let result = flow.opaque_result(
         &[Operand::Constant(spark_mir::Constant::Void)],
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &symbolic,
             ty: reference,
@@ -573,6 +579,7 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
         &summary,
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &arguments,
             ty: reference,
@@ -778,7 +785,19 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
     let mut flow = Flow::new(&function, &table, None);
     flow.ensure_transfer(point, &state);
     let outcome = CallOutcome {
+        fresh_outputs: Vec::new(),
+        spawn_outputs: Vec::new(),
+        producer_events: Vec::new(),
+        queue_accesses: crate::provenance::channels::access::Accesses::default(),
+        queue_send_counts: crate::provenance::channels::counts::Sends::default(),
+        receipt: None,
+        direct_queue_send: None,
+        spawn_return: None,
         fresh_leaf_task: false,
+        spawn_owners: None,
+        returned_owner_tags: crate::provenance::tasks::lifecycle::Tags::default(),
+        retained_captures: Vec::new(),
+        returned_callbacks: crate::provenance::tasks::outputs::CallbackOutputs::default(),
         residuals: Vec::new(),
         async_memory: Vec::new(),
         returned: Value::default(),
@@ -822,4 +841,94 @@ fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
     let payload = Value::reference(Origin::Loan(point));
     flow.queue_send(&queue, &payload, int, later, &mut state);
     assert_eq!(flow.queue_escapes.get(&later), Some(&payload));
+}
+
+// TAG [SPARK-151]
+#[test]
+fn a_leaf_certificate_checks_plain_function_bodies_and_rejects_owned_environments() {
+    use spark_mir::{BasicBlock, Constant, LocalDecl, Place, Rvalue, Statement, Terminator};
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let future = table.intern(Ty::Future { inner: int });
+    let callback = table.intern(Ty::Function {
+        params: Vec::new(),
+        ret: int,
+        is_async: false,
+    });
+    let body_def = DefId::new(10170);
+    let helper_def = DefId::new(10171);
+    let function = |def_id, types: &[TypeId], statements| MirFunction {
+        def_id,
+        param_count: 0,
+        return_type: int,
+        locals: types
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| LocalDecl {
+                local: Local(index as u32),
+                ty: *ty,
+                name: None,
+                is_user_variable: false,
+                mutable: false,
+                span: Span::DUMMY,
+            })
+            .collect(),
+        blocks: vec![BasicBlock {
+            statements,
+            terminator: Terminator::Return,
+            is_cleanup: false,
+        }],
+        captures: Vec::new(),
+        is_async: false,
+        span: Span::DUMMY,
+    };
+    for (helper_local, rewritten, expected) in [
+        (int, false, true),
+        (future, false, false),
+        (callback, false, false),
+        (int, true, false),
+    ] {
+        let mut statements = vec![Statement::Assign {
+            place: Place::from_local(Local(1)),
+            rvalue: Rvalue::Use(Operand::Constant(Constant::FunctionRef(helper_def))),
+            span: Span::DUMMY,
+        }];
+        if rewritten {
+            statements.push(Statement::Assign {
+                place: Place::from_local(Local(1)),
+                rvalue: Rvalue::Use(Operand::Copy(Place::from_local(Local(1)))),
+                span: Span::DUMMY,
+            });
+        }
+        let body = function(body_def, &[int, callback], statements);
+        let helper = function(helper_def, &[int, helper_local], Vec::new());
+        let mir = spark_mir::Mir {
+            functions: std::collections::HashMap::from([
+                (body_def, body.clone()),
+                (helper_def, helper),
+            ]),
+        };
+        let summaries = FxHashMap::default();
+        let ports = FxHashMap::default();
+        let flow = Flow::new(
+            &body,
+            &table,
+            Some(Context {
+                mir: &mir,
+                definitions: None,
+                summaries: &summaries,
+                proofs: None,
+                ports: &ports,
+            }),
+        );
+        let record = super::super::tasks::Record {
+            callback: Value::function(body_def),
+            callback_ty: callback,
+        };
+        assert_eq!(
+            flow.leaf_task(&record),
+            expected,
+            "helper={helper_local:?}, rewritten={rewritten}"
+        );
+    }
 }

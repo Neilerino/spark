@@ -1,0 +1,16 @@
+// TAG [SPARK-149]
+link "union_probe"
+extern fn future_rc(value: Ref[Future[Int]]): Int
+async fn zero(): Int { return 0 }
+fn inspect(value: Future[Int]): Int { return 7 }
+fn main(): Int {
+    inner: Future[Int] = spawn { zero() }
+    observed: Ref[Future[Int]] = inner
+    print(future_rc(observed))
+    if true {
+        read: (): Int = fn(): Int { return inspect(inner) }
+        print(read())
+    }
+    print(future_rc(observed))
+    return 0
+}

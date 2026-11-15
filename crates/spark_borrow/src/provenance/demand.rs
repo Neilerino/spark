@@ -2,6 +2,8 @@
 
 // TAG [SPARK-114]
 
+use std::borrow::Cow;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_mir::Local;
 
@@ -20,8 +22,11 @@ pub(super) enum Storage {
     Cell(Local),
     External(Port),
     Queue(super::channels::Target, spark_types::TypeId),
+    QueueCurrent(super::channels::messages::Slot),
     Task(super::tasks::Target, spark_types::TypeId),
+    ExecutionCallback(Local, spark_types::TypeId),
     Observation(std::sync::Arc<super::observations::Lane>),
+    CallbackNode(Box<super::tasks::activity::Location>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -55,9 +60,11 @@ pub(super) struct Definition {
 
 impl Definition {
     fn includes(&self, atom: &Atom) -> bool {
-        self.storage == atom.coordinate.storage
-            && !self.prefix.contains(&Slot::Tail)
-            && atom.coordinate.path.starts_with(&self.prefix)
+        let nested = matches!(&atom.coordinate.storage, Storage::CallbackNode(location) if location.is_below(&self.storage, &self.prefix));
+        nested
+            || self.storage == atom.coordinate.storage
+                && !self.prefix.contains(&Slot::Tail)
+                && atom.coordinate.path.starts_with(&self.prefix)
     }
 }
 
@@ -109,14 +116,11 @@ impl Transfer {
 
     pub(super) fn freeze(&self, mut value: super::Value) -> super::Value {
         self.freeze_annotations(&mut value.sources);
-        for view in value
-            .task_views
-            .values_mut()
-            .flat_map(|views| views.values_mut())
-        {
-            view.history.freeze_imports(self);
-            view.memory.freeze_imports(self);
-        }
+        value.visit_callback_sources(|sources| self.freeze_annotations(sources));
+        value.visit_task_progress(|history, memory| {
+            history.freeze_imports(self);
+            memory.freeze_imports(self);
+        });
         value
     }
 
@@ -219,11 +223,16 @@ impl super::Flow<'_> {
 
     pub(super) fn storage_type(&self, storage: &Storage) -> spark_types::TypeId {
         match storage {
+            Storage::CallbackNode(location) => location.ty(),
+            Storage::QueueCurrent(slot) => slot.ty,
             Storage::Logical(local) | Storage::Cell(local) => {
                 self.function.locals[local.index()].ty
             }
             Storage::External(port) => port.pointee,
-            Storage::Queue(_, ty) | Storage::Task(_, ty) | Storage::ResidualCallback(_, ty) => *ty,
+            Storage::Queue(_, ty)
+            | Storage::Task(_, ty)
+            | Storage::ExecutionCallback(_, ty)
+            | Storage::ResidualCallback(_, ty) => *ty,
             Storage::Observation(lane) => lane.sample.ty,
             Storage::PendingWrite(lane) => lane.location.ty,
             Storage::SettledMemory(location) => location.ty,
@@ -232,6 +241,30 @@ impl super::Flow<'_> {
     }
 
     pub(super) fn record_path_store(
+        &mut self,
+        point: super::Point,
+        destination: Coordinate,
+        value: &super::Value,
+        strong: bool,
+    ) {
+        let root = self.storage_type(&destination.storage);
+        let prefixed = value.prefixed_path(&destination.path, root, self.table);
+        let callbacks = prefixed.callback_storage_values(&destination.storage);
+        self.record_flat_path_store(point, destination, value, strong);
+        for (storage, callback) in callbacks {
+            self.record_flat_path_store(
+                point,
+                Coordinate {
+                    storage,
+                    path: Vec::new(),
+                },
+                &callback,
+                strong,
+            );
+        }
+    }
+
+    fn record_flat_path_store(
         &mut self,
         point: super::Point,
         destination: Coordinate,
@@ -304,7 +337,9 @@ impl super::Flow<'_> {
         for index in 0..self.entries.len() {
             if let Some(mut state) = self.entries[index].clone() {
                 let block = spark_mir::BlockId(index as u32);
-                self.transfer_block(block, &mut state);
+                if !self.transfer_block(block, &mut state) {
+                    continue;
+                }
                 exits.insert(block, state.atoms());
                 if matches!(
                     self.function.blocks[index].terminator,
@@ -350,12 +385,13 @@ impl super::Flow<'_> {
                         active.extend(state.support(atom));
                     }
                 }
-                if let Some(statement) = self.function.blocks[index].statements.get(statement_index)
+                let continues = if let Some(statement) =
+                    self.function.blocks[index].statements.get(statement_index)
                 {
-                    self.transfer_statement(statement, point, &mut state);
+                    self.transfer_statement(statement, point, &mut state)
                 } else {
-                    self.transfer_terminator(block, &mut state);
-                }
+                    self.transfer_terminator(block, &mut state)
+                };
                 for atom in after.get(&point).into_iter().flatten() {
                     if state.contains(atom) {
                         active.extend(state.support(atom));
@@ -373,6 +409,9 @@ impl super::Flow<'_> {
                     {
                         region.points.insert(point);
                     }
+                }
+                if !continues {
+                    break;
                 }
             }
         }
@@ -425,7 +464,7 @@ fn solve(
 }
 
 impl super::State {
-    pub(super) fn atoms(&self) -> Demand {
+    fn storage_containers(&self) -> Vec<(Storage, &super::Value)> {
         self.values
             .iter()
             .map(|(local, value)| (Storage::Logical(*local), value))
@@ -443,6 +482,16 @@ impl super::State {
                 self.queues
                     .iter()
                     .map(|((target, ty), value)| (Storage::Queue(target.clone(), *ty), value)),
+            )
+            .chain(
+                self.queue_current
+                    .iter()
+                    .map(|(slot, message)| (Storage::QueueCurrent(slot.clone()), &message.value)),
+            )
+            .chain(
+                self.executions.iter().map(|((local, ty), callback)| {
+                    (Storage::ExecutionCallback(*local, *ty), callback)
+                }),
             )
             .chain(self.tasks.iter().map(|(target, record)| {
                 (
@@ -475,30 +524,46 @@ impl super::State {
                     .iter()
                     .map(|((key, ty), value)| (Storage::ResidualCallback(key.clone(), *ty), value)),
             )
-            .flat_map(|(storage, value)| {
-                value
-                    .leaves
-                    .keys()
-                    .filter(|(_, origin, _)| *origin != Origin::ValidationHole)
-                    .map(move |(path, origin, capture)| Atom {
-                        coordinate: Coordinate {
-                            storage: storage.clone(),
-                            path: path.clone(),
-                        },
-                        origin: origin.clone(),
-                        capture: *capture,
-                    })
-            })
             .collect()
     }
 
-    pub(super) fn stored_value(&self, storage: &Storage) -> Option<&super::Value> {
+    pub(super) fn atoms(&self) -> Demand {
+        let mut result = Demand::default();
+        for (storage, value) in self.storage_containers() {
+            append_atoms(&mut result, &storage, value);
+            for (storage, callback) in value.callback_storage_values(&storage) {
+                append_atoms(&mut result, &storage, &callback);
+            }
+        }
+        result
+    }
+
+    pub(super) fn stored_value(&self, storage: &Storage) -> Option<Cow<'_, super::Value>> {
+        if let Storage::CallbackNode(location) = storage {
+            let root = self.stored_terminal_value(location.root())?;
+            let callback = root
+                .task_views
+                .get(location.path())?
+                .get(location.actor())?
+                .callbacks
+                .get(&location.callback_type())?;
+            return callback.node_value(location.node()).map(Cow::Owned);
+        }
+        self.stored_terminal_value(storage).map(Cow::Borrowed)
+    }
+
+    fn stored_terminal_value(&self, storage: &Storage) -> Option<&super::Value> {
         match storage {
+            Storage::CallbackNode(_) => None,
             Storage::Logical(local) => self.values.get(local),
             Storage::Cell(local) => self.cells.get(local),
             Storage::External(port) => self.external.get(port),
             Storage::Queue(target, ty) => self.queues.get(&(target.clone(), *ty)),
+            Storage::QueueCurrent(slot) => {
+                self.queue_current.get(slot).map(|message| &message.value)
+            }
             Storage::Task(target, _) => self.tasks.get(target).map(|record| &record.callback),
+            Storage::ExecutionCallback(local, ty) => self.executions.get(&(*local, *ty)),
             Storage::Observation(lane) => self.observations.get(lane),
             Storage::PendingWrite(lane) => self.pending_memory.get(lane),
             Storage::SettledMemory(location) => self.settled_memory.get(location),
@@ -509,17 +574,14 @@ impl super::State {
 
     fn support(&self, atom: &Atom) -> super::Origins {
         let mut result = super::Origins::from_iter([atom.origin.clone()]);
-        if let Some(parents) = self
-            .stored_value(&atom.coordinate.storage)
-            .and_then(|value| {
-                value.leaves.get(&(
-                    atom.coordinate.path.clone(),
-                    atom.origin.clone(),
-                    atom.capture,
-                ))
-            })
-        {
-            result.extend(parents.parents.iter().cloned());
+        if let Some(value) = self.stored_value(&atom.coordinate.storage) {
+            if let Some(leaf) = value.leaves.get(&(
+                atom.coordinate.path.clone(),
+                atom.origin.clone(),
+                atom.capture,
+            )) {
+                result.extend(leaf.parents.iter().cloned());
+            }
         }
         result
     }
@@ -534,6 +596,23 @@ impl super::State {
                 ))
             })
     }
+}
+
+fn append_atoms(result: &mut Demand, storage: &Storage, value: &super::Value) {
+    result.extend(
+        value
+            .leaves
+            .keys()
+            .filter(|(_, origin, _)| *origin != Origin::ValidationHole)
+            .map(|(path, origin, capture)| Atom {
+                coordinate: Coordinate {
+                    storage: storage.clone(),
+                    path: path.clone(),
+                },
+                origin: origin.clone(),
+                capture: *capture,
+            }),
+    );
 }
 
 #[cfg(test)]

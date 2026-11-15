@@ -385,14 +385,10 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
-        for view in value
-            .task_views
-            .values_mut()
-            .flat_map(|views| views.values_mut())
-        {
-            let imports = view.history.take_imports();
-            self.remember_samples(imports, &mut view.history, point, state);
-        }
+        value.visit_task_progress(|history, _| {
+            let imports = history.take_imports();
+            self.remember_samples(imports, history, point, state);
+        });
     }
 
     pub(super) fn import_prefix_observations(
@@ -438,9 +434,19 @@ impl Flow<'_> {
         let mut value = read
             .state
             .stored_value(&storage)
-            .cloned()
+            .map(std::borrow::Cow::into_owned)
             .unwrap_or_default()
             .sourced(&storage);
+        if let Memory::Queue(target, ty) = &sample.memory {
+            for (candidate, candidate_ty, source, payload) in read.state.queue_entries() {
+                if candidate == target
+                    && candidate_ty == *ty
+                    && matches!(source, Storage::QueueCurrent(_))
+                {
+                    value.join(&payload.clone().sourced(&source));
+                }
+            }
+        }
         if let Some(prefix) = read.envelope.and_then(|envelope| envelope.get(&storage)) {
             value.join(prefix);
         }
@@ -491,7 +497,7 @@ impl Flow<'_> {
                 &value,
                 false,
             );
-            value.sources.clear();
+            value.clear_sources();
             state
                 .observations
                 .entry(lane.clone())

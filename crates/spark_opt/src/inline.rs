@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! MIR function inlining pass.
 //!
 //! Substitutes small, non-recursive function bodies at their call sites.
@@ -356,7 +358,7 @@ fn remap_statement(stmt: &Statement, local_off: u32, block_off: u32) -> Statemen
             value,
             span,
         } => Statement::IndexedAssign {
-            root: remap_local(*root, local_off),
+            root: remap_place(root, local_off),
             indices: indices
                 .iter()
                 .map(|&local| remap_local(local, local_off))
@@ -449,6 +451,9 @@ fn remap_operand(op: &Operand, local_off: u32, _block_off: u32) -> Operand {
 /// Remaps an rvalue's locals and block IDs.
 fn remap_rvalue(rvalue: &Rvalue, local_off: u32, block_off: u32) -> Rvalue {
     match rvalue {
+        Rvalue::ReadFutureResult { pointer } => Rvalue::ReadFutureResult {
+            pointer: Local(pointer.0 + local_off),
+        },
         Rvalue::Use(op) => Rvalue::Use(remap_operand(op, local_off, block_off)),
         Rvalue::BinaryOp(op, lhs, rhs) => Rvalue::BinaryOp(
             *op,

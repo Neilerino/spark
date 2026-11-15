@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Pass 5: Copy propagation.
 //!
 //! Conservative single-block copy propagation. For each block, identifies
@@ -89,7 +91,7 @@ fn find_candidates(
                 *assign_counts.entry(place.local).or_insert(0) += 1;
             }
             Statement::IndexedAssign { root, .. } => {
-                *assign_counts.entry(*root).or_insert(0) += 1;
+                *assign_counts.entry(root.local).or_insert(0) += 1;
             }
             _ => {}
         }
@@ -168,7 +170,12 @@ fn statement_reads_local(stmt: &Statement, local: Local) -> bool {
             indices,
             value,
             ..
-        } => *root == local || indices.contains(&local) || *value == local,
+        } => {
+            root.local == local
+                || place_projections_read_local(root, local)
+                || indices.contains(&local)
+                || *value == local
+        }
         Statement::Drop { place, .. } => {
             place.local == local || place_projections_read_local(place, local)
         }
@@ -187,6 +194,7 @@ fn place_projections_read_local(place: &Place, local: Local) -> bool {
 /// Returns true if an rvalue reads from `local`.
 fn rvalue_reads_local(rvalue: &spark_mir::Rvalue, local: Local) -> bool {
     match rvalue {
+        spark_mir::Rvalue::ReadFutureResult { pointer } => *pointer == local,
         spark_mir::Rvalue::BinaryOp(_, a, b) => {
             operand_reads_local(a, local) || operand_reads_local(b, local)
         }
@@ -251,7 +259,7 @@ fn terminator_reads_local(term: &Terminator, local: Local) -> bool {
 fn statement_assigns_local(stmt: &Statement, local: Local) -> bool {
     match stmt {
         Statement::Assign { place, .. } => place.local == local && place.projections.is_empty(),
-        Statement::IndexedAssign { root, .. } => *root == local,
+        Statement::IndexedAssign { root, .. } => root.local == local,
         _ => false,
     }
 }
@@ -294,6 +302,13 @@ fn replace_local_in_place_projections(place: &mut Place, from: Local, to: Local)
 /// Replaces reads of `from` with `to` in an rvalue.
 fn replace_local_in_rvalue(rvalue: &mut spark_mir::Rvalue, from: Local, to: Local) -> bool {
     match rvalue {
+        spark_mir::Rvalue::ReadFutureResult { pointer } => {
+            let changed = *pointer == from;
+            if changed {
+                *pointer = to;
+            }
+            changed
+        }
         spark_mir::Rvalue::BinaryOp(_, a, b) => {
             let changed = replace_local_in_operand(a, from, to);
             changed | replace_local_in_operand(b, from, to)

@@ -2,7 +2,8 @@
 
 //! Direct function summaries use the same slot transfer engine as diagnostics.
 
-use crate::provenance::tasks::proofs::CallProof;
+pub(in crate::provenance) mod fresh_output_binding;
+pub(in crate::provenance) mod spawn_outputs;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_diagnostics::Diagnostics;
@@ -20,10 +21,16 @@ use super::{
 #[derive(Clone, Default)]
 pub(super) struct Summary {
     returned: Value,
+    returned_owner_tags: super::tasks::lifecycle::Tags,
+    retained_owner_tags: super::tasks::lifecycle::Tags,
+    pub(super) fresh_outputs: super::tasks::fresh_outputs::Outputs,
+    pub(super) returned_callbacks: super::tasks::outputs::CallbackOutputs,
     queues: FxHashMap<super::channels::QueueKey, Value>,
     queue_contents: FxHashMap<(super::channels::Target, TypeId), Value>,
     tasks: FxHashMap<super::tasks::Target, super::tasks::Record>,
     normal_return: bool,
+    normal_queue_sends: Option<super::channels::counts::Sends>,
+    normal_queue_accesses: Option<super::channels::access::Accesses>,
     memory: FxHashMap<Port, Value>,
     prefix_memory: PrefixMemory,
     normal_prefix: ReachedPrefix,
@@ -41,10 +48,37 @@ pub(super) struct Summary {
 }
 
 impl Summary {
-    fn join(&mut self, other: &Self) -> bool {
-        let mut changed = self.returned.join(&other.returned);
+    fn join_normal_returns(&mut self, other: &Self) -> bool {
+        let mut changed = super::channels::counts::join_returns(
+            &mut self.normal_queue_sends,
+            other.normal_queue_sends.as_ref(),
+        );
+        changed |= super::channels::access::join_returns(
+            &mut self.normal_queue_accesses,
+            other.normal_queue_accesses.as_ref(),
+        );
+        changed |= !self.normal_return && other.normal_return;
+        self.normal_return |= other.normal_return;
         changed |= join_prefix(&mut self.normal_prefix, &other.normal_prefix);
         changed |= self.normal_publications.join(&other.normal_publications);
+        changed
+    }
+
+    fn join(&mut self, other: &Self) -> bool {
+        let mut changed = self.join_normal_returns(other);
+        changed |= self.returned.join(&other.returned);
+        let before = self.returned_owner_tags.len();
+        self.returned_owner_tags
+            .extend(other.returned_owner_tags.iter().copied());
+        changed |= before != self.returned_owner_tags.len();
+        let before = self.retained_owner_tags.len();
+        self.retained_owner_tags
+            .extend(other.retained_owner_tags.iter().copied());
+        changed |= before != self.retained_owner_tags.len();
+        changed |= self.join_fresh_outputs(other);
+        for (ty, output) in &other.returned_callbacks {
+            changed |= self.returned_callbacks.entry(*ty).or_default().join(output);
+        }
         for (receive, values) in &other.receive_snapshots {
             let missing = !self.receive_snapshots.contains_key(receive);
             changed |= self
@@ -75,8 +109,6 @@ impl Summary {
         }
         changed |= !self.unknown_copy_clobber && other.unknown_copy_clobber;
         self.unknown_copy_clobber |= other.unknown_copy_clobber;
-        changed |= !self.normal_return && other.normal_return;
-        self.normal_return |= other.normal_return;
         for (event, value) in &other.prefix_memory {
             let existed = self.prefix_memory.contains_key(event);
             changed |= self
@@ -145,6 +177,7 @@ pub(super) struct Context<'a> {
 #[derive(Clone, Copy)]
 struct CallActuals<'a> {
     callee: &'a Value,
+    callee_place: Option<&'a spark_mir::Place>,
     arguments: &'a [Value],
     ty: TypeId,
     point: Point,
@@ -155,6 +188,31 @@ struct CallActuals<'a> {
 }
 
 impl<'a> CallActuals<'a> {
+    fn normal(
+        operand: &'a Operand,
+        callee: &'a Value,
+        arguments: &'a [Value],
+        ty: TypeId,
+        point: Point,
+        frame_owner: DefId,
+        state: &'a State,
+    ) -> Self {
+        Self {
+            callee_place: match operand {
+                Operand::Copy(place) | Operand::Move(place) => Some(place),
+                Operand::Constant(_) => None,
+            },
+            callee,
+            arguments,
+            ty,
+            point,
+            read: super::observations::ReadView::current(state),
+            instantiation_site: None,
+            frame_caller: Some(frame_owner),
+            aliases: None,
+        }
+    }
+
     const fn at_read<'b>(self, receive: Option<&'b Receive>) -> CallActuals<'b>
     where
         'a: 'b,
@@ -197,6 +255,7 @@ pub(super) use prefix::{
 };
 pub(super) use receive_snapshots::ReceiveSnapshots;
 mod history;
+mod output_binding;
 mod selection;
 mod task_binding;
 mod task_views;
@@ -273,16 +332,15 @@ impl Flow<'_> {
         }
         let callee = self.operand(func, state);
         let arguments: Vec<_> = args.iter().map(|arg| self.operand(arg, state)).collect();
-        let actuals = CallActuals {
-            callee: &callee,
-            arguments: &arguments,
+        let actuals = CallActuals::normal(
+            func,
+            &callee,
+            &arguments,
             ty,
             point,
-            read: super::observations::ReadView::current(state),
-            instantiation_site: None,
-            frame_caller: Some(self.function.def_id),
-            aliases: None,
-        };
+            self.function.def_id,
+            state,
+        );
         let targets = self.callee_targets(&callee, super::operand_type(func, self.function));
         let mut dispatch = Dispatch::default();
         let open = targets.open;
@@ -316,7 +374,7 @@ impl Flow<'_> {
                     ..actuals
                 };
                 self.observe_writes(summary, function, actuals);
-                let prefix = self.bind_prefix(summary, function, actuals, &key, Some(args));
+                let prefix = self.bind_prefix(summary, function, actuals, &key, Some(args), None);
                 self.observe_prefix(&prefix, point, state);
                 if !summary.normal_return {
                     dispatch.diverging.push(PrefixWrites {
@@ -327,6 +385,7 @@ impl Flow<'_> {
                     continue;
                 }
                 let mut outcome = self.bind_outcome(summary, function, actuals, &key, args, prefix);
+                outcome.queue_accesses.unknown |= self.environment_sources(func, state).1;
                 outcome.future_proof = self.call_future_proof(&key, args, state);
                 dispatch.returning.push(outcome);
             }
@@ -345,11 +404,14 @@ impl Flow<'_> {
             );
             let returned = self.opaque_result(args, actuals);
             let mut outcome = self.opaque_queue_outcome(returned, args, actuals);
+            outcome.retained_captures = self.retained_capture_witnesses(None, actuals);
             outcome.clobbered_copies = self.opaque_copy_clobbers(func, args, actuals);
             dispatch.returning.push(outcome);
         }
         if open {
-            dispatch.returning.push(self.open_outcome(ty, point));
+            let mut outcome = self.open_outcome(ty, point);
+            outcome.retained_captures = self.retained_capture_witnesses(None, actuals);
+            dispatch.returning.push(outcome);
         }
         dispatch
     }
@@ -374,22 +436,13 @@ impl Flow<'_> {
             true,
         ));
         CallOutcome {
-            fresh_leaf_task: false,
-            residuals: Vec::new(),
-            async_memory: Vec::new(),
-            tasks: Vec::new(),
-            completed_task: None,
-            clobbered_copies: Vec::new(),
-            future_proof: CallProof::default(),
-            returned_prefix: rustc_hash::FxHashSet::default(),
-            publications: crate::provenance::effects::PrefixWrites::default(),
-            place_writes: Vec::new(),
-            prefix_memory: Vec::new(),
-            prefix_residuals: Vec::new(),
+            queue_accesses: crate::provenance::channels::access::Accesses::unknown(),
+            queue_send_counts: crate::provenance::channels::counts::Sends {
+                unknown: true,
+                ..Default::default()
+            },
             returned,
-            memory: Vec::new(),
-            queues: Vec::new(),
-            queue_contents: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -555,14 +608,26 @@ impl Flow<'_> {
             let Some(mut state) = self.entries[index].clone() else {
                 continue;
             };
-            self.transfer_block(BlockId(index as u32), &mut state);
+            if !self.transfer_block(BlockId(index as u32), &mut state) {
+                continue;
+            }
             summary.normal_return = true;
             join_prefix(&mut summary.normal_prefix, &state.reached_prefix);
             summary
                 .normal_publications
                 .join(&state.publications.exported(self.function.def_id));
-            self.export_queue_contents(&state, &mut summary);
+            self.export_fresh_outputs(&state, &mut summary);
+            self.export_queue_state(&state, &mut summary);
             self.export_tasks(&state, &mut summary);
+            self.export_callback_outputs(&state, &mut summary);
+            summary
+                .retained_owner_tags
+                .extend(state.input_owners.retained_tags());
+            summary.returned_owner_tags.extend(
+                state
+                    .input_owners
+                    .tags(&super::tasks::Role::root(Local::RETURN_PLACE)),
+            );
             for (key, value) in &state.residuals {
                 summary
                     .residuals
@@ -581,58 +646,62 @@ impl Flow<'_> {
                 &state.value(Local::RETURN_PLACE),
                 self.function.def_id,
             ));
-            let mut ports = self
-                .program
-                .map(|context| context.ports[&self.function.def_id].clone())
-                .unwrap_or_default();
-            ports.extend(self.written_inputs.iter().map(|view| view.root.clone()));
-            let async_modified = Self::async_modified(&state);
-            ports.extend(async_modified.iter().map(|view| view.root.clone()));
-            summary.async_modified.extend(async_modified);
-            for declaration in self
-                .function
-                .locals
-                .iter()
-                .skip(1)
-                .take(self.function.param_count as usize + self.function.captures.len())
-            {
-                if let Some(inner) = child_type(declaration.ty, &Slot::Deref, self.table) {
-                    ports.push(Port::root(declaration.local, inner));
-                }
-            }
-            let ports: FxHashSet<_> = ports
-                .into_iter()
-                .map(|port| self.aliases.representative(&port))
-                .collect();
-            for port in ports {
-                if matches!(port.kind, super::aliases::StorageKind::Channel(_)) {
-                    continue;
-                }
-                let mut selector = port.selector();
-                if !self.aliases.is_cell(&port) {
-                    if let Intent::Address(payload) = &mut selector.intent {
-                        payload.kind = DerefKind::Residual;
-                    }
-                }
-                let value = self.symbolic_pointee(&selector, port.pointee, &state);
-                summary
-                    .memory
-                    .entry(port.clone())
-                    .or_default()
-                    .join(&export_value(&value, self.function.def_id));
-                summary.modified.extend(
-                    state
-                        .modified_views
-                        .iter()
-                        .filter(|view| view.root == port)
-                        .cloned(),
-                );
-            }
+            self.export_memory_state(&state, &mut summary);
         }
         self.export_prefix(&mut summary);
 
         self.normalize_fresh_queue_roles(&mut summary);
         summary
+    }
+
+    fn export_memory_state(&self, state: &State, summary: &mut Summary) {
+        let mut ports = self
+            .program
+            .map(|context| context.ports[&self.function.def_id].clone())
+            .unwrap_or_default();
+        ports.extend(self.written_inputs.iter().map(|view| view.root.clone()));
+        let async_modified = Self::async_modified(state);
+        ports.extend(async_modified.iter().map(|view| view.root.clone()));
+        summary.async_modified.extend(async_modified);
+        for declaration in self
+            .function
+            .locals
+            .iter()
+            .skip(1)
+            .take(self.function.param_count as usize + self.function.captures.len())
+        {
+            if let Some(inner) = child_type(declaration.ty, &Slot::Deref, self.table) {
+                ports.push(Port::root(declaration.local, inner));
+            }
+        }
+        let ports: FxHashSet<_> = ports
+            .into_iter()
+            .map(|port| self.aliases.representative(&port))
+            .collect();
+        for port in ports {
+            if matches!(port.kind, super::aliases::StorageKind::Channel(_)) {
+                continue;
+            }
+            let mut selector = port.selector();
+            if !self.aliases.is_cell(&port) {
+                if let Intent::Address(payload) = &mut selector.intent {
+                    payload.kind = DerefKind::Residual;
+                }
+            }
+            let value = self.symbolic_pointee(&selector, port.pointee, state);
+            summary
+                .memory
+                .entry(port.clone())
+                .or_default()
+                .join(&export_value(&value, self.function.def_id));
+            summary.modified.extend(
+                state
+                    .modified_views
+                    .iter()
+                    .filter(|view| view.root == port)
+                    .cloned(),
+            );
+        }
     }
 
     fn bind_frame(&mut self, endpoint: &Endpoint, actuals: CallActuals<'_>) -> Endpoint {

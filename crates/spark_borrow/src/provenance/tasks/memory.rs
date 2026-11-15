@@ -113,18 +113,13 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
-        for effects in value
-            .task_views
-            .values_mut()
-            .flat_map(|views| views.values_mut())
-            .map(|view| &mut view.memory)
-        {
+        value.visit_task_progress(|_, effects| {
             for (lane, sources) in std::mem::take(&mut effects.imports) {
                 let mut value = effects.facts[&lane].value();
                 value.sources = sources;
                 self.remember_pending_write(lane, value, point, state);
             }
-        }
+        });
     }
 
     fn remember_pending_write(
@@ -134,6 +129,7 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
+        self.import_task_sources(&mut value, point, state);
         match &lane.location.memory {
             Memory::Frame {
                 scope: FrameScope::Current,
@@ -141,8 +137,7 @@ impl Flow<'_> {
                 local,
                 ..
             } if *function == self.function.def_id => {
-                state.future_owners.invalidate(*local, &state.future_copies);
-                state.future_copies.forget(*local);
+                self.clobber_input_owners(*local, state);
                 state.invalidated_copies.insert(*local);
             }
             Memory::External(port) => {
@@ -154,10 +149,10 @@ impl Flow<'_> {
             }
             Memory::Frame { .. } | Memory::Unavailable(_) => {
                 self.unknown_copy_clobber = true;
-                for local in &state.live {
-                    state.future_owners.invalidate(*local, &state.future_copies);
-                    state.future_copies.forget(*local);
-                    state.invalidated_copies.insert(*local);
+                let live: Vec<_> = state.live.iter().copied().collect();
+                for local in live {
+                    self.clobber_input_owners(local, state);
+                    state.invalidated_copies.insert(local);
                 }
             }
             Memory::Queue(_, _) => {}
@@ -171,7 +166,7 @@ impl Flow<'_> {
             &value,
             false,
         );
-        value.sources.clear();
+        value.clear_sources();
         state.pending_memory.entry(lane).or_default().join(&value);
     }
 
@@ -193,11 +188,14 @@ impl Flow<'_> {
                 },
                 Storage::External(port) => Memory::External(port),
                 Storage::Queue(_, _)
+                | Storage::QueueCurrent(_)
                 | Storage::Task(_, _)
+                | Storage::ExecutionCallback(_, _)
                 | Storage::Observation(_)
                 | Storage::PendingWrite(_)
                 | Storage::SettledMemory(_)
                 | Storage::Residual(_)
+                | Storage::CallbackNode(_)
                 | Storage::ResidualCallback(_, _) => continue,
             };
             locations.push(Sample {
@@ -246,7 +244,8 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
-        let value = self.freeze_sources(point, write.value.clone());
+        let mut value = self.freeze_sources(point, write.value.clone());
+        self.import_task_sources(&mut value, point, state);
         let locations = self.memory_locations(
             &write.target,
             write.ty,
@@ -266,13 +265,34 @@ impl Flow<'_> {
                 false,
             );
             let mut stored = value.clone();
-            stored.sources.clear();
+            stored.clear_sources();
             state
                 .settled_memory
                 .entry(location)
                 .or_default()
                 .join(&stored);
         }
+    }
+
+    pub(in crate::provenance) fn sample_pending_write(
+        lane: &Arc<Lane>,
+        mut sample: Value,
+        state: &State,
+    ) -> Value {
+        if let Some(backing) = state.pending_memory.get(lane) {
+            for (path, handles) in &sample.futures {
+                for handle in handles {
+                    sample
+                        .task_views
+                        .entry(path.clone())
+                        .or_default()
+                        .entry(Subject::from(handle))
+                        .or_default()
+                        .join(&super::views::contribution(backing, path, handle));
+                }
+            }
+        }
+        sample.sourced(&Storage::PendingWrite(lane.clone()))
     }
 
     pub(in crate::provenance) fn external_async_values(state: &State) -> Vec<Value> {
@@ -286,12 +306,13 @@ impl Flow<'_> {
                 );
             }
         }
-        for view in state.current_task_views() {
+        let activity = state.rooted_activity();
+        for view in activity.views() {
             for (lane, value) in view.memory.samples() {
                 if matches!(lane.location.memory, Memory::External(_))
                     && state.pending_memory.contains_key(lane)
                 {
-                    values.push(value.sourced(&Storage::PendingWrite(lane.clone())));
+                    values.push(Self::sample_pending_write(lane, value, state));
                 }
             }
         }
@@ -302,8 +323,9 @@ impl Flow<'_> {
         state: &State,
     ) -> rustc_hash::FxHashSet<crate::provenance::aliases::View> {
         let mut modified = rustc_hash::FxHashSet::default();
-        let pending = state
-            .current_task_views()
+        let activity = state.rooted_activity();
+        let pending = activity
+            .views()
             .flat_map(|view| view.memory.samples())
             .map(|(lane, _)| &lane.location);
         for location in state.settled_memory.keys().chain(pending) {
@@ -326,7 +348,10 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) -> bool {
-        let Some(mut current) = state.stored_value(storage).cloned() else {
+        let Some(mut current) = state
+            .stored_value(storage)
+            .map(std::borrow::Cow::into_owned)
+        else {
             return false;
         };
         let mut effects = Effects {
@@ -387,12 +412,13 @@ impl Flow<'_> {
                 result.join(&value.prefixed_path(&location.path, ty, self.table));
             }
         };
-        for view in state.current_task_views() {
+        let activity = state.rooted_activity();
+        for view in activity.views() {
             for (lane, value) in view.memory.samples() {
                 if state.pending_memory.contains_key(lane) {
                     add(
                         &lane.location,
-                        value.sourced(&Storage::PendingWrite(lane.clone())),
+                        Self::sample_pending_write(lane, value, state),
                     );
                 }
             }
@@ -416,12 +442,14 @@ impl Flow<'_> {
         state: &mut State,
     ) {
         let mut values = Vec::new();
-        for peer in witness.peers.iter().filter(|peer| {
-            state.live.contains(peer)
-                && !clobbered.contains(peer)
-                && !state.invalidated_copies.contains(peer)
-        }) {
-            let current = state.value(*peer);
+        for role in witness
+            .peers
+            .iter()
+            .filter(|role| !role.frame_clobbered(clobbered, &state.invalidated_copies))
+        {
+            let Some(current) = self.current_role_value(role, state) else {
+                continue;
+            };
             for handle in current
                 .futures
                 .get(&Vec::new())
@@ -433,10 +461,7 @@ impl Flow<'_> {
                 for (lane, value) in view.memory.samples() {
                     values.push((
                         lane.location.clone(),
-                        self.freeze_sources(
-                            point,
-                            value.sourced(&Storage::PendingWrite(lane.clone())),
-                        ),
+                        self.freeze_sources(point, Self::sample_pending_write(lane, value, state)),
                     ));
                 }
             }
@@ -451,7 +476,7 @@ impl Flow<'_> {
                 &value,
                 false,
             );
-            value.sources.clear();
+            value.clear_sources();
             state
                 .settled_memory
                 .entry(location)

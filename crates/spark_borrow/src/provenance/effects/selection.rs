@@ -2,7 +2,7 @@
 
 //! Bind typed input selections against a call's before-state.
 
-use crate::provenance::observations::ReadRole;
+use crate::provenance::{observations::ReadRole, tasks::lifecycle::Tags};
 
 use super::{
     child_type, value, AccessKind, Accesses, CallActuals, DerefKind, Flow, Intent, Local,
@@ -187,6 +187,62 @@ impl Flow<'_> {
             return self.project_path(value, payload.pointee, &payload.projection, actuals.read);
         }
         selected
+    }
+
+    pub(super) fn owner_input(
+        &self,
+        input: Local,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        args: &[spark_mir::Operand],
+    ) -> (Tags, bool) {
+        use super::super::tasks::Role;
+        use spark_mir::Operand;
+        let state = actuals.read.state;
+        if input.0 > 0 && input.0 <= function.param_count {
+            return match args.get(input.index() - 1) {
+                Some(operand @ (Operand::Copy(place) | Operand::Move(place))) => {
+                    if place.projections.is_empty() {
+                        (
+                            state.input_owners.value_tags(&Role::root(place.local)),
+                            matches!(operand, Operand::Copy(_)),
+                        )
+                    } else {
+                        (self.owner_tags(operand, state), true)
+                    }
+                }
+                Some(Operand::Constant(_)) => (Tags::default(), false),
+                None => (state.input_owners.all_value_tags(), true),
+            };
+        }
+        let capture = input
+            .0
+            .checked_sub(function.param_count + 1)
+            .and_then(|index| {
+                function
+                    .captures
+                    .get(index as usize)
+                    .map(|(_, ty)| (index as usize, *ty))
+            });
+        if let (Some((index, ty)), Some(place)) = (capture, actuals.callee_place) {
+            let (sources, unresolved) =
+                self.environment_sources(&Operand::Copy(place.clone()), state);
+            if !unresolved {
+                let tags = sources
+                    .into_iter()
+                    .flat_map(|source| {
+                        state.input_owners.value_tags(&Role::capture(
+                            source,
+                            function.def_id,
+                            index,
+                            ty,
+                        ))
+                    })
+                    .collect();
+                return (tags, true);
+            }
+        }
+        (state.input_owners.all_value_tags(), true)
     }
 
     pub(super) fn actual_input(

@@ -2,6 +2,8 @@
 
 //! Bind possible executed-prefix effects independently of normal return.
 
+use rustc_hash::FxHashSet;
+
 use super::{
     child_type, export_value, value, Accesses, CallActuals, Dependency, Endpoint, Flow, Intent,
     MirFunction, Origin, Point, Slot, State, Summary, TypeId, Value,
@@ -228,6 +230,7 @@ impl Flow<'_> {
         actuals: CallActuals<'_>,
         key: &super::Key,
         args: Option<&[spark_mir::Operand]>,
+        resident_captures: Option<&FxHashSet<spark_mir::Local>>,
     ) -> Prefix {
         let obligations = summary
             .obligations
@@ -251,7 +254,8 @@ impl Flow<'_> {
             PrefixWrites::default()
         };
         let snapshots = self.bind_receive_snapshots(summary, function, actuals, key, args);
-        let residuals = self.bind_prefix_residuals(summary, function, actuals, key, args);
+        let residuals =
+            self.bind_prefix_residuals(summary, function, actuals, key, args, resident_captures);
         let prefix = Prefix {
             residuals,
             snapshots,

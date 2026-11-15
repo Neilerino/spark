@@ -11,6 +11,7 @@ fn helper_binding_tracks_endpoint_growth_across_backedges() {
 
     let mut table = TypeTable::new();
     let int = table.intern(Ty::Int(IntWidth::I64));
+    let boolean = table.intern(Ty::Bool);
     let string = table.intern(Ty::String);
     let reference = table.intern(Ty::Ref {
         inner: int,
@@ -86,40 +87,41 @@ fn helper_binding_tracks_endpoint_growth_across_backedges() {
     };
     let caller = MirFunction {
         def_id: caller_id,
-        param_count: 1,
+        param_count: 2,
         return_type: map,
-        // Return, input Ref, local Int, local Ref, safe/unsafe maps,
+        // Return, input Ref, input Bool, local Int, local Ref, safe/unsafe maps,
         // safe/unsafe map Refs, selected Ref, reborrow, call output.
         locals: locals(&[
-            map, reference, int, reference, map, map, map_ref, map_ref, map_ref, map_ref, map,
+            map, reference, boolean, int, reference, map, map, map_ref, map_ref, map_ref, map_ref,
+            map,
         ]),
         blocks: vec![
             block(
                 vec![
-                    assign(2, Rvalue::Use(Operand::Constant(Constant::Int(7)))),
-                    assign(3, borrow(2)),
-                    assign(4, aggregate(1)),
-                    assign(5, aggregate(3)),
-                    assign(6, borrow(4)),
+                    assign(3, Rvalue::Use(Operand::Constant(Constant::Int(7)))),
+                    assign(4, borrow(3)),
+                    assign(5, aggregate(1)),
+                    assign(6, aggregate(4)),
                     assign(7, borrow(5)),
-                    assign(8, Rvalue::Use(copy(6))),
+                    assign(8, borrow(6)),
+                    assign(9, Rvalue::Use(copy(7))),
                 ],
                 Terminator::Goto { target: BlockId(1) },
             ),
             block(
                 vec![
                     assign(
-                        9,
+                        10,
                         Rvalue::Ref {
                             place: Place {
-                                local: Local(8),
+                                local: Local(9),
                                 projections: vec![Projection::Deref],
                             },
                             mutable: false,
                         },
                     ),
-                    assign(8, Rvalue::Use(copy(6))),
-                    assign(10, Rvalue::Aggregate(AggregateKind::Map, vec![])),
+                    assign(9, Rvalue::Use(copy(7))),
+                    assign(11, Rvalue::Aggregate(AggregateKind::Map, vec![])),
                 ],
                 Terminator::Goto { target: BlockId(2) },
             ),
@@ -127,8 +129,8 @@ fn helper_binding_tracks_endpoint_growth_across_backedges() {
                 vec![],
                 Terminator::Call {
                     func: Operand::Constant(Constant::FunctionRef(helper_id)),
-                    args: vec![copy(9)],
-                    destination: local(10),
+                    args: vec![copy(10)],
+                    destination: local(11),
                     target: BlockId(3),
                     span,
                 },
@@ -136,16 +138,16 @@ fn helper_binding_tracks_endpoint_growth_across_backedges() {
             block(
                 vec![],
                 Terminator::SwitchInt {
-                    discriminant: Operand::Constant(Constant::Bool(true)),
+                    discriminant: copy(2),
                     targets: vec![(1, BlockId(4))],
                     otherwise: BlockId(5),
                 },
             ),
             block(
-                vec![assign(8, Rvalue::Use(copy(7)))],
+                vec![assign(9, Rvalue::Use(copy(8)))],
                 Terminator::Goto { target: BlockId(1) },
             ),
-            block(vec![assign(0, Rvalue::Use(copy(10)))], Terminator::Return),
+            block(vec![assign(0, Rvalue::Use(copy(11)))], Terminator::Return),
         ],
         captures: vec![],
         is_async: false,
@@ -1029,6 +1031,7 @@ fn binding_a_queued_read_discovers_its_input_storage_port() {
         &selector,
         &function,
         CallActuals {
+            callee_place: None,
             callee: &callee,
             arguments: &arguments,
             ty: reference,

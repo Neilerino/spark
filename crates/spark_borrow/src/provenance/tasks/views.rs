@@ -10,6 +10,9 @@ use crate::provenance::{
 use rustc_hash::FxHashMap;
 use spark_types::TypeId;
 
+mod callback;
+pub(in crate::provenance) use callback::{Callback, NodeKey};
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::provenance) struct Subject {
     pub target: Target,
@@ -72,7 +75,7 @@ impl Carrier {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::provenance) struct View {
-    pub callbacks: FxHashMap<TypeId, Carrier>,
+    pub callbacks: FxHashMap<TypeId, Callback>,
     pub fallback: bool,
     pub history: crate::provenance::observations::History,
     pub memory: super::memory::Effects,
@@ -81,7 +84,7 @@ pub(in crate::provenance) struct View {
 impl View {
     pub fn pending(callback: Value, ty: TypeId) -> Self {
         Self {
-            callbacks: FxHashMap::from_iter([(ty, Carrier::seal(callback))]),
+            callbacks: FxHashMap::from_iter([(ty, Callback::seal(callback))]),
             ..Self::default()
         }
     }
@@ -91,6 +94,16 @@ impl View {
             ..Self::default()
         }
     }
+    pub(in crate::provenance) fn retains_activity(&self) -> bool {
+        self.fallback
+            || self.memory.may_write
+            || self.memory.samples().next().is_some()
+            || self
+                .callbacks
+                .values()
+                .any(|callback| callback.shallow_value().retains_task_activity())
+    }
+
     pub fn join(&mut self, other: &Self) -> bool {
         let mut changed = other.fallback && !self.fallback;
         self.fallback |= other.fallback;
@@ -192,6 +205,20 @@ pub(in crate::provenance) fn map(
     result
 }
 
+pub(in crate::provenance) fn pending_records_at(
+    value: &Value,
+    path: &[crate::provenance::Slot],
+    handle: &Handle,
+    state: &crate::provenance::State,
+    storage: &crate::provenance::demand::Storage,
+) -> (Vec<super::Record>, bool) {
+    let (records, unknown) = super::activity::located_records(value, path, handle, state, storage);
+    (
+        records.into_iter().map(|located| located.record).collect(),
+        unknown,
+    )
+}
+
 pub(in crate::provenance) fn pending_records(
     value: &Value,
     path: &[crate::provenance::Slot],
@@ -212,7 +239,15 @@ pub(in crate::provenance) fn pending_records(
     let mut unknown = false;
     if view.is_none_or(|v| v.fallback) {
         if let Some(record) = state.tasks.get(&handle.target) {
-            records.push(record.clone());
+            records.push(super::Record {
+                callback: record.callback.clone().sourced(
+                    &crate::provenance::demand::Storage::Task(
+                        handle.target.clone(),
+                        record.callback_ty,
+                    ),
+                ),
+                callback_ty: record.callback_ty,
+            });
         } else {
             unknown = true;
         }
@@ -236,27 +271,95 @@ impl Carrier {
 mod tests;
 
 impl Value {
-    pub(in crate::provenance) fn clear_task_imports(&mut self) {
+    pub(in crate::provenance) fn callback_storage_values(
+        &self,
+        storage: &crate::provenance::demand::Storage,
+    ) -> Vec<(crate::provenance::demand::Storage, Self)> {
+        use crate::provenance::{demand::Storage, tasks::activity::Location};
+        let mut result = Vec::new();
+        for (path, subjects) in &self.task_views {
+            for (actor, view) in subjects {
+                for (ty, callback) in &view.callbacks {
+                    let location = Location::new(storage, path.clone(), actor.clone(), *ty);
+                    result.extend(callback.source_values().map(|(key, value)| {
+                        let selected = key
+                            .map_or_else(|| location.clone(), |key| location.for_node(key.clone()));
+                        (Storage::CallbackNode(Box::new(selected)), value)
+                    }));
+                }
+            }
+        }
+        result
+    }
+
+    pub(in crate::provenance) fn source_callback_nodes(
+        &mut self,
+        storage: &crate::provenance::demand::Storage,
+    ) {
+        for (path, subjects) in &mut self.task_views {
+            for (actor, view) in subjects {
+                for (ty, callback) in &mut view.callbacks {
+                    callback.source_at(&crate::provenance::tasks::activity::Location::new(
+                        storage,
+                        path.clone(),
+                        actor.clone(),
+                        *ty,
+                    ));
+                }
+            }
+        }
+    }
+
+    pub(in crate::provenance) fn visit_callback_sources(
+        &mut self,
+        mut visit: impl FnMut(&mut crate::provenance::demand::Sources),
+    ) {
         for view in self
             .task_views
             .values_mut()
-            .flat_map(|views| views.values_mut())
+            .flat_map(|subjects| subjects.values_mut())
         {
-            view.history.clear_imports();
-            view.memory.clear_imports();
+            for callback in view.callbacks.values_mut() {
+                callback.visit_sources(&mut visit);
+            }
         }
+    }
+
+    pub(in crate::provenance) fn visit_task_progress(
+        &mut self,
+        mut visit: impl FnMut(
+            &mut crate::provenance::observations::History,
+            &mut super::memory::Effects,
+        ),
+    ) {
+        for view in self
+            .task_views
+            .values_mut()
+            .flat_map(|subjects| subjects.values_mut())
+        {
+            visit(&mut view.history, &mut view.memory);
+            for callback in view.callbacks.values_mut() {
+                callback.visit_progress(&mut visit);
+            }
+        }
+    }
+
+    pub(in crate::provenance) fn clear_task_imports(&mut self) {
+        self.visit_task_progress(|history, memory| {
+            history.clear_imports();
+            memory.clear_imports();
+        });
     }
 }
 
-impl crate::provenance::State {
-    pub(in crate::provenance) fn current_task_views(&self) -> impl Iterator<Item = &View> {
-        self.values
-            .values()
-            .chain(self.residuals.values())
-            .chain(self.external.values())
-            .chain(self.queues.values())
-            .chain(self.tasks.values().map(|record| &record.callback))
-            .flat_map(|value| value.task_views.values())
-            .flat_map(|subjects| subjects.values())
+impl Value {
+    pub(in crate::provenance) fn retains_task_activity(&self) -> bool {
+        !self.leaves.is_empty()
+            || !self.queues.is_empty()
+            || self.futures.values().flatten().any(|handle| handle.pending)
+            || self
+                .callees
+                .iter()
+                .any(|(path, targets)| !path.is_empty() || targets.open || targets.unresolved)
     }
 }

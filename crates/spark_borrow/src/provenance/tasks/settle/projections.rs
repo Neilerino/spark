@@ -63,7 +63,13 @@ fn reads_prefix(flow: &Flow<'_>, state: &State, local: Local) -> bool {
             if !handle.pending {
                 return false;
             }
-            let (records, unknown) = super::views::pending_records(value, &[], handle, state);
+            let (records, unknown) = super::views::pending_records_at(
+                value,
+                &[],
+                handle,
+                state,
+                &Storage::Logical(local),
+            );
             // A known callback with no bound inputs or ports reads the same facts in every cut.
             unknown
                 || records.is_empty()

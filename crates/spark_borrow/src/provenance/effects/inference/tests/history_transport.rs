@@ -95,28 +95,51 @@ fn parent_activity_obeys_prefix_and_normal_return_contracts() {
         assert!(!matching.is_empty());
         for (_, summary) in matching {
             assert_eq!(summary.normal_return, returns);
-            assert_eq!(summary.residuals.is_empty(), !returns);
+            assert!(
+                summary.residuals.is_empty(),
+                "a represented queued child is not lost activity"
+            );
             assert!(
                 summary.returned.futures.is_empty(),
                 "the helper returns only a scalar"
             );
-            if returns {
-                assert!(
-                    !summary.residual_callbacks.is_empty(),
-                    "continuing activity exports its own callback recipes"
-                );
-            }
-            assert!(
-                !summary.prefix_residuals.is_empty(),
-                "a reachable child loss is not a normal-return effect"
+            let pending_callback = |value: &Value| {
+                value.futures.iter().any(|(path, handles)| {
+                    handles
+                        .iter()
+                        .filter(|handle| handle.pending)
+                        .any(|handle| {
+                            let Some(view) = value.task_views.get(path).and_then(|views| {
+                                views.get(&crate::provenance::tasks::views::Subject::from(handle))
+                            }) else {
+                                return false;
+                            };
+                            !view.fallback
+                                && view.callbacks.values().any(|callback| {
+                                    let callback = callback.value();
+                                    !callback.origins().is_empty()
+                                        && callback.callees.get(&Vec::new()).is_some_and(
+                                            |targets| {
+                                                !targets.open
+                                                    && !targets.unresolved
+                                                    && targets.known.len() == 1
+                                            },
+                                        )
+                                })
+                        })
+                })
+            };
+            assert!(summary.queues.values().any(pending_callback), "reachable queue publication must retain pending child callback backing even without a normal return");
+            assert_eq!(
+                summary.queue_contents.values().any(pending_callback),
+                returns,
+                "only a normal return exports final queued contents"
             );
             assert!(
-                summary
-                    .prefix_residuals
-                    .values()
-                    .any(|activity| !activity.callbacks.is_empty()),
-                "prefix activity needs real callback recipes after the parent frame disappears"
+                summary.prefix_residuals.is_empty(),
+                "the queued physical copy preserves activity without duplicate prefix loss debt"
             );
+            assert!(summary.residual_callbacks.is_empty());
         }
     }
 }

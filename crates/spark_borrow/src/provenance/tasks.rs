@@ -9,14 +9,39 @@ use spark_types::{Ty, TypeId, TypeTable};
 
 use super::{address::OpaqueSite, value, Path, Point, Slot, Value};
 
+pub(in crate::provenance) mod activity;
+pub(super) mod execution;
+pub(super) mod forwarding;
+pub(super) mod fresh;
+pub(super) mod fresh_outputs;
 mod identity;
+pub(super) mod last_release;
 pub(super) mod lifecycle;
 pub(super) mod memory;
+pub(super) mod outputs;
 pub(super) mod proofs;
 pub(super) mod residual;
 mod settle;
 pub(super) mod views;
-pub(super) use identity::{Copies, Witness};
+pub(super) use identity::{Anchor, Copies, Live, Role, Witness};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(in crate::provenance) enum ReturnStatus {
+    NoReturn,
+    Pending,
+    #[default]
+    MayReturn,
+}
+
+impl ReturnStatus {
+    pub const fn join(&mut self, other: Self) {
+        *self = match (*self, other) {
+            (Self::MayReturn, _) | (_, Self::MayReturn) => Self::MayReturn,
+            (Self::Pending, _) | (_, Self::Pending) => Self::Pending,
+            _ => Self::NoReturn,
+        };
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct Capture {
@@ -269,10 +294,21 @@ impl super::Flow<'_> {
                 Ty::Future { .. }
             )
         {
-            if let Some(witness) = witness {
-                state
-                    .future_copies
-                    .assign(place.local, witness, &state.live);
+            if let Some(mut witness) = witness {
+                if state.invalidated_copies.contains(&place.local)
+                    || witness
+                        .peers
+                        .iter()
+                        .any(|peer| peer.frame_clobbered(&[], &state.invalidated_copies))
+                {
+                    witness.birth = None;
+                    witness.produces.clear();
+                }
+                state.future_copies.assign(
+                    place.local,
+                    witness,
+                    &crate::provenance::tasks::Live::new(&state.live, &state.queue_current),
+                );
             }
         }
     }
@@ -302,36 +338,29 @@ impl super::Flow<'_> {
         self.ensure_transfer(point, state);
         witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
         self.settle_task_memory(&witness, &[], point, state);
+        witness.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
+        let descendants = self.prepare_completion_descendants(&witness, point, state);
+        self.cleanup_completed_executions(&witness, point, state);
+        for (callback, role) in descendants {
+            self.preserve_pending_loss(&callback, &role, point, state, true);
+        }
+        for role in witness
+            .peers
+            .iter()
+            .filter(|role| role.as_local().is_none())
+        {
+            self.complete_owned_role(role, result, point, state);
+        }
+        let peers: Vec<_> = witness.locals().collect();
         state.joined_inputs.extend(witness.inputs);
-        for peer in witness.peers {
+        for peer in peers {
             if !state.live.contains(&peer) {
                 continue;
             }
             let mut current = state
                 .value(peer)
                 .sourced(&super::demand::Storage::Logical(peer));
-            for (path, handles) in &mut current.futures {
-                if path.is_empty() || *path == [Slot::Tail] {
-                    *handles = handles
-                        .iter()
-                        .map(|handle| Handle {
-                            pending: false,
-                            ..handle.clone()
-                        })
-                        .collect();
-                }
-            }
-            for (path, subjects) in &mut current.task_views {
-                if path.is_empty() || *path == [Slot::Tail] {
-                    for view in subjects.values_mut() {
-                        *view = views::View::default();
-                    }
-                }
-            }
-            current.leaves.retain(|(path, ..), _| *path != [Slot::Tail]);
-            current
-                .sources
-                .retain(|(path, ..), _| *path != [Slot::Tail]);
+            current.mark_future_completed();
             let ty = self.function.locals[peer.index()].ty;
             if let Some(result) = result {
                 current.join(&result.prefixed(Slot::Element, ty, self.table));
@@ -352,40 +381,17 @@ impl super::Flow<'_> {
         let Some(witness) = &proof.returned else {
             return;
         };
-        let Some(handles) = returned.futures.get(&Vec::new()) else {
-            return;
-        };
-        for handle in handles.iter().filter(|handle| handle.pending) {
-            let subject = views::Subject::from(handle);
-            for peer in witness.peers.iter().filter(|peer| {
-                state.live.contains(peer)
-                    && !clobbered.contains(peer)
-                    && !state.invalidated_copies.contains(peer)
-            }) {
-                let Some(current) = state.values.get(peer) else {
-                    continue;
-                };
-                if !current.futures.get(&Vec::new()).is_some_and(|handles| {
-                    handles
-                        .iter()
-                        .any(|handle| handle.pending && views::Subject::from(handle) == subject)
-                }) {
-                    continue;
-                }
-                if let Some(view) = current
-                    .task_views
-                    .get(&Vec::new())
-                    .and_then(|views| views.get(&subject))
-                {
-                    let returned_view = returned
-                        .task_views
-                        .entry(Vec::new())
-                        .or_default()
-                        .entry(subject.clone())
-                        .or_insert_with(views::View::unknown);
-                    returned_view.history.join(&view.history);
-                    returned_view.memory.join(&view.memory);
-                }
+        for peer in witness.locals().filter(|peer| {
+            state.live.contains(peer)
+                && !clobbered.contains(peer)
+                && !state.invalidated_copies.contains(peer)
+        }) {
+            if let Some(current) = state.values.get(&peer) {
+                returned.merge_task_progress(
+                    &current
+                        .clone()
+                        .sourced(&super::demand::Storage::Logical(peer)),
+                );
             }
         }
     }
@@ -400,7 +406,7 @@ impl super::Flow<'_> {
         proof.exclude(clobbered);
         proof.exclude(&state.invalidated_copies.iter().copied().collect::<Vec<_>>());
         for local in clobbered {
-            state.future_copies.forget(*local);
+            self.clobber_input_owners(*local, state);
         }
         for witness in proof.completed {
             self.complete_future_witness(witness, None, point, state);
@@ -410,6 +416,35 @@ impl super::Flow<'_> {
 }
 
 impl Value {
+    pub(in crate::provenance) fn merge_task_progress(&mut self, current: &Self) {
+        let Some(handles) = self.futures.get(&Vec::new()) else {
+            return;
+        };
+        for handle in handles.iter().filter(|handle| handle.pending) {
+            let subject = views::Subject::from(handle);
+            if !current.futures.get(&Vec::new()).is_some_and(|handles| {
+                handles
+                    .iter()
+                    .any(|handle| handle.pending && views::Subject::from(handle) == subject)
+            }) {
+                continue;
+            }
+            if let Some(view) = current
+                .task_views
+                .get(&Vec::new())
+                .and_then(|views| views.get(&subject))
+            {
+                let returned_view = self
+                    .task_views
+                    .entry(Vec::new())
+                    .or_default()
+                    .entry(subject)
+                    .or_insert_with(views::View::unknown);
+                returned_view.join(view);
+            }
+        }
+    }
+
     pub(super) fn future_result(&self) -> Self {
         let mut result = self.clone();
         result.leaves.retain(|(path, ..), _| *path != [Slot::Tail]);
@@ -472,7 +507,7 @@ impl super::Flow<'_> {
                 &record.callback,
                 false,
             );
-            record.callback.sources.clear();
+            record.callback.clear_sources();
             if let Some(current) = state.tasks.get_mut(&target) {
                 current.join(&record);
             } else {

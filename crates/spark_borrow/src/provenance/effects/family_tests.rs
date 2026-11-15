@@ -102,6 +102,7 @@ fn residual_binding_filters_endpoints_without_erasing_opaque_or_ambiguous_altern
         ];
         let target = Value::default();
         let actuals = CallActuals {
+            callee_place: None,
             callee: &target,
             arguments: &arguments,
             ty: map_ref,
@@ -128,6 +129,7 @@ fn residual_binding_filters_endpoints_without_erasing_opaque_or_ambiguous_altern
     ];
     let target = Value::default();
     let actuals = CallActuals {
+        callee_place: None,
         callee: &target,
         arguments: &arguments,
         ty: map_ref,
