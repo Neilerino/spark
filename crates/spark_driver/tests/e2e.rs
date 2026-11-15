@@ -445,6 +445,27 @@ fn signed_division_remainder() {
     }
 }
 
+// TAG [SPARK-127]
+#[test]
+fn dead_integer_division_preserves_runtime_traps() {
+    let fixture = "run-fail/basics/dead_integer_division.spark";
+    for mode in [&[][..], &["--no-opt"][..]] {
+        for (op, args, expected) in [
+            ("div", "x", (1, "")),
+            ("rem", "x", (1, "")),
+            ("overflow", "", (1, "")),
+            ("div", "xxxx", (0, "42\n")),
+            ("rem", "xxxx", (0, "42\n")),
+            ("overflow", "xxx", (0, "42\n")),
+        ] {
+            let cli = [mode, &["--", op, args]].concat();
+            let result = run_spark_with_args(fixture, &cli);
+            assert_eq!(result.exit_code, expected.0, "{cli:?}: {}", result.stderr);
+            assert_eq!(result.stdout, expected.1, "{cli:?}");
+        }
+    }
+}
+
 #[test]
 fn signed_remainder_preserves_division_trap() {
     let fixture = "run-fail/basics/signed_remainder_preserves_division_trap.spark";
