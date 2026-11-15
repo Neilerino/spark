@@ -8,6 +8,7 @@ mod collections;
 mod demand;
 mod effects;
 mod obligations;
+mod observations;
 mod read;
 mod storage;
 mod tasks;
@@ -43,9 +44,12 @@ type Origins = FxHashSet<Origin>;
 #[derive(Clone, Debug, Default)]
 struct State {
     queues: FxHashMap<(channels::Target, TypeId), Value>,
+    observations: observations::Samples,
     tasks: FxHashMap<tasks::Target, tasks::Record>,
     future_copies: tasks::Copies,
     joined_inputs: FxHashSet<Local>,
+    reached_prefix: effects::ReachedPrefix,
+    publications: effects::PublicationValues,
     exposed_queues: FxHashSet<channels::Target>,
     values: FxHashMap<Local, Value>,
     live: FxHashSet<Local>,
@@ -90,6 +94,8 @@ impl State {
         let before = self.live.len();
         self.live.extend(other.live.iter().copied());
         let mut changed = before != self.live.len();
+        changed |= effects::join_prefix(&mut self.reached_prefix, &other.reached_prefix);
+        changed |= self.publications.join(&other.publications);
         changed |= self.future_copies.intersect(&other.future_copies);
         let before = self.joined_inputs.len();
         self.joined_inputs
@@ -107,6 +113,13 @@ impl State {
         self.exposed_queues
             .extend(other.exposed_queues.iter().cloned());
         changed |= before != self.exposed_queues.len();
+        for (lane, value) in &other.observations {
+            changed |= self
+                .observations
+                .entry(lane.clone())
+                .or_default()
+                .join(value);
+        }
         for (target, value) in &other.queues {
             changed |= self.queues.entry(target.clone()).or_default().join(value);
         }
@@ -146,12 +159,16 @@ struct Flow<'a> {
     written_inputs: FxHashSet<aliases::View>,
     unknown_copy_clobber: bool,
     obligations: FxHashMap<(Point, obligations::Boundary), Value>,
-    queue_sends: FxHashMap<(Point, channels::Target, TypeId), Value>,
+    queue_sends: FxHashMap<channels::QueueKey, Value>,
+    prefix_memory: effects::PrefixMemory,
+    receive_snapshots: effects::ReceiveSnapshots,
+    event_guards: tasks::proofs::EventGuards,
     queue_ports: FxHashSet<aliases::Port>,
     queue_escapes: FxHashMap<Point, Value>,
     accesses: FxHashMap<Point, Accesses>,
     transfers: FxHashMap<Point, demand::Transfer>,
-    invalid_reads: FxHashSet<(Point, Point, Origin)>,
+    invalid_reads: FxHashSet<(Point, storage::Invalidation, Origin)>,
+    frame_boundaries: FxHashSet<address::OpaqueSite>,
 }
 
 pub use effects::analyze_program;
@@ -186,11 +203,15 @@ impl<'a> Flow<'a> {
             unknown_copy_clobber: false,
             obligations: FxHashMap::default(),
             queue_sends: FxHashMap::default(),
+            prefix_memory: effects::PrefixMemory::default(),
+            receive_snapshots: effects::ReceiveSnapshots::default(),
+            event_guards: tasks::proofs::EventGuards::default(),
             queue_ports: FxHashSet::default(),
             queue_escapes: FxHashMap::default(),
             accesses: FxHashMap::default(),
             transfers: FxHashMap::default(),
             invalid_reads: FxHashSet::default(),
+            frame_boundaries: FxHashSet::default(),
             entries: vec![None; function.blocks.len()],
         }
     }
@@ -296,10 +317,8 @@ impl<'a> Flow<'a> {
                     }
                 }
                 self.record_accesses(point, accesses, state);
-                let Some(outcome) = self.call_result(func, args, ty, point, state) else {
-                    return false;
-                };
-                self.apply_call_outcomes(args, destination, outcome, point, state);
+                let dispatch = self.call_result(func, args, ty, point, state);
+                return self.apply_dispatch(dispatch, args, destination, point, state);
             }
             Terminator::SwitchInt { discriminant, .. } => {
                 let mut accesses = Accesses::default();

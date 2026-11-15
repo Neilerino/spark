@@ -126,17 +126,18 @@ impl Value {
                             .iter()
                             .filter_map(|dependency| match dependency {
                                 Dependency::Address(endpoint) => Some(endpoint),
-                                Dependency::InputValue(_) => None,
+                                Dependency::InputValue(..) => None,
                             }),
                     )
             })
             .filter_map(move |endpoint| match endpoint {
                 Endpoint::Frame {
+                    lifetime: crate::provenance::address::FrameLifetime::Local,
                     function: owner,
                     root,
                     ..
                 } if *owner == function => Some(*root),
-                Endpoint::Frame { .. } | Endpoint::Input(_) => None,
+                Endpoint::Frame { .. } | Endpoint::Input(..) => None,
             })
     }
 
@@ -663,15 +664,18 @@ pub(super) fn inputs(
                 .try_fold(ty, |ty, slot| child_type(ty, slot, table))
                 .filter(|ty| matches!(table.resolve(strip_mutable(*ty, table)), Ty::Ref { .. }));
             let leaf = value.leaves.entry((path, origin, None)).or_default();
-            leaf.dependencies.insert(Dependency::InputValue(Selector {
-                channel_capture: None,
-                queue: None,
-                input: local,
-                selection,
-                intent: Intent::Value,
-                expected,
-                capture,
-            }));
+            leaf.dependencies.insert(Dependency::InputValue(
+                Selector {
+                    channel_capture: None,
+                    queue: None,
+                    input: local,
+                    selection,
+                    intent: Intent::Value,
+                    expected,
+                    capture,
+                },
+                None,
+            ));
         },
     );
     super::callbacks::callable_slots(
@@ -915,6 +919,7 @@ mod tests {
             Value::reference(derived.clone()).with_metadata(&Leaf {
                 parents: std::iter::once(Origin::Loan(root)).collect(),
                 endpoints: std::iter::once(Endpoint::Frame {
+                    lifetime: crate::provenance::address::FrameLifetime::Local,
                     function: DefId::new(9701),
                     root,
                     local: Local(1),

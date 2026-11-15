@@ -94,6 +94,7 @@ impl Selector {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Endpoint {
     Frame {
+        lifetime: FrameLifetime,
         function: DefId,
         root: Point,
         local: Local,
@@ -101,13 +102,56 @@ pub(super) enum Endpoint {
         pointee: TypeId,
         location: Path,
     },
-    Input(Selector),
+    Input(Selector, Option<std::sync::Arc<super::effects::Receive>>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum FrameLifetime {
+    Local,
+    DuringCall {
+        boundary: OpaqueSite,
+        owner_return: OpaqueSite,
+    },
+    Returned(OpaqueSite),
+}
+
+impl Endpoint {
+    pub(super) fn bind_frame(&self, boundary: Option<OpaqueSite>) -> Self {
+        let mut endpoint = self.clone();
+        if let (Self::Frame { lifetime, .. }, Some(boundary)) = (&mut endpoint, boundary) {
+            let owner_return = match *lifetime {
+                FrameLifetime::Local => boundary,
+                FrameLifetime::DuringCall { owner_return, .. } => owner_return,
+                FrameLifetime::Returned(_) => return endpoint,
+            };
+            *lifetime = FrameLifetime::DuringCall {
+                boundary,
+                owner_return,
+            };
+        }
+        endpoint
+    }
+
+    pub(super) fn retire_frame(mut self, boundary: OpaqueSite) -> Self {
+        if let Self::Frame { lifetime, .. } = &mut self {
+            if let FrameLifetime::DuringCall {
+                boundary: active,
+                owner_return,
+            } = *lifetime
+            {
+                if active == boundary {
+                    *lifetime = FrameLifetime::Returned(owner_return);
+                }
+            }
+        }
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Dependency {
     Address(Endpoint),
-    InputValue(Selector),
+    InputValue(Selector, Option<std::sync::Arc<super::effects::Receive>>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -134,6 +178,7 @@ impl super::Flow<'_> {
                     let (location, _) = self.projection_path(root_ty, &place.projections);
                     let mut leaf = super::value::Leaf::default();
                     leaf.endpoints.insert(Endpoint::Frame {
+                        lifetime: crate::provenance::address::FrameLifetime::Local,
                         function: self.function.def_id,
                         root: point,
                         local: place.local,
@@ -184,10 +229,10 @@ impl super::Flow<'_> {
             }
             for dependency in &leaf.dependencies {
                 match dependency {
-                    Dependency::InputValue(_) if !leaf.opaque.is_empty() => {
+                    Dependency::InputValue(..) if !leaf.opaque.is_empty() => {
                         result.dependencies.insert(dependency.clone());
                     }
-                    Dependency::InputValue(selector) => {
+                    Dependency::InputValue(selector, site) => {
                         let mut selector = selector.clone();
                         let capture = selector.address_capture();
                         if let Intent::Payload(payload) = selector.intent.clone() {
@@ -208,7 +253,9 @@ impl super::Flow<'_> {
                                 self.table,
                             ),
                         });
-                        result.endpoints.insert(Endpoint::Input(selector));
+                        result
+                            .endpoints
+                            .insert(Endpoint::Input(selector, site.clone()));
                     }
                     Dependency::Address(endpoint) => {
                         result
@@ -229,6 +276,7 @@ impl super::Flow<'_> {
     ) -> Endpoint {
         match endpoint {
             Endpoint::Frame {
+                lifetime,
                 function,
                 root,
                 local,
@@ -236,6 +284,7 @@ impl super::Flow<'_> {
                 pointee: source_pointee,
                 location,
             } => Endpoint::Frame {
+                lifetime: *lifetime,
                 function: *function,
                 root: *root,
                 local: *local,
@@ -247,7 +296,7 @@ impl super::Flow<'_> {
                     self.table,
                 ),
             },
-            Endpoint::Input(selector) => {
+            Endpoint::Input(selector, site) => {
                 let mut selector = selector.clone();
                 selector.expected = Some(self.selected_type(pointee, projection));
                 selector.intent = match &selector.intent {
@@ -270,7 +319,7 @@ impl super::Flow<'_> {
                         ),
                     }),
                 };
-                Endpoint::Input(selector)
+                Endpoint::Input(selector, site.clone())
             }
         }
     }

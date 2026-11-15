@@ -1,0 +1,378 @@
+// TAG [SPARK-114]
+
+//! Retained task reads have their own source storage and never define current cells.
+
+use std::{cell::RefCell, sync::Arc};
+
+use rustc_hash::FxHashMap;
+use spark_mir::Local;
+use spark_resolve::DefId;
+use spark_types::TypeId;
+
+use super::{
+    address::Selector,
+    aliases::Port,
+    channels,
+    demand::{Coordinate, Storage},
+    read::ReadSite,
+    tasks::views::{Carrier, Subject},
+    value, Flow, Path, Point, Slot, State, Value,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Memory {
+    Frame {
+        function: DefId,
+        local: Local,
+        ty: TypeId,
+    },
+    External(Port),
+    Queue(channels::Target, TypeId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Sample {
+    pub memory: Memory,
+    pub path: Path,
+    pub ty: TypeId,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) enum ReadRole {
+    #[default]
+    Payload,
+    Queue,
+    Selection(usize),
+    Projection(usize),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Lane {
+    site: Option<ReadSite>,
+    receive: Option<Arc<super::effects::Receive>>,
+    actor: Subject,
+    function: DefId,
+    selector: Selector,
+    role: ReadRole,
+    pub sample: Sample,
+}
+
+pub(super) type Samples = FxHashMap<Arc<Lane>, Value>;
+pub(super) type Envelope = FxHashMap<Storage, Value>;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct History(FxHashMap<Arc<Lane>, Carrier>);
+
+impl History {
+    pub fn join(&mut self, other: &Self) -> bool {
+        let mut changed = false;
+        for (lane, facts) in &other.0 {
+            changed |= self.insert(lane.clone(), facts.clone());
+        }
+        changed
+    }
+
+    pub fn retire_frames(&mut self, boundary: super::address::OpaqueSite) {
+        for carrier in self.0.values_mut() {
+            carrier.retire_frames(boundary);
+        }
+    }
+
+    pub fn projected_samples(&self, state: &State, transfer: &super::demand::Transfer) -> Samples {
+        self.0
+            .iter()
+            .filter(|(lane, _)| state.observations.contains_key(*lane))
+            .map(|(lane, carrier)| {
+                let value = carrier.value().sourced(&Storage::Observation(lane.clone()));
+                (lane.clone(), transfer.freeze(value))
+            })
+            .collect()
+    }
+
+    fn insert(&mut self, lane: Arc<Lane>, facts: Carrier) -> bool {
+        use std::collections::hash_map::Entry;
+        match self.0.entry(lane) {
+            Entry::Occupied(mut entry) => entry.get_mut().join(&facts),
+            Entry::Vacant(entry) => {
+                entry.insert(facts);
+                true
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TaskRead<'a> {
+    actor: &'a Subject,
+    history: &'a History,
+    trace: &'a RefCell<Samples>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct ReadView<'a> {
+    pub state: &'a State,
+    task: Option<TaskRead<'a>>,
+    envelope: Option<&'a Envelope>,
+    query: Option<(DefId, &'a Selector)>,
+    site: Option<ReadSite>,
+    receive: Option<&'a super::effects::Receive>,
+    receive_queries: Option<&'a RefCell<rustc_hash::FxHashSet<Arc<super::effects::Receive>>>>,
+    entry_prefix: Option<&'a super::effects::ReachedPrefix>,
+    access_site: Option<ReadSite>,
+    role: ReadRole,
+}
+
+impl<'a> ReadView<'a> {
+    pub fn current(state: &'a State) -> Self {
+        Self {
+            state,
+            task: None,
+            envelope: None,
+            query: None,
+            site: None,
+            receive: None,
+            receive_queries: None,
+            entry_prefix: None,
+            access_site: None,
+            role: ReadRole::default(),
+        }
+    }
+
+    pub fn task(
+        state: &'a State,
+        actor: &'a Subject,
+        history: &'a History,
+        trace: &'a RefCell<Samples>,
+    ) -> Self {
+        Self {
+            task: Some(TaskRead {
+                actor,
+                history,
+                trace,
+            }),
+            ..Self::current(state)
+        }
+    }
+
+    pub const fn select<'b>(self, function: DefId, selector: &'b Selector) -> ReadView<'b>
+    where
+        'a: 'b,
+    {
+        ReadView {
+            query: Some((function, selector)),
+            role: ReadRole::Payload,
+            ..self
+        }
+    }
+
+    pub const fn role(self, role: ReadRole) -> Self {
+        Self { role, ..self }
+    }
+
+    pub const fn with_read_site(self, site: Option<ReadSite>) -> Self {
+        match site {
+            Some(_) => Self { site, ..self },
+            None => self,
+        }
+    }
+
+    pub const fn with_receive<'b>(
+        self,
+        receive: Option<&'b super::effects::Receive>,
+    ) -> ReadView<'b>
+    where
+        'a: 'b,
+    {
+        match receive {
+            Some(receive) => ReadView {
+                receive: Some(receive),
+                site: Some(receive.site),
+                ..self
+            },
+            None => self,
+        }
+    }
+
+    pub const fn with_bound_receive<'b>(
+        self,
+        receive: Option<&'b super::effects::Receive>,
+    ) -> ReadView<'b>
+    where
+        'a: 'b,
+    {
+        match receive {
+            Some(receive) => ReadView {
+                receive: Some(receive),
+                site: Some(receive.site),
+                entry_prefix: None,
+                ..self
+            },
+            None => self,
+        }
+    }
+
+    pub fn receive(self) -> Option<Arc<super::effects::Receive>> {
+        self.receive.map(|receive| {
+            Arc::new(
+                self.entry_prefix
+                    .map_or_else(|| receive.clone(), |prefix| receive.including(prefix)),
+            )
+        })
+    }
+
+    pub const fn with_entry_prefix(self) -> Self {
+        Self {
+            entry_prefix: Some(&self.state.reached_prefix),
+            ..self
+        }
+    }
+
+    pub const fn with_receive_queries<'b>(
+        self,
+        queries: &'b RefCell<rustc_hash::FxHashSet<Arc<super::effects::Receive>>>,
+    ) -> ReadView<'b>
+    where
+        'a: 'b,
+    {
+        ReadView {
+            receive_queries: Some(queries),
+            ..self
+        }
+    }
+
+    pub fn record_receive_query(self, receive: &Arc<super::effects::Receive>) {
+        if let Some(queries) = self.receive_queries {
+            queries.borrow_mut().insert(receive.clone());
+        }
+    }
+
+    pub const fn with_access_site(self, access_site: Option<ReadSite>) -> Self {
+        Self {
+            access_site,
+            ..self
+        }
+    }
+
+    pub const fn access_site(self) -> Option<ReadSite> {
+        self.access_site
+    }
+
+    pub const fn with_envelope(self, envelope: &'a Envelope) -> Self {
+        Self {
+            envelope: Some(envelope),
+            ..self
+        }
+    }
+
+    pub fn observe(self, sample: Sample, mut current: Value) -> Value {
+        let (Some(task), Some((function, selector))) = (self.task, self.query) else {
+            return current;
+        };
+        let lane = Arc::new(Lane {
+            site: self.site,
+            receive: self.receive(),
+            actor: task.actor.clone(),
+            function,
+            selector: selector.clone(),
+            role: self.role,
+            sample,
+        });
+        task.trace
+            .borrow_mut()
+            .entry(lane.clone())
+            .or_default()
+            .join(&current);
+        for (old, value) in &task.history.0 {
+            if old.site == lane.site
+                && old.function == lane.function
+                && old.selector == lane.selector
+                && old.role == lane.role
+                && old.sample == lane.sample
+                && self.state.observations.contains_key(old)
+            {
+                current.join(&value.value().sourced(&Storage::Observation(old.clone())));
+            }
+        }
+        current
+    }
+}
+
+impl Flow<'_> {
+    pub(super) fn read_memory(&self, sample: Sample, read: ReadView<'_>) -> Value {
+        let current = self.sample_memory(&sample, read);
+        read.observe(sample, current)
+    }
+
+    fn sample_memory(&self, sample: &Sample, read: ReadView<'_>) -> Value {
+        let storage = match &sample.memory {
+            Memory::Frame {
+                function, local, ..
+            } if *function == self.function.def_id => Storage::Cell(*local),
+            Memory::Frame { .. } => return Value::default(),
+            Memory::External(port) => Storage::External(port.clone()),
+            Memory::Queue(target, ty) => Storage::Queue(target.clone(), *ty),
+        };
+        let mut value = read
+            .state
+            .stored_value(&storage)
+            .cloned()
+            .unwrap_or_default()
+            .sourced(&storage);
+        if let Some(prefix) = read.envelope.and_then(|envelope| envelope.get(&storage)) {
+            value.join(prefix);
+        }
+        if let Memory::Frame { ty, .. } = sample.memory {
+            let value = self.project_path(value, ty, &sample.path, read);
+            if sample.path.contains(&Slot::Tail) {
+                value::tainted_from(sample.ty, &value, self.table)
+            } else {
+                value
+            }
+        } else {
+            sample
+                .path
+                .iter()
+                .fold(value, |value, slot| value.project(slot))
+        }
+    }
+
+    pub(super) fn resample_history(&self, history: &History, current: ReadView<'_>) -> Samples {
+        history
+            .0
+            .keys()
+            .map(|lane| (lane.clone(), self.sample_memory(&lane.sample, current)))
+            .collect()
+    }
+
+    pub(super) fn remember_samples(
+        &mut self,
+        samples: Samples,
+        history: &mut History,
+        point: Point,
+        state: &mut State,
+    ) -> bool {
+        let mut changed = false;
+        for (lane, mut value) in samples {
+            self.record_path_store(
+                point,
+                Coordinate {
+                    storage: Storage::Observation(lane.clone()),
+                    path: Vec::new(),
+                },
+                &value,
+                false,
+            );
+            value.sources.clear();
+            state
+                .observations
+                .entry(lane.clone())
+                .or_default()
+                .join(&value);
+            changed |= history.insert(lane, Carrier::seal(value));
+        }
+        changed
+    }
+}
+
+#[cfg(test)]
+mod tests;

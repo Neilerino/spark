@@ -523,6 +523,7 @@ impl Flow<'_> {
         for endpoint in &metadata.endpoints {
             let location = match endpoint {
                 Endpoint::Frame {
+                    lifetime: crate::provenance::address::FrameLifetime::Local,
                     function,
                     local,
                     location,
@@ -537,7 +538,7 @@ impl Flow<'_> {
                         path: location.clone(),
                     }
                 }
-                Endpoint::Input(selector) if matches!(&selector.intent, Intent::Address(payload) if payload.projection.is_empty()) =>
+                Endpoint::Input(selector, _) if matches!(&selector.intent, Intent::Address(payload) if payload.projection.is_empty()) =>
                 {
                     let port = Port::from_selector(selector, self.function, self.table)?;
                     if !self.aliases.is_cell(&port) {
@@ -556,7 +557,7 @@ impl Flow<'_> {
                     }
                     Location::Input(self.aliases.representative(&port))
                 }
-                Endpoint::Frame { .. } | Endpoint::Input(_) => return None,
+                Endpoint::Frame { .. } | Endpoint::Input(..) => return None,
             };
             locations.insert(location);
         }
@@ -616,6 +617,7 @@ mod tests {
             value.join(
                 &Value::reference(Origin::Loan(point)).with_metadata(&Leaf {
                     endpoints: std::iter::once(Endpoint::Frame {
+                        lifetime: crate::provenance::address::FrameLifetime::Local,
                         function: function.def_id,
                         root: point,
                         local,
@@ -876,15 +878,17 @@ mod tests {
             path: Vec::new(),
         })
         .with_metadata(&Leaf {
-            dependencies: std::iter::once(super::super::address::Dependency::InputValue(selector))
-                .collect(),
+            dependencies: std::iter::once(super::super::address::Dependency::InputValue(
+                selector, None,
+            ))
+            .collect(),
             ..Default::default()
         });
         let flow = Flow::new(&function, &table, None);
         let metadata = flow.project_reference(&pointer, inner, &Vec::new());
         let expected = vec![Slot::Element, Slot::ResidualDeref, Slot::Value];
         assert_eq!(metadata.endpoints.len(), 1);
-        let Endpoint::Input(address) = metadata.endpoints.iter().next().unwrap() else {
+        let Endpoint::Input(address, _) = metadata.endpoints.iter().next().unwrap() else {
             panic!("expected symbolic input address");
         };
         assert_eq!(address.selection, expected);
@@ -920,7 +924,7 @@ mod tests {
             Aliases::call_variants(&ports, &table, &locations, &Aliases::default()).remove(0);
         let point = Point::new(BlockId::ENTRY, 0);
         let metadata = Leaf {
-            endpoints: std::iter::once(Endpoint::Input(family.selector())).collect(),
+            endpoints: std::iter::once(Endpoint::Input(family.selector(), None)).collect(),
             ..Default::default()
         };
         for (aliases, strong) in [(body, false), (exact, true)] {

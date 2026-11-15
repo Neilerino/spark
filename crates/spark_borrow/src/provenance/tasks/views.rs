@@ -51,7 +51,16 @@ impl Carrier {
             ..Value::default()
         }
     }
-    fn join(&mut self, other: &Self) -> bool {
+    pub(in crate::provenance) fn retire_frames(
+        &mut self,
+        boundary: crate::provenance::address::OpaqueSite,
+    ) {
+        for leaf in self.leaves.values_mut() {
+            leaf.retire_frames(boundary);
+        }
+    }
+
+    pub(in crate::provenance) fn join(&mut self, other: &Self) -> bool {
         let mut joined = self.value();
         let changed = joined.join(&other.value());
         if changed {
@@ -65,13 +74,14 @@ impl Carrier {
 pub(in crate::provenance) struct View {
     pub callbacks: FxHashMap<TypeId, Carrier>,
     pub fallback: bool,
+    pub history: crate::provenance::observations::History,
 }
 
 impl View {
     pub fn pending(callback: Value, ty: TypeId) -> Self {
         Self {
             callbacks: FxHashMap::from_iter([(ty, Carrier::seal(callback))]),
-            fallback: false,
+            ..Self::default()
         }
     }
     pub fn unknown() -> Self {
@@ -83,6 +93,7 @@ impl View {
     pub fn join(&mut self, other: &Self) -> bool {
         let mut changed = other.fallback && !self.fallback;
         self.fallback |= other.fallback;
+        changed |= self.history.join(&other.history);
         for (ty, carrier) in &other.callbacks {
             if let Some(current) = self.callbacks.get_mut(ty) {
                 changed |= current.join(carrier);

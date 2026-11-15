@@ -81,8 +81,9 @@ fn widened_future_input_selections_keep_type_and_capture_roles_separate() {
         arguments: &arguments,
         ty: first,
         point,
-        state: &state,
+        read: crate::provenance::observations::ReadView::current(&state),
         instantiation_site: None,
+        frame_caller: None,
         aliases: None,
     };
     let target = Target::Input {

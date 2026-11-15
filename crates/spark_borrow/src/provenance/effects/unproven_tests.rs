@@ -8,6 +8,7 @@ use spark_types::{IntWidth, Ty};
 
 fn endpoint(function: DefId, point: Point, ty: TypeId) -> Endpoint {
     Endpoint::Frame {
+        lifetime: crate::provenance::address::FrameLifetime::Local,
         function,
         root: point,
         local: Local(1),
@@ -296,8 +297,9 @@ fn imported_invocation_keeps_its_original_dispatch_witness() {
             arguments: &arguments,
             ty: callable,
             point,
-            state: &state,
+            read: crate::provenance::observations::ReadView::current(&state),
             instantiation_site: None,
+            frame_caller: None,
             aliases: None,
         },
     );
@@ -373,13 +375,18 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
             arguments: &[],
             ty: reference,
             point,
-            state: &state,
+            read: crate::provenance::observations::ReadView::current(&state),
             instantiation_site: None,
+            frame_caller: None,
             aliases: None,
         },
     );
     assert_eq!(hole, bound);
-    let loaded = flow.read_pointee(&bound, callable, &state);
+    let loaded = flow.read_pointee(
+        &bound,
+        callable,
+        crate::provenance::observations::ReadView::current(&state),
+    );
     assert!(loaded.callees[&Vec::new()].open);
     assert!(!loaded.callees[&Vec::new()].unresolved);
     let derived = Value::reference(Origin::Loan(point)).with_metadata(&Leaf {
@@ -395,12 +402,17 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
             arguments: &[],
             ty: reference,
             point,
-            state: &state,
+            read: crate::provenance::observations::ReadView::current(&state),
             instantiation_site: None,
+            frame_caller: None,
             aliases: None,
         },
     );
-    let through_summary = flow.read_pointee(&imported, callable, &state);
+    let through_summary = flow.read_pointee(
+        &imported,
+        callable,
+        crate::provenance::observations::ReadView::current(&state),
+    );
     assert!(
         through_summary
             .callees
@@ -426,16 +438,21 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
             arguments: &[],
             ty: reference,
             point,
-            state: &state,
+            read: crate::provenance::observations::ReadView::current(&state),
             instantiation_site: None,
+            frame_caller: None,
             aliases: Some(&aliases),
         },
     );
     assert!(
-        flow.read_pointee(&residual, callable, &state)
-            .callees
-            .get(&Vec::new())
-            .is_some_and(|targets| targets.open),
+        flow.read_pointee(
+            &residual,
+            callable,
+            crate::provenance::observations::ReadView::current(&state)
+        )
+        .callees
+        .get(&Vec::new())
+        .is_some_and(|targets| targets.open),
         "residual filtering must retain the deferred alternative"
     );
     let real_and_hole = derived.clone().with_metadata(&Leaf {
@@ -451,7 +468,11 @@ fn validation_results_survive_binding_dereference_reborrow_and_taint() {
         .frame_sources(function.def_id)
         .any(|root| root == point));
     let cast = value::tainted_from(reference, &derived, &table);
-    let loaded = flow.read_pointee(&cast, callable, &state);
+    let loaded = flow.read_pointee(
+        &cast,
+        callable,
+        crate::provenance::observations::ReadView::current(&state),
+    );
     assert!(loaded.callees[&Vec::new()].open);
     assert!(!loaded.callees[&Vec::new()].unresolved);
     let mut mixed = loaded;
@@ -516,12 +537,17 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
             arguments: &arguments,
             ty: reference,
             point,
-            state: &state,
+            read: crate::provenance::observations::ReadView::current(&state),
             instantiation_site: None,
+            frame_caller: None,
             aliases: None,
         },
     );
-    let loaded = flow.read_pointee(&result, callable, &state);
+    let loaded = flow.read_pointee(
+        &result,
+        callable,
+        crate::provenance::observations::ReadView::current(&state),
+    );
     let targets = &loaded.callees[&Vec::new()];
     assert!(targets.unresolved);
     assert!(
@@ -536,8 +562,9 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
             arguments: &symbolic,
             ty: reference,
             point,
-            state: &state,
+            read: crate::provenance::observations::ReadView::current(&state),
             instantiation_site: None,
+            frame_caller: None,
             aliases: None,
         },
     );
@@ -550,12 +577,17 @@ fn opaque_runtime_results_do_not_inherit_open_from_arguments() {
             arguments: &arguments,
             ty: reference,
             point,
-            state: &state,
+            read: crate::provenance::observations::ReadView::current(&state),
             instantiation_site: None,
+            frame_caller: None,
             aliases: None,
         },
     );
-    let loaded = flow.read_pointee(&bound, callable, &state);
+    let loaded = flow.read_pointee(
+        &bound,
+        callable,
+        crate::provenance::observations::ReadView::current(&state),
+    );
     let targets = &loaded.callees[&Vec::new()];
     assert!(
         targets.unresolved && !targets.open,
@@ -638,4 +670,152 @@ fn known_function_placeholders_do_not_erase_widened_reference_captures() {
                 .any(|(path, _, _)| path == &[Slot::Capture(outer, 0, callable), Slot::Tail]));
         }
     }
+}
+
+#[test]
+fn bound_prefix_stores_to_unknown_destinations_keep_their_obligation() {
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let function = MirFunction {
+        def_id: DefId::new(9965),
+        param_count: 0,
+        return_type: int,
+        locals: vec![],
+        blocks: vec![],
+        captures: vec![],
+        is_async: false,
+        span: Span::DUMMY,
+    };
+    let point = Point::new(BlockId::ENTRY, 0);
+    let site = super::super::address::OpaqueSite {
+        function: function.def_id,
+        point,
+    };
+    let mut state = super::super::State::default();
+    state.set(Local(1), Value::reference(Origin::Loan(point)));
+    let value = state.value(Local(1)).sourced(&Storage::Logical(Local(1)));
+    let mut prefix = prefix::Prefix::default();
+    prefix.memory.push(prefix::MemoryEvent {
+        site,
+        fence: Default::default(),
+        write: MemoryWrite {
+            target: Leaf {
+                opaque: FxHashSet::from_iter([site]),
+                ..Leaf::default()
+            },
+            ty: int,
+            value: value.clone(),
+        },
+    });
+    let mut flow = Flow::new(&function, &table, None);
+    flow.ensure_transfer(point, &state);
+    flow.observe_prefix(&prefix, point, &state);
+    assert_eq!(
+        flow.obligations.get(&(point, Boundary::Store(int))),
+        Some(&value)
+    );
+    assert_eq!(
+        flow.transfers[&point].seeds,
+        state
+            .atoms()
+            .into_iter()
+            .filter(|atom| atom.coordinate.storage == Storage::Logical(Local(1)))
+            .collect()
+    );
+    assert!(
+        state.external.is_empty(),
+        "a prefix event must not install ordinary memory"
+    );
+    assert!(
+        flow.prefix_memory.is_empty(),
+        "an unknown destination is not a physical external lane"
+    );
+}
+
+#[test]
+fn bound_prefix_queue_exposure_survives_a_return_without_final_memory() {
+    use crate::provenance::{channels, tasks::proofs::CallProof};
+    use spark_mir::{LocalDecl, Place};
+    let mut table = TypeTable::new();
+    let int = table.intern(Ty::Int(IntWidth::I64));
+    let channel = table.intern(Ty::Channel { inner: int });
+    let function = MirFunction {
+        def_id: DefId::new(9966),
+        param_count: 0,
+        return_type: int,
+        locals: (0..2)
+            .map(|index| LocalDecl {
+                local: Local(index),
+                ty: int,
+                name: None,
+                is_user_variable: false,
+                mutable: false,
+                span: Span::DUMMY,
+            })
+            .collect(),
+        blocks: vec![],
+        captures: vec![],
+        is_async: false,
+        span: Span::DUMMY,
+    };
+    let point = Point::new(BlockId::ENTRY, 0);
+    let site = super::super::address::OpaqueSite {
+        function: function.def_id,
+        point,
+    };
+    let queue = channels::Target::Allocation {
+        function: function.def_id,
+        point,
+        ty: channel,
+        constructor: None,
+    };
+    let mut handle = Value::default();
+    handle.queues.insert(
+        Vec::new(),
+        FxHashSet::from_iter([channels::Handle::new(queue.clone())]),
+    );
+    let mut state = super::super::State::default();
+    let mut flow = Flow::new(&function, &table, None);
+    flow.ensure_transfer(point, &state);
+    let outcome = CallOutcome {
+        returned: Value::default(),
+        tasks: Vec::new(),
+        completed_task: None,
+        clobbered_copies: Vec::new(),
+        future_proof: CallProof::default(),
+        returned_prefix: rustc_hash::FxHashSet::default(),
+        publications: crate::provenance::effects::PrefixWrites::default(),
+        place_writes: Vec::new(),
+        memory: Vec::new(),
+        queues: Vec::new(),
+        queue_contents: Vec::new(),
+        prefix_memory: vec![prefix::MemoryEvent {
+            site,
+            fence: Default::default(),
+            write: MemoryWrite {
+                target: Leaf {
+                    opaque: FxHashSet::from_iter([site]),
+                    ..Leaf::default()
+                },
+                ty: channel,
+                value: handle,
+            },
+        }],
+    };
+    flow.apply_call_outcomes(
+        &[],
+        &Place::from_local(Local(1)),
+        vec![outcome],
+        point,
+        &mut state,
+    );
+    assert!(state.exposed_queues.contains(&queue));
+    assert!(
+        state.external.is_empty(),
+        "the imported event does not install its RHS"
+    );
+    let later = Point::new(BlockId::ENTRY, 1);
+    let payload = Value::reference(Origin::Loan(point));
+    flow.queue_send(&queue, &payload, int, later, &mut state);
+    assert_eq!(flow.queue_escapes.get(&later), Some(&payload));
 }

@@ -7,9 +7,73 @@ use spark_diagnostics::{Diagnostic, Diagnostics, Label};
 use spark_mir::Place;
 use spark_types::{Ty, TypeId, TypeTable};
 
+use super::address::{Dependency, Endpoint, FrameLifetime, OpaqueSite};
 use super::{value, AccessKind, Accesses, Flow, Origin, Path, Point, Slot, State};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Invalidation {
+    Drop(Point),
+    Return(OpaqueSite),
+}
+
+impl super::value::Leaf {
+    pub(super) fn retire_frames(&mut self, boundary: OpaqueSite) {
+        self.endpoints = std::mem::take(&mut self.endpoints)
+            .into_iter()
+            .map(|endpoint| endpoint.retire_frame(boundary))
+            .collect();
+        self.dependencies = std::mem::take(&mut self.dependencies)
+            .into_iter()
+            .map(|dependency| match dependency {
+                Dependency::Address(endpoint) => {
+                    Dependency::Address(endpoint.retire_frame(boundary))
+                }
+                input @ Dependency::InputValue(..) => input,
+            })
+            .collect();
+    }
+}
+
+impl super::Value {
+    fn retire_frames(&mut self, boundary: OpaqueSite) {
+        for leaf in self.leaves.values_mut() {
+            leaf.retire_frames(boundary);
+        }
+        for view in self
+            .task_views
+            .values_mut()
+            .flat_map(|views| views.values_mut())
+        {
+            for callback in view.callbacks.values_mut() {
+                callback.retire_frames(boundary);
+            }
+            view.history.retire_frames(boundary);
+        }
+    }
+}
+
 impl Flow<'_> {
+    pub(super) fn retire_call_frames(&self, point: Point, state: &mut State) {
+        let boundary = OpaqueSite {
+            function: self.function.def_id,
+            point,
+        };
+        if !self.frame_boundaries.contains(&boundary) {
+            return;
+        }
+        for value in state
+            .values
+            .values_mut()
+            .chain(state.cells.values_mut())
+            .chain(state.external.values_mut())
+            .chain(state.queues.values_mut())
+            .chain(state.observations.values_mut())
+            .chain(state.tasks.values_mut().map(|task| &mut task.callback))
+        {
+            value.retire_frames(boundary);
+        }
+    }
+
     pub(super) fn invalidate(&self, place: &Place, point: Point, state: &mut State) {
         if place
             .projections
@@ -39,6 +103,10 @@ impl Flow<'_> {
 
     pub(super) fn record_accesses(&mut self, point: Point, accesses: Accesses, state: &State) {
         self.ensure_transfer(point, state);
+        let accesses = accesses.at_site(super::read::ReadSite {
+            function: self.function.def_id,
+            point,
+        });
         for access in &accesses {
             let mut expired = FxHashSet::default();
             self.expired_access(
@@ -62,22 +130,27 @@ impl Flow<'_> {
 
     fn expired_access(
         &self,
-        target: &super::address::Dependency,
+        target: &Dependency,
         selection: &[Slot],
         kind: AccessKind,
         state: &State,
-        expired: &mut FxHashSet<Point>,
+        expired: &mut FxHashSet<Invalidation>,
     ) {
-        use super::address::{Dependency, Endpoint};
         if let Dependency::Address(Endpoint::Frame {
+            lifetime,
             function,
             local,
             location,
             ..
         }) = target
         {
-            if *function != self.function.def_id {
-                return;
+            match lifetime {
+                FrameLifetime::Returned(site) => {
+                    expired.insert(Invalidation::Return(*site));
+                    return;
+                }
+                FrameLifetime::Local if *function == self.function.def_id => {}
+                _ => return,
             }
             let selected = [location.as_slice(), selection].concat();
             for ((owner, path), drops) in &state.invalidated {
@@ -91,7 +164,7 @@ impl Flow<'_> {
                     }
                 };
                 if needed {
-                    expired.extend(drops);
+                    expired.extend(drops.iter().copied().map(Invalidation::Drop));
                 }
             }
         }
@@ -103,15 +176,33 @@ impl Flow<'_> {
             if !reported.insert((*access, *invalidation)) {
                 continue;
             }
+            let (site, label) = match invalidation {
+                Invalidation::Drop(point) => (
+                    OpaqueSite {
+                        function: self.function.def_id,
+                        point: *point,
+                    },
+                    "its owner was dropped here",
+                ),
+                Invalidation::Return(site) => (*site, "its owner's frame ended at this call"),
+            };
             let mut diagnostic = Diagnostic::error("borrowed value does not live long enough")
                 .with_label(Label::primary(
                     crate::errors::span_for_point(*access, self.function),
                     "this read needs the borrowed value",
-                ))
-                .with_label(Label::secondary(
-                    crate::errors::span_for_point(*invalidation, self.function),
-                    "its owner was dropped here",
                 ));
+            let scope = if site.function == self.function.def_id {
+                Some(self.function)
+            } else {
+                self.program
+                    .and_then(|context| context.mir.functions.get(&site.function))
+            };
+            if let Some(scope) = scope {
+                diagnostic = diagnostic.with_label(Label::secondary(
+                    crate::errors::span_for_point(site.point, scope),
+                    label,
+                ));
+            }
             if let Origin::Loan(point) = origin {
                 diagnostic = diagnostic.with_label(Label::secondary(
                     crate::errors::span_for_point(*point, self.function),

@@ -163,10 +163,20 @@ impl Target {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct Write {
     pub target: Target,
     pub ty: TypeId,
     pub value: Value,
+}
+
+pub(super) type QueueKey = (super::address::OpaqueSite, Target, TypeId);
+
+#[derive(Clone)]
+pub(super) struct QueueEvent {
+    pub site: super::address::OpaqueSite,
+    pub write: Write,
+    pub fence: super::tasks::proofs::EventFence,
 }
 
 pub(super) fn allocation(function: DefId, point: Point, ty: TypeId) -> Value {
@@ -373,14 +383,25 @@ impl Flow<'_> {
         let mut queues = Vec::new();
         let returned = if info.name == kw::SEND {
             let payload = self.operand(args.get(1)?, state);
-            queues.extend(targets.into_iter().map(|handle| Write {
-                target: handle.target,
-                ty: *inner,
-                value: payload.clone(),
+            let site = super::address::OpaqueSite {
+                function: self.function.def_id,
+                point,
+            };
+            queues.extend(targets.into_iter().map(|handle| QueueEvent {
+                site,
+                write: Write {
+                    target: handle.target,
+                    ty: *inner,
+                    value: payload.clone(),
+                },
+                fence: super::tasks::proofs::EventFence {
+                    inputs: state.joined_inputs.clone(),
+                    ..Default::default()
+                },
             }));
             Value::default()
         } else if info.name == kw::RECV || info.name == kw::TRY_RECV {
-            let payload = self.queue_payload(&receiver, *inner, state);
+            let payload = self.receive_payload(&receiver, *inner, point, state);
             if info.name == kw::TRY_RECV {
                 payload.prefixed(Slot::Optional, result_ty, self.table)
             } else {
@@ -391,12 +412,19 @@ impl Flow<'_> {
         } else {
             return None;
         };
+        let publications = super::effects::PrefixWrites {
+            memory: Vec::new(),
+            queues: queues.clone(),
+        };
         Some(super::effects::CallOutcome {
             tasks: Vec::new(),
             completed_task: None,
             clobbered_copies: Vec::new(),
             future_proof: CallProof::default(),
+            returned_prefix: rustc_hash::FxHashSet::default(),
+            publications,
             place_writes: Vec::new(),
+            prefix_memory: Vec::new(),
             returned,
             memory: Vec::new(),
             queues,
@@ -405,6 +433,16 @@ impl Flow<'_> {
     }
 
     pub(super) fn queue_payload(&self, handle: &Value, inner: TypeId, state: &State) -> Value {
+        self.queue_payload_in(handle, inner, super::observations::ReadView::current(state))
+    }
+
+    pub(super) fn queue_payload_in(
+        &self,
+        handle: &Value,
+        inner: TypeId,
+        read: super::observations::ReadView<'_>,
+    ) -> Value {
+        use super::observations::{Memory, Sample};
         let mut result = Value::default();
         for (path, targets) in &handle.queues {
             if !path.is_empty() && *path != [Slot::Tail] {
@@ -414,13 +452,14 @@ impl Flow<'_> {
                 .iter()
                 .flat_map(|handle| self.queue_targets(&handle.target))
             {
-                if let Some(value) = state.queues.get(&(target.clone(), inner)) {
-                    result.join(
-                        &value
-                            .clone()
-                            .sourced(&super::demand::Storage::Queue(target.clone(), inner)),
-                    );
-                }
+                result.join(&self.read_memory(
+                    Sample {
+                        memory: Memory::Queue(target.clone(), inner),
+                        path: Vec::new(),
+                        ty: inner,
+                    },
+                    read,
+                ));
                 match &target {
                     Target::Input {
                         local,
@@ -430,12 +469,12 @@ impl Flow<'_> {
                         capture,
                     } => {
                         result.join(&self.symbolic_queue_payload(
-                            *local,
-                            path,
+                            (*local, path),
                             *ty,
                             queue.as_ref(),
                             *capture,
                             inner,
+                            read,
                         ));
                     }
                     Target::Validation { site, .. } => {
@@ -467,14 +506,29 @@ impl Flow<'_> {
 
     fn symbolic_queue_payload(
         &self,
-        local: Local,
-        path: &Path,
+        (local, path): (Local, &Path),
         channel: TypeId,
         parent: Option<&super::address::QueueSelection>,
         capture: Option<Capture>,
         inner: TypeId,
+        read: super::observations::ReadView<'_>,
     ) -> Value {
         use super::address::{Dependency, Intent, QueueSelection, Selector};
+        let receive = read.receive().map(|receive| {
+            std::sync::Arc::new(super::effects::Receive {
+                source: Some(Target::Input {
+                    local,
+                    path: path.clone(),
+                    ty: channel,
+                    queue: parent.cloned(),
+                    capture,
+                }),
+                ..receive.as_ref().clone()
+            })
+        });
+        if let Some(receive) = &receive {
+            read.record_receive_query(receive);
+        }
         let mut prefix = path.clone();
         prefix.push(Slot::Element);
         let mut result = value::inputs(
@@ -509,20 +563,23 @@ impl Flow<'_> {
         };
         for ((relative, _, _), leaf) in &mut result.leaves {
             leaf.dependencies.clear();
-            leaf.dependencies.insert(Dependency::InputValue(Selector {
-                channel_capture: None,
-                queue: Some(basis(relative)),
-                input: local,
-                selection: path.clone(),
-                intent: Intent::Value,
-                expected: Some(self.selected_type(inner, relative)).filter(|ty| {
-                    matches!(
-                        self.table.resolve(value::strip_mutable(*ty, self.table)),
-                        Ty::Ref { .. }
-                    )
-                }),
-                capture: None,
-            }));
+            leaf.dependencies.insert(Dependency::InputValue(
+                Selector {
+                    channel_capture: None,
+                    queue: Some(basis(relative)),
+                    input: local,
+                    selection: path.clone(),
+                    intent: Intent::Value,
+                    expected: Some(self.selected_type(inner, relative)).filter(|ty| {
+                        matches!(
+                            self.table.resolve(value::strip_mutable(*ty, self.table)),
+                            Ty::Ref { .. }
+                        )
+                    }),
+                    capture: None,
+                },
+                receive.clone(),
+            ));
         }
         for (relative, handles) in &mut result.futures {
             *handles = handles
@@ -649,13 +706,19 @@ impl Flow<'_> {
         }
     }
 
-    pub(super) fn record_queue_prefix(&mut self, writes: &[Write], point: Point, state: &State) {
+    pub(super) fn record_queue_prefix(
+        &mut self,
+        events: &[QueueEvent],
+        point: Point,
+        state: &State,
+    ) {
         let mut prefix = State {
             queues: state.queues.clone(),
             exposed_queues: state.exposed_queues.clone(),
             ..State::default()
         };
-        for write in writes {
+        for event in events {
+            let write = &event.write;
             for target in self.queue_targets(&write.target) {
                 prefix
                     .queues
@@ -664,26 +727,22 @@ impl Flow<'_> {
                     .join(&write.value);
             }
         }
-        for write in writes {
+        for event in events {
+            let write = &event.write;
             if self.queue_targets(&write.target).iter().any(|target| {
                 target.may_outlive_function() || prefix.exposed_queues.contains(target)
             }) {
                 self.expose_queue_handles(&write.value, &mut prefix);
             }
         }
-        for write in writes {
-            self.record_queue_send(&write.target, &write.value, write.ty, point, &prefix);
+        for event in events {
+            let write = &event.write;
+            self.record_queue_event(event);
+            self.record_queue_send(&write.target, &write.value, point, &prefix);
         }
     }
 
-    pub(super) fn record_queue_send(
-        &mut self,
-        target: &Target,
-        payload: &Value,
-        ty: TypeId,
-        point: Point,
-        state: &State,
-    ) {
+    fn record_queue_send(&mut self, target: &Target, payload: &Value, point: Point, state: &State) {
         self.ensure_transfer(point, state);
         if let Some(port) = target.port(self.table) {
             self.queue_ports.insert(port);
@@ -699,10 +758,37 @@ impl Flow<'_> {
                 .or_default()
                 .seed(&reachable.all_sources());
         }
-        self.queue_sends
-            .entry((point, target.clone(), ty))
-            .or_default()
-            .join(payload);
+    }
+
+    fn record_queue_event(&mut self, event: &QueueEvent) {
+        self.record_event_guard(
+            super::effects::EventKey::Queue(event.site),
+            &event.fence.inputs,
+        );
+        let write = &event.write;
+        for target in self.queue_targets(&write.target) {
+            self.queue_sends
+                .entry((event.site, target, write.ty))
+                .or_default()
+                .join(&write.value);
+        }
+    }
+
+    pub(super) fn apply_queue_event(
+        &mut self,
+        event: &QueueEvent,
+        point: Point,
+        state: &mut State,
+    ) {
+        self.record_queue_event(event);
+        state
+            .reached_prefix
+            .insert(super::effects::PrefixOccurrence {
+                event: event.site,
+                returned_at: None,
+            });
+        let write = &event.write;
+        self.queue_send(&write.target, &write.value, write.ty, point, state);
     }
 
     pub(super) fn expose_queue_handles(&self, payload: &Value, state: &mut State) {
@@ -776,7 +862,7 @@ impl Flow<'_> {
         }
     }
 
-    fn queue_targets(&self, target: &Target) -> FxHashSet<Target> {
+    pub(super) fn queue_targets(&self, target: &Target) -> FxHashSet<Target> {
         let Some(port) = target.port(self.table) else {
             return FxHashSet::from_iter([target.clone()]);
         };
@@ -845,7 +931,7 @@ impl Flow<'_> {
         point: Point,
         state: &mut State,
     ) {
-        self.record_queue_send(&target, payload, ty, point, state);
+        self.record_queue_send(&target, payload, point, state);
         if target.may_outlive_function() || state.exposed_queues.contains(&target) {
             self.expose_queue_handles(payload, state);
         }

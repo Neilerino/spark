@@ -2,21 +2,79 @@
 
 //! Possible queue effects close at an existing MIR point, without replaying task bodies.
 
-use super::{views::Subject, Target};
+use super::{
+    views::{self, Subject},
+    Handle, Target,
+};
 use crate::provenance::{
     demand::{Coordinate, Storage},
+    effects::MemoryEvent,
+    observations::{Envelope, History, ReadView},
     value, Flow, Path, Point, Slot, State, Value,
 };
 use rustc_hash::FxHashSet;
+
+mod projections;
+use projections::{GuardedReads, Publications};
 use spark_types::TypeId;
+use std::cell::RefCell;
+
+#[derive(Default)]
+struct TaskQuery {
+    writes: Vec<crate::provenance::channels::QueueEvent>,
+    result: Value,
+    normal_return: bool,
+    history: Option<History>,
+}
 
 impl Flow<'_> {
     pub(in crate::provenance) fn settle_pending_tasks(&mut self, point: Point, state: &mut State) {
+        self.settle_pending_tasks_in(point, state, &[], &[]);
+    }
+
+    pub(in crate::provenance) fn settle_pending_tasks_in(
+        &mut self,
+        point: Point,
+        state: &mut State,
+        events: &[MemoryEvent],
+        queues: &[crate::provenance::channels::QueueEvent],
+    ) {
+        let Some(guarded) = GuardedReads::new(self, events, queues, state) else {
+            self.close_task_effects(point, state, events, queues, &mut Publications::default());
+            return;
+        };
+        let entry = self.transfers[&point].clone();
+        let mut candidate = state.clone();
+        if self.close_task_effects(
+            point,
+            &mut candidate,
+            events,
+            queues,
+            &mut Publications::probe(),
+        ) {
+            *state = candidate;
+            return;
+        }
+        self.transfers.insert(point, entry);
+        let (closed, transfer) = guarded.settle(self, point);
+        *state = closed;
+        self.transfers.insert(point, transfer);
+    }
+
+    fn close_task_effects(
+        &mut self,
+        point: Point,
+        state: &mut State,
+        events: &[MemoryEvent],
+        queues: &[crate::provenance::channels::QueueEvent],
+        publications: &mut Publications<'_>,
+    ) -> bool {
         loop {
             let entry_relation = self.transfers[&point].clone();
             let previous_queues = state.queues.clone();
             let mut writes = Vec::new();
             let mut results = Vec::new();
+            let mut histories = Vec::new();
             for (storage, root_ty, carrier) in self.task_carriers(state) {
                 let carrier = carrier.sourced(&storage);
                 for (path, handles) in &carrier.futures {
@@ -27,58 +85,129 @@ impl Flow<'_> {
                         {
                             continue;
                         }
-                        let Some(inner) =
-                            value::child_type(handle.target.ty(), &Slot::Element, self.table)
-                        else {
-                            continue;
-                        };
-                        let (records, unknown) =
-                            super::views::pending_records(&carrier, path, handle, state);
-                        if unknown {
-                            let mut accesses = crate::provenance::Accesses::default();
-                            accesses.observe_reference(
-                                &carrier.task_lineage(),
-                                None,
-                                &[],
-                                crate::provenance::AccessKind::Value,
-                            );
-                            self.record_accesses(point, accesses, state);
+                        let mut query = publications
+                            .projected(self, point, state, &storage, path, handle)
+                            .unwrap_or_else(|| {
+                                let envelope = self.prefix_envelope(events, queues, &storage, path);
+                                self.query_pending_task(
+                                    &carrier, path, handle, point, state, &envelope,
+                                )
+                            });
+                        publications.record(&storage, path, handle, &query);
+                        writes.append(&mut query.writes);
+                        if query.normal_return {
+                            results.push((storage.clone(), root_ty, path.clone(), query.result));
                         }
-                        for mut record in records {
-                            record.callback = record
-                                .callback
-                                .sourced(&Storage::Task(handle.target.clone(), record.callback_ty));
-                            let facts =
-                                self.task_facts(&record, &handle.target, point, state, inner);
-                            self.observe_prefix(&facts.prefix, point, state);
-                            for mut write in facts.prefix.queues {
-                                write.value = self.freeze_sources(point, write.value);
-                                writes.push(write);
-                            }
-                            if facts.normal_return {
-                                results.push((
-                                    storage.clone(),
-                                    root_ty,
-                                    path.clone(),
-                                    self.freeze_sources(point, facts.returned),
-                                ));
-                            }
+                        if let Some(history) = query.history {
+                            histories.push((
+                                storage.clone(),
+                                path.clone(),
+                                Subject::from(handle),
+                                history,
+                            ));
                         }
                     }
                 }
             }
+            let before_publications = publications
+                .is_probe()
+                .then(|| self.transfers[&point].clone());
             let mut changed = false;
             for write in writes {
-                self.queue_send(&write.target, &write.value, write.ty, point, state);
+                self.apply_queue_event(&write, point, state);
             }
             for (storage, ty, path, result) in results {
                 changed |= self.cache_task_result(&storage, ty, path, &result, point, state);
             }
             changed |= previous_queues != state.queues;
+            for (storage, path, subject, history) in histories {
+                changed |= Self::cache_task_history(&storage, path, subject, &history, state);
+            }
+            if before_publications
+                .is_some_and(|before| changed || !before.same_sources(&self.transfers[&point]))
+            {
+                return false;
+            }
             if !changed && entry_relation == self.transfers[&point] {
-                break;
+                return true;
             }
         }
+    }
+
+    fn query_pending_task(
+        &mut self,
+        carrier: &Value,
+        path: &Path,
+        handle: &Handle,
+        point: Point,
+        state: &mut State,
+        envelope: &Envelope,
+    ) -> TaskQuery {
+        let mut query = TaskQuery::default();
+        let Some(inner) = value::child_type(handle.target.ty(), &Slot::Element, self.table) else {
+            return query;
+        };
+        let subject = Subject::from(handle);
+        let (records, unknown) = views::pending_records(carrier, path, handle, state);
+        if unknown {
+            let mut accesses = crate::provenance::Accesses::default();
+            accesses.observe_reference(
+                &carrier.task_lineage(),
+                None,
+                &[],
+                crate::provenance::AccessKind::Value,
+            );
+            self.record_accesses(point, accesses, state);
+        }
+        let mut history = views::contribution(carrier, path, handle).history;
+        let resampled =
+            self.resample_history(&history, ReadView::current(state).with_envelope(envelope));
+        let mut changed = self.remember_samples(resampled, &mut history, point, state);
+        let trace = RefCell::default();
+        for mut record in records {
+            record.callback = record
+                .callback
+                .sourced(&Storage::Task(handle.target.clone(), record.callback_ty));
+            let read = ReadView::task(state, &subject, &history, &trace).with_envelope(envelope);
+            let facts = self.task_facts_in(&record, &handle.target, point, read, inner);
+            self.observe_prefix(&facts.prefix, point, state);
+            self.expose_prefix_memory(&facts.prefix.memory, state);
+            for mut write in facts.prefix.queues {
+                write.write.value = self.freeze_sources(point, write.write.value);
+                query.writes.push(write);
+            }
+            if facts.normal_return {
+                query.normal_return = true;
+                query
+                    .result
+                    .join(&self.freeze_sources(point, facts.returned));
+            }
+        }
+        changed |= self.remember_samples(trace.into_inner(), &mut history, point, state);
+        query.history = changed.then_some(history);
+        query
+    }
+
+    fn cache_task_history(
+        storage: &Storage,
+        path: Path,
+        subject: Subject,
+        history: &History,
+        state: &mut State,
+    ) -> bool {
+        let Some(mut current) = state.stored_value(storage).cloned() else {
+            return false;
+        };
+        let view = current
+            .task_views
+            .entry(path)
+            .or_default()
+            .entry(subject)
+            .or_insert_with(views::View::unknown);
+        if !view.history.join(history) {
+            return false;
+        }
+        Self::replace_task_carrier(storage, current, state)
     }
 
     fn task_carriers(&self, state: &State) -> Vec<(Storage, TypeId, Value)> {
@@ -145,7 +274,12 @@ impl Flow<'_> {
             return false;
         }
         current.sources.clear();
+        Self::replace_task_carrier(storage, current, state)
+    }
+
+    fn replace_task_carrier(storage: &Storage, current: Value, state: &mut State) -> bool {
         match storage {
+            Storage::Observation(_) => return false,
             Storage::Logical(local) => {
                 state.set(*local, current);
             }

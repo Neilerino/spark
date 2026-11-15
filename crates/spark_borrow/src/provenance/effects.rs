@@ -20,11 +20,15 @@ use super::{
 #[derive(Clone, Default)]
 pub(super) struct Summary {
     returned: Value,
-    queues: FxHashMap<(super::channels::Target, TypeId), Value>,
+    queues: FxHashMap<super::channels::QueueKey, Value>,
     queue_contents: FxHashMap<(super::channels::Target, TypeId), Value>,
     tasks: FxHashMap<super::tasks::Target, super::tasks::Record>,
     normal_return: bool,
     memory: FxHashMap<Port, Value>,
+    prefix_memory: PrefixMemory,
+    normal_prefix: ReachedPrefix,
+    normal_publications: PublicationValues,
+    receive_snapshots: ReceiveSnapshots,
     modified: FxHashSet<View>,
     written_inputs: FxHashSet<View>,
     unknown_copy_clobber: bool,
@@ -35,6 +39,17 @@ pub(super) struct Summary {
 impl Summary {
     fn join(&mut self, other: &Self) -> bool {
         let mut changed = self.returned.join(&other.returned);
+        changed |= join_prefix(&mut self.normal_prefix, &other.normal_prefix);
+        changed |= self.normal_publications.join(&other.normal_publications);
+        for (receive, values) in &other.receive_snapshots {
+            let missing = !self.receive_snapshots.contains_key(receive);
+            changed |= self
+                .receive_snapshots
+                .entry(receive.clone())
+                .or_default()
+                .join(values)
+                || missing;
+        }
         for (target, record) in &other.tasks {
             if let Some(current) = self.tasks.get_mut(target) {
                 changed |= current.join(record);
@@ -51,12 +66,22 @@ impl Summary {
                 .join(value);
         }
         for (target, value) in &other.queues {
-            changed |= self.queues.entry(target.clone()).or_default().join(value);
+            let existed = self.queues.contains_key(target);
+            changed |= self.queues.entry(target.clone()).or_default().join(value) || !existed;
         }
         changed |= !self.unknown_copy_clobber && other.unknown_copy_clobber;
         self.unknown_copy_clobber |= other.unknown_copy_clobber;
         changed |= !self.normal_return && other.normal_return;
         self.normal_return |= other.normal_return;
+        for (event, value) in &other.prefix_memory {
+            let existed = self.prefix_memory.contains_key(event);
+            changed |= self
+                .prefix_memory
+                .entry(event.clone())
+                .or_default()
+                .join(value)
+                || !existed;
+        }
         for (local, value) in &other.memory {
             changed |= self.memory.entry(local.clone()).or_default().join(value);
         }
@@ -89,45 +114,6 @@ pub(super) struct Context<'a> {
     pub(super) ports: &'a Ports,
 }
 
-pub(super) struct CallOutcome {
-    pub returned: Value,
-    pub tasks: Vec<(super::tasks::Target, super::tasks::Record)>,
-    pub completed_task: Option<(Local, Value)>,
-    pub clobbered_copies: Vec<Local>,
-    pub future_proof: super::tasks::proofs::CallProof,
-    pub place_writes: Vec<(spark_mir::Place, Value)>,
-    pub memory: Vec<MemoryWrite>,
-    pub queues: Vec<super::channels::Write>,
-    pub queue_contents: Vec<super::channels::Write>,
-}
-
-impl CallOutcome {
-    pub(super) fn freeze_sources(&mut self, flow: &Flow<'_>, point: Point) {
-        self.returned = flow.freeze_sources(point, std::mem::take(&mut self.returned));
-        for (_, record) in &mut self.tasks {
-            record.callback = flow.freeze_sources(point, std::mem::take(&mut record.callback));
-        }
-        if let Some((_, result)) = &mut self.completed_task {
-            *result = flow.freeze_sources(point, std::mem::take(result));
-        }
-        for (_, value) in &mut self.place_writes {
-            *value = flow.freeze_sources(point, std::mem::take(value));
-        }
-        for write in &mut self.memory {
-            write.value = flow.freeze_sources(point, std::mem::take(&mut write.value));
-        }
-        for write in self.queues.iter_mut().chain(&mut self.queue_contents) {
-            write.value = flow.freeze_sources(point, std::mem::take(&mut write.value));
-        }
-    }
-}
-
-pub(super) struct MemoryWrite {
-    pub target: super::value::Leaf,
-    pub ty: TypeId,
-    pub value: Value,
-}
-
 #[derive(Clone, Copy)]
 struct CallActuals<'a> {
     callee: &'a Value,
@@ -135,11 +121,22 @@ struct CallActuals<'a> {
     ty: TypeId,
     point: Point,
     instantiation_site: Option<super::address::OpaqueSite>,
-    state: &'a State,
+    frame_caller: Option<DefId>,
+    read: super::observations::ReadView<'a>,
     aliases: Option<&'a Aliases>,
 }
 
-impl CallActuals<'_> {
+impl<'a> CallActuals<'a> {
+    const fn at_read<'b>(self, receive: Option<&'b Receive>) -> CallActuals<'b>
+    where
+        'a: 'b,
+    {
+        CallActuals {
+            read: self.read.with_entry_prefix().with_receive(receive),
+            ..self
+        }
+    }
+
     fn instantiation_site(self, caller: DefId) -> super::address::OpaqueSite {
         self.instantiation_site
             .unwrap_or(super::address::OpaqueSite {
@@ -154,6 +151,9 @@ impl CallActuals<'_> {
     }
 }
 
+mod publications;
+pub(super) use publications::PublicationValues;
+
 type Summaries = FxHashMap<Key, Summary>;
 type Ports = FxHashMap<DefId, Vec<Port>>;
 
@@ -161,80 +161,23 @@ mod channel_binding;
 mod inference;
 mod opaque;
 mod prefix;
+mod receive_prefix;
+mod receive_snapshots;
+pub(super) use prefix::{
+    join_prefix, EventKey, Memory as PrefixMemory, MemoryEvent, PrefixOccurrence, PrefixWrites,
+    ReachedPrefix, Receive,
+};
+pub(super) use receive_snapshots::ReceiveSnapshots;
 mod selection;
 mod task_binding;
 mod task_views;
+mod transaction;
 pub use inference::analyze_program;
 #[cfg(test)]
 use inference::infer_summaries;
+pub(super) use transaction::{CallOutcome, Dispatch, MemoryWrite};
 
 impl Flow<'_> {
-    pub(super) fn apply_call_outcomes(
-        &mut self,
-        args: &[Operand],
-        destination: &spark_mir::Place,
-        mut outcome: Vec<CallOutcome>,
-        point: Point,
-        state: &mut State,
-    ) {
-        for alternative in &mut outcome {
-            alternative.freeze_sources(self, point);
-        }
-        for arg in args {
-            if let Some(local) = super::consume(arg, state) {
-                self.record_consumed(point, local);
-            }
-        }
-        let common = self.transfers[&point].clone();
-        let mut alternatives: Option<(State, super::demand::Transfer)> = None;
-        for alternative in outcome {
-            self.transfers.insert(point, common.clone());
-            let mut after = state.clone();
-            let returned_copy = self.apply_call_future_proof(
-                alternative.future_proof,
-                &alternative.clobbered_copies,
-                point,
-                &mut after,
-            );
-            self.import_tasks(alternative.tasks, point, &mut after);
-            if let Some((local, result)) = alternative.completed_task {
-                self.complete_future(local, &result, point, &mut after);
-            }
-
-            for write in alternative.queue_contents {
-                self.import_queue_contents(
-                    &write.target,
-                    &write.value,
-                    write.ty,
-                    point,
-                    &mut after,
-                );
-            }
-            for write in alternative.queues {
-                self.queue_send(&write.target, &write.value, write.ty, point, &mut after);
-            }
-            for write in alternative.memory {
-                self.store_references(&write.target, &write.value, write.ty, point, &mut after);
-            }
-            for (place, value) in alternative.place_writes {
-                self.store(&place, value, point, &mut after);
-            }
-            self.store(destination, alternative.returned, point, &mut after);
-            self.store_future_copy(destination, returned_copy, &mut after);
-            let transfer = self.transfers[&point].clone();
-            if let Some((joined, ledger)) = &mut alternatives {
-                joined.join(&after);
-                ledger.join_alternative(&transfer);
-            } else {
-                alternatives = Some((after, transfer));
-            }
-        }
-        if let Some((after, transfer)) = alternatives {
-            *state = after;
-            self.transfers.insert(point, transfer);
-        }
-    }
-
     fn discover_ports(&self, summary: &Summary, ports: &mut Vec<Port>) {
         for port in &self.queue_ports {
             if !ports.contains(port) {
@@ -260,8 +203,8 @@ impl Flow<'_> {
         }
         for access in &summary.observed {
             let selector = match &access.target {
-                Dependency::InputValue(selector)
-                | Dependency::Address(Endpoint::Input(selector)) => selector,
+                Dependency::InputValue(selector, _)
+                | Dependency::Address(Endpoint::Input(selector, _)) => selector,
                 Dependency::Address(Endpoint::Frame { .. }) => continue,
             };
             if let Some(port) = Port::from_selector(selector, self.function, self.table) {
@@ -282,19 +225,22 @@ impl Flow<'_> {
         ty: TypeId,
         point: Point,
         state: &State,
-    ) -> Option<Vec<CallOutcome>> {
+    ) -> Dispatch {
         self.ensure_transfer(point, state);
         if let Some(outcome) = self.task_call(func, args, ty, point, state) {
             return match outcome {
-                task_binding::TaskDispatch::Returns(outcomes) => Some(outcomes),
-                task_binding::TaskDispatch::NoReturn => None,
+                task_binding::TaskDispatch::Returns(outcomes) => Dispatch::returning(outcomes),
+                task_binding::TaskDispatch::NoReturn(events) => Dispatch {
+                    diverging: vec![events],
+                    ..Dispatch::default()
+                },
             };
         }
         if let Some(outcome) = self
             .collection_call(func, args, state)
             .or_else(|| self.channel_call(func, args, ty, point, state))
         {
-            return Some(vec![outcome]);
+            return Dispatch::returning(vec![outcome]);
         }
         let callee = self.operand(func, state);
         let arguments: Vec<_> = args.iter().map(|arg| self.operand(arg, state)).collect();
@@ -303,12 +249,13 @@ impl Flow<'_> {
             arguments: &arguments,
             ty,
             point,
-            state,
+            read: super::observations::ReadView::current(state),
             instantiation_site: None,
+            frame_caller: Some(self.function.def_id),
             aliases: None,
         };
         let targets = self.callee_targets(&callee, super::operand_type(func, self.function));
-        let mut outcomes = Vec::new();
+        let mut dispatch = Dispatch::default();
         let open = targets.open;
         let unresolved_value = targets.unresolved || (!targets.open && targets.known.is_empty());
         let mut unknown = unresolved_value;
@@ -340,16 +287,19 @@ impl Flow<'_> {
                     ..actuals
                 };
                 self.observe_writes(summary, function, actuals);
-                let prefix = self.bind_prefix(summary, function, actuals);
+                let prefix = self.bind_prefix(summary, function, actuals, &key, Some(args));
                 self.observe_prefix(&prefix, point, state);
-                let queues = prefix.queues;
                 if !summary.normal_return {
+                    dispatch.diverging.push(PrefixWrites {
+                        memory: prefix.memory,
+                        queues: prefix.queues,
+                    });
                     continue;
                 }
                 let mut outcome =
-                    self.bind_outcome(summary, function, actuals, &key.aliases, queues);
+                    self.bind_outcome(summary, function, actuals, &key.aliases, prefix);
                 outcome.future_proof = self.call_future_proof(&key, args, state);
-                outcomes.push(outcome);
+                dispatch.returning.push(outcome);
             }
         }
         if unknown {
@@ -367,12 +317,12 @@ impl Flow<'_> {
             let returned = self.opaque_result(args, actuals);
             let mut outcome = self.opaque_queue_outcome(returned, args, actuals);
             outcome.clobbered_copies = self.opaque_copy_clobbers(func, args, actuals);
-            outcomes.push(outcome);
+            dispatch.returning.push(outcome);
         }
         if open {
-            outcomes.push(self.open_outcome(ty, point));
+            dispatch.returning.push(self.open_outcome(ty, point));
         }
-        (!outcomes.is_empty()).then_some(outcomes)
+        dispatch
     }
 
     fn open_outcome(&self, ty: TypeId, point: Point) -> CallOutcome {
@@ -399,12 +349,57 @@ impl Flow<'_> {
             completed_task: None,
             clobbered_copies: Vec::new(),
             future_proof: CallProof::default(),
+            returned_prefix: rustc_hash::FxHashSet::default(),
+            publications: crate::provenance::effects::PrefixWrites::default(),
             place_writes: Vec::new(),
+            prefix_memory: Vec::new(),
             returned,
             memory: Vec::new(),
             queues: Vec::new(),
             queue_contents: Vec::new(),
         }
+    }
+
+    fn callback_bases(
+        &self,
+        input: Local,
+        ty: TypeId,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> Vec<(Value, TypeId, Option<value::ReferenceCapture>)> {
+        let value = self.actual_input(input, function, actuals);
+        let captures: FxHashSet<_> = value
+            .leaves
+            .keys()
+            .filter_map(|(_, _, capture)| *capture)
+            .collect();
+        let mut bases = Vec::new();
+        for capture in captures {
+            let Some(inner) = child_type(capture.ty, &Slot::Deref, self.table) else {
+                continue;
+            };
+            if super::callbacks::selectors(inner, self.table).is_empty() {
+                continue;
+            }
+            let selector = Selector {
+                input,
+                selection: Vec::new(),
+                intent: Intent::Value,
+                expected: Some(capture.ty),
+                capture: Some(capture),
+                channel_capture: None,
+                queue: None,
+            };
+            let read = actuals.read.select(function.def_id, &selector);
+            let pointer = value.select_reference_capture(capture);
+            bases.push((
+                self.dereference_in(&pointer, capture.ty, read),
+                inner,
+                Some(capture),
+            ));
+        }
+        bases.push((value, ty, None));
+        bases
     }
 
     fn callback_inputs(
@@ -419,28 +414,9 @@ impl Flow<'_> {
             .skip(1)
             .take(function.param_count as usize + function.captures.len())
         {
-            let value = self.actual_input(decl.local, function, actuals);
-            let captures: FxHashSet<_> = value
-                .leaves
-                .keys()
-                .filter_map(|(_, _, capture)| *capture)
-                .collect();
-            let mut bases = vec![(value.clone(), decl.ty, None)];
-            for capture in captures {
-                let Some(inner) = child_type(capture.ty, &Slot::Deref, self.table) else {
-                    continue;
-                };
-                if super::callbacks::selectors(inner, self.table).is_empty() {
-                    continue;
-                }
-                let pointer = value.select_reference_capture(capture);
-                bases.push((
-                    self.dereference(&pointer, capture.ty, actuals.state),
-                    inner,
-                    Some(capture),
-                ));
-            }
-            for (value, root_ty, capture) in bases {
+            for (value, root_ty, capture) in
+                self.callback_bases(decl.local, decl.ty, function, actuals)
+            {
                 let mut pending = super::callbacks::selectors(root_ty, self.table);
                 let mut visited = FxHashSet::default();
                 while let Some((path, ty)) = pending.pop() {
@@ -448,14 +424,17 @@ impl Flow<'_> {
                     if path.contains(&Slot::Tail) || !visited.insert((path.clone(), ty)) {
                         continue;
                     }
-                    let selected = self.select_input(
-                        value.clone(),
-                        root_ty,
-                        &path,
-                        decl.local,
-                        function,
-                        actuals,
-                    );
+                    let selector = Selector {
+                        input: decl.local,
+                        selection: path.clone(),
+                        intent: Intent::Value,
+                        expected: Some(ty),
+                        capture,
+                        channel_capture: None,
+                        queue: None,
+                    };
+                    let selected =
+                        self.select_input(value.clone(), root_ty, &selector, function, actuals);
                     let targets = self.callee_targets(&selected, ty);
                     for def in &targets.known {
                         let Some(target) = self
@@ -517,7 +496,7 @@ impl Flow<'_> {
             }
             let targets = self.project_reference(&input, view.root.pointee, &view.path);
             for endpoint in targets.endpoints {
-                if let Endpoint::Input(selector) = endpoint {
+                if let Endpoint::Input(selector, _) = endpoint {
                     for (view, _) in self.external_targets(&selector) {
                         self.written_inputs.insert(view);
                     }
@@ -528,69 +507,6 @@ impl Flow<'_> {
 
     fn port_input(&self, port: &Port, function: &MirFunction, actuals: CallActuals<'_>) -> Value {
         self.select_input_value(&port.selector(), function, actuals)
-    }
-
-    fn bind_outcome(
-        &mut self,
-        summary: &Summary,
-        function: &MirFunction,
-        actuals: CallActuals<'_>,
-        aliases: &Aliases,
-        queues: Vec<super::channels::Write>,
-    ) -> CallOutcome {
-        let returned = self.bind(&summary.returned, function, actuals);
-        let mut memory = Vec::new();
-        for modified in &summary.modified {
-            if summary.modified.iter().any(|other| {
-                other != modified
-                    && other.root == modified.root
-                    && modified.path.starts_with(&other.path)
-            }) {
-                continue;
-            }
-            let Some(snapshot) = summary.memory.get(&modified.root) else {
-                continue;
-            };
-            let bound = self.bind(
-                snapshot,
-                function,
-                CallActuals {
-                    ty: modified.root.pointee,
-                    ..actuals
-                },
-            );
-            let mut targets = super::value::Leaf::default();
-            for member in aliases.members(&modified.root) {
-                let mut input = self.port_input(&member, function, actuals);
-                if !aliases.is_cell(&member) {
-                    input = self.residual_reference(&input, &member, function, actuals);
-                }
-                targets.join(&self.project_reference(&input, member.pointee, &modified.path));
-            }
-            let mut value = bound;
-            for slot in &modified.path {
-                value = value.project(slot);
-            }
-            memory.push(MemoryWrite {
-                target: targets,
-                ty: self.selected_type(modified.root.pointee, &modified.path),
-                value,
-            });
-        }
-        let queue_contents = self.bind_queue_contents(summary, function, actuals);
-        let tasks = self.bind_tasks(summary, function, actuals);
-        let clobbered_copies = self.bound_copy_clobbers(summary, function, actuals);
-        CallOutcome {
-            tasks,
-            completed_task: None,
-            clobbered_copies,
-            future_proof: CallProof::default(),
-            place_writes: Vec::new(),
-            returned,
-            memory,
-            queues,
-            queue_contents,
-        }
     }
 
     fn summary(&mut self) -> Summary {
@@ -608,6 +524,10 @@ impl Flow<'_> {
             };
             self.transfer_block(BlockId(index as u32), &mut state);
             summary.normal_return = true;
+            join_prefix(&mut summary.normal_prefix, &state.reached_prefix);
+            summary
+                .normal_publications
+                .join(&state.publications.exported(self.function.def_id));
             self.export_queue_contents(&state, &mut summary);
             self.export_tasks(&state, &mut summary);
             summary.returned.join(&export_value(
@@ -659,42 +579,50 @@ impl Flow<'_> {
                 );
             }
         }
-        summary.queues = self.export_queue_writes();
-        for ((_, boundary), value) in &self.obligations {
-            summary
-                .obligations
-                .entry(boundary.clone())
-                .or_default()
-                .join(&export_value(value, self.function.def_id));
-        }
-        for access in self.accesses.values().flatten() {
-            let selector = match &access.target {
-                Dependency::InputValue(selector)
-                | Dependency::Address(Endpoint::Input(selector)) => selector,
-                Dependency::Address(Endpoint::Frame { .. }) => continue,
-            };
-            let mut observed = access.clone();
-            observed.origin = Origin::Input {
-                local: selector.input,
-                path: selector.selection.clone(),
-            };
-            let pointee = if matches!(selector.intent, Intent::Address(_)) {
-                selector.expected.unwrap_or(TypeId::ERROR)
-            } else {
-                let ty = selector.expected.unwrap_or_else(|| {
-                    self.selected_type(
-                        self.function.locals[selector.input.index()].ty,
-                        &selector.selection,
-                    )
-                });
-                child_type(ty, &Slot::Deref, self.table).unwrap_or(TypeId::ERROR)
-            };
-            observed.selection = value::normalize(pointee, access.selection.clone(), self.table);
-            summary.observed.insert(observed);
-        }
+        self.export_prefix(&mut summary);
 
         self.normalize_fresh_queue_roles(&mut summary);
         summary
+    }
+
+    fn bind_frame(&mut self, endpoint: &Endpoint, actuals: CallActuals<'_>) -> Endpoint {
+        let boundary = actuals
+            .frame_caller
+            .map(|function| super::address::OpaqueSite {
+                function,
+                point: actuals.point,
+            });
+        let bound = endpoint.bind_frame(boundary);
+        if let Endpoint::Frame {
+            lifetime: super::address::FrameLifetime::DuringCall { boundary: site, .. },
+            ..
+        } = &bound
+        {
+            if boundary == Some(*site) {
+                self.frame_boundaries.insert(*site);
+            }
+        }
+        bound
+    }
+
+    fn typed_dependency(
+        &self,
+        selector: &Selector,
+        leaf: &super::value::Leaf,
+        path: &Path,
+        root: TypeId,
+    ) -> Selector {
+        let mut selector = selector.clone();
+        if selector.expected.is_none() && leaf.opaque.is_empty() {
+            let ty = self.selected_type(root, path);
+            if matches!(
+                self.table.resolve(value::strip_mutable(ty, self.table)),
+                spark_types::Ty::Ref { .. }
+            ) {
+                selector.expected = Some(ty);
+            }
+        }
+        selector
     }
 
     fn bind(&mut self, summary: &Value, function: &MirFunction, actuals: CallActuals<'_>) -> Value {
@@ -724,10 +652,13 @@ impl Flow<'_> {
             for endpoint in &leaf.endpoints {
                 match endpoint {
                     Endpoint::Frame { .. } => {
-                        retained.endpoints.insert(endpoint.clone());
+                        retained
+                            .endpoints
+                            .insert(self.bind_frame(endpoint, actuals));
                     }
-                    Endpoint::Input(selector) => {
-                        let selected = self.select_selector(selector, function, actuals);
+                    Endpoint::Input(selector, site) => {
+                        let read = actuals.at_read(site.as_deref());
+                        let selected = self.select_selector(selector, function, read);
                         if leaf.opaque.is_empty() {
                             result.insert_addresses(path, &selected);
                         } else {
@@ -738,25 +669,20 @@ impl Flow<'_> {
             }
             for dependency in &leaf.dependencies {
                 match dependency {
-                    Dependency::Address(Endpoint::Frame { .. }) => {
-                        retained.dependencies.insert(dependency.clone());
+                    Dependency::Address(endpoint @ Endpoint::Frame { .. }) => {
+                        retained
+                            .dependencies
+                            .insert(Dependency::Address(self.bind_frame(endpoint, actuals)));
                     }
-                    Dependency::Address(Endpoint::Input(selector)) => {
-                        let selected = self.select_selector(selector, function, actuals);
+                    Dependency::Address(Endpoint::Input(selector, site)) => {
+                        let read = actuals.at_read(site.as_deref());
+                        let selected = self.select_selector(selector, function, read);
                         retain_selected(&selected, &mut retained, &mut retained_sources);
                     }
-                    Dependency::InputValue(selector) => {
-                        let mut selector = selector.clone();
-                        if selector.expected.is_none() && leaf.opaque.is_empty() {
-                            let ty = self.selected_type(actuals.ty, path);
-                            if matches!(
-                                self.table.resolve(value::strip_mutable(ty, self.table)),
-                                spark_types::Ty::Ref { .. }
-                            ) {
-                                selector.expected = Some(ty);
-                            }
-                        }
-                        let mut selected = self.select_selector(&selector, function, actuals);
+                    Dependency::InputValue(selector, site) => {
+                        let selector = self.typed_dependency(selector, leaf, path, actuals.ty);
+                        let read = actuals.at_read(site.as_deref());
+                        let mut selected = self.select_selector(&selector, function, read);
                         if let Some(capture) = capture {
                             selected = selected.with_reference_capture(*capture);
                         }
@@ -805,21 +731,42 @@ impl Flow<'_> {
     ) -> Accesses {
         let mut accesses = Accesses::default();
         for access in &summary.observed {
-            let selector = match &access.target {
-                Dependency::InputValue(selector)
-                | Dependency::Address(Endpoint::Input(selector)) => selector,
-                Dependency::Address(Endpoint::Frame { .. }) => continue,
-            };
-            let mut selected = self.select_selector(selector, function, actuals);
-            if selector.selection.contains(&Slot::Tail)
-                && matches!(selector.intent, Intent::Value)
-                && selector.expected.is_none()
-            {
-                selected = self.tail_reference_value(selected, TypeId::ERROR, None, actuals.state);
-            }
-            accesses.observe_reference(&selected, None, &access.selection, access.kind);
+            self.bind_access(access, function, actuals, &mut accesses);
         }
         accesses
+    }
+
+    fn bind_access(
+        &mut self,
+        access: &super::read::Access,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        accesses: &mut Accesses,
+    ) {
+        let (selector, receive) = match &access.target {
+            Dependency::InputValue(selector, receive)
+            | Dependency::Address(Endpoint::Input(selector, receive)) => {
+                (selector, receive.as_deref())
+            }
+            Dependency::Address(Endpoint::Frame { .. }) => return,
+        };
+        let actuals = CallActuals {
+            read: actuals
+                .read
+                .with_read_site(access.site)
+                .with_entry_prefix()
+                .with_receive(receive)
+                .with_access_site(access.site),
+            ..actuals
+        };
+        let mut selected = self.select_selector(selector, function, actuals);
+        if selector.selection.contains(&Slot::Tail)
+            && matches!(selector.intent, Intent::Value)
+            && selector.expected.is_none()
+        {
+            selected = self.tail_reference_value(selected, TypeId::ERROR, None, actuals.read.state);
+        }
+        accesses.observe_reference_at(&selected, None, &access.selection, access.kind, access.site);
     }
 
     fn residual_reference(
@@ -872,7 +819,7 @@ impl Flow<'_> {
                 || leaf
                     .dependencies
                     .iter()
-                    .any(|dependency| matches!(dependency, Dependency::InputValue(_)))
+                    .any(|dependency| matches!(dependency, Dependency::InputValue(..)))
         });
         selected
             .sources
@@ -892,7 +839,7 @@ impl Flow<'_> {
             let endpoints = std::mem::take(&mut metadata.endpoints);
             for endpoint in endpoints {
                 match endpoint {
-                    Endpoint::Input(selector) => {
+                    Endpoint::Input(selector, site) => {
                         for (view, _) in self.external_targets(&selector) {
                             let mut selected = view.root.selector();
                             if let Intent::Address(payload) = &mut selected.intent {
@@ -901,7 +848,9 @@ impl Flow<'_> {
                                     payload.kind = DerefKind::Residual;
                                 }
                             }
-                            metadata.endpoints.insert(Endpoint::Input(selected));
+                            metadata
+                                .endpoints
+                                .insert(Endpoint::Input(selected, site.clone()));
                         }
                     }
                     frame @ Endpoint::Frame { .. } => {

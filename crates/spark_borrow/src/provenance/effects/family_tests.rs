@@ -54,6 +54,7 @@ fn residual_binding_filters_endpoints_without_erasing_opaque_or_ambiguous_altern
     };
     let point = Point::new(BlockId::ENTRY, 0);
     let endpoint = |local| Endpoint::Frame {
+        lifetime: crate::provenance::address::FrameLifetime::Local,
         function: caller.def_id,
         root: point,
         local: Local(local),
@@ -105,8 +106,9 @@ fn residual_binding_filters_endpoints_without_erasing_opaque_or_ambiguous_altern
             arguments: &arguments,
             ty: map_ref,
             point,
-            state: &state,
+            read: crate::provenance::observations::ReadView::current(&state),
             instantiation_site: None,
+            frame_caller: None,
             aliases: Some(&aliases),
         };
         let filtered = flow.residual_reference(&selected, &family, &callee, actuals);
@@ -130,8 +132,9 @@ fn residual_binding_filters_endpoints_without_erasing_opaque_or_ambiguous_altern
         arguments: &arguments,
         ty: map_ref,
         point,
-        state: &state,
+        read: crate::provenance::observations::ReadView::current(&state),
         instantiation_site: None,
+        frame_caller: None,
         aliases: Some(&aliases),
     };
     let filtered = flow.residual_reference(&selected, &family, &callee, actuals);

@@ -823,13 +823,23 @@ fn call_transaction_preserves_moved_argument_sources_in_return_and_queue() {
         completed_task: None,
         clobbered_copies: Vec::new(),
         future_proof: CallProof::default(),
+        returned_prefix: rustc_hash::FxHashSet::default(),
+        publications: crate::provenance::effects::PrefixWrites::default(),
         place_writes: Vec::new(),
+        prefix_memory: Vec::new(),
         memory: Vec::new(),
         queue_contents: Vec::new(),
-        queues: vec![channels::Write {
-            target: queue.clone(),
-            ty: reference,
-            value,
+        queues: vec![channels::QueueEvent {
+            site: super::super::address::OpaqueSite {
+                function: function.def_id,
+                point,
+            },
+            write: channels::Write {
+                target: queue.clone(),
+                ty: reference,
+                value,
+            },
+            fence: Default::default(),
         }],
     };
     flow.apply_call_outcomes(

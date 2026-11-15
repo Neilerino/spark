@@ -1,11 +1,37 @@
 // TAG [SPARK-114]
 
-use crate::provenance::tasks::proofs::{Guarantee, Proofs};
+use crate::provenance::tasks::proofs::{Proof, Proofs};
 
 use super::{
-    Context, DefId, Diagnostics, Flow, FxHashMap, FxHashSet, Key, Mir, Ports, Summaries, Summary,
-    TypeTable,
+    Context, DefId, Diagnostics, EventKey, Flow, FxHashMap, FxHashSet, Key, Mir, Ports, Summaries,
+    Summary, TypeTable,
 };
+
+type EventVocabulary = FxHashMap<Key, FxHashSet<EventKey>>;
+
+fn discover_events(events: &mut EventVocabulary, key: &Key, summary: &Summary) -> bool {
+    if summary.prefix_memory.is_empty() && summary.queues.is_empty() {
+        return false;
+    }
+    let known = events.entry(key.clone()).or_default();
+    let before = known.len();
+    known.extend(summary.prefix_memory.keys().cloned().map(EventKey::Memory));
+    known.extend(
+        summary
+            .queues
+            .keys()
+            .map(|(site, _, _)| EventKey::Queue(*site)),
+    );
+    known.len() != before
+}
+
+fn discover_summary_events(events: &mut EventVocabulary, summaries: &Summaries) -> bool {
+    let mut changed = false;
+    for (key, summary) in summaries {
+        changed |= discover_events(events, key, summary);
+    }
+    changed
+}
 
 pub fn analyze_program(
     mir: &Mir,
@@ -74,30 +100,42 @@ fn infer_summaries_with_definitions(
         .map(|def| Key::distinct(*def))
         .collect();
     let mut ports = mir.functions.keys().map(|def| (*def, Vec::new())).collect();
+    let mut events = EventVocabulary::default();
     'vocabulary: loop {
         let (base, frozen_ports) = program.may(&keys, ports, None);
         keys = base.keys().cloned().collect();
-        let (mut proofs, discovered, requests) = program.proofs(&base, &frozen_ports, None);
-        if discovered != frozen_ports || requests.iter().any(|key| !keys.contains(key)) {
+        discover_summary_events(&mut events, &base);
+        let (mut proofs, discovered, requests, new_events) =
+            program.proofs(&base, &frozen_ports, &mut events, None);
+        if new_events
+            || discovered != frozen_ports
+            || requests.iter().any(|key| !keys.contains(key))
+        {
             keys.extend(requests);
             program.expand_keys(&mut keys, &discovered);
             ports = discovered;
             continue;
         }
-        if !proofs.values().any(Guarantee::has_effect) {
+        if !proofs.values().any(Proof::has_effect) {
             return (base, frozen_ports, proofs);
         }
         loop {
             let (refined, refined_ports) = program.may(&keys, frozen_ports.clone(), Some(&proofs));
-            if refined_ports != frozen_ports || refined.keys().any(|key| !keys.contains(key)) {
+            if discover_summary_events(&mut events, &refined)
+                || refined_ports != frozen_ports
+                || refined.keys().any(|key| !keys.contains(key))
+            {
                 keys.extend(refined.keys().cloned());
                 program.expand_keys(&mut keys, &refined_ports);
                 ports = refined_ports;
                 continue 'vocabulary;
             }
-            let (checked, discovered, requests) =
-                program.proofs(&refined, &refined_ports, Some(&proofs));
-            if discovered != refined_ports || requests.iter().any(|key| !keys.contains(key)) {
+            let (checked, discovered, requests, new_events) =
+                program.proofs(&refined, &refined_ports, &mut events, Some(&proofs));
+            if new_events
+                || discovered != refined_ports
+                || requests.iter().any(|key| !keys.contains(key))
+            {
                 keys.extend(requests);
                 program.expand_keys(&mut keys, &discovered);
                 ports = discovered;
@@ -140,8 +178,9 @@ impl Program<'_> {
         &self,
         summaries: &Summaries,
         ports: &Ports,
+        events: &mut EventVocabulary,
         bounds: Option<&Proofs>,
-    ) -> (Proofs, Ports, FxHashSet<Key>) {
+    ) -> (Proofs, Ports, FxHashSet<Key>, bool) {
         let mut proofs: Proofs = summaries
             .iter()
             .map(|(key, summary)| {
@@ -151,10 +190,11 @@ impl Program<'_> {
                         .and_then(|bounds| bounds.get(key))
                         .cloned()
                         .unwrap_or_else(|| {
-                            Guarantee::universe(
+                            Proof::universe(
                                 &self.mir.functions[&key.function],
                                 self.table,
                                 summary.normal_return,
+                                events.get(key),
                             )
                         }),
                 )
@@ -172,6 +212,7 @@ impl Program<'_> {
             };
             let mut next = proofs.clone();
             let mut changed = false;
+            let mut new_events = false;
             for (key, proof) in &mut next {
                 if !proof.has_effect() {
                     continue;
@@ -181,14 +222,16 @@ impl Program<'_> {
                 flow.aliases = key.aliases.clone();
                 flow.callables = key.callables.clone();
                 flow.solve(&self.facts[&key.function]);
-                changed |= proof.intersect(&flow.future_guarantee());
+                let returns = flow.future_guarantee();
                 let summary = flow.summary();
+                changed |= proof.restrict(&returns, &flow.event_guards);
+                new_events |= discover_events(events, key, &summary);
                 flow.discover_ports(&summary, discovered.entry(key.function).or_default());
                 requests.extend(flow.requests);
             }
             proofs = next;
-            if !changed {
-                return (proofs, discovered, requests);
+            if new_events || !changed {
+                return (proofs, discovered, requests, new_events);
             }
         }
     }

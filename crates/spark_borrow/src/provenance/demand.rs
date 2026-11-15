@@ -14,6 +14,7 @@ pub(super) enum Storage {
     External(Port),
     Queue(super::channels::Target, spark_types::TypeId),
     Task(super::tasks::Target, spark_types::TypeId),
+    Observation(std::sync::Arc<super::observations::Lane>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -89,7 +90,7 @@ impl Transfer {
             .collect()
     }
 
-    fn freeze(&self, mut value: super::Value) -> super::Value {
+    pub(super) fn freeze(&self, mut value: super::Value) -> super::Value {
         for sources in value.sources.values_mut() {
             *sources = self
                 .resolve(sources)
@@ -128,6 +129,10 @@ impl Transfer {
 
     pub fn seed(&mut self, sources: &Frontier) {
         self.seeds.extend(self.resolve(sources));
+    }
+
+    pub fn same_sources(&self, other: &Self) -> bool {
+        self.support == other.support && self.rows == other.rows
     }
 
     pub fn join_alternative(&mut self, other: &Self) {
@@ -193,6 +198,17 @@ impl super::Flow<'_> {
         }
     }
 
+    pub(super) fn storage_type(&self, storage: &Storage) -> spark_types::TypeId {
+        match storage {
+            Storage::Logical(local) | Storage::Cell(local) => {
+                self.function.locals[local.index()].ty
+            }
+            Storage::External(port) => port.pointee,
+            Storage::Queue(_, ty) | Storage::Task(_, ty) => *ty,
+            Storage::Observation(lane) => lane.sample.ty,
+        }
+    }
+
     pub(super) fn record_path_store(
         &mut self,
         point: super::Point,
@@ -204,13 +220,7 @@ impl super::Flow<'_> {
             storage,
             path: prefix,
         } = destination;
-        let root = match &storage {
-            Storage::Logical(local) | Storage::Cell(local) => {
-                self.function.locals[local.index()].ty
-            }
-            Storage::External(port) => port.pointee,
-            Storage::Queue(_, ty) | Storage::Task(_, ty) => *ty,
-        };
+        let root = self.storage_type(&storage);
         let mut incoming = FxHashMap::default();
         for (path, origin, capture) in value.leaves.keys() {
             if *origin == Origin::ValidationHole {
@@ -415,6 +425,11 @@ impl super::State {
                     &record.callback,
                 )
             }))
+            .chain(
+                self.observations
+                    .iter()
+                    .map(|(lane, value)| (Storage::Observation(lane.clone()), value)),
+            )
             .flat_map(|(storage, value)| {
                 value
                     .leaves
@@ -439,6 +454,7 @@ impl super::State {
             Storage::External(port) => self.external.get(port),
             Storage::Queue(target, ty) => self.queues.get(&(target.clone(), *ty)),
             Storage::Task(target, _) => self.tasks.get(target).map(|record| &record.callback),
+            Storage::Observation(lane) => self.observations.get(lane),
         }
     }
 
