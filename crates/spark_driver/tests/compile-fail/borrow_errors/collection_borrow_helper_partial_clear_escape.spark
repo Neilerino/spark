@@ -1,0 +1,14 @@
+fn clear(out: Ref[Map[String, Ref[Int]]]!, change: Bool): Void {
+    empty: Map[String, Ref[Int]] = {}
+    if change { out = empty }
+}
+fn produce(): Map[String, Ref[Int]] {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    entries: Map[String, Ref[Int]]! = {"one": borrowed}
+    clear(entries, false)
+    return entries
+}
+fn main(): Int { entries: Map[String, Ref[Int]] = produce()
+    print(entries.len())
+    return 0 }

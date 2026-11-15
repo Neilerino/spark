@@ -1,0 +1,326 @@
+// TAG [SPARK-114]
+
+use spark_mir::Local;
+use spark_resolve::DefId;
+use spark_types::{TypeId, TypeTable};
+
+use super::{Path, Point};
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Intent {
+    Value,
+    Payload(TypedPath),
+    Address(TypedPath),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum DerefKind {
+    All,
+    Residual,
+}
+
+impl DerefKind {
+    pub const fn slot(self) -> super::Slot {
+        match self {
+            Self::All => super::Slot::Deref,
+            Self::Residual => super::Slot::ResidualDeref,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct TypedPath {
+    pub kind: DerefKind,
+    pub pointee: TypeId,
+    pub projection: Path,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct QueueSelection {
+    pub capture: Option<super::channels::Capture>,
+    pub channel: TypeId,
+    pub projection: Path,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Selector {
+    pub channel_capture: Option<super::channels::Capture>,
+    pub queue: Option<QueueSelection>,
+    pub input: Local,
+    pub selection: Path,
+    pub intent: Intent,
+    pub expected: Option<TypeId>,
+    pub capture: Option<super::value::ReferenceCapture>,
+}
+
+impl Selector {
+    pub(super) fn select_payload(&mut self, payload: &TypedPath, root: TypeId, table: &TypeTable) {
+        if let Some(queue) = &mut self.queue {
+            let root = super::value::child_type(queue.channel, &super::Slot::Element, table)
+                .unwrap_or(TypeId::ERROR);
+            queue.projection = super::value::normalize(
+                root,
+                [
+                    queue.projection.clone(),
+                    vec![payload.kind.slot()],
+                    payload.projection.clone(),
+                ]
+                .concat(),
+                table,
+            );
+        } else {
+            self.selection = super::value::normalize(
+                root,
+                [
+                    self.selection.clone(),
+                    vec![payload.kind.slot()],
+                    payload.projection.clone(),
+                ]
+                .concat(),
+                table,
+            );
+        }
+    }
+
+    pub const fn address_capture(&self) -> Option<super::value::ReferenceCapture> {
+        if self.queue.is_some() || matches!(&self.intent, Intent::Payload(_)) {
+            None
+        } else {
+            self.capture
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Endpoint {
+    Frame {
+        lifetime: FrameLifetime,
+        function: DefId,
+        root: Point,
+        local: Local,
+        root_ty: TypeId,
+        pointee: TypeId,
+        location: Path,
+    },
+    Input(Selector, Option<std::sync::Arc<super::effects::Receive>>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum FrameLifetime {
+    Local,
+    DuringCall {
+        boundary: OpaqueSite,
+        owner_return: OpaqueSite,
+    },
+    Returned(OpaqueSite),
+}
+
+impl Endpoint {
+    pub(super) fn bind_frame(&self, boundary: Option<OpaqueSite>) -> Self {
+        let mut endpoint = self.clone();
+        if let (Self::Frame { lifetime, .. }, Some(boundary)) = (&mut endpoint, boundary) {
+            let owner_return = match *lifetime {
+                FrameLifetime::Local => boundary,
+                FrameLifetime::DuringCall { owner_return, .. } => owner_return,
+                FrameLifetime::Returned(_) => return endpoint,
+            };
+            *lifetime = FrameLifetime::DuringCall {
+                boundary,
+                owner_return,
+            };
+        }
+        endpoint
+    }
+
+    pub(super) fn retire_frame(mut self, boundary: OpaqueSite) -> Self {
+        if let Self::Frame { lifetime, .. } = &mut self {
+            if let FrameLifetime::DuringCall {
+                boundary: active,
+                owner_return,
+            } = *lifetime
+            {
+                if active == boundary {
+                    *lifetime = FrameLifetime::Returned(owner_return);
+                }
+            }
+        }
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Dependency {
+    Address(Endpoint),
+    InputValue(Selector, Option<std::sync::Arc<super::effects::Receive>>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct OpaqueSite {
+    pub function: DefId,
+    pub point: Point,
+}
+
+impl super::Flow<'_> {
+    pub(super) fn reference_metadata(
+        &self,
+        place: &spark_mir::Place,
+        point: Point,
+        state: &super::State,
+    ) -> super::value::Leaf {
+        use spark_mir::{Place, Projection};
+        place
+            .projections
+            .iter()
+            .rposition(|p| matches!(p, Projection::Deref))
+            .map_or_else(
+                || {
+                    let root_ty = self.function.locals[place.local.index()].ty;
+                    let (location, _) = self.projection_path(root_ty, &place.projections);
+                    let mut leaf = super::value::Leaf::default();
+                    leaf.endpoints.insert(Endpoint::Frame {
+                        lifetime: crate::provenance::address::FrameLifetime::Local,
+                        function: self.function.def_id,
+                        root: point,
+                        local: place.local,
+                        root_ty,
+                        pointee: self.place_type(place),
+                        location: super::value::normalize(root_ty, location, self.table),
+                    });
+                    leaf
+                },
+                |index| {
+                    let prefix = Place {
+                        local: place.local,
+                        projections: place.projections[..index].to_vec(),
+                    };
+                    let reference = self.read(&prefix, state);
+                    let pointee = super::child_type(
+                        self.place_type(&prefix),
+                        &super::Slot::Deref,
+                        self.table,
+                    )
+                    .unwrap_or(TypeId::ERROR);
+                    let (projection, _) =
+                        self.projection_path(pointee, &place.projections[index + 1..]);
+                    self.project_reference(&reference, pointee, &projection)
+                },
+            )
+    }
+
+    pub(super) fn project_reference(
+        &self,
+        reference: &super::Value,
+        pointee: TypeId,
+        projection: &Path,
+    ) -> super::value::Leaf {
+        let mut result = super::value::Leaf {
+            parents: reference.address_support(),
+            ..Default::default()
+        };
+        for ((path, _, _), leaf) in &reference.leaves {
+            if !path.is_empty() && *path != [super::Slot::Tail] {
+                continue;
+            }
+            result.opaque.extend(leaf.opaque.iter().copied());
+            for endpoint in &leaf.endpoints {
+                result
+                    .endpoints
+                    .insert(self.project_endpoint(endpoint, pointee, projection));
+            }
+            for dependency in &leaf.dependencies {
+                match dependency {
+                    Dependency::InputValue(..) if !leaf.opaque.is_empty() => {
+                        result.dependencies.insert(dependency.clone());
+                    }
+                    Dependency::InputValue(selector, site) => {
+                        let mut selector = selector.clone();
+                        let capture = selector.address_capture();
+                        if let Intent::Payload(payload) = selector.intent.clone() {
+                            selector.capture = capture;
+                            selector.select_payload(
+                                &payload,
+                                self.function.locals[selector.input.index()].ty,
+                                self.table,
+                            );
+                        }
+                        selector.expected = Some(self.selected_type(pointee, projection));
+                        selector.intent = Intent::Address(TypedPath {
+                            kind: DerefKind::All,
+                            pointee,
+                            projection: super::value::normalize(
+                                pointee,
+                                projection.clone(),
+                                self.table,
+                            ),
+                        });
+                        result
+                            .endpoints
+                            .insert(Endpoint::Input(selector, site.clone()));
+                    }
+                    Dependency::Address(endpoint) => {
+                        result
+                            .dependencies
+                            .insert(Dependency::Address(endpoint.clone()));
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn project_endpoint(
+        &self,
+        endpoint: &Endpoint,
+        pointee: TypeId,
+        projection: &Path,
+    ) -> Endpoint {
+        match endpoint {
+            Endpoint::Frame {
+                lifetime,
+                function,
+                root,
+                local,
+                root_ty,
+                pointee: source_pointee,
+                location,
+            } => Endpoint::Frame {
+                lifetime: *lifetime,
+                function: *function,
+                root: *root,
+                local: *local,
+                root_ty: *root_ty,
+                pointee: self.selected_type(*source_pointee, projection),
+                location: super::value::normalize(
+                    *root_ty,
+                    [location.clone(), projection.clone()].concat(),
+                    self.table,
+                ),
+            },
+            Endpoint::Input(selector, site) => {
+                let mut selector = selector.clone();
+                selector.expected = Some(self.selected_type(pointee, projection));
+                selector.intent = match &selector.intent {
+                    Intent::Address(payload) => Intent::Address(TypedPath {
+                        kind: payload.kind,
+                        pointee: payload.pointee,
+                        projection: super::value::normalize(
+                            payload.pointee,
+                            [payload.projection.clone(), projection.clone()].concat(),
+                            self.table,
+                        ),
+                    }),
+                    Intent::Value | Intent::Payload(_) => Intent::Address(TypedPath {
+                        kind: DerefKind::All,
+                        pointee,
+                        projection: super::value::normalize(
+                            pointee,
+                            projection.clone(),
+                            self.table,
+                        ),
+                    }),
+                };
+                Endpoint::Input(selector, site.clone())
+            }
+        }
+    }
+}

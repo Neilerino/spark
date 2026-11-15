@@ -1,0 +1,16 @@
+// TAG [SPARK-114]
+
+fn produce(input: Ref[Int]): Ref[Int] {
+    local: Int = 7
+    localRef: Ref[Int] = local
+    values: List[Ref[Int]]! = [input]
+    snapshot: List[Ref[Int]] = values
+    values.append(localRef)
+    return snapshot[0] ?? input
+}
+fn main(): Int {
+    outside: Int = 9
+    borrowed: Ref[Int] = outside
+    print(produce(borrowed))
+    return 0
+}

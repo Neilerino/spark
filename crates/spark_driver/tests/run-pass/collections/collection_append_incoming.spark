@@ -1,0 +1,15 @@
+// TAG [SPARK-114]
+
+fn produce(value: Ref[Int]): List[Ref[Int]] {
+    values: List[Ref[Int]]! = []
+    values.append(value)
+    return values
+}
+fn main(): Int {
+    outside: Int = 9
+    borrowed: Ref[Int] = outside
+    values: List[Ref[Int]] = produce(borrowed)
+    result: Ref[Int] = values[0] ?? borrowed
+    print(result)
+    return 0
+}

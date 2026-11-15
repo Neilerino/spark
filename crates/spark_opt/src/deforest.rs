@@ -1,3 +1,5 @@
+// TAG [SPARK-154]
+
 //! Deforestation pass: eliminates intermediate data structures that are
 //! created only to be immediately consumed by iteration.
 //!
@@ -277,7 +279,7 @@ fn analyze_consumers(
                     value,
                     ..
                 } => {
-                    if is_alias(aliases, *root)
+                    if place_reads_alias(root, aliases)
                         || indices.iter().any(|&index| is_alias(aliases, index))
                         || is_alias(aliases, *value)
                     {
@@ -367,6 +369,7 @@ fn analyze_consumers(
 /// Returns true if an rvalue reads from any alias local.
 fn rvalue_reads_any_alias(rvalue: &Rvalue, aliases: &[Local]) -> bool {
     match rvalue {
+        Rvalue::ReadFutureResult { pointer } => aliases.contains(pointer),
         Rvalue::Use(op) | Rvalue::UnaryOp(_, op) | Rvalue::Cast { operand: op, .. } => {
             operand_reads_alias(op, aliases)
         }

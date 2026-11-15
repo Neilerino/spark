@@ -1,3 +1,4 @@
+// TAG [SPARK-117]
 //! Cranelift code generation backend.
 //!
 //! Compiles MIR to native object files using the Cranelift compiler framework.
@@ -426,7 +427,7 @@ impl CraneliftBackend {
         }
     }
 
-    /// Pre-generates element destructor functions for all collection types
+    /// Pre-generates slot destructors for collection payloads and Future caches
     /// that appear in the MIR. Returns a map from element `TypeId` to the
     /// generated `FuncId` so codegen can store the function pointer in
     /// collection descriptors at construction time.
@@ -485,6 +486,15 @@ impl CraneliftBackend {
                     result.insert(elem, fid);
                 }
                 self.collect_elem_dtors(elem, table, stubs, gen, result);
+            }
+            Ty::Future { inner } => {
+                let inner = *inner;
+                if let Some(fid) =
+                    gen.get_or_generate_elem_dtor(inner, table, stubs, &mut self.module)
+                {
+                    result.insert(inner, fid);
+                }
+                self.collect_elem_dtors(inner, table, stubs, gen, result);
             }
             Ty::Map(k, v) => {
                 let k = *k;
@@ -861,23 +871,14 @@ impl CodegenBackend for CraneliftBackend {
             diagnostics,
         );
 
-        // Phase 2c: Precompute lambda → async function mapping for spawn_coop.
-        // For each lambda that calls an async function with a poll entry,
-        // record the mapping so emit_spawn_call can use the cooperative path.
-        let mut lambda_to_async: FxHashMap<DefId, DefId> = FxHashMap::default();
-        for mir_func in mir.functions.values() {
-            for block in &mir_func.blocks {
-                if let spark_mir::Terminator::Call {
-                    func: spark_mir::Operand::Constant(spark_mir::Constant::FunctionRef(callee)),
-                    ..
-                } = &block.terminator
-                {
-                    if poll_fn_map.contains_key(callee) {
-                        lambda_to_async.insert(mir_func.def_id, *callee);
-                    }
-                }
-            }
-        }
+        let lambda_to_async = poll_fn_map
+            .iter()
+            .flat_map(|(callee, info)| {
+                info.spawn_adapters
+                    .keys()
+                    .map(move |callback| (*callback, *callee))
+            })
+            .collect();
 
         // Phase 3: Compile each function.
         let thunk_ids = self.thunk_ids.clone();

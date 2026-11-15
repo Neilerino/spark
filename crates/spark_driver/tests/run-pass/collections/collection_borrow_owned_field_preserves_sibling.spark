@@ -1,0 +1,22 @@
+struct Pair { left: Map[String, Ref[Int]]!, right: Map[String, Ref[Int]]! }
+fn clearLeft(pair: Ref[Pair]!): Void {
+    empty: Map[String, Ref[Int]] = {}
+    pair.left = empty
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    borrowed: Ref[Int] = value
+    left: Map[String, Ref[Int]] = {"one": borrowed}
+    right: Map[String, Ref[Int]] = {"one": safe}
+    pair: Pair! = Pair { left: left, right: right }
+    view: Ref[Pair]! = pair
+    clearLeft(view)
+    snapshot: Pair = view
+    return snapshot.right
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    entries: Map[String, Ref[Int]] = produce(borrowed, 7)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

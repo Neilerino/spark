@@ -1,0 +1,25 @@
+// TAG [SPARK-114]
+
+fn nest(callback: (): Void): (): Void { return fn(): Void { callback() } }
+fn produce(value: Ref[Int]): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {}
+    target: Ref[Map[String, Ref[Int]]]! = entries
+    borrowed: Ref[Int] = value
+    callback: (): Void = fn(): Void {
+        next: Map[String, Ref[Int]] = {"one": borrowed}
+        target = next
+    }
+    first: (): Void = nest(callback)
+    second: (): Void = nest(first)
+    third: (): Void = nest(second)
+    third()
+
+    return entries
+}
+fn main(): Int {
+    value: Int = 7
+    source: Ref[Int] = value
+    entries: Map[String, Ref[Int]] = produce(source)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    return 0
+}

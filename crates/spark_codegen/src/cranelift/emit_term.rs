@@ -1,3 +1,7 @@
+// TAG [SPARK-117]
+// TAG [SPARK-148]
+// TAG [SPARK-154]
+
 //! Terminator lowering: MIR terminators → Cranelift IR.
 //!
 //! Handles `Goto`, `Return`, `SwitchInt`, `Call`, and `Unreachable` terminators.
@@ -202,7 +206,7 @@ fn emit_call<M: Module>(
             }
             if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::SPARK_SPAWN
             {
-                emit_spawn_call(ctx, args, destination, target, ecx, module);
+                emit_spawn_call(ctx, args, destination, target, ecx, module, diagnostics);
                 return;
             }
             if matches!(info.kind, DefinitionKind::BuiltinFunction) && info.name == kw::SPARK_AWAIT
@@ -555,7 +559,9 @@ fn compute_cb_kind_for_arg(
     table: &TypeTable,
 ) -> u8 {
     let cb_ty_id = match args.get(arg_idx) {
-        Some(Operand::Copy(place) | Operand::Move(place)) => ctx.local_type_id(place.local),
+        Some(Operand::Copy(place) | Operand::Move(place)) => {
+            emit_rvalue::resolve_place_type(ctx, place, table)
+        }
         _ => spark_types::TypeId::ERROR,
     };
     let (param_ty, ret_ty) = match table.resolve(cb_ty_id).clone() {
@@ -586,7 +592,9 @@ fn get_callback_return_type(
     table: &TypeTable,
 ) -> spark_types::TypeId {
     let cb_ty_id = match args.get(arg_idx) {
-        Some(Operand::Copy(place) | Operand::Move(place)) => ctx.local_type_id(place.local),
+        Some(Operand::Copy(place) | Operand::Move(place)) => {
+            emit_rvalue::resolve_place_type(ctx, place, table)
+        }
         _ => return spark_types::TypeId::ERROR,
     };
     match table.resolve(cb_ty_id).clone() {
@@ -615,7 +623,7 @@ fn emit_builtin_print<M: Module>(
         // Determine the argument's type from the MIR operand.
         let resolved_ty = match &args[0] {
             spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place) => {
-                table.resolve(ctx.local_type_id(place.local))
+                table.resolve(emit_rvalue::resolve_place_type(ctx, place, table))
             }
             spark_mir::Operand::Constant(c) => match c {
                 spark_mir::Constant::Float(_) => &Ty::Float(spark_types::FloatWidth::F64),
@@ -790,7 +798,7 @@ fn emit_parallel_call<M: Module>(
 
     // Determine elem_size from the list's element type.
     let list_ty_id = if let Some(Operand::Copy(place)) = args.first() {
-        ctx.local_type_id(place.local)
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -808,7 +816,7 @@ fn emit_parallel_call<M: Module>(
     // Bits 0-1: input kind (0 = int-like, 1 = float)
     // Bits 2-3: output kind (0 = int-like, 1 = float, 2 = void)
     let cb_ty_id = if let Some(Operand::Copy(place)) = args.get(1) {
-        ctx.local_type_id(place.local)
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -949,7 +957,7 @@ fn emit_parallel_map_reduce_call<M: Module>(
 
     // Determine elem_size from list element type
     let list_ty_id = if let Some(Operand::Copy(place)) = args.first() {
-        ctx.local_type_id(place.local)
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -965,7 +973,7 @@ fn emit_parallel_map_reduce_call<M: Module>(
 
     // Compute map_cb_kind from mapper type
     let map_cb_ty_id = if let Some(Operand::Copy(place)) = args.get(1) {
-        ctx.local_type_id(place.local)
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -986,7 +994,7 @@ fn emit_parallel_map_reduce_call<M: Module>(
 
     // Compute reduce_cb_kind from combiner type
     let reduce_cb_ty_id = if let Some(Operand::Copy(place)) = args.get(2) {
-        ctx.local_type_id(place.local)
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -1038,7 +1046,7 @@ fn emit_parallel_map_reduce_call<M: Module>(
 /// 1. Allocates an async state struct via `__spark_alloc_state(state_size)`
 /// 2. Stores the async function's parameters into the state struct
 /// 3. Sets the dispatch tag to 0 (initial segment)
-/// 4. Calls `__spark_spawn_coop(poll_fn_ptr, state_ptr, state_size, result_size, result_offset)`
+/// 4. Calls `__spark_spawn_coop(poll_fn_ptr, state_ptr, state_size, result_size, result_offset, result_drop)`
 ///
 /// **Blocking fallback** (no poll function available):
 /// Extracts `fn_ptr` and `env_ptr` from the closure fat pointer and calls `__spark_spawn`.
@@ -1049,11 +1057,12 @@ fn emit_spawn_call<M: Module>(
     target: BlockId,
     ecx: &EmitCtx<'_>,
     module: &mut M,
+    diagnostics: &mut Diagnostics,
 ) {
     let table = ecx.table;
 
     // Try cooperative spawn path.
-    if try_emit_coop_spawn(ctx, args, destination, target, ecx, module).is_some() {
+    if try_emit_coop_spawn(ctx, args, destination, target, ecx, module, diagnostics).is_some() {
         return;
     }
 
@@ -1086,6 +1095,12 @@ fn emit_spawn_call<M: Module>(
         Ty::Future { inner } => *inner,
         _ => dest_ty_id,
     };
+    let Some(result_drop) = future_result_destructor(ctx, inner_ty, ecx, module, diagnostics)
+    else {
+        let target_block = ctx.clif_block(target);
+        ctx.builder.ins().jump(target_block, &[]);
+        return;
+    };
     let result_layout = ctx.layouts.layout_of(inner_ty, table);
     let result_size_val = ctx
         .builder
@@ -1093,8 +1108,8 @@ fn emit_spawn_call<M: Module>(
         .iconst(types::I64, i64::from(result_layout.size));
 
     // Determine is_float flag from the closure's return type.
-    let cb_ty_id = if let Some(Operand::Copy(place)) = args.first() {
-        ctx.local_type_id(place.local)
+    let cb_ty_id = if let Some(Operand::Copy(place) | Operand::Move(place)) = args.first() {
+        emit_rvalue::resolve_place_type(ctx, place, table)
     } else {
         spark_types::TypeId::ERROR
     };
@@ -1107,12 +1122,12 @@ fn emit_spawn_call<M: Module>(
         .ins()
         .iconst(types::I8, i64::from(u8::from(is_float)));
 
-    // Call __spark_spawn(fn_ptr, env_ptr, result_size, is_float) -> ptr
+    // Call __spark_spawn(fn_ptr, env_ptr, result_size, is_float, result_drop) -> ptr
     let func_ref = module.declare_func_in_func(ctx.stubs.spawn, ctx.builder.func);
-    let call = ctx
-        .builder
-        .ins()
-        .call(func_ref, &[fn_ptr, env_ptr, result_size_val, is_float_val]);
+    let call = ctx.builder.ins().call(
+        func_ref,
+        &[fn_ptr, env_ptr, result_size_val, is_float_val, result_drop],
+    );
     let result = ctx.builder.inst_results(call)[0];
     if destination.projections.is_empty() {
         ctx.write_local(destination.local, result);
@@ -1120,6 +1135,49 @@ fn emit_spawn_call<M: Module>(
 
     let target_block = ctx.clif_block(target);
     ctx.builder.ins().jump(target_block, &[]);
+}
+
+// TAG [SPARK-117]
+fn spawn_callback(
+    function: &spark_mir::MirFunction,
+    local: spark_mir::Local,
+) -> Option<spark_resolve::DefId> {
+    let declaration = &function.locals[local.index()];
+    if declaration.is_user_variable
+        || declaration.mutable
+        || declaration.name.is_some()
+        || function.address_taken_locals().contains(&local)
+    {
+        return None;
+    }
+    let mut callback = None;
+    for block in &function.blocks {
+        if matches!(&block.terminator, Terminator::Call { destination, .. } if destination.local == local)
+        {
+            return None;
+        }
+        for statement in &block.statements {
+            if let spark_mir::Statement::Assign { place, rvalue, .. } = statement {
+                if place.local != local {
+                    continue;
+                }
+                if callback.is_some() || !place.projections.is_empty() {
+                    return None;
+                }
+                callback = Some(match rvalue {
+                    spark_mir::Rvalue::Aggregate(
+                        spark_mir::AggregateKind::Closure { func_def_id },
+                        _,
+                    ) => *func_def_id,
+                    spark_mir::Rvalue::Use(Operand::Constant(
+                        spark_mir::Constant::FunctionRef(def),
+                    )) => *def,
+                    _ => return None,
+                });
+            }
+        }
+    }
+    callback
 }
 
 /// Attempts to emit a cooperative spawn. Returns `Some(())` if successful.
@@ -1134,10 +1192,10 @@ fn try_emit_coop_spawn<M: Module>(
     target: BlockId,
     ecx: &EmitCtx<'_>,
     module: &mut M,
+    diagnostics: &mut Diagnostics,
 ) -> Option<()> {
     let table = ecx.table;
 
-    // Step 1: Find the closure local from the spawn argument.
     let closure_local = match args.first() {
         Some(Operand::Copy(place) | Operand::Move(place)) if place.projections.is_empty() => {
             place.local
@@ -1145,120 +1203,162 @@ fn try_emit_coop_spawn<M: Module>(
         _ => return None,
     };
 
-    // Step 2: Scan MIR for the MakeClosure that assigned to this local.
-    let mut lambda_def_id = None;
-    let mut capture_operands = Vec::new();
-    for block in &ctx.mir_func.blocks {
-        for stmt in &block.statements {
-            if let spark_mir::Statement::Assign { place, rvalue, .. } = stmt {
-                if place.local == closure_local && place.projections.is_empty() {
-                    if let spark_mir::Rvalue::Aggregate(
-                        spark_mir::AggregateKind::Closure { func_def_id },
-                        operands,
-                    ) = rvalue
-                    {
-                        lambda_def_id = Some(*func_def_id);
-                        capture_operands = operands.clone();
-                    }
-                }
-            }
-        }
-    }
-
-    let lambda_def_id = lambda_def_id?;
-
-    // Step 3: Check if this lambda wraps an async function with a poll entry.
+    let lambda_def_id = spawn_callback(ctx.mir_func, closure_local)?;
     let async_def_id = ecx.lambda_to_async.get(&lambda_def_id)?;
     let poll_info = ecx.poll_fn_map.get(async_def_id)?;
+    let adapter = poll_info.spawn_adapters.get(&lambda_def_id)?;
+    let closure = ctx.local_stack_addr(closure_local)?;
+    let parameter_fields: Vec<_> = adapter
+        .arguments
+        .iter()
+        .enumerate()
+        .map(|(index, argument)| {
+            let name = format!("__local_{}", index + 1);
+            let field = poll_info
+                .state_fields
+                .iter()
+                .position(|(field, _)| field.as_str() == name)?;
+            Some((field, argument))
+        })
+        .collect::<Option<_>>()?;
 
-    // Step 4: Get the poll function's FuncId.
     let poll_func_id = ecx.func_ids.get(&poll_info.poll_def_id)?;
 
-    // Step 5: Compute state layout.
+    let transferred_closure = if matches!(args.first(), Some(Operand::Move(_))) {
+        Some(ctx.local_stack_addr(closure_local)?)
+    } else {
+        None
+    };
+
     let state_layout = ctx
         .layouts
         .async_state_layout_of(&poll_info.state_fields, table);
     let state_size = state_layout.layout.size;
 
-    // Step 6: Allocate state via __spark_alloc_state(state_size).
+    let environment = ctx.builder.ins().load(
+        ctx.ptr_type,
+        MemFlags::new(),
+        closure,
+        ctx.ptr_type.bytes() as i32,
+    );
+    let mut arguments = Vec::new();
+    for (field, argument) in parameter_fields {
+        let ty = poll_info.state_fields[field].1;
+        if abi::is_zero_sized(ty, table) {
+            continue;
+        }
+        let (value, retained) = match argument {
+            spark_mir::async_transform::SpawnArgument::Capture(index) => {
+                let capture_ty = adapter.capture_types[*index];
+                let offset = ctx
+                    .layouts
+                    .tuple_field_offset(&adapter.capture_types, *index, table)
+                    + spark_abi::ENV_CAPTURES_OFFSET;
+                let value = if abi::is_scalar(capture_ty, table) {
+                    let clif_ty = abi::spark_type_to_clif(capture_ty, table, ctx.ptr_type)?;
+                    ctx.builder
+                        .ins()
+                        .load(clif_ty, MemFlags::new(), environment, offset as i32)
+                } else {
+                    ctx.builder.ins().iadd_imm(environment, i64::from(offset))
+                };
+                (value, true)
+            }
+            spark_mir::async_transform::SpawnArgument::Constant(spark_mir::Constant::Null) => {
+                continue; // State allocation initializes absent Optional values to zero.
+            }
+            spark_mir::async_transform::SpawnArgument::Constant(spark_mir::Constant::Int(
+                value,
+            )) => {
+                let clif_ty = abi::spark_type_to_clif(ty, table, ctx.ptr_type)?;
+                (ctx.builder.ins().iconst(clif_ty, *value), false)
+            }
+            spark_mir::async_transform::SpawnArgument::Constant(spark_mir::Constant::Float(
+                value,
+            )) => {
+                let (_, ty) = clif_types::unwrap_mutable(ty, table);
+                let value = if matches!(ty, Ty::Float(spark_types::FloatWidth::F32)) {
+                    ctx.builder.ins().f32const(*value as f32)
+                } else {
+                    ctx.builder.ins().f64const(*value)
+                };
+                (value, false)
+            }
+            spark_mir::async_transform::SpawnArgument::Constant(constant) => {
+                let Some(value) = emit_rvalue::emit_operand(
+                    ctx,
+                    &Operand::Constant(constant.clone()),
+                    ecx,
+                    module,
+                ) else {
+                    diagnostics.error("could not emit a certified spawn argument");
+                    return None;
+                };
+                (value, false)
+            }
+        };
+        arguments.push((field, ty, value, retained));
+    }
     let state_size_val = ctx.builder.ins().iconst(types::I64, i64::from(state_size));
     let alloc_ref = module.declare_func_in_func(ctx.stubs.alloc_state, ctx.builder.func);
     let alloc_call = ctx.builder.ins().call(alloc_ref, &[state_size_val]);
     let state_ptr = ctx.builder.inst_results(alloc_call)[0];
-
-    // Step 7: Store capture values (async function params) into state struct fields.
-    // The state struct fields begin with __tag, then __param_<name> fields for each param.
-    // Captures correspond to the param fields in order.
-    let tag_offset = state_layout.field_offsets.first().copied().unwrap_or(0);
-
-    // Store __tag = 0 (initial segment).
-    let tag_zero = ctx.builder.ins().iconst(types::I64, 0);
-    ctx.builder.ins().store(
-        MemFlags::new(),
-        tag_zero,
-        state_ptr,
-        i32::try_from(tag_offset).unwrap_or(0),
-    );
-
-    // Store each capture into its corresponding state field.
-    // Captures correspond to the async function's params (Local(1), Local(2), ...).
-    // State field names are __local_1, __local_2, etc.
-    for (i, cap_op) in capture_operands.iter().enumerate() {
-        let param_idx = i + 1; // Local(1), Local(2), ...
-        let field_name = format!("__local_{param_idx}");
-
-        // Find the state field by name.
-        let field_pos = poll_info
-            .state_fields
-            .iter()
-            .position(|(name, _)| name.as_str() == field_name);
-        let Some(field_idx) = field_pos else { continue };
-        if field_idx >= state_layout.field_offsets.len() {
-            continue;
+    for (field, ty, value, retained) in arguments {
+        if retained && spark_drop::needs_drop(ty, table) {
+            super::drop_glue::emit_typed_retain(
+                &mut ctx.builder,
+                value,
+                ty,
+                table,
+                ctx.stubs,
+                module,
+                ctx.ptr_type,
+            );
         }
-        let field_offset = state_layout.field_offsets[field_idx];
-        let field_ty = poll_info.state_fields[field_idx].1;
-
-        if let Some(val) = emit_rvalue::emit_operand(ctx, cap_op, ecx, module) {
-            if abi::is_scalar(field_ty, table) {
-                ctx.builder.ins().store(
-                    MemFlags::new(),
-                    val,
-                    state_ptr,
-                    i32::try_from(field_offset).unwrap_or(0),
-                );
-            } else {
-                // Aggregate capture: memcpy from the value address.
-                let field_layout = ctx.layouts.layout_of(field_ty, table);
-                let dest = ctx
-                    .builder
-                    .ins()
-                    .iadd_imm(state_ptr, i64::from(field_offset));
-                let config = module.target_config();
-                ctx.builder.emit_small_memory_copy(
-                    config,
-                    dest,
-                    val,
-                    u64::from(field_layout.size),
-                    1,
-                    1,
-                    true,
-                    MemFlags::new(),
-                );
-            }
+        let offset = state_layout.field_offsets[field];
+        if abi::is_scalar(ty, table) {
+            ctx.builder
+                .ins()
+                .store(MemFlags::new(), value, state_ptr, offset as i32);
+        } else {
+            let size = ctx.layouts.layout_of(ty, table).size;
+            let dest = ctx.builder.ins().iadd_imm(state_ptr, i64::from(offset));
+            ctx.builder.emit_small_memory_copy(
+                module.target_config(),
+                dest,
+                value,
+                u64::from(size),
+                1,
+                1,
+                true,
+                MemFlags::new(),
+            );
         }
     }
 
-    // Step 8: Get poll function pointer.
+    // TAG [SPARK-149] State owns the copied captures instead of the closure.
+    if let Some(closure) = transferred_closure {
+        let closure_ty = ctx.local_type_id(closure_local);
+        super::drop_glue::emit_typed_drop(
+            &mut ctx.builder,
+            closure,
+            closure_ty,
+            table,
+            ctx.stubs,
+            module,
+            ctx.ptr_type,
+        );
+    }
+
     let poll_func_ref = module.declare_func_in_func(*poll_func_id, ctx.builder.func);
     let poll_fn_ptr = ctx.builder.ins().func_addr(ctx.ptr_type, poll_func_ref);
 
-    // Step 9: Compute result_size and result_offset.
     let dest_ty_id = ctx.local_type_id(destination.local);
     let inner_ty = match table.resolve(dest_ty_id) {
         Ty::Future { inner } => *inner,
         _ => dest_ty_id,
     };
+    let result_drop = future_result_destructor(ctx, inner_ty, ecx, module, diagnostics)?;
     let result_layout = ctx.layouts.layout_of(inner_ty, table);
     let result_size_val = ctx
         .builder
@@ -1281,7 +1381,6 @@ fn try_emit_coop_spawn<M: Module>(
         .ins()
         .iconst(types::I64, i64::from(result_offset));
 
-    // Step 10: Call __spark_spawn_coop(poll_fn_ptr, state_ptr, state_size, result_size, result_offset) -> ptr.
     let spawn_coop_ref = module.declare_func_in_func(ctx.stubs.spawn_coop, ctx.builder.func);
     let spawn_call = ctx.builder.ins().call(
         spawn_coop_ref,
@@ -1291,6 +1390,7 @@ fn try_emit_coop_spawn<M: Module>(
             state_size_val,
             result_size_val,
             result_offset_val,
+            result_drop,
         ],
     );
     let future_ptr = ctx.builder.inst_results(spawn_call)[0];
@@ -1301,6 +1401,24 @@ fn try_emit_coop_spawn<M: Module>(
     let target_block = ctx.clif_block(target);
     ctx.builder.ins().jump(target_block, &[]);
     Some(())
+}
+
+fn future_result_destructor<M: Module>(
+    ctx: &mut FunctionContext<'_>,
+    ty: spark_types::TypeId,
+    ecx: &EmitCtx<'_>,
+    module: &mut M,
+    diagnostics: &mut Diagnostics,
+) -> Option<Value> {
+    if !spark_drop::needs_drop(ty, ecx.table) {
+        return Some(ctx.builder.ins().iconst(ctx.ptr_type, 0));
+    }
+    let Some(id) = ecx.elem_dtor_ids.get(&ty) else {
+        diagnostics.error("missing destructor for an owned Future result");
+        return None;
+    };
+    let function = module.declare_func_in_func(*id, ctx.builder.func);
+    Some(ctx.builder.ins().func_addr(ctx.ptr_type, function))
 }
 
 /// Emits an `await` call: passes the future pointer to `__spark_await` and
@@ -1318,7 +1436,7 @@ fn emit_await_call<M: Module>(
     // args[0] is the Future[T] pointer.
     let future_val = args
         .first()
-        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
+        .and_then(|arg| emit_rvalue::emit_borrowed_operand(ctx, arg, ecx, module));
 
     let Some(future_ptr) = future_val else {
         let target_block = ctx.clif_block(target);
@@ -1338,6 +1456,17 @@ fn emit_await_call<M: Module>(
             .builder
             .ins()
             .load(clif_ty, MemFlags::new(), result_ptr, 0);
+        if abi::is_scalar(dest_ty_id, table) && spark_drop::needs_drop(dest_ty_id, table) {
+            super::drop_glue::emit_typed_retain(
+                &mut ctx.builder,
+                result_val,
+                dest_ty_id,
+                table,
+                ctx.stubs,
+                module,
+                ctx.ptr_type,
+            );
+        }
         if destination.projections.is_empty() {
             ctx.write_local(destination.local, result_val);
         }
@@ -1360,7 +1489,7 @@ fn emit_try_poll_call<M: Module>(
     // args[0] is the future pointer (opaque i64/ptr).
     let future_val = args
         .first()
-        .and_then(|arg| emit_rvalue::emit_operand(ctx, arg, ecx, module));
+        .and_then(|arg| emit_rvalue::emit_borrowed_operand(ctx, arg, ecx, module));
 
     let Some(future_ptr) = future_val else {
         let target_block = ctx.clif_block(target);
@@ -1401,7 +1530,7 @@ fn emit_builtin_method<M: Module>(
     // args[0] is the receiver. Read its type to determine dispatch.
     let recv_ty_id = match &args[0] {
         spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place) => {
-            ctx.local_type_id(place.local)
+            emit_rvalue::resolve_place_type(ctx, place, table)
         }
         spark_mir::Operand::Constant(_) => {
             // Constant receiver — shouldn't happen for method calls
@@ -1437,14 +1566,9 @@ fn emit_builtin_method<M: Module>(
         return;
     }
 
-    // Helper: get the recv local for write-back after COW
-    let recv_local = match &args[0] {
-        spark_mir::Operand::Copy(place) | spark_mir::Operand::Move(place)
-            if place.projections.is_empty() =>
-        {
-            Some(place.local)
-        }
-        _ => None,
+    let recv_place = match &args[0] {
+        Operand::Copy(place) | Operand::Move(place) => Some(place),
+        Operand::Constant(_) => None,
     };
 
     // Is this a mutating method?
@@ -1522,8 +1646,15 @@ fn emit_builtin_method<M: Module>(
     if is_mutating {
         // COW: call the appropriate cow function and write back the new pointer.
         let cow_ptr = emit_cow(ctx, recv_ptr, stripped_ty, table, module);
-        if let Some(local) = recv_local {
-            ctx.write_local(local, cow_ptr);
+        if let Some(place) = recv_place {
+            if place.projections.is_empty() {
+                ctx.write_local(place.local, cow_ptr);
+            } else {
+                let (address, _) = emit_rvalue::emit_place_addr(ctx, place, table, module);
+                ctx.builder
+                    .ins()
+                    .store(MemFlags::new(), cow_ptr, address, 0);
+            }
         }
 
         match (stripped_ty, method_name) {
@@ -1918,4 +2049,165 @@ fn emit_indirect_call_sret<M: Module>(
 
     let sig_ref = ctx.builder.import_signature(sig);
     ctx.builder.ins().call_indirect(sig_ref, fn_ptr, &full_args);
+}
+
+// TAG [SPARK-154]
+#[cfg(test)]
+mod frame_mutation_tests {
+    use super::*;
+    use crate::layout::LayoutCache;
+    use crate::TargetSpec;
+    use cranelift_codegen::ir::{Function, InstructionData, Opcode};
+    use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+    use rustc_hash::FxHashMap;
+    use spark_mir::{BasicBlock, Local, LocalDecl, MirFunction, Projection};
+    use spark_resolve::{DefId, DefinitionTable};
+    use spark_span::Span;
+    use spark_types::{IntWidth, TypeTable};
+
+    #[test]
+    fn projected_mutating_receiver_installs_its_cow_owner() {
+        let mut table = TypeTable::new();
+        let integer = table.intern(Ty::Int(IntWidth::I64));
+        let void = table.intern(Ty::Void);
+        let list = table.intern(Ty::List(integer));
+        let list = table.intern(Ty::Mutable(list));
+        let field = spark_intern::sym("items");
+        let state = table.intern(Ty::AsyncState {
+            func_def_id: DefId::new(0),
+            fields: vec![(field, list)],
+        });
+        let state_ref = table.intern(Ty::Ref {
+            inner: state,
+            mutable: true,
+            lifetime: spark_types::ty::LifetimeId::ANONYMOUS,
+        });
+        let mir = MirFunction {
+            def_id: DefId::new(0),
+            param_count: 2,
+            return_type: void,
+            locals: [void, state_ref, integer]
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| LocalDecl {
+                    local: Local(index as u32),
+                    ty,
+                    name: None,
+                    is_user_variable: false,
+                    mutable: false,
+                    span: Span::DUMMY,
+                })
+                .collect(),
+            blocks: vec![
+                BasicBlock {
+                    statements: vec![],
+                    terminator: Terminator::Goto { target: BlockId(1) },
+                    is_cleanup: false,
+                },
+                BasicBlock {
+                    statements: vec![],
+                    terminator: Terminator::Return,
+                    is_cleanup: false,
+                },
+            ],
+            captures: vec![],
+            is_async: false,
+            span: Span::DUMMY,
+        };
+        let mut backend =
+            super::super::CraneliftBackend::new(&TargetSpec::host()).expect("native backend");
+        let pointer = backend.module.target_config().pointer_type();
+        let call_conv = backend.module.isa().default_call_conv();
+        let stubs =
+            super::super::runtime::RuntimeStubs::declare_all(&mut backend.module, call_conv);
+        let mut function = Function::new();
+        function.signature = Signature::new(call_conv);
+        function.signature.params = vec![AbiParam::new(pointer), AbiParam::new(types::I64)];
+        let mut builder_context = FunctionBuilderContext::new();
+        let builder = FunctionBuilder::new(&mut function, &mut builder_context);
+        let mut ctx = FunctionContext::new(
+            builder,
+            &mir,
+            &table,
+            pointer,
+            LayoutCache::new(pointer.bytes()),
+            &stubs,
+        );
+        let entry = ctx.clif_block(BlockId(0));
+        ctx.builder.append_block_params_for_function_params(entry);
+        ctx.builder.switch_to_block(entry);
+        let params = ctx.builder.block_params(entry).to_vec();
+        ctx.write_local(Local(1), params[0]);
+        ctx.write_local(Local(2), params[1]);
+        let definitions = DefinitionTable::new();
+        let functions = FxHashMap::default();
+        let elements = FxHashMap::default();
+        let polls = FxHashMap::default();
+        let callbacks = FxHashMap::default();
+        let ecx = EmitCtx {
+            table: &table,
+            definitions: &definitions,
+            func_ids: &functions,
+            thunk_ids: &functions,
+            dtor_ids: &functions,
+            elem_dtor_ids: &elements,
+            elem_retain_ids: &elements,
+            elem_eq_ids: &elements,
+            poll_fn_map: &polls,
+            lambda_to_async: &callbacks,
+        };
+        let cow_ref = backend
+            .module
+            .declare_func_in_func(stubs.list_cow, ctx.builder.func);
+        let cow_name = ctx.builder.func.dfg.ext_funcs[cow_ref].name.clone();
+        emit_builtin_method(
+            &mut ctx,
+            kw::APPEND,
+            &[
+                Operand::Copy(Place {
+                    local: Local(1),
+                    projections: vec![Projection::Deref, Projection::Field(field)],
+                }),
+                Operand::Copy(Place::from_local(Local(2))),
+            ],
+            &Place::from_local(Local(0)),
+            BlockId(1),
+            &ecx,
+            &mut backend.module,
+        );
+        let cow_value = ctx
+            .builder
+            .func
+            .layout
+            .blocks()
+            .flat_map(|block| ctx.builder.func.layout.block_insts(block))
+            .find_map(|inst| match &ctx.builder.func.dfg.insts[inst] {
+                InstructionData::Call { func_ref, .. }
+                    if ctx.builder.func.dfg.ext_funcs[*func_ref].name == cow_name =>
+                {
+                    ctx.builder.func.dfg.inst_results(inst).first().copied()
+                }
+                _ => None,
+            })
+            .expect("method must detach its collection owner");
+        let installed = ctx
+            .builder
+            .func
+            .layout
+            .blocks()
+            .flat_map(|block| ctx.builder.func.layout.block_insts(block))
+            .any(|inst| {
+                ctx.builder.func.dfg.insts[inst].opcode() == Opcode::Store
+                    && ctx.builder.func.dfg.inst_args(inst).first() == Some(&cow_value)
+            });
+        let target = ctx.clif_block(BlockId(1));
+        ctx.builder.switch_to_block(target);
+        ctx.builder.ins().return_(&[]);
+        ctx.builder.seal_all_blocks();
+        ctx.builder.finalize();
+        assert!(
+            installed,
+            "a projected owner must receive the detached COW pointer"
+        );
+    }
 }

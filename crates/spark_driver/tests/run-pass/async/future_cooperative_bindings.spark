@@ -1,0 +1,22 @@
+// TAG [SPARK-117]
+async fn value(input: Int): Int { return input }
+async fn combine(left: Future[Int], right: Future[Int], factor: Int, offset: Int): Int {
+    a: Int = await left
+    b: Int = await right
+    return a * factor + b + offset
+}
+fn spawnReversed(a: Future[Int], b: Future[Int]): Future[Int] {
+    return spawn { combine(b, a, 10, 1) }
+}
+fn spawnRepeated(a: Future[Int]): Future[Int] {
+    return spawn { combine(a, a, 10, 1) }
+}
+fn main(): Int {
+    a: Future[Int] = spawn { value(2) }
+    b: Future[Int] = spawn { value(3) }
+    reversed: Future[Int] = spawnReversed(a, b)
+    repeated: Future[Int] = spawnRepeated(a)
+    print(await reversed)
+    print(await repeated)
+    return 0
+}

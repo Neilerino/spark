@@ -1,0 +1,34 @@
+// TAG [SPARK-117]
+link "union_probe"
+extern fn expect_string_rc(value: Ref[String], expected: Int): Void
+async fn echo(input: String): String { return input }
+async fn relay(child: Future[String]): String { return await child }
+fn launch(input: String): Future[String] {
+    child: Future[String] = spawn { echo(input) }
+    return spawn { relay(child) }
+}
+fn main(): Int {
+    separate: List[String] = ["separate"]
+    anchor: String = "payload"
+    observed: Ref[String] = anchor
+    expect_string_rc(observed, 1)
+    if true {
+        pending: Future[String] = launch(anchor)
+        first: String = await pending
+        expect_string_rc(observed, 3)
+        print(first.len())
+        if true {
+            copied: Future[String] = pending
+            second: String = await copied
+            expect_string_rc(observed, 4)
+            print(second.len())
+        }
+        expect_string_rc(observed, 3)
+    }
+    expect_string_rc(observed, 1)
+    if true {
+        unobserved: Future[String] = launch(anchor)
+    }
+    expect_string_rc(observed, 1)
+    return 0
+}

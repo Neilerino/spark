@@ -1,0 +1,35 @@
+// TAG [SPARK-114]
+
+fn writeRead(outputs: List[Ref[Map[String, Ref[Int]]]!], bridge: List[Ref[Map[String, Ref[Int]]]], readers: List[Ref[Map[String, Ref[Int]]]], value: Ref[Int]): Map[String, Ref[Int]] {
+    next: Map[String, Ref[Int]] = {"one": value}
+    outputs[0] to { out: Ref[Map[String, Ref[Int]]]! -> { out = next }, Null -> {} }
+    bridge[0] to { middle: Ref[Map[String, Ref[Int]]] -> print(middle.len()), Null -> print(0) }
+    empty: Map[String, Ref[Int]] = {}
+    readers[0] to {
+        reader: Ref[Map[String, Ref[Int]]] -> {
+            snapshot: Map[String, Ref[Int]] = reader
+            return snapshot
+        },
+        Null -> { return empty }
+    }
+    return empty
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    first: Map[String, Ref[Int]]! = {"one": safe}
+    second: Map[String, Ref[Int]] = {"one": safe}
+    target: Ref[Map[String, Ref[Int]]]! = first
+    same: Ref[Map[String, Ref[Int]]] = target
+    other: Ref[Map[String, Ref[Int]]] = second
+    outputs: List[Ref[Map[String, Ref[Int]]]!] = [target]
+    bridge: List[Ref[Map[String, Ref[Int]]]] = [same, other]
+    readers: List[Ref[Map[String, Ref[Int]]]] = [same]
+    borrowed: Ref[Int] = value
+    return writeRead(outputs, bridge, readers, borrowed)
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    entries: Map[String, Ref[Int]] = produce(borrowed, 7)
+    entries["one"] to { value: Ref[Int] -> print(value), Null -> print(0) }
+    return 0
+}

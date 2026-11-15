@@ -1,0 +1,9 @@
+// TAG [SPARK-114]
+
+fn bad(callback: (): Void): Ref[Int] {
+    value: Int = 7
+    callback()
+    borrowed: Ref[Int] = value
+    return borrowed
+}
+fn main(): Int { return 0 }

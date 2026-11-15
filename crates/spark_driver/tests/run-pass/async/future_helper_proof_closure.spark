@@ -1,0 +1,17 @@
+// TAG [SPARK-114]
+
+fn neverLoop(): Int { return neverLoop() }
+async fn never(): Int { return neverLoop() }
+async fn zero(): Int { return 0 }
+fn finish(task: Future[Int]): Int { return await task }
+fn finishAndReturn(task: Future[Int]): Future[Int] {
+    ignored: Int = finish(task)
+    return task
+}
+fn checked(task: Future[Int], choose: Bool): Int {
+    if choose { return finish(task) }
+    local: Future[Int] = spawn { never() }
+    forwarded: Future[Int] = finishAndReturn(local)
+    return await forwarded
+}
+fn main(): Int { return 0 }

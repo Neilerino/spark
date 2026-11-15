@@ -1,0 +1,16 @@
+fn clear(out: Ref[Map[String, Ref[Int]]]!, branch: Bool): Map[String, Ref[Int]] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    initial: Map[String, Ref[Int]] = {"one": borrowed}
+    out = initial
+    empty: Map[String, Ref[Int]] = {}
+    if branch { out = empty } else { out = empty }
+    result: Map[String, Ref[Int]] = out
+    return result
+}
+fn main(): Int {
+    entries: Map[String, Ref[Int]]! = {}
+    result: Map[String, Ref[Int]] = clear(entries, true)
+    print(result.len())
+    return 0
+}

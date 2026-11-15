@@ -1,0 +1,6 @@
+struct Entry { borrowed: Ref[Int] }
+fn produce(): List[Entry] {
+    local: Int = 7
+    return [Entry { borrowed: local }]
+}
+fn main(): Int { return 0 }

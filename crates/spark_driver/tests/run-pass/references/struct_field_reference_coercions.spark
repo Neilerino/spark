@@ -1,0 +1,47 @@
+struct Record { value: Int }
+struct Box[T] { value: T }
+struct Borrowed { value: Ref[Int] }
+struct Text { value: String }
+fn textRecord(): Text {
+    text: String = "kept"
+    borrowed: Ref[String] = text
+    return Text { value: borrowed }
+}
+fn forwarded(input: Ref[Int]): List[Borrowed] {
+    return [Borrowed { value: input }]
+}
+fn owned[T](sample: T, input: Ref[T]): Box[T] {
+    return Box[T] { value: input }
+}
+fn ownedViaBinding[T](sample: T, input: Ref[T]): Box[T] {
+    value: T = input
+    return Box[T] { value: value }
+}
+fn genericTextBox(): Box[String] {
+    text: String = "generic-kept"
+    return owned(text, text)
+}
+fn main(): Int {
+    value: Ref[Int]! = 7
+    record: Record = Record { value: value }
+    print(record.value)
+    boxed: Box[Int] = Box[Int] { value: value }
+    print(boxed.value)
+    explicit: Borrowed = Borrowed { value: value }
+    print(explicit.value)
+    plain: Int = 7
+    implicit: Borrowed = Borrowed { value: plain }
+    print(implicit.value)
+    generic: Box[Ref[Int]] = Box[Ref[Int]] { value: plain }
+    print(generic.value)
+    print(textRecord().value)
+    forwarded(value)[0] to {
+        item: Borrowed -> print(item.value),
+        Null -> print(99)
+    }
+    print(owned(7, value).value)
+    print(genericTextBox().value)
+    bindingText: String = "binding-kept"
+    print(ownedViaBinding(bindingText, bindingText).value)
+    return 0
+}

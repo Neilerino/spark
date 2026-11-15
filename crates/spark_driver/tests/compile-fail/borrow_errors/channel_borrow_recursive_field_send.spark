@@ -1,0 +1,18 @@
+// TAG [SPARK-114]
+
+struct Node { children: List[Node], payload: Channel[Ref[Int]] }
+fn publish(outside: Channel[Ref[Int]], value: Int): Void {
+    input: Ref[Int] = value
+    leaf: Node = Node { children: [], payload: outside }
+    root: Node = Node { children: [leaf], payload: outside }
+    root.children[0] to { node: Node -> node.payload.send(input), Null -> print("missing") }
+}
+fn main(): Int {
+    local: Int = 9
+    input: Ref[Int] = local
+    outside: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    publish(outside, 7)
+    found: Ref[Int] = outside.recv()
+    print(found)
+    return 0
+}

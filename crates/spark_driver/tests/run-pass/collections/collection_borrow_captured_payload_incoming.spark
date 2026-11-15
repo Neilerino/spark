@@ -1,0 +1,29 @@
+// TAG [SPARK-114]
+
+struct Holder { items: Ref[Map[String, Ref[Int]]] }
+fn nest(callback: (): Map[String, Ref[Int]]): (): Map[String, Ref[Int]] {
+    return fn(): Map[String, Ref[Int]] { return callback() }
+}
+fn produce(value: Ref[Int]): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]] = {"one": value}
+    pointer: Ref[Map[String, Ref[Int]]] = entries
+    holder: Holder = Holder { items: pointer }
+    outer: Ref[Holder] = holder
+    original: (): Map[String, Ref[Int]] = fn(): Map[String, Ref[Int]] {
+        selected: Holder = outer
+        inner: Ref[Map[String, Ref[Int]]] = selected.items
+        copy: Map[String, Ref[Int]] = inner
+        return copy
+    }
+    once: (): Map[String, Ref[Int]] = nest(original)
+    twice: (): Map[String, Ref[Int]] = nest(once)
+    three: (): Map[String, Ref[Int]] = nest(twice)
+    return three()
+}
+fn main(): Int {
+    value: Int = 7
+    reference: Ref[Int] = value
+    result: Map[String, Ref[Int]] = produce(reference)
+    result["one"] to { found: Ref[Int] -> print(found), Null -> print(0) }
+    return 0
+}

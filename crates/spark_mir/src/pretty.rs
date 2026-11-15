@@ -116,6 +116,9 @@ impl PrettyPrinter<'_> {
     #[allow(clippy::too_many_lines)]
     fn print_rvalue(&mut self, rvalue: &Rvalue) {
         match rvalue {
+            Rvalue::ReadFutureResult { pointer } => {
+                let _ = write!(self.out, "read_future_result {pointer}");
+            }
             Rvalue::Use(op) => self.print_operand(op),
             Rvalue::BinaryOp(op, lhs, rhs) => {
                 self.print_operand(lhs);

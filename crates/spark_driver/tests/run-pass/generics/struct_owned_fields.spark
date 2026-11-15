@@ -1,0 +1,25 @@
+// TAG [SPARK-151]
+link "union_probe"
+extern fn probe_cell_rc(cell: Ref[Cell]): Int
+extern fn probe_box_rc(cell: Ref[Box[Cell]]): Int
+struct Cell { entries: Map[String, Int]! }
+struct Box[T] { flag: Bool, value: T }
+struct Borrowed { value: Ref[Cell] }
+fn forward[T](value: T): T { return value }
+fn main(): Int {
+    cell: Cell = Cell { entries: {"one": 7} }
+    print(probe_cell_rc(cell))
+    if true {
+        borrowed: Borrowed = Borrowed { value: cell }
+        print(probe_cell_rc(cell))
+        boxed: Box[Cell] = Box[Cell] { flag: true, value: cell }
+        print(probe_box_rc(boxed))
+        if true {
+            saved: Box[Cell] = forward(boxed)
+            print(probe_box_rc(saved))
+        }
+        print(probe_box_rc(boxed))
+    }
+    print(probe_cell_rc(cell))
+    return 0
+}

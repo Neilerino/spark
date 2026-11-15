@@ -1,0 +1,13 @@
+fn fill(out: Ref[Map[String, Ref[List[Int]]]]!, value: Ref[List[Int]]): Void {
+    next: Map[String, Ref[List[Int]]] = {"one": value}
+    out = next
+}
+fn main(): Int {
+    source: List[Int]! = [1]
+    borrowed: Ref[List[Int]] = source
+    entries: Map[String, Ref[List[Int]]]! = {}
+    fill(entries, borrowed)
+    source[0] = 9
+    entries["one"] to { found: Ref[List[Int]] -> print(found.len()), Null -> print(0) }
+    return 0
+}

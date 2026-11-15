@@ -1,0 +1,24 @@
+// TAG [SPARK-152]
+async fn measure(text: String, values: List[Int], counts: Map[String, Int], seen: Set[Int]): Int {
+    return text.len() + values.len() + counts.len() + seen.len()
+}
+fn launch(): Future[Int] {
+    text: String = " seed ".trim()
+    values: List[Int] = [1, 2]
+    counts: Map[String, Int] = {"one": 1}
+    seen: Set[Int] = {1, 2}
+    return spawn { measure(text, values, counts, seen) }
+}
+fn main(): Int {
+    count: Int! = 0
+    total: Int! = 0
+    loop {
+        if count == 32 { break }
+        pending: Future[Int] = launch()
+        result: Int = await pending
+        total = total + result
+        count = count + 1
+    }
+    print(total)
+    return 0
+}

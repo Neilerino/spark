@@ -1,0 +1,20 @@
+fn store(out: Ref[Map[String, Ref[Int]]]!, value: Ref[Int]): Void {
+    entries: Map[String, Ref[Int]] = {"one": value}
+    out = entries
+}
+fn fill(out: Ref[Map[String, Ref[Int]]]!, value: Ref[Int], depth: Int): Void {
+    if depth > 0 {
+        fill(out, value, depth - 1)
+    } else {
+        store(out, value)
+    }
+}
+fn produce(value: Int): Map[String, Ref[Int]] {
+    entries: Map[String, Ref[Int]]! = {}
+    borrowed: Ref[Int] = value
+    fill(entries, borrowed, 2)
+    return entries
+}
+fn main(): Int { entries: Map[String, Ref[Int]] = produce(7)
+    print(entries.len())
+    return 0 }

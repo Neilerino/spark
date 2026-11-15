@@ -1,0 +1,21 @@
+struct Container { entries: Map[String, Ref[Int]]! }
+fn storeAndRead(holder: Ref[Container]!, reader: Ref[Map[String, Ref[Int]]], value: Ref[Int]): Map[String, Ref[Int]] {
+    next: Map[String, Ref[Int]] = {"one": value}
+    holder.entries = next
+    snapshot: Map[String, Ref[Int]] = reader
+    return snapshot
+}
+fn produce(safe: Ref[Int], value: Int): Map[String, Ref[Int]] {
+    container: Container! = Container { entries: {"one": safe} }
+    holder: Ref[Container]! = container
+    reader: Ref[Map[String, Ref[Int]]] = container.entries
+    borrowed: Ref[Int] = value
+    return storeAndRead(holder, reader, borrowed)
+}
+fn main(): Int {
+    safe: Int = 9
+    borrowed: Ref[Int] = safe
+    entries: Map[String, Ref[Int]] = produce(borrowed, 7)
+    entries["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

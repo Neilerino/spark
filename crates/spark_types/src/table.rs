@@ -3,6 +3,8 @@
 //! The [`TypeTable`] is the primary output of type checking. It maps
 //! definitions to their types and expressions to their inferred types.
 
+use std::borrow::Cow;
+
 use rustc_hash::FxHashMap;
 use spark_ast::ExprId;
 use spark_intern::Symbol;
@@ -207,6 +209,29 @@ impl TypeTable {
         self.struct_fields.get(&def_id).map(Vec::as_slice)
     }
 
+    // TAG [SPARK-151]
+    /// Returns a struct's fields in declaration order with its type arguments substituted.
+    #[must_use]
+    pub fn instantiated_struct_fields(&self, ty: TypeId) -> Option<Vec<(Symbol, TypeId)>> {
+        match self.resolve(ty) {
+            Ty::Struct(def) => self.get_struct_fields(*def).map(<[_]>::to_vec),
+            Ty::Applied { base, args } => {
+                let fields = self.get_struct_fields(*base)?;
+                let params = self.get_generic_params(*base).unwrap_or_default();
+                let subst = crate::substitute::build_subst_map(params, args);
+                Some(
+                    fields
+                        .iter()
+                        .map(|&(name, field)| {
+                            (name, crate::substitute::substitute(field, &subst, self))
+                        })
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+
     /// Records the variants of an enum.
     pub fn set_enum_variants(&mut self, def_id: DefId, variants: Vec<(Symbol, DefId)>) {
         self.enum_variants.insert(def_id, variants);
@@ -368,6 +393,31 @@ impl TypeTable {
     #[must_use]
     pub const fn mono_instances(&self) -> &FxHashMap<Span, (DefId, FxHashMap<DefId, TypeId>)> {
         &self.mono_instances
+    }
+
+    /// Returns the parameter layouts recorded for this call, including generic substitution.
+    #[must_use]
+    pub fn call_parameter_types(
+        &self,
+        mut callee: TypeId,
+        span: Span,
+    ) -> Option<Cow<'_, [TypeId]>> {
+        // TAG [SPARK-105]
+        while let Ty::Mutable(inner) | Ty::Ref { inner, .. } = self.resolve(callee) {
+            callee = *inner;
+        }
+        let Ty::Function { params, .. } = self.resolve(callee) else {
+            return None;
+        };
+        let Some((_, substitution)) = self.mono_instances.get(&span) else {
+            return Some(Cow::Borrowed(params));
+        };
+        Some(Cow::Owned(
+            params
+                .iter()
+                .map(|&param| crate::substitute::substitute(param, substitution, self))
+                .collect(),
+        ))
     }
 
     /// Interns a lifetime name and returns its [`LifetimeId`].

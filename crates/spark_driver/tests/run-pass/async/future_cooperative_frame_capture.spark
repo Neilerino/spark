@@ -1,0 +1,16 @@
+// TAG [SPARK-154]
+struct Point { x: Int, y: Int, label: String }
+async fn value(): Int { return 7 }
+async fn relay(pending: Future[Int]): Int {
+    point: Point = Point { x: 3, y: 4, label: "owned" }
+    view: Ref[Point] = point
+    read: (): Int = fn(): Int { return point.x + point.label.len() }
+    child: Int = await pending
+    return view.x + read() + child
+}
+fn main(): Int {
+    child: Future[Int] = spawn { value() }
+    parent: Future[Int] = spawn { relay(child) }
+    print(await parent)
+    return 0
+}

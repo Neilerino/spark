@@ -1,0 +1,16 @@
+fn display(out: Ref[Map[String, Ref[String]]]!, reader: Ref[Map[String, Ref[String]]]): Void {
+    if true {
+        text: String = "seven"
+        borrowed: Ref[String] = text
+        entries: Map[String, Ref[String]] = {"one": borrowed}
+        out = entries
+    }
+    snapshot: Map[String, Ref[String]] = reader
+    snapshot["one"] to { found: Ref[String] -> print(found), Null -> print("missing") }
+    display(out, reader)
+}
+fn main(): Int {
+    entries: Map[String, Ref[String]]! = {}
+    display(entries, entries)
+    return 0
+}

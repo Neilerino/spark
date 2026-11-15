@@ -1,0 +1,29 @@
+// TAG [SPARK-114]
+
+async fn relay(input: Channel[Ref[String]], output: Channel[Ref[String]]): Int {
+    value: Ref[String] = input.recv()
+    output.send(value)
+    return 0
+}
+fn main(): Int {
+    input: Channel[Ref[String]] = Channel[Ref[String]]()
+    output: Channel[Ref[String]] = Channel[Ref[String]]()
+    first: String = " seven ".trim()
+    firstRef: Ref[String] = first
+    input.send(firstRef)
+    pending: Future[Int] = spawn { relay(input, output) }
+    completed: Int = await pending
+    initial: Ref[String] = output.recv()
+    print(initial.len())
+    if true {
+        later: String = " later ".trim()
+        laterRef: Ref[String] = later
+        input.send(laterRef)
+        again: Int = await pending
+    }
+    output.tryRecv() to {
+        value: Ref[String] -> print(value.len()),
+        Null -> print(0)
+    }
+    return 0
+}

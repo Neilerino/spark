@@ -1,0 +1,20 @@
+struct Holder { target: Ref[Map[String, Ref[Int]]]! }
+fn fillThenRebind(holder: Ref[Holder]!, other: Ref[Map[String, Ref[Int]]]!): Void {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    entries: Map[String, Ref[Int]] = {"one": borrowed}
+    holder.target = entries
+    replacement: Holder = Holder { target: other }
+    holder = replacement
+}
+fn main(): Int {
+    first: Map[String, Ref[Int]]! = {}
+    second: Map[String, Ref[Int]]! = {}
+    firstRef: Ref[Map[String, Ref[Int]]]! = first
+    secondRef: Ref[Map[String, Ref[Int]]]! = second
+    holder: Holder! = Holder { target: firstRef }
+    view: Ref[Holder]! = holder
+    fillThenRebind(view, secondRef)
+    first["one"] to { found: Ref[Int] -> print(found), Null -> print(99) }
+    return 0
+}

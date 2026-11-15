@@ -1,0 +1,11 @@
+// TAG [SPARK-114]
+
+fn publish(channel: Channel[Int], value: Int): Void {
+    channel.send(value)
+}
+fn main(): Int {
+    channel: Channel[Int] = Channel[Int]()
+    publish(channel, 7)
+    print(channel.recv())
+    return 0
+}

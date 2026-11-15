@@ -1,0 +1,12 @@
+// TAG [SPARK-114]
+
+fn empty(): Channel[Int] { return Channel[Int]() }
+fn pair(): Tup[Channel[Int], Channel[Int]] { return (empty(), empty()) }
+fn main(): Int {
+    queues: Tup[Channel[Int], Channel[Int]] = pair()
+    queues.0.send(7)
+    queues.1.send(9)
+    print(queues.1.recv())
+    print(queues.0.recv())
+    return 0
+}

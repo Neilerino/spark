@@ -1,0 +1,15 @@
+fn main(): Int {
+    values: List[Int]! = [1, 2]
+    empty: Map[String, Ref[List[Int]]] = {}
+    retained: Map[String, Ref[List[Int]]]! = empty
+    count: Int! = 0
+    loop {
+        values[0] = count
+        borrowed: Ref[List[Int]] = values
+        retained["one"] to { old: Ref[List[Int]] -> print(old.len()), Null -> print(0) }
+        retained = {"one": borrowed}
+        count = count + 1
+        if count == 2 { break }
+    }
+    return 0
+}

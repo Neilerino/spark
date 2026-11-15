@@ -1,0 +1,20 @@
+// TAG [SPARK-114]
+
+struct Holder { value: Ref[String] }
+async fn fetch(holder: Holder): Ref[String] { return holder.value }
+fn finishTask(task: Future[Ref[String]]): Ref[String] { return await task }
+fn produce(): Future[Ref[String]] {
+    text: String = " seven ".trim()
+    borrowed: Ref[String] = text
+    holder: Holder = Holder { value: borrowed }
+    pending: Future[Ref[String]] = spawn { fetch(holder) }
+    result: Ref[String] = finishTask(pending)
+    print(result.len())
+    return pending
+}
+fn main(): Int {
+    pending: Future[Ref[String]] = produce()
+    result: Ref[String] = await pending
+    print(result.len())
+    return 0
+}

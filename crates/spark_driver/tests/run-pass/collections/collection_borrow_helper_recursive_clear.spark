@@ -1,0 +1,17 @@
+fn clear(out: Ref[Map[String, Ref[Int]]]!): Void {
+    empty: Map[String, Ref[Int]] = {}
+    out = empty
+}
+fn clearRecursive(out: Ref[Map[String, Ref[Int]]]!, depth: Int): Void {
+    if depth > 0 { clearRecursive(out, depth - 1) } else { clear(out) }
+}
+fn produce(): Map[String, Ref[Int]] {
+    value: Int = 7
+    borrowed: Ref[Int] = value
+    entries: Map[String, Ref[Int]]! = {"one": borrowed}
+    clearRecursive(entries, 2)
+    return entries
+}
+fn main(): Int { entries: Map[String, Ref[Int]] = produce()
+    print(entries.len())
+    return 0 }

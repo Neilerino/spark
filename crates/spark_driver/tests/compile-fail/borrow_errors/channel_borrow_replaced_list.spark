@@ -1,0 +1,12 @@
+// TAG [SPARK-114]
+
+fn main(): Int {
+    values: List[Int]! = [1, 2]
+    borrowed: Ref[List[Int]] = values
+    queue: Channel[Ref[List[Int]]] = Channel[Ref[List[Int]]]()
+    queue.send(borrowed)
+    values = [9]
+    found: Ref[List[Int]] = queue.recv()
+    print(found.len())
+    return 0
+}

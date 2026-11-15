@@ -5,7 +5,7 @@
 //! into every Spark executable.
 //!
 //! All heap-allocated types (`SparkString`, `SparkList`, `SparkMap`) start with
-//! a `rc: usize` field for reference counting. The generic `__spark_rc_inc`
+//! an ABI-compatible atomic reference-count word. The generic `__spark_rc_inc`
 //! function works on any heap object (rc is always at offset 0). Type-specific
 //! `_rc_dec` functions handle deallocation when the count reaches zero.
 
@@ -13,6 +13,9 @@
 // are part of the runtime ABI.
 #![allow(unsafe_code)]
 #![allow(clippy::missing_const_for_fn)] // extern "C" FFI stubs are not const
+
+// TAG [SPARK-152]
+use crate::heap::RefCount;
 
 mod callback;
 mod channel;
@@ -117,7 +120,7 @@ pub extern "C" fn __spark_println() {
 #[repr(C)]
 struct SparkString {
     /// Reference count.
-    rc: usize,
+    rc: RefCount,
     /// Pointer to the UTF-8 byte buffer.
     data: *mut u8,
     /// Number of valid bytes.
@@ -130,7 +133,7 @@ struct SparkString {
 #[no_mangle]
 pub extern "C" fn __spark_string_new() -> *mut u8 {
     let s = Box::new(SparkString {
-        rc: 1,
+        rc: RefCount::new(),
         data: std::ptr::null_mut(),
         len: 0,
         cap: 0,
@@ -163,7 +166,7 @@ pub unsafe extern "C" fn __spark_string_from_literal(data: *const u8, len: i64) 
     unsafe { std::ptr::copy_nonoverlapping(data, buf, byte_len) };
 
     let s = Box::new(SparkString {
-        rc: 1,
+        rc: RefCount::new(),
         data: buf,
         len: byte_len,
         cap: byte_len,
@@ -258,7 +261,7 @@ pub unsafe extern "C" fn __spark_string_concat(a: *mut u8, b: *mut u8) -> *mut u
     }
 
     let s = Box::new(SparkString {
-        rc: 1,
+        rc: RefCount::new(),
         data: buf,
         len: new_len,
         cap: new_len,
@@ -351,9 +354,8 @@ pub unsafe extern "C" fn __spark_string_rc_dec(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    let s = unsafe { &mut *(ptr.cast::<SparkString>()) };
-    s.rc -= 1;
-    if s.rc == 0 {
+    let s = unsafe { &*(ptr.cast::<SparkString>()) };
+    if s.rc.release() {
         // Free the data buffer.
         if !s.data.is_null() && s.cap > 0 {
             let align = std::mem::align_of::<u64>();
@@ -383,7 +385,7 @@ pub unsafe extern "C" fn __spark_string_cow(ptr: *mut u8) -> *mut u8 {
         return ptr;
     }
     let s = unsafe { &*(ptr.cast::<SparkString>()) };
-    if s.rc == 1 {
+    if s.rc.get() == 1 {
         return ptr;
     }
     // Clone the buffer.
@@ -401,14 +403,12 @@ pub unsafe extern "C" fn __spark_string_cow(ptr: *mut u8) -> *mut u8 {
         std::ptr::null_mut()
     };
     let new = Box::new(SparkString {
-        rc: 1,
+        rc: RefCount::new(),
         data: new_ptr,
         len: s.len,
         cap: s.len,
     });
-    // Decrement old rc.
-    let old = unsafe { &mut *(ptr.cast::<SparkString>()) };
-    old.rc -= 1;
+    unsafe { __spark_string_rc_dec(ptr) };
     Box::into_raw(new).cast::<u8>()
 }
 
@@ -1577,6 +1577,40 @@ mod tests {
             __spark_string_rc_dec(v1);
             __spark_string_rc_dec(v2);
             __spark_set_rc_dec(s);
+        }
+    }
+    // TAG [SPARK-152]
+    #[test]
+    fn list_cow_releases_the_original_when_an_alias_disappears_during_clone() {
+        use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+        static ALIAS: AtomicPtr<u8> = AtomicPtr::new(std::ptr::null_mut());
+        static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+        unsafe extern "C" fn release_alias(_slot: *mut u8) {
+            let alias = ALIAS.swap(std::ptr::null_mut(), Ordering::SeqCst);
+            unsafe { __spark_list_rc_dec(alias) };
+        }
+        unsafe extern "C" fn count_drop(_slot: *mut u8) {
+            DROPS.fetch_add(1, Ordering::SeqCst);
+        }
+        unsafe {
+            DROPS.store(0, Ordering::SeqCst);
+            let list = __spark_list_new(test_desc_with_retain(
+                8,
+                count_drop as *const () as usize,
+                release_alias as *const () as usize,
+                0,
+                0,
+            ));
+            let value = 17_i64;
+            __spark_list_push(list, std::ptr::from_ref(&value).cast());
+            __spark_rc_inc(list);
+            ALIAS.store(list, Ordering::SeqCst);
+            let cloned = __spark_list_cow(list);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+            assert_eq!(read_list_i64(cloned), vec![17]);
+            __spark_list_rc_dec(cloned);
+            assert_eq!(DROPS.load(Ordering::SeqCst), 2);
         }
     }
 }

@@ -1,0 +1,17 @@
+// TAG [SPARK-114]
+
+fn send(queue: Channel[Ref[Int]], value: Ref[Int]): Void {}
+fn produce(outside: Channel[Ref[Int]]): Void {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    send(outside, borrowed)
+}
+fn main(): Int {
+    value: Int = 9
+    input: Ref[Int] = value
+    outside: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    outside.send(input)
+    produce(outside)
+    outside.tryRecv() to { found: Ref[Int] -> print(found), Null -> print(0) }
+    return 0
+}

@@ -1,0 +1,23 @@
+// TAG [SPARK-114]
+
+fn produce(input: Ref[Int], second: Ref[Int]): Channel[Ref[Int]] {
+    local: Int = 7
+    borrowed: Ref[Int] = local
+    queue: Channel[Ref[Int]] = Channel[Ref[Int]]()
+    queue.send(input)
+    queue.send(borrowed)
+    first: Ref[Int] = queue.recv()
+    print(first)
+    queue.close()
+    return queue
+}
+fn main(): Int {
+    first: Int = 9
+    second: Int = 10
+    firstRef: Ref[Int] = first
+    secondRef: Ref[Int] = second
+    queue: Channel[Ref[Int]] = produce(firstRef, secondRef)
+    found: Ref[Int] = queue.recv()
+    print(found)
+    return 0
+}

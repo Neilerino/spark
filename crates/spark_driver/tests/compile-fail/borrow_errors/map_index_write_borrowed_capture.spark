@@ -1,8 +1,12 @@
-fn main(): Int {
+fn produce(): Map[Int, (): Int] {
     number: Int = 7
     borrowed: Ref[Int] = number
     callback: (): Int = fn(): Int { borrowed + 1 }
     entries: Map[Int, (): Int]! = {}
     entries[0] = callback
-    return 0
+    return entries
+}
+
+fn main(): Int {
+    return produce().len()
 }

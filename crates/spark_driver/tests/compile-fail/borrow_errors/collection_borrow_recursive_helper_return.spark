@@ -1,0 +1,16 @@
+struct Node { children: List[Node], payload: Ref[Map[String, Ref[Int]]] }
+fn bad(fallback: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
+ local: Int = 7
+ entries: Map[String, Ref[Int]] = {"x": local}
+ entriesRef: Ref[Map[String, Ref[Int]]] = entries
+ leaf: Node = Node { children: [], payload: entriesRef }
+ middle: Node = Node { children: [leaf], payload: fallback }
+ root: Node = Node { children: [middle], payload: fallback }
+ return extract(root, fallback)
+}
+fn extract(root: Node, fallback: Ref[Map[String, Ref[Int]]]): Map[String, Ref[Int]] {
+ view: Ref[Map[String, Ref[Int]]] = root.children[0] to { node: Node -> node.children[0] to { inner: Node -> inner.payload, Null -> fallback }, Null -> fallback }
+ copied: Map[String, Ref[Int]] = view
+ return copied
+}
+fn main(): Int { return 0 }

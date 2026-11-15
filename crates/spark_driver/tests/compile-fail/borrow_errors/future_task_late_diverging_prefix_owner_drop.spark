@@ -1,0 +1,21 @@
+// TAG [SPARK-114]
+
+async fn publishForever(input: Channel[Ref[String]], output: Channel[Ref[String]]): Int {
+    value: Ref[String] = input.recv()
+    output.send(value)
+    loop {}
+    return 0
+}
+fn main(): Int {
+    input: Channel[Ref[String]] = Channel[Ref[String]]()
+    output: Channel[Ref[String]] = Channel[Ref[String]]()
+    pending: Future[Int] = spawn { publishForever(input, output) }
+    if true {
+        text: String = " seven ".trim()
+        borrowed: Ref[String] = text
+        input.send(borrowed)
+    }
+    result: Ref[String] = output.recv()
+    print(result.len())
+    return 0
+}

@@ -1,3 +1,4 @@
+// TAG [SPARK-117]
 //! # `spark_abi`
 //!
 //! Shared ABI definitions between the Spark codegen and runtime.
@@ -548,10 +549,10 @@ pub const ENV_RC_DEC: RuntimeFn = RuntimeFn {
 
 // ── Concurrency ─────────────────────────────────────────────────────────
 
-/// `__spark_spawn(fn_ptr: ptr, env_ptr: ptr, result_size: i64, is_float: i8) -> ptr`
+/// `__spark_spawn(fn_ptr: ptr, env_ptr: ptr, result_size: i64, is_float: i8, result_drop: ptr) -> ptr`
 pub const SPAWN: RuntimeFn = RuntimeFn {
     name: "__spark_spawn",
-    params: &[Ptr, Ptr, I64, I8],
+    params: &[Ptr, Ptr, I64, I8, Ptr],
     ret: Some(Ptr),
 };
 
@@ -576,10 +577,10 @@ pub const ALLOC_STATE: RuntimeFn = RuntimeFn {
     ret: Some(Ptr),
 };
 
-/// `__spark_spawn_coop(poll_fn: ptr, state_ptr: ptr, state_size: i64, result_size: i64, result_offset: i64) -> ptr`
+/// `__spark_spawn_coop(poll_fn: ptr, state_ptr: ptr, state_size: i64, result_size: i64, result_offset: i64, result_drop: ptr) -> ptr`
 pub const SPAWN_COOP: RuntimeFn = RuntimeFn {
     name: "__spark_spawn_coop",
-    params: &[Ptr, Ptr, I64, I64, I64],
+    params: &[Ptr, Ptr, I64, I64, I64, Ptr],
     ret: Some(Ptr),
 };
 

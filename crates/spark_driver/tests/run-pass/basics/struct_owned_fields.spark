@@ -1,0 +1,44 @@
+// TAG [SPARK-151]
+link "union_probe"
+extern fn probe_cell_rc(cell: Ref[Cell]): Int
+struct Cell { entries: Map[String, Int]! }
+fn identity(cell: Cell): Cell { return cell }
+fn ignore(cell: Cell): Int { return 0 }
+fn fresh(): Cell { return Cell { entries: {"two": 9} } }
+fn named(): Cell {
+    local: Cell = fresh()
+    return local
+}
+fn main(): Int {
+    cell: Cell! = Cell { entries: {"one": 7} }
+    before: Int = probe_cell_rc(cell)
+    print(before)
+    if true {
+        saved: Cell = cell
+        print(probe_cell_rc(cell) - before)
+        saved.entries["one"] to { value: Int -> print(value), Null -> print(99) }
+    }
+    print(probe_cell_rc(cell) - before)
+    ignore(cell)
+    print(probe_cell_rc(cell))
+    if true {
+        returned: Cell = identity(cell)
+        print(probe_cell_rc(cell))
+    }
+    print(probe_cell_rc(cell))
+    if true {
+        saved: Cell = cell
+        cleared: Map[String, Int] = {}
+        cell.entries = cleared
+        saved.entries["one"] to { value: Int -> print(value), Null -> print(99) }
+        cell.entries["one"] to { value: Int -> print(value), Null -> print(0) }
+        print(probe_cell_rc(saved))
+    }
+    created: Cell! = named()
+    print(probe_cell_rc(created))
+    created = created
+    print(probe_cell_rc(created))
+    projected: Cell = Cell { entries: fresh().entries }
+    print(probe_cell_rc(projected))
+    return 0
+}

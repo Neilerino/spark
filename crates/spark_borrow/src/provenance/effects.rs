@@ -1,4 +1,9 @@
+// TAG [SPARK-114]
+
 //! Direct function summaries use the same slot transfer engine as diagnostics.
+
+pub(in crate::provenance) mod fresh_output_binding;
+pub(in crate::provenance) mod spawn_outputs;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 use spark_diagnostics::Diagnostics;
@@ -6,63 +11,304 @@ use spark_mir::{BlockId, Local, Mir, MirFunction, Operand, Terminator};
 use spark_resolve::DefId;
 use spark_types::{TypeId, TypeTable};
 
-use super::{child_type, value, Flow, Origin, Origins, Path, Point, Slot, State, Target, Value};
+use super::address::{Dependency, DerefKind, Endpoint, Intent, Selector};
+use super::aliases::{Aliases, Key, Port, View};
+
+use super::{
+    child_type, value, AccessKind, Accesses, Flow, Origin, Origins, Path, Point, Slot, State, Value,
+};
+
+#[derive(Clone, Default)]
+pub(super) struct Summary {
+    returned: Value,
+    returned_owner_tags: super::tasks::lifecycle::Tags,
+    retained_owner_tags: super::tasks::lifecycle::Tags,
+    pub(super) fresh_outputs: super::tasks::fresh_outputs::Outputs,
+    pub(super) returned_callbacks: super::tasks::outputs::CallbackOutputs,
+    queues: FxHashMap<super::channels::QueueKey, Value>,
+    queue_contents: FxHashMap<(super::channels::Target, TypeId), Value>,
+    tasks: FxHashMap<super::tasks::Target, super::tasks::Record>,
+    normal_return: bool,
+    normal_queue_sends: Option<super::channels::counts::Sends>,
+    normal_queue_accesses: Option<super::channels::access::Accesses>,
+    memory: FxHashMap<Port, Value>,
+    prefix_memory: PrefixMemory,
+    normal_prefix: ReachedPrefix,
+    normal_publications: PublicationValues,
+    receive_snapshots: ReceiveSnapshots,
+    modified: FxHashSet<View>,
+    async_modified: FxHashSet<View>,
+    residuals: FxHashMap<std::sync::Arc<super::tasks::residual::Key>, Value>,
+    prefix_residuals: super::tasks::residual::Activities,
+    residual_callbacks: FxHashMap<(std::sync::Arc<super::tasks::residual::Key>, TypeId), Value>,
+    written_inputs: FxHashSet<View>,
+    unknown_copy_clobber: bool,
+    unknown_memory_write: bool,
+    observed: Accesses,
+    obligations: FxHashMap<super::obligations::Boundary, Value>,
+}
+
+impl Summary {
+    fn join_normal_returns(&mut self, other: &Self) -> bool {
+        let mut changed = super::channels::counts::join_returns(
+            &mut self.normal_queue_sends,
+            other.normal_queue_sends.as_ref(),
+        );
+        changed |= super::channels::access::join_returns(
+            &mut self.normal_queue_accesses,
+            other.normal_queue_accesses.as_ref(),
+        );
+        changed |= !self.normal_return && other.normal_return;
+        self.normal_return |= other.normal_return;
+        changed |= join_prefix(&mut self.normal_prefix, &other.normal_prefix);
+        changed |= self.normal_publications.join(&other.normal_publications);
+        changed
+    }
+
+    fn join(&mut self, other: &Self) -> bool {
+        let mut changed = self.join_normal_returns(other);
+        changed |= self.returned.join(&other.returned);
+        let before = self.returned_owner_tags.len();
+        self.returned_owner_tags
+            .extend(other.returned_owner_tags.iter().copied());
+        changed |= before != self.returned_owner_tags.len();
+        let before = self.retained_owner_tags.len();
+        self.retained_owner_tags
+            .extend(other.retained_owner_tags.iter().copied());
+        changed |= before != self.retained_owner_tags.len();
+        changed |= self.join_fresh_outputs(other);
+        for (ty, output) in &other.returned_callbacks {
+            changed |= self.returned_callbacks.entry(*ty).or_default().join(output);
+        }
+        for (receive, values) in &other.receive_snapshots {
+            let missing = !self.receive_snapshots.contains_key(receive);
+            changed |= self
+                .receive_snapshots
+                .entry(receive.clone())
+                .or_default()
+                .join(values)
+                || missing;
+        }
+        for (target, record) in &other.tasks {
+            if let Some(current) = self.tasks.get_mut(target) {
+                changed |= current.join(record);
+            } else {
+                self.tasks.insert(target.clone(), record.clone());
+                changed = true;
+            }
+        }
+        for (target, value) in &other.queue_contents {
+            changed |= self
+                .queue_contents
+                .entry(target.clone())
+                .or_default()
+                .join(value);
+        }
+        for (target, value) in &other.queues {
+            let existed = self.queues.contains_key(target);
+            changed |= self.queues.entry(target.clone()).or_default().join(value) || !existed;
+        }
+        changed |= !self.unknown_copy_clobber && other.unknown_copy_clobber;
+        self.unknown_copy_clobber |= other.unknown_copy_clobber;
+        changed |= !self.unknown_memory_write && other.unknown_memory_write;
+        self.unknown_memory_write |= other.unknown_memory_write;
+        for (event, value) in &other.prefix_memory {
+            let existed = self.prefix_memory.contains_key(event);
+            changed |= self
+                .prefix_memory
+                .entry(event.clone())
+                .or_default()
+                .join(value)
+                || !existed;
+        }
+        for (local, value) in &other.memory {
+            changed |= self.memory.entry(local.clone()).or_default().join(value);
+        }
+        for (boundary, value) in &other.obligations {
+            changed |= self
+                .obligations
+                .entry(boundary.clone())
+                .or_default()
+                .join(value);
+        }
+        let before = self.modified.len();
+        self.modified.extend(other.modified.iter().cloned());
+        changed |= before != self.modified.len();
+        for (key, activity) in &other.prefix_residuals {
+            let absent = !self.prefix_residuals.contains_key(key);
+            changed |= self
+                .prefix_residuals
+                .entry(key.clone())
+                .or_default()
+                .join(activity)
+                || absent;
+        }
+        for (key, value) in &other.residuals {
+            let absent = !self.residuals.contains_key(key);
+            changed |= self.residuals.entry(key.clone()).or_default().join(value) || absent;
+        }
+        for (key, value) in &other.residual_callbacks {
+            changed |= self
+                .residual_callbacks
+                .entry(key.clone())
+                .or_default()
+                .join(value);
+        }
+        let before = self.async_modified.len();
+        self.async_modified
+            .extend(other.async_modified.iter().cloned());
+        changed |= before != self.async_modified.len();
+        let before = self.written_inputs.len();
+        self.written_inputs
+            .extend(other.written_inputs.iter().cloned());
+        changed |= before != self.written_inputs.len();
+        let before = self.observed.len();
+        self.observed.extend(other.observed.iter().cloned());
+        changed || before != self.observed.len()
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct Context<'a> {
-    mir: &'a Mir,
-    summaries: &'a FxHashMap<DefId, Value>,
+    pub(super) mir: &'a Mir,
+    pub(super) definitions: Option<&'a spark_resolve::DefinitionTable>,
+    summaries: &'a Summaries,
+    pub(super) proofs: Option<&'a super::tasks::proofs::Proofs>,
+    pub(super) ports: &'a Ports,
 }
 
 #[derive(Clone, Copy)]
 struct CallActuals<'a> {
     callee: &'a Value,
+    callee_place: Option<&'a spark_mir::Place>,
     arguments: &'a [Value],
     ty: TypeId,
     point: Point,
-    state: &'a State,
+    instantiation_site: Option<super::address::OpaqueSite>,
+    frame_caller: Option<DefId>,
+    read: super::observations::ReadView<'a>,
+    aliases: Option<&'a Aliases>,
 }
 
-pub fn check_program_returns(mir: &Mir, table: &TypeTable, diagnostics: &mut Diagnostics) {
-    let facts: FxHashMap<_, _> = mir
-        .functions
-        .iter()
-        .map(|(def, function)| (*def, crate::facts::extract_facts(function)))
-        .collect();
-    let mut summaries: FxHashMap<_, _> = mir
-        .functions
-        .keys()
-        .map(|def| (*def, Value::default()))
-        .collect();
-    loop {
-        let context = Context {
-            mir,
-            summaries: &summaries,
-        };
-        let mut next = summaries.clone();
-        let mut changed = false;
-        for (def, function) in &mir.functions {
-            let mut flow = Flow::new(function, table, Some(context));
-            flow.solve(&facts[def]);
-            changed |= next.entry(*def).or_default().join(&flow.summary());
-        }
-        summaries = next;
-        if !changed {
-            break;
+impl<'a> CallActuals<'a> {
+    fn normal(
+        operand: &'a Operand,
+        callee: &'a Value,
+        arguments: &'a [Value],
+        ty: TypeId,
+        point: Point,
+        frame_owner: DefId,
+        state: &'a State,
+    ) -> Self {
+        Self {
+            callee_place: match operand {
+                Operand::Copy(place) | Operand::Move(place) => Some(place),
+                Operand::Constant(_) => None,
+            },
+            callee,
+            arguments,
+            ty,
+            point,
+            read: super::observations::ReadView::current(state),
+            instantiation_site: None,
+            frame_caller: Some(frame_owner),
+            aliases: None,
         }
     }
-    let context = Context {
-        mir,
-        summaries: &summaries,
-    };
-    for (def, function) in &mir.functions {
-        let mut flow = Flow::new(function, table, Some(context));
-        flow.solve(&facts[def]);
-        flow.report_returns(&facts[def], diagnostics);
+
+    const fn at_read<'b>(self, receive: Option<&'b Receive>) -> CallActuals<'b>
+    where
+        'a: 'b,
+    {
+        CallActuals {
+            read: self.read.with_entry_prefix().with_receive(receive),
+            ..self
+        }
+    }
+
+    fn instantiation_site(self, caller: DefId) -> super::address::OpaqueSite {
+        self.instantiation_site
+            .unwrap_or(super::address::OpaqueSite {
+                function: caller,
+                point: self.point,
+            })
+    }
+
+    fn is_cell(self, port: &Port) -> bool {
+        self.aliases
+            .map_or_else(|| port.exact(), |aliases| aliases.is_cell(port))
     }
 }
+
+mod publications;
+pub(super) use publications::PublicationValues;
+
+type Summaries = FxHashMap<Key, Summary>;
+type Ports = FxHashMap<DefId, Vec<Port>>;
+
+mod channel_binding;
+mod inference;
+mod opaque;
+mod prefix;
+mod receive_prefix;
+mod receive_snapshots;
+pub(super) use prefix::{
+    join_prefix, EventKey, Execution, Memory as PrefixMemory, MemoryEvent, MemoryKey,
+    PrefixOccurrence, PrefixWrites, ReachedPrefix, Receive,
+};
+pub(super) use receive_snapshots::ReceiveSnapshots;
+mod history;
+mod output_binding;
+mod selection;
+mod task_binding;
+mod task_views;
+mod transaction;
+pub use inference::analyze_program;
+#[cfg(test)]
+use inference::infer_summaries;
+pub(super) use transaction::{CallOutcome, Dispatch, MemoryWrite};
 
 impl Flow<'_> {
+    fn discover_ports(&self, summary: &Summary, ports: &mut Vec<Port>) {
+        for port in &self.queue_ports {
+            if !ports.contains(port) {
+                ports.push(port.clone());
+            }
+        }
+        if summary.written_inputs.is_empty() && summary.async_modified.is_empty() {
+            return;
+        }
+        for view in summary.written_inputs.iter().chain(&summary.async_modified) {
+            if !value::inputs(
+                view.root.pointee,
+                view.root.input,
+                view.root.pointee,
+                &[],
+                self.table,
+            )
+            .is_empty()
+                && !ports.contains(&view.root)
+            {
+                ports.push(view.root.clone());
+            }
+        }
+        for access in &summary.observed {
+            let selector = match &access.target {
+                Dependency::InputValue(selector, _)
+                | Dependency::Address(Endpoint::Input(selector, _)) => selector,
+                Dependency::Address(Endpoint::Frame { .. }) => continue,
+            };
+            if let Some(port) = Port::from_selector(selector, self.function, self.table) {
+                if !value::inputs(port.pointee, port.input, port.pointee, &[], self.table)
+                    .is_empty()
+                    && !ports.contains(&port)
+                {
+                    ports.push(port);
+                }
+            }
+        }
+    }
+
     pub(super) fn call_result(
         &mut self,
         func: &Operand,
@@ -70,49 +316,294 @@ impl Flow<'_> {
         ty: TypeId,
         point: Point,
         state: &State,
-    ) -> Value {
+    ) -> Dispatch {
+        self.ensure_transfer(point, state);
+        if let Some(outcome) = self.task_call(func, args, ty, point, state) {
+            return match outcome {
+                task_binding::TaskDispatch::Returns(outcomes) => Dispatch::returning(outcomes),
+                task_binding::TaskDispatch::NoReturn(events) => Dispatch {
+                    diverging: vec![events],
+                    ..Dispatch::default()
+                },
+            };
+        }
+        if let Some(outcome) = self
+            .collection_call(func, args, state)
+            .or_else(|| self.channel_call(func, args, ty, point, state))
+        {
+            return Dispatch::returning(vec![outcome]);
+        }
         let callee = self.operand(func, state);
         let arguments: Vec<_> = args.iter().map(|arg| self.operand(arg, state)).collect();
-        let actuals = CallActuals {
-            callee: &callee,
-            arguments: &arguments,
+        let actuals = CallActuals::normal(
+            func,
+            &callee,
+            &arguments,
             ty,
             point,
+            self.function.def_id,
             state,
-        };
-        let targets = callee.callees.get(&Vec::new());
-        let mut result = Value::default();
-        let mut unknown = targets.is_none_or(FxHashSet::is_empty);
-        for def in targets.into_iter().flatten() {
-            if let Some((function, summary)) = self.program.and_then(|context| {
-                Some((context.mir.functions.get(def)?, context.summaries.get(def)?))
-            }) {
-                result.join(&self.bind(summary, function, actuals));
-            } else {
+        );
+        let targets = self.callee_targets(&callee, super::operand_type(func, self.function));
+        let mut dispatch = Dispatch::default();
+        let open = targets.open;
+        let unresolved_value = targets.unresolved || (!targets.open && targets.known.is_empty());
+        let mut unknown = unresolved_value;
+        let mut dispatched = FxHashSet::default();
+        for def in &targets.known {
+            let Some(context) = self.program else {
                 unknown = true;
+                continue;
+            };
+            let Some(function) = context.mir.functions.get(def) else {
+                unknown = true;
+                continue;
+            };
+            let roots = &context.ports[def];
+            let locations = self.call_locations(roots, function, actuals);
+            for aliases in Aliases::call_variants(roots, self.table, &locations, &self.aliases) {
+                dispatched.insert(*def);
+                let key = Key {
+                    function: *def,
+                    aliases,
+                    callables: self.callback_inputs(function, actuals),
+                };
+                let Some(summary) = context.summaries.get(&key) else {
+                    self.requests.insert(key);
+                    continue;
+                };
+                let actuals = CallActuals {
+                    aliases: Some(&key.aliases),
+                    ..actuals
+                };
+                self.observe_writes(summary, function, actuals);
+                let source = prefix::PrefixContext::Call(args);
+                let prefix = self.bind_prefix(summary, function, actuals, &key, source);
+                self.observe_prefix(&prefix, point, state);
+                if !summary.normal_return {
+                    dispatch.diverging.push(prefix.into_writes());
+                    continue;
+                }
+                let mut outcome = self.bind_outcome(summary, function, actuals, &key, args, prefix);
+                outcome.queue_accesses.unknown |= self.environment_sources(func, state).1;
+                outcome.future_proof = self.call_future_proof(&key, args, state);
+                dispatch.returning.push(outcome);
             }
         }
         if unknown {
-            let mut origins = callee.origins();
-            for arg in &arguments {
-                origins.extend(arg.origins());
+            if unresolved_value {
+                self.record_unknown_arguments(point, args, &arguments, state);
             }
-            self.retain_unknown(point, &origins);
-            origins.insert(Origin::Unproven(point));
-            result.join(&value::tainted(ty, &origins, self.table));
+            self.record_obligation(
+                point,
+                super::obligations::Boundary::invoke(
+                    super::operand_type(func, self.function),
+                    dispatched,
+                ),
+                &callee,
+            );
+            let returned = self.opaque_result(args, actuals);
+            let mut outcome = self.opaque_queue_outcome(returned, args, actuals);
+            outcome.retained_captures = self.retained_capture_witnesses(None, actuals);
+            outcome.clobbered_copies = self.opaque_copy_clobbers(func, args, actuals);
+            dispatch.returning.push(outcome);
         }
-        result
+        if open {
+            self.unknown_memory_write = true;
+            let mut outcome = self.open_outcome(ty, point);
+            outcome.retained_captures = self.retained_capture_witnesses(None, actuals);
+            dispatch.returning.push(outcome);
+        }
+        dispatch
     }
 
-    fn retain_unknown(&mut self, point: Point, origins: &Origins) {
-        let entry = self.unproven.entry(point).or_default();
-        let before = entry.len();
-        entry.extend(origins.iter().cloned());
-        self.changed |= before != entry.len();
+    fn open_outcome(&self, ty: TypeId, point: Point) -> CallOutcome {
+        let mut returned = value::validation_hole(ty, self.table);
+        returned.join(&super::channels::validation_handles(
+            ty,
+            super::address::OpaqueSite {
+                function: self.function.def_id,
+                point,
+            },
+            self.table,
+        ));
+        returned.join(&super::tasks::opaque_handles(
+            ty,
+            super::address::OpaqueSite {
+                function: self.function.def_id,
+                point,
+            },
+            self.table,
+            true,
+        ));
+        CallOutcome {
+            queue_accesses: crate::provenance::channels::access::Accesses::unknown(),
+            queue_send_counts: crate::provenance::channels::counts::Sends {
+                unknown: true,
+                ..Default::default()
+            },
+            returned,
+            ..Default::default()
+        }
     }
 
-    fn summary(&mut self) -> Value {
-        let mut summary = Value::default();
+    fn callback_bases(
+        &self,
+        input: Local,
+        ty: TypeId,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> Vec<(Value, TypeId, Option<value::ReferenceCapture>)> {
+        let value = self.actual_input(input, function, actuals);
+        let captures: FxHashSet<_> = value
+            .leaves
+            .keys()
+            .filter_map(|(_, _, capture)| *capture)
+            .collect();
+        let mut bases = Vec::new();
+        for capture in captures {
+            let Some(inner) = child_type(capture.ty, &Slot::Deref, self.table) else {
+                continue;
+            };
+            if super::callbacks::selectors(inner, self.table).is_empty() {
+                continue;
+            }
+            let selector = Selector {
+                input,
+                selection: Vec::new(),
+                intent: Intent::Value,
+                expected: Some(capture.ty),
+                capture: Some(capture),
+                channel_capture: None,
+                queue: None,
+            };
+            let read = actuals.read.select(function.def_id, &selector);
+            let pointer = value.select_reference_capture(capture);
+            bases.push((
+                self.dereference_in(&pointer, capture.ty, read),
+                inner,
+                Some(capture),
+            ));
+        }
+        bases.push((value, ty, None));
+        bases
+    }
+
+    fn callback_inputs(
+        &self,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> super::callbacks::Inputs {
+        let mut inputs = super::callbacks::Inputs::invocation();
+        for decl in function
+            .locals
+            .iter()
+            .skip(1)
+            .take(function.param_count as usize + function.captures.len())
+        {
+            for (value, root_ty, capture) in
+                self.callback_bases(decl.local, decl.ty, function, actuals)
+            {
+                let mut pending = super::callbacks::selectors(root_ty, self.table);
+                let mut visited = FxHashSet::default();
+                while let Some((path, ty)) = pending.pop() {
+                    let path = value::normalize(root_ty, path, self.table);
+                    if path.contains(&Slot::Tail) || !visited.insert((path.clone(), ty)) {
+                        continue;
+                    }
+                    let selector = Selector {
+                        input: decl.local,
+                        selection: path.clone(),
+                        intent: Intent::Value,
+                        expected: Some(ty),
+                        capture,
+                        channel_capture: None,
+                        queue: None,
+                    };
+                    let selected =
+                        self.select_input(value.clone(), root_ty, &selector, function, actuals);
+                    let targets = self.callee_targets(&selected, ty);
+                    for def in &targets.known {
+                        let Some(target) = self
+                            .program
+                            .and_then(|context| context.mir.functions.get(def))
+                        else {
+                            continue;
+                        };
+                        for (index, (_, capture_ty)) in target.captures.iter().enumerate() {
+                            for (selection, selected_ty) in
+                                super::callbacks::selectors(*capture_ty, self.table)
+                            {
+                                pending.push((
+                                    [
+                                        path.clone(),
+                                        vec![Slot::Capture(*def, index, *capture_ty)],
+                                        selection,
+                                    ]
+                                    .concat(),
+                                    selected_ty,
+                                ));
+                            }
+                        }
+                    }
+                    inputs
+                        .slots
+                        .entry((decl.local, path, ty, capture))
+                        .or_default()
+                        .join(&targets);
+                }
+                for (path, targets) in value.callees {
+                    let ty = self.selected_type(root_ty, &path);
+                    inputs
+                        .slots
+                        .entry((
+                            decl.local,
+                            value::normalize(root_ty, path, self.table),
+                            ty,
+                            capture,
+                        ))
+                        .or_default()
+                        .join(&targets);
+                }
+            }
+        }
+        inputs
+    }
+
+    fn observe_writes(
+        &mut self,
+        summary: &Summary,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) {
+        self.unknown_memory_write |= summary.unknown_memory_write;
+        for view in &summary.written_inputs {
+            let mut input = self.port_input(&view.root, function, actuals);
+            if !actuals.is_cell(&view.root) {
+                input = self.residual_reference(&input, &view.root, function, actuals);
+            }
+            let targets = self.project_reference(&input, view.root.pointee, &view.path);
+            for endpoint in targets.endpoints {
+                if let Endpoint::Input(selector, _) = endpoint {
+                    for (view, _) in self.external_targets(&selector) {
+                        self.written_inputs.insert(view);
+                    }
+                }
+            }
+        }
+    }
+
+    fn port_input(&self, port: &Port, function: &MirFunction, actuals: CallActuals<'_>) -> Value {
+        self.select_input_value(&port.selector(), function, actuals)
+    }
+
+    fn summary(&mut self) -> Summary {
+        let mut summary = Summary {
+            written_inputs: self.written_inputs.clone(),
+            unknown_copy_clobber: self.unknown_copy_clobber,
+            unknown_memory_write: self.unknown_memory_write,
+            ..Summary::default()
+        };
         for index in 0..self.entries.len() {
             if !matches!(self.function.blocks[index].terminator, Terminator::Return) {
                 continue;
@@ -120,585 +611,451 @@ impl Flow<'_> {
             let Some(mut state) = self.entries[index].clone() else {
                 continue;
             };
-            self.transfer_block(BlockId(index as u32), &mut state);
-            let value = state.value(Local::RETURN_PLACE);
-            for (path, origins) in &value.slots {
-                let mut exported = Origins::default();
-                for origin in origins {
-                    exported.extend(self.boundary_origins(origin, &mut FxHashSet::default()));
-                }
-                summary.insert(path.clone(), exported);
+            if !self.transfer_block(BlockId(index as u32), &mut state) {
+                continue;
             }
-            for (path, callees) in &value.callees {
+            summary.normal_return = true;
+            join_prefix(&mut summary.normal_prefix, &state.reached_prefix);
+            summary
+                .normal_publications
+                .join(&state.publications.exported(self.function.def_id));
+            self.export_fresh_outputs(&state, &mut summary);
+            self.export_queue_state(&state, &mut summary);
+            self.export_tasks(&state, &mut summary);
+            self.export_callback_outputs(&state, &mut summary);
+            summary
+                .retained_owner_tags
+                .extend(state.input_owners.retained_tags());
+            summary.returned_owner_tags.extend(
+                state
+                    .input_owners
+                    .tags(&super::tasks::Role::root(Local::RETURN_PLACE)),
+            );
+            for (key, value) in &state.residuals {
                 summary
-                    .callees
-                    .entry(path.clone())
+                    .residuals
+                    .entry(key.clone())
                     .or_default()
-                    .extend(callees);
+                    .join(&export_value(value, self.function.def_id));
             }
+            for (key, value) in &state.residual_callbacks {
+                summary
+                    .residual_callbacks
+                    .entry(key.clone())
+                    .or_default()
+                    .join(&export_value(value, self.function.def_id));
+            }
+            summary.returned.join(&export_value(
+                &state.value(Local::RETURN_PLACE),
+                self.function.def_id,
+            ));
+            self.export_memory_state(&state, &mut summary);
         }
+        self.export_prefix(&mut summary);
+
+        self.normalize_fresh_queue_roles(&mut summary);
         summary
     }
 
-    fn boundary_origins(&self, origin: &Origin, seen: &mut FxHashSet<Origin>) -> Origins {
-        if !seen.insert(origin.clone()) {
-            return Origins::default();
-        }
-        let mut result = Origins::default();
-        match origin {
-            Origin::Loan(point) => {
-                for target in self.loans.get(point).into_iter().flatten() {
-                    match target {
-                        Target::Frame { .. } => {
-                            result.insert(Origin::Frame {
-                                function: self.function.def_id,
-                                point: *point,
-                            });
-                        }
-                        Target::Through { origin, path, .. } => {
-                            for source in self.boundary_origins(origin, seen) {
-                                let projected = match source {
-                                    Origin::Input {
-                                        local,
-                                        path: mut source_path,
-                                    } => {
-                                        source_path.push(Slot::Deref);
-                                        source_path.extend(path.iter().cloned());
-                                        self.input_address(local, source_path)
-                                    }
-                                    Origin::InputAddress {
-                                        local,
-                                        path: mut source_path,
-                                    } => {
-                                        source_path.extend(path.iter().cloned());
-                                        self.input_address(local, source_path)
-                                    }
-                                    other => other,
-                                };
-                                result.insert(projected);
-                            }
-                        }
-                    }
-                }
-            }
-            Origin::Unproven(point) => {
-                result.insert(Origin::Opaque {
-                    function: self.function.def_id,
-                    point: *point,
-                });
-                for dependency in self.unproven.get(point).into_iter().flatten() {
-                    result.extend(self.boundary_origins(dependency, seen));
-                }
-            }
-            Origin::Input { .. }
-            | Origin::InputAddress { .. }
-            | Origin::Frame { .. }
-            | Origin::Opaque { .. } => {
-                result.insert(origin.clone());
+    fn export_memory_state(&self, state: &State, summary: &mut Summary) {
+        let mut ports = self
+            .program
+            .map(|context| context.ports[&self.function.def_id].clone())
+            .unwrap_or_default();
+        ports.extend(self.written_inputs.iter().map(|view| view.root.clone()));
+        let async_modified = Self::async_modified(state);
+        ports.extend(async_modified.iter().map(|view| view.root.clone()));
+        summary.async_modified.extend(async_modified);
+        for declaration in self
+            .function
+            .locals
+            .iter()
+            .skip(1)
+            .take(self.function.param_count as usize + self.function.captures.len())
+        {
+            if let Some(inner) = child_type(declaration.ty, &Slot::Deref, self.table) {
+                ports.push(Port::root(declaration.local, inner));
             }
         }
-        seen.remove(origin);
-        result
+        let ports: FxHashSet<_> = ports
+            .into_iter()
+            .map(|port| self.aliases.representative(&port))
+            .collect();
+        for port in ports {
+            if matches!(port.kind, super::aliases::StorageKind::Channel(_)) {
+                continue;
+            }
+            let mut selector = port.selector();
+            if !self.aliases.is_cell(&port) {
+                if let Intent::Address(payload) = &mut selector.intent {
+                    payload.kind = DerefKind::Residual;
+                }
+            }
+            let value = self.symbolic_pointee(&selector, port.pointee, state);
+            summary
+                .memory
+                .entry(port.clone())
+                .or_default()
+                .join(&export_value(&value, self.function.def_id));
+            summary.modified.extend(
+                state
+                    .modified_views
+                    .iter()
+                    .filter(|view| view.root == port)
+                    .cloned(),
+            );
+        }
     }
 
-    fn input_address(&self, local: Local, path: Path) -> Origin {
-        Origin::InputAddress {
-            local,
-            path: value::normalize(self.function.locals[local.index()].ty, path, self.table),
+    fn bind_frame(&mut self, endpoint: &Endpoint, actuals: CallActuals<'_>) -> Endpoint {
+        let boundary = actuals
+            .frame_caller
+            .map(|function| super::address::OpaqueSite {
+                function,
+                point: actuals.point,
+            });
+        let bound = endpoint.bind_frame(boundary);
+        if let Endpoint::Frame {
+            lifetime: super::address::FrameLifetime::DuringCall { boundary: site, .. },
+            ..
+        } = &bound
+        {
+            if boundary == Some(*site) {
+                self.frame_boundaries.insert(*site);
+            }
         }
+        bound
+    }
+
+    fn typed_dependency(
+        &self,
+        selector: &Selector,
+        leaf: &super::value::Leaf,
+        path: &Path,
+        root: TypeId,
+    ) -> Selector {
+        let mut selector = selector.clone();
+        if selector.expected.is_none() && leaf.opaque.is_empty() {
+            let ty = self.selected_type(root, path);
+            if matches!(
+                self.table.resolve(value::strip_mutable(ty, self.table)),
+                spark_types::Ty::Ref { .. }
+            ) {
+                selector.expected = Some(ty);
+            }
+        }
+        selector
     }
 
     fn bind(&mut self, summary: &Value, function: &MirFunction, actuals: CallActuals<'_>) -> Value {
-        let CallActuals {
-            ty, point, state, ..
-        } = actuals;
-        let mut result = Value::default();
-        for (path, callees) in &summary.callees {
-            result
-                .callees
-                .entry(path.clone())
-                .or_default()
-                .extend(callees);
-        }
-        for (path, origins) in &summary.slots {
-            for origin in origins {
-                match origin {
-                    Origin::Input {
-                        local,
-                        path: source_path,
-                    } => {
-                        let source = Self::actual_input(*local, function, actuals);
-                        let source_ty = function.locals[local.index()].ty;
-                        let selected = self.select_input(source, source_ty, source_path, state);
-                        if source_path.last() == Some(&Slot::Tail)
-                            && path.last() == Some(&Slot::Tail)
-                        {
-                            result.join(&selected.prefixed_path(
-                                &path[..path.len() - 1],
-                                ty,
-                                self.table,
-                            ));
+        let mut result = Value {
+            callees: summary.callees.clone(),
+            queues: self.bind_queue_handles(summary, function, actuals),
+            futures: self.bind_task_handles(summary, function, actuals),
+            task_views: self.bind_task_views(summary, function, actuals),
+            ..Default::default()
+        };
+        for ((path, origin, capture), leaf) in &summary.leaves {
+            if leaf.has_validation_hole(origin) {
+                result.insert_leaf(
+                    path.clone(),
+                    Origin::ValidationHole,
+                    &super::value::Leaf::default(),
+                );
+            }
+            if leaf.is_validation_only(origin) {
+                continue;
+            }
+            let mut retained = super::value::Leaf {
+                opaque: leaf.opaque.clone(),
+                ..Default::default()
+            };
+            let mut retained_sources = super::demand::Frontier::default();
+            for endpoint in &leaf.endpoints {
+                match endpoint {
+                    Endpoint::Frame { .. } => {
+                        retained
+                            .endpoints
+                            .insert(self.bind_frame(endpoint, actuals));
+                    }
+                    Endpoint::Input(selector, site) => {
+                        let read = actuals.at_read(site.as_deref());
+                        let selected = self.select_selector(selector, function, read);
+                        if leaf.opaque.is_empty() {
+                            result.insert_addresses(path, &selected);
                         } else {
-                            result.insert(path.clone(), selected.addresses());
+                            retain_selected(&selected, &mut retained, &mut retained_sources);
                         }
-                    }
-                    Origin::InputAddress {
-                        local,
-                        path: source_path,
-                    } => {
-                        let source = Self::actual_input(*local, function, actuals);
-                        let source_ty = function.locals[local.index()].ty;
-                        let selected = self.bind_address(source, source_ty, source_path, actuals);
-                        result.insert(path.clone(), selected);
-                    }
-                    Origin::Opaque { .. } => result.insert(
-                        path.clone(),
-                        std::iter::once(Origin::Unproven(point)).collect(),
-                    ),
-                    Origin::Frame { .. } => {
-                        result.insert(path.clone(), std::iter::once(origin.clone()).collect());
-                    }
-                    Origin::Loan(_) | Origin::Unproven(_) => {
-                        unreachable!("summary origins must be exported")
                     }
                 }
             }
-        }
-        if result.origins().contains(&Origin::Unproven(point)) {
-            self.retain_unknown(point, &result.origins());
+            for dependency in &leaf.dependencies {
+                match dependency {
+                    Dependency::Address(endpoint @ Endpoint::Frame { .. }) => {
+                        retained
+                            .dependencies
+                            .insert(Dependency::Address(self.bind_frame(endpoint, actuals)));
+                    }
+                    Dependency::Address(Endpoint::Input(selector, site)) => {
+                        let read = actuals.at_read(site.as_deref());
+                        let selected = self.select_selector(selector, function, read);
+                        retain_selected(&selected, &mut retained, &mut retained_sources);
+                    }
+                    Dependency::InputValue(selector, site) => {
+                        let selector = self.typed_dependency(selector, leaf, path, actuals.ty);
+                        let read = actuals.at_read(site.as_deref());
+                        let mut selected = self.select_selector(&selector, function, read);
+                        if let Some(capture) = capture {
+                            selected = selected.with_reference_capture(*capture);
+                        }
+                        if !leaf.opaque.is_empty() {
+                            retain_selected(&selected, &mut retained, &mut retained_sources);
+                        } else if path.last() == Some(&Slot::Tail) {
+                            let prefix = if selector.expected.is_some_and(|ty| {
+                                child_type(ty, &Slot::Deref, self.table).is_some()
+                            }) {
+                                path.as_slice()
+                            } else {
+                                &path[..path.len() - 1]
+                            };
+                            result.join(&selected.prefixed_path(prefix, actuals.ty, self.table));
+                        } else {
+                            result.insert_addresses(path, &selected);
+                        }
+                    }
+                }
+            }
+            if !retained.endpoints.is_empty()
+                || !retained.dependencies.is_empty()
+                || !retained.opaque.is_empty()
+            {
+                let identity = if retained.opaque.is_empty() {
+                    origin.clone()
+                } else {
+                    Origin::Unproven(actuals.point)
+                };
+                result.insert_contribution(path.clone(), identity.clone(), *capture, &retained);
+                result
+                    .sources
+                    .entry((path.clone(), identity, *capture))
+                    .or_default()
+                    .extend(retained_sources);
+            }
         }
         result
     }
 
-    fn actual_input(local: Local, function: &MirFunction, actuals: CallActuals<'_>) -> Value {
-        if local.0 > 0 && local.0 <= function.param_count {
-            actuals
-                .arguments
-                .get(local.index() - 1)
-                .cloned()
-                .unwrap_or_default()
-        } else if local.0 > function.param_count {
-            actuals
-                .callee
-                .capture(local.index() - function.param_count as usize - 1)
-        } else {
-            Value::default()
-        }
-    }
-
-    fn bind_address(
+    fn bound_accesses(
         &mut self,
-        source: Value,
-        mut ty: TypeId,
-        path: &Path,
+        summary: &Summary,
+        function: &MirFunction,
         actuals: CallActuals<'_>,
-    ) -> Origins {
-        let deref = path.iter().rposition(|slot| *slot == Slot::Deref);
-        let Some(index) = deref.filter(|_| !path.contains(&Slot::Tail)) else {
-            let mut origins = source.origins();
-            self.retain_unknown(actuals.point, &origins);
-            origins.insert(Origin::Unproven(actuals.point));
-            return origins;
-        };
-        let selected = self.select_input(source, ty, &path[..index].to_vec(), actuals.state);
-        for slot in &path[..=index] {
-            ty = child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR);
+    ) -> Accesses {
+        let mut accesses = Accesses::default();
+        for access in &summary.observed {
+            self.bind_access(access, function, actuals, &mut accesses);
         }
-        let targets: FxHashSet<_> = selected
-            .addresses()
-            .into_iter()
-            .map(|origin| Target::Through {
-                origin,
-                ty,
-                path: path[index + 1..].to_vec(),
-            })
-            .collect();
-        let entry = self.loans.entry(actuals.point).or_default();
-        let before = entry.len();
-        entry.extend(targets);
-        self.changed |= before != entry.len();
-        std::iter::once(Origin::Loan(actuals.point)).collect()
+        accesses
     }
 
-    fn select_input(&self, mut value: Value, mut ty: TypeId, path: &Path, state: &State) -> Value {
-        for slot in path {
-            if *slot == Slot::Tail {
-                break;
+    fn bind_access(
+        &mut self,
+        access: &super::read::Access,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+        accesses: &mut Accesses,
+    ) {
+        let (selector, receive) = match &access.target {
+            Dependency::InputValue(selector, receive)
+            | Dependency::Address(Endpoint::Input(selector, receive)) => {
+                (selector, receive.as_deref())
             }
-            value = if *slot == Slot::Deref {
-                self.dereference(&value, ty, state, &mut FxHashSet::default())
-            } else {
-                value.project(slot)
-            };
-            ty = child_type(ty, slot, self.table).unwrap_or(TypeId::ERROR);
+            Dependency::Address(Endpoint::Frame { .. }) => return,
+        };
+        let actuals = CallActuals {
+            read: actuals
+                .read
+                .with_read_site(access.site)
+                .with_entry_prefix()
+                .with_receive(receive)
+                .with_access_site(access.site),
+            ..actuals
+        };
+        let mut selected = self.select_selector(selector, function, actuals);
+        if selector.selection.contains(&Slot::Tail)
+            && matches!(selector.intent, Intent::Value)
+            && selector.expected.is_none()
+        {
+            selected = self.tail_reference_value(selected, TypeId::ERROR, None, actuals.read.state);
         }
-        value
+        accesses.observe_reference_at(&selected, None, &access.selection, access.kind, access.site);
+    }
+
+    fn residual_reference(
+        &self,
+        value: &Value,
+        port: &Port,
+        function: &MirFunction,
+        actuals: CallActuals<'_>,
+    ) -> Value {
+        let mut selected = self.expand_reference(value, port.pointee);
+        selected.materialize_validation_holes();
+        if actuals.is_cell(port) {
+            return selected;
+        }
+        let Some(aliases) = actuals.aliases else {
+            return selected;
+        };
+        let ports = self
+            .program
+            .map(|context| context.ports[&function.def_id].as_slice())
+            .unwrap_or_default();
+        let mut excluded = FxHashSet::default();
+        for root in aliases.family(port, ports, self.table).excluded {
+            let input = self.port_input(&root, function, actuals);
+            if let Some(locations) = self.reference_locations(&input, root.pointee) {
+                if locations.len() == 1 {
+                    excluded.extend(
+                        locations
+                            .into_iter()
+                            .filter(super::aliases::Location::unique),
+                    );
+                }
+            }
+        }
+        selected.leaves.retain(|(_, origin, _), leaf| {
+            leaf.endpoints.retain(|endpoint| {
+                let pointer = Value::reference(origin.clone()).with_metadata(&super::value::Leaf {
+                    endpoints: std::iter::once(endpoint.clone()).collect(),
+                    ..Default::default()
+                });
+                self.reference_locations(&pointer, port.pointee)
+                    .is_none_or(|locations| {
+                        locations.len() != 1
+                            || !locations.iter().all(|location| excluded.contains(location))
+                    })
+            });
+            leaf.is_validation_only(origin)
+                || !leaf.endpoints.is_empty()
+                || !leaf.opaque.is_empty()
+                || leaf
+                    .dependencies
+                    .iter()
+                    .any(|dependency| matches!(dependency, Dependency::InputValue(..)))
+        });
+        selected
+            .sources
+            .retain(|key, _| selected.leaves.contains_key(key));
+        selected
+    }
+
+    fn expand_reference(&self, value: &Value, ty: TypeId) -> Value {
+        let mut result = Value::default();
+        for (key @ (path, _, _), leaf) in &value.leaves {
+            if !path.is_empty() && *path != [Slot::Tail] {
+                continue;
+            }
+            let mut one = Value::default();
+            one.leaves.insert(key.clone(), leaf.clone());
+            let mut metadata = self.project_reference(&one, ty, &Vec::new());
+            let endpoints = std::mem::take(&mut metadata.endpoints);
+            for endpoint in endpoints {
+                match endpoint {
+                    Endpoint::Input(selector, site) => {
+                        for (view, _) in self.external_targets(&selector) {
+                            let mut selected = view.root.selector();
+                            if let Intent::Address(payload) = &mut selected.intent {
+                                payload.projection = view.path;
+                                if !self.aliases.is_cell(&view.root) {
+                                    payload.kind = DerefKind::Residual;
+                                }
+                            }
+                            metadata
+                                .endpoints
+                                .insert(Endpoint::Input(selected, site.clone()));
+                        }
+                    }
+                    frame @ Endpoint::Frame { .. } => {
+                        metadata.endpoints.insert(frame);
+                    }
+                }
+            }
+            result.leaves.insert(key.clone(), metadata);
+            if let Some(sources) = value.sources.get(key) {
+                result.sources.insert(key.clone(), sources.clone());
+            }
+        }
+        result
+    }
+}
+
+pub(super) fn export_value(value: &Value, function: DefId) -> Value {
+    let mut result = Value {
+        callees: value.callees.clone(),
+        queues: value.queues.clone(),
+        futures: value.futures.clone(),
+        task_views: task_views::export(value, function),
+        ..Default::default()
+    };
+    for ((path, origin, capture), leaf) in &value.leaves {
+        if leaf.has_validation_hole(origin) {
+            result.insert_leaf(
+                path.clone(),
+                Origin::ValidationHole,
+                &super::value::Leaf::default(),
+            );
+        }
+        if leaf.is_validation_only(origin) {
+            continue;
+        }
+        let origin = match origin {
+            Origin::Loan(point) => Origin::Frame {
+                function,
+                point: *point,
+            },
+            Origin::Unproven(point) => Origin::Opaque {
+                function,
+                point: *point,
+            },
+            other => other.clone(),
+        };
+        let mut leaf = leaf.clone();
+        leaf.parents.clear();
+        result.insert_contribution(path.clone(), origin, *capture, &leaf);
+    }
+    result
+}
+
+fn retain_selected(
+    value: &Value,
+    retained: &mut super::value::Leaf,
+    sources: &mut super::demand::Frontier,
+) {
+    retained.parents.extend(value.origins());
+    sources.extend(value.all_sources());
+    for leaf in value.leaves.values() {
+        retained.parents.extend(leaf.parents.iter().cloned());
+        retained
+            .dependencies
+            .extend(leaf.dependencies.iter().cloned());
+        retained
+            .dependencies
+            .extend(leaf.endpoints.iter().cloned().map(Dependency::Address));
+        retained.opaque.extend(leaf.opaque.iter().copied());
+    }
+    if !retained.opaque.is_empty() {
+        retained.parents.remove(&Origin::ValidationHole);
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    #[test]
-    fn helper_binding_recomputes_when_reborrow_targets_grow() {
-        use spark_mir::{
-            AggregateKind, BasicBlock, Constant, LocalDecl, Place, Projection, Rvalue, Statement,
-        };
-        use spark_span::Span;
-        use spark_types::{IntWidth, LifetimeId, Ty};
-        use std::collections::HashMap;
+#[cfg(test)]
+mod write_tests;
 
-        let mut table = TypeTable::new();
-        let int = table.intern(Ty::Int(IntWidth::I64));
-        let string = table.intern(Ty::String);
-        let reference = table.intern(Ty::Ref {
-            inner: int,
-            mutable: false,
-            lifetime: LifetimeId::ANONYMOUS,
-        });
-        let map = table.intern(Ty::Map(string, reference));
-        let map_ref = table.intern(Ty::Ref {
-            inner: map,
-            mutable: false,
-            lifetime: LifetimeId::ANONYMOUS,
-        });
-        let span = Span::DUMMY;
-        let local = |index| Place::from_local(Local(index));
-        let copy = |index| Operand::Copy(local(index));
-        let assign = |index, rvalue| Statement::Assign {
-            place: local(index),
-            rvalue,
-            span,
-        };
-        let borrow = |index| Rvalue::Ref {
-            place: local(index),
-            mutable: false,
-        };
-        let drop_local = |index| Statement::Drop {
-            place: local(index),
-            span,
-        };
-        let block = |statements, terminator| BasicBlock {
-            statements,
-            terminator,
-            is_cleanup: false,
-        };
-        let locals = |types: &[TypeId]| {
-            types
-                .iter()
-                .enumerate()
-                .map(|(index, ty)| LocalDecl {
-                    local: Local(index as u32),
-                    ty: *ty,
-                    name: None,
-                    is_user_variable: false,
-                    mutable: true,
-                    span,
-                })
-                .collect()
-        };
-        let helper_id = DefId::new(9000);
-        let caller_id = DefId::new(9001);
-        let helper = MirFunction {
-            def_id: helper_id,
-            param_count: 1,
-            return_type: map,
-            locals: locals(&[map, map_ref]),
-            blocks: vec![block(
-                vec![assign(
-                    0,
-                    Rvalue::Use(Operand::Copy(Place {
-                        local: Local(1),
-                        projections: vec![Projection::Deref],
-                    })),
-                )],
-                Terminator::Return,
-            )],
-            captures: vec![],
-            is_async: false,
-            span,
-        };
-        let aggregate = |reference_local| {
-            Rvalue::Aggregate(
-                AggregateKind::Map,
-                vec![
-                    Operand::Constant(Constant::String(spark_intern::sym("one"))),
-                    copy(reference_local),
-                ],
-            )
-        };
-        let caller = MirFunction {
-            def_id: caller_id,
-            param_count: 1,
-            return_type: map,
-            // Return, input Ref, local Int, local Ref, safe/unsafe maps,
-            // safe/unsafe map Refs, selected Ref, reborrow, call output.
-            locals: locals(&[
-                map, reference, int, reference, map, map, map_ref, map_ref, map_ref, map_ref, map,
-            ]),
-            blocks: vec![
-                block(
-                    vec![
-                        assign(2, Rvalue::Use(Operand::Constant(Constant::Int(7)))),
-                        assign(3, borrow(2)),
-                        assign(4, aggregate(1)),
-                        assign(5, aggregate(3)),
-                        assign(6, borrow(4)),
-                        assign(7, borrow(5)),
-                        assign(8, Rvalue::Use(copy(6))),
-                    ],
-                    Terminator::Goto { target: BlockId(1) },
-                ),
-                block(
-                    vec![
-                        assign(
-                            9,
-                            Rvalue::Ref {
-                                place: Place {
-                                    local: Local(8),
-                                    projections: vec![Projection::Deref],
-                                },
-                                mutable: false,
-                            },
-                        ),
-                        drop_local(8),
-                        drop_local(10),
-                    ],
-                    Terminator::Goto { target: BlockId(2) },
-                ),
-                block(
-                    vec![],
-                    Terminator::Call {
-                        func: Operand::Constant(Constant::FunctionRef(helper_id)),
-                        args: vec![copy(9)],
-                        destination: local(10),
-                        target: BlockId(3),
-                        span,
-                    },
-                ),
-                block(
-                    vec![],
-                    Terminator::SwitchInt {
-                        discriminant: Operand::Constant(Constant::Bool(true)),
-                        targets: vec![(1, BlockId(4))],
-                        otherwise: BlockId(5),
-                    },
-                ),
-                block(
-                    vec![assign(8, Rvalue::Use(copy(7)))],
-                    Terminator::Goto { target: BlockId(1) },
-                ),
-                block(vec![assign(0, Rvalue::Use(copy(10)))], Terminator::Return),
-            ],
-            captures: vec![],
-            is_async: false,
-            span,
-        };
-        let mir = Mir {
-            functions: HashMap::from([(helper_id, helper), (caller_id, caller)]),
-        };
-        let mut diagnostics = Diagnostics::new();
-        check_program_returns(&mir, &table, &mut diagnostics);
-        assert!(
-            diagnostics.iter().any(|diagnostic| diagnostic.message
-                == "returned value contains a reference to local storage"),
-            "helper must see the unsafe pointee added on the backedge"
-        );
-    }
-    #[test]
-    fn projected_helper_reference_preserves_pointee_selector() {
-        for borrow_local in [false, true] {
-            projected_helper_reference_case(borrow_local);
-        }
-    }
+#[cfg(test)]
+mod family_tests;
 
-    fn projected_helper_reference_case(borrow_local: bool) {
-        use spark_mir::{
-            AggregateKind, BasicBlock, Constant, LocalDecl, Place, Projection, Rvalue, Statement,
-        };
-        use spark_span::Span;
-        use spark_types::{IntWidth, LifetimeId, Ty};
-        use std::collections::HashMap;
-
-        let mut table = TypeTable::new();
-        let int = table.intern(Ty::Int(IntWidth::I64));
-        let string = table.intern(Ty::String);
-        let reference = table.intern(Ty::Ref {
-            inner: int,
-            mutable: false,
-            lifetime: LifetimeId::ANONYMOUS,
-        });
-        let map = table.intern(Ty::Map(string, reference));
-        let map_ref = table.intern(Ty::Ref {
-            inner: map,
-            mutable: false,
-            lifetime: LifetimeId::ANONYMOUS,
-        });
-        let span = Span::DUMMY;
-        let local = |index| Place::from_local(Local(index));
-        let copy = |index| Operand::Copy(local(index));
-        let assign = |index, rvalue| Statement::Assign {
-            place: local(index),
-            rvalue,
-            span,
-        };
-        let borrow = |index| Rvalue::Ref {
-            place: local(index),
-            mutable: false,
-        };
-        let block = |statements, terminator| BasicBlock {
-            statements,
-            terminator,
-            is_cleanup: false,
-        };
-        let locals = |types: &[TypeId]| {
-            types
-                .iter()
-                .enumerate()
-                .map(|(index, ty)| LocalDecl {
-                    local: Local(index as u32),
-                    ty: *ty,
-                    name: None,
-                    is_user_variable: false,
-                    mutable: true,
-                    span,
-                })
-                .collect()
-        };
-        let first = spark_intern::sym("first");
-        let pair_id = DefId::new(9003);
-        table.set_struct_fields(pair_id, vec![(first, map)]);
-        let pair = table.intern(Ty::Struct(pair_id));
-        let pair_ref = table.intern(Ty::Ref {
-            inner: pair,
-            mutable: false,
-            lifetime: LifetimeId::ANONYMOUS,
-        });
-        let select_id = DefId::new(9000);
-        let copy_id = DefId::new(9001);
-        let caller_id = DefId::new(9002);
-        let select = MirFunction {
-            def_id: select_id,
-            param_count: 1,
-            return_type: map_ref,
-            locals: locals(&[map_ref, pair_ref]),
-            blocks: vec![block(
-                vec![assign(
-                    0,
-                    Rvalue::Ref {
-                        place: Place {
-                            local: Local(1),
-                            projections: vec![Projection::Deref, Projection::Field(first)],
-                        },
-                        mutable: false,
-                    },
-                )],
-                Terminator::Return,
-            )],
-            captures: vec![],
-            is_async: false,
-            span,
-        };
-        let copier = MirFunction {
-            def_id: copy_id,
-            param_count: 1,
-            return_type: map,
-            locals: locals(&[map, map_ref]),
-            blocks: vec![block(
-                vec![assign(
-                    0,
-                    Rvalue::Use(Operand::Copy(Place {
-                        local: Local(1),
-                        projections: vec![Projection::Deref],
-                    })),
-                )],
-                Terminator::Return,
-            )],
-            captures: vec![],
-            is_async: false,
-            span,
-        };
-        let caller = MirFunction {
-            def_id: caller_id,
-            param_count: u32::from(!borrow_local),
-            return_type: map,
-            locals: locals(&[
-                map,
-                if borrow_local { int } else { reference },
-                reference,
-                map,
-                pair,
-                pair_ref,
-                map_ref,
-            ]),
-            blocks: vec![
-                block(
-                    vec![
-                        if borrow_local {
-                            assign(1, Rvalue::Use(Operand::Constant(Constant::Int(7))))
-                        } else {
-                            Statement::Nop
-                        },
-                        assign(
-                            2,
-                            if borrow_local {
-                                borrow(1)
-                            } else {
-                                Rvalue::Use(copy(1))
-                            },
-                        ),
-                        assign(
-                            3,
-                            Rvalue::Aggregate(
-                                AggregateKind::Map,
-                                vec![
-                                    Operand::Constant(Constant::String(spark_intern::sym("one"))),
-                                    copy(2),
-                                ],
-                            ),
-                        ),
-                        assign(
-                            4,
-                            Rvalue::Aggregate(
-                                AggregateKind::Struct {
-                                    def_id: pair_id,
-                                    fields: vec![first],
-                                },
-                                vec![copy(3)],
-                            ),
-                        ),
-                        assign(5, borrow(4)),
-                    ],
-                    Terminator::Call {
-                        func: Operand::Constant(Constant::FunctionRef(select_id)),
-                        args: vec![copy(5)],
-                        destination: local(6),
-                        target: BlockId(1),
-                        span,
-                    },
-                ),
-                block(
-                    vec![],
-                    Terminator::Call {
-                        func: Operand::Constant(Constant::FunctionRef(copy_id)),
-                        args: vec![copy(6)],
-                        destination: local(0),
-                        target: BlockId(2),
-                        span,
-                    },
-                ),
-                block(vec![], Terminator::Return),
-            ],
-            captures: vec![],
-            is_async: false,
-            span,
-        };
-        let mir = Mir {
-            functions: HashMap::from([(select_id, select), (copy_id, copier), (caller_id, caller)]),
-        };
-        let mut diagnostics = Diagnostics::new();
-        check_program_returns(&mir, &table, &mut diagnostics);
-        assert_eq!(diagnostics.has_errors(), borrow_local, "projected helper Ref must preserve payload lifetime independently of the wrapper address");
-    }
-}
+#[cfg(test)]
+mod unproven_tests;

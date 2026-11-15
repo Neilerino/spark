@@ -1,0 +1,15 @@
+// TAG [SPARK-114]
+
+fn main(): Int {
+    fallback: String = "outside"
+    fallbackRef: Ref[String] = fallback
+    values: List[Ref[String]]! = []
+    if true {
+        text: String = " seven ".trim()
+        borrowed: Ref[String] = text
+        values.append(borrowed)
+    }
+    result: Ref[String] = values[0] ?? fallbackRef
+    print(result)
+    return 0
+}
