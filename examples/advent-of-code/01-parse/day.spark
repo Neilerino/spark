@@ -1,0 +1,37 @@
+import spark.io { readFile, lastError }
+import spark.sys { args }
+import spark.text { parse, ParseError }
+
+fn parseLine(text: String): Int | ParseError {
+    number: Int = parse(text)!
+    return number
+}
+
+fn main(): Int {
+    argv: List[String] = args()
+    path: String = argv[1] ?? "input.txt"
+    text: String = readFile(path)
+    error: String = lastError()
+    if error != "" {
+        print(error)
+        return 1
+    }
+    rows: List[String] = text.lines()
+    total: Int! = 0
+    row: Int! = 0
+    loop {
+        if row >= rows.len() { break }
+        line: String = rows[row] ?? ""
+        row = row + 1
+        parseLine(line) to {
+            value: Int -> { total = total + value },
+            ParseError -> {
+                lineNumber: Int = row
+                print("line {lineNumber}: parse error")
+                return 1
+            }
+        }
+    }
+    print(total)
+    return 0
+}
